@@ -19,6 +19,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, type ScopedRowSource } from '@/chat/store';
 import { bareToolFullName } from '@/chat/tool-groups';
+import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
@@ -390,6 +391,8 @@ interface ChatToolGroupRow {
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
 }
 
 /**
@@ -754,7 +757,7 @@ export function AgentScopedResourcesPanel({
     footerLinkText: string;
     footerLinkAriaLabel: string;
     renderGroupIcon: (group: ChatToolGroupRow) => React.ReactNode;
-    renderToolIcon: (fullName: string) => React.ReactNode;
+    renderToolIcon: (fullName: string, group: ChatToolGroupRow) => React.ReactNode;
   }) => {
     if (groups.length === 0) {
       return (
@@ -878,7 +881,7 @@ export function AgentScopedResourcesPanel({
                           onClick={(e) => e.stopPropagation()}
                         />
                       </span>
-                      {renderToolIcon(fn)}
+                      {renderToolIcon(fn, group)}
                       <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
                         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {short}
@@ -1108,8 +1111,10 @@ export function AgentScopedResourcesPanel({
             footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
               defaultValue: 'Open MCP servers to add or manage connections',
             }),
-            renderGroupIcon: () => <MaterialIcon name="hub" size={18} color="var(--gray-11)" />,
-            renderToolIcon: () => <MaterialIcon name="hub" size={16} color="var(--gray-9)" />,
+            renderGroupIcon: (group) => <McpServerIcon typeId={group.typeId} name={group.label} size={18} />,
+            renderToolIcon: (_fullName, group) => (
+              <McpServerIcon typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+            ),
           })}
       </Flex>
 

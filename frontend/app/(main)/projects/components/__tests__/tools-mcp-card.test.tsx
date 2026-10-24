@@ -57,4 +57,15 @@ describe('ToolsMcpCard', () => {
     expect(onChange).toHaveBeenCalledWith(['mcp_github_create_pr']);
     expect(screen.getByText('list issues')).toBeTruthy();
   });
+
+  it("shows an MCP server's own logo", async () => {
+    catalog.fetchToolCatalog.mockResolvedValue({ toolGroups: [], mcpGroups });
+    render(
+      <Theme>
+        <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
+      </Theme>,
+    );
+
+    expect(await screen.findByRole('img', { name: 'github icon' })).toBeTruthy();
+  });
 });

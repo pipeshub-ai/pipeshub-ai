@@ -175,6 +175,8 @@ export interface AgentChatToolGroupRow {
   /** Stable id for UI keys — same toolset type may appear multiple times as instances. */
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
 }
@@ -251,6 +253,7 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
       label: (server.displayName || server.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       ...(instanceId ? { instanceId } : {}),
+      typeId: server.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
     });

@@ -5,6 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
+import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 
 const api = vi.hoisted(() => ({
   getMyToolsets: vi.fn(),
@@ -13,14 +14,13 @@ const api = vi.hoisted(() => ({
   getInstanceOAuthAuthorizationUrl: vi.fn(),
 }));
 const apiActionsApi = vi.hoisted(() => ({ listInstances: vi.fn() }));
+const mcpApi = vi.hoisted(() => ({ getMyMcpServers: vi.fn() }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/store/toast-store', () => ({ toast }));
 vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: api, MAX_TOOLSETS_LIST_LIMIT: 200 }));
-vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({
-  McpServersApi: { getMyMcpServers: vi.fn(async () => ({ instances: [] })) },
-}));
+vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/(main)/workspace/api-toolsets/api', () => ({ ApiToolsetsApi: apiActionsApi }));
 // The real dialog saves the credential; here "Save" stands for one that was accepted.
 vi.mock('@/app/(main)/workspace/api-toolsets/components', () => ({
@@ -116,6 +116,7 @@ beforeEach(() => {
   });
   api.getAllMyToolsets.mockImplementation(async () => ({ toolsets: backend.toConnect }));
   apiActionsApi.listInstances.mockResolvedValue([]);
+  mcpApi.getMyMcpServers.mockResolvedValue({ instances: [] });
 });
 
 afterEach(() => {
@@ -325,5 +326,46 @@ describe('API actions in the chat’s Actions tab', () => {
 
     await openActionsTab();
     expect(apiActionsApi.listInstances).not.toHaveBeenCalled();
+  });
+});
+
+function mcpServer(overrides: Partial<McpMyServerEntry>): McpMyServerEntry {
+  return {
+    _id: 'inst-1',
+    orgId: 'org-1',
+    createdBy: 'u-1',
+    name: 'Server',
+    transport: 'streamable_http',
+    authMode: 'oauth',
+    useAdminAuth: false,
+    requiredEnv: [],
+    optionalEnv: [],
+    isCustom: false,
+    createdAt: 1,
+    updatedAt: 1,
+    isAuthenticated: true,
+    tools: [{ name: 'search', namespacedName: `mcp_${overrides._id}_search`, inputSchema: {} }],
+    ...overrides,
+  };
+}
+
+describe('the chat’s MCP tab', () => {
+  it('shows each connected server with its own logo', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: true } });
+    mcpApi.getMyMcpServers.mockResolvedValue({
+      instances: [
+        mcpServer({ _id: 'rovo', name: 'Atlassian Rovo', typeId: 'atlassian_rovo' }),
+        mcpServer({ _id: 'cu', name: 'ClickUp', typeId: 'clickup' }),
+        mcpServer({ _id: 'own', name: 'Acme internal', typeId: null, isCustom: true }),
+      ],
+    });
+    renderInTheme(<UniversalAgentResourcesPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+
+    const rowOf = async (name: string) => (await screen.findByText(name)).parentElement!.parentElement!;
+    expect(within(await rowOf('Atlassian Rovo')).getByRole('img', { name: 'atlassian icon' })).toBeTruthy();
+    expect(within(await rowOf('ClickUp')).getByRole('img', { name: 'clickup icon' })).toBeTruthy();
+    // No logo of ours: it keeps the MCP mark rather than a stock picture.
+    expect(within(await rowOf('Acme internal')).queryByRole('img')).toBeNull();
   });
 });

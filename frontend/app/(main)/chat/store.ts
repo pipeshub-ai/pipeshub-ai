@@ -72,6 +72,8 @@ export interface ScopedToolGroupRow {
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
 }
 
 /**

@@ -5,6 +5,7 @@ import { Checkbox, Flex, IconButton, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
+import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import { fetchToolCatalog } from '@/chat/hooks/use-project-scope-hydration';
 import { bareToolFullName, type CatalogToolGroupRow } from '@/chat/tool-groups';
 import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
@@ -34,7 +35,7 @@ function toCardRows(groups: CatalogToolGroupRow[], kind: 'toolset' | 'mcp'): Too
     ),
     icon:
       kind === 'mcp' ? (
-        <MaterialIcon name="hub" size={16} color="var(--gray-11)" />
+        <McpServerIcon typeId={g.typeId} name={g.label} />
       ) : (
         <ConnectorIcon type={resolveConnectorType(g.toolsetSlug || g.label)} size={16} />
       ),

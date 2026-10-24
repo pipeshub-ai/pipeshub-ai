@@ -155,6 +155,13 @@ describe('McpConnectRows', () => {
     expect(onConnected).toHaveBeenCalledWith('exa');
   });
 
+  it("shows each server's own logo", () => {
+    const { row } = renderRows([clickUp, exaOwnKey]);
+
+    expect(within(row('ClickUp')).getByRole('img', { name: 'clickup icon' })).toBeTruthy();
+    expect(within(row('Exa')).getByRole('img', { name: 'exa icon' })).toBeTruthy();
+  });
+
   it('shows nothing when every server is connected', () => {
     renderRows([notion]);
     expect(screen.queryByText('Not connected')).toBeNull();
