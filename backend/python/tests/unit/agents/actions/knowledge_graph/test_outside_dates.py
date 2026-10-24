@@ -115,6 +115,17 @@ class TestOutsideBounds:
         assert outside_bounds(record, _WEEK)
         assert not outside_bounds(record, {"source_updated_after_ms": _ms("2026-01-01")})
 
+    @pytest.mark.parametrize(("switch", "after_the_end_is_outside"), [("true", False), ("", True)])
+    def test_an_upload_dated_only_by_its_upload_is_judged_as_the_filter_judges_it(
+        self, monkeypatch: pytest.MonkeyPatch, switch: str, after_the_end_is_outside: bool,
+    ) -> None:
+        # With content dates on, the filter keeps it unless it was uploaded before the start.
+        monkeypatch.setenv("CONTENT_DOCUMENT_DATES", switch)
+        uploaded_later = {**_record("u", "2026-05-21"), "sourceTimestampOrigin": "upload"}
+        uploaded_before = {**_record("u", "2025-12-01"), "sourceTimestampOrigin": "upload"}
+        assert outside_bounds(uploaded_later, _WEEK) is after_the_end_is_outside
+        assert outside_bounds(uploaded_before, _WEEK)
+
 
 class TestPickOutsideDates:
     def test_the_best_few_outside_the_dates_in_rank_order(self) -> None:

@@ -169,6 +169,12 @@ class TestStoredOrigin:
         assert record.source_timestamp_origin == "file"
         assert record.to_arango_base_record()["sourceTimestampOrigin"] == "file"
 
+    def test_indexing_loads_it_with_the_record(self) -> None:
+        from app.events.processor import convert_record_dict_to_record
+
+        doc = _kb_doc(sourceTimestampOrigin="file", mimeType="text/plain")
+        assert convert_record_dict_to_record(doc).source_timestamp_origin == "file"
+
     def test_it_is_not_written_unset(self) -> None:
         # A pod still on the old strict schema rejects the key even as null.
         assert "sourceTimestampOrigin" not in _kb_record().to_arango_base_record()
@@ -186,3 +192,47 @@ class TestStoredOrigin:
     def test_the_records_schema_rejects_a_malformed_one(self) -> None:
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(self._stored(sourceTimestampOrigin="Upload Time"), record_schema["rule"])
+
+
+class TestContentDates:
+    EMAIL_DAY = 1739232000000  # 2025-02-11 00:00 UTC
+    REPLY_DAY = 1739404800000  # 2025-02-13 00:00 UTC
+
+    def test_a_date_the_document_states_is_shown_as_its_date(self) -> None:
+        record = _kb_record(
+            source_created_at=self.EMAIL_DAY, source_updated_at=self.REPLY_DAY, source_timestamp_origin="content",
+        )
+        lines = [line for line in record.to_llm_context().splitlines() if line.startswith(("Document Date", "Last Updated", "Uploaded At", "Created At"))]
+        assert lines == [
+            "Document Date: 2025-02-11 (stated in the document)",
+            "Last Updated: 2025-02-13 (stated in the document)",
+            "Uploaded At: 2026-10-15 18:48:19 UTC (Thu, Oct 15, 2026, 6:48 PM UTC) (upload time, not a document date)",
+        ]
+
+    def test_one_stated_day_is_shown_once(self) -> None:
+        record = _kb_record(source_created_at=self.EMAIL_DAY, source_updated_at=self.EMAIL_DAY, source_timestamp_origin="content")
+        context = record.to_llm_context()
+        assert "Document Date: 2025-02-11 (stated in the document)" in context
+        assert "Last Updated:" not in context
+
+    def test_the_day_is_the_stated_one_in_any_time_zone(self) -> None:
+        from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+
+        token = set_llm_time_zone("America/Los_Angeles")
+        try:
+            context = _kb_record(source_created_at=self.EMAIL_DAY, source_updated_at=self.EMAIL_DAY, source_timestamp_origin="content").to_llm_context()
+        finally:
+            reset_llm_time_zone(token)
+        assert "Document Date: 2025-02-11" in context
+
+    def test_listings_show_the_stated_date(self) -> None:
+        doc = _kb_doc(sourceCreatedAtTimestamp=self.EMAIL_DAY, sourceLastModifiedTimestamp=self.EMAIL_DAY, sourceTimestampOrigin="content")
+        assert RecordDates.from_graph(doc).listing_date() == ("dated", self.EMAIL_DAY)
+
+    def test_the_records_schema_accepts_the_kept_upload_values(self) -> None:
+        doc = _kb_doc(
+            sourceTimestampOrigin="content", uploadSourceCreatedAtTimestamp=UPLOADED,
+            uploadSourceLastModifiedTimestamp=UPLOADED, uploadSourceTimestampOrigin="upload",
+        )
+        del doc["_key"]
+        jsonschema.validate(doc, record_schema["rule"])
