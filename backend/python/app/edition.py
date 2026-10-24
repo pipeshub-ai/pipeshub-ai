@@ -7,3 +7,6 @@ that import telemetry, so importing it from there would cycle.
 
 # Used when TELEMETRY_COLLECTION_FLAG is unset.
 TELEMETRY_DEFAULT_ENABLED = True
+
+# The admin's Data Collection switch before an admin has set it.
+METRICS_CONSENT_DEFAULT = True

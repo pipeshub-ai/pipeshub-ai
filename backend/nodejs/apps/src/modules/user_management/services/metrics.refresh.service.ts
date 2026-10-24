@@ -6,6 +6,7 @@ import {
 } from '../../../libs/services/telemetry/modules/org-metrics';
 import { setOrgUsers } from '../../../libs/services/telemetry/modules/user-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
+import { isCollecting } from '../../../libs/services/telemetry/flag';
 import { Logger } from '../../../libs/services/logger.service';
 
 const DEFAULT_INTERVAL_MS = 60000 * 5;
@@ -34,6 +35,7 @@ export function startOrgMetricsRefresh(
   intervalMs: number = DEFAULT_INTERVAL_MS,
 ): NodeJS.Timeout {
   const refresh = async (): Promise<void> => {
+    if (!isCollecting()) return;
     try {
       // Single org read drives both the per-account-type totals and the
       // org→domain lookup; grouping for the totals happens in Node.

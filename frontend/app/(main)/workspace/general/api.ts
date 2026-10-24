@@ -10,6 +10,8 @@ const METRICS_URL = `${METRICS_BASE_URL}/toggle`;
 
 export interface MetricsConfig {
   enableMetricCollection: string; // "true" | "false" (string from API)
+  /** False when the deployment runs no telemetry; the page then hides Data Collection. */
+  telemetryEnabled?: boolean;
 }
 
 // ========================================

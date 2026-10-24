@@ -23,3 +23,6 @@ export const REMOVED_SIGN_IN_METHODS: readonly string[] = ['samlSso', 'oauth'];
 export const RENAMED_SIGN_IN_METHODS: Readonly<Record<string, string>> = {
   azureAd: 'microsoft',
 };
+
+// The admin's Data Collection switch before an admin has set it.
+export const METRICS_CONSENT_DEFAULT = true;

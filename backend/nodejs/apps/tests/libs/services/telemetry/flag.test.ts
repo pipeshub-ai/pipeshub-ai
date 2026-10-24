@@ -98,7 +98,7 @@ describe('telemetry flag', () => {
 
   describe('recordEvent', () => {
     it('drops events while telemetry is off', () => {
-      sinon.stub(flagModule, 'isTelemetryEnabled').returns(false);
+      sinon.stub(flagModule, 'isCollecting').returns(false);
 
       recordEvent('user_signed_in', { org: 'o1' });
 
@@ -106,7 +106,7 @@ describe('telemetry flag', () => {
     });
 
     it('buffers events while telemetry is on', () => {
-      sinon.stub(flagModule, 'isTelemetryEnabled').returns(true);
+      sinon.stub(flagModule, 'isCollecting').returns(true);
 
       recordEvent('user_signed_in', { org: 'o1' });
 

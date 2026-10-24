@@ -6,7 +6,7 @@ import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatApi, type KnowledgeBaseForChat } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionLeadingIcon } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collection-row';

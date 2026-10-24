@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.api import connector_resolvers as oss_resolvers
 from app.connectors.api import router as router_module
 from app.connectors.api.router import update_connector_instance_config
 from app.connectors.sources.google.drive.individual.connector import (
@@ -128,6 +129,9 @@ async def _save(
             router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance(connector_type))
         ),
         patch.object(router_module, "resolve_config_service", return_value=store),
+        # The OAuth apps are read from `store`, whichever resolvers the router is wired with.
+        patch.object(router_module, "resolve_oauth_config", oss_resolvers.resolve_oauth_config),
+        patch.object(router_module, "resolve_oauth_configs", oss_resolvers.resolve_oauth_configs),
     ):
         return await update_connector_instance_config(CONNECTOR_ID, request)
 
