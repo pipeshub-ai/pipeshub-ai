@@ -706,6 +706,16 @@ class TestMailDelta:
 
         assert {r.record_name for r in stored_by_type(db, RecordType.FILE).values()} == {"plan.pdf", "notes.pdf"}
 
+    async def test_a_repeated_attachments_next_link_fails_the_mail_instead_of_looping(self, connector, api, db) -> None:
+        serve_delta(api, {None: page([message("m1", "Plan", attachments=True)], delta_link=delta_url("D1"))})
+        attachments = "/v1.0/users/u-ana/messages/m1/attachments"
+        api.on("GET", attachments, page([file_attachment("a1")], next_link=f"{GRAPH}{attachments[5:]}?$skiptoken=same"))
+
+        await connector.run_sync()
+
+        assert len(api.calls("GET", attachments)) == 2, "the repeated link is followed once, then refused"
+        assert connector.full_sync_coverage().complete is False
+
     async def test_the_attachment_listing_selects_metadata_so_graph_sends_no_file_content(self, connector, api, db) -> None:
         serve_delta(api, {None: page([message("m1", "Plan", attachments=True)], delta_link=delta_url("D1"))})
         api.on("GET", "/v1.0/users/u-ana/messages/m1/attachments", page([file_attachment("a1")]))
@@ -1705,6 +1715,16 @@ class TestOutlookPersonal:
         await personal.run_sync()
 
         assert {r.record_name for r in self.db.records.values() if r.record_type == RecordType.FILE} == {"plan.pdf", "notes.pdf"}
+
+    async def test_a_repeated_attachments_next_link_fails_the_mail_instead_of_looping(self, personal, personal_api) -> None:
+        serve_me_delta(personal_api, {None: page([message("m1", "Plan", attachments=True)], delta_link=me_delta_url("D1"))})
+        attachments = f"/v1.0/users/{OID}/messages/m1/attachments"
+        personal_api.on("GET", attachments, page([file_attachment("a1")], next_link=f"{GRAPH}{attachments[5:]}?$skiptoken=same"))
+
+        await personal.run_sync()
+
+        assert len(personal_api.calls("GET", attachments)) == 2, "the repeated link is followed once, then refused"
+        assert personal.full_sync_coverage().complete is False
 
     async def test_sync_reads_every_page_of_the_users_own_mail_with_their_token(self, personal, personal_api) -> None:
         serve_me_delta(personal_api, {

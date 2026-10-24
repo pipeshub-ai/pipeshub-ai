@@ -1706,8 +1706,12 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
         attachments = list(page.value or [])
         # The data source has no nextLink parameter for this call, so later pages go
         # through the Graph client it wraps (a failed page raises).
+        followed: set[str] = set()
         while page.odata_next_link:
             next_link = page.odata_next_link
+            if next_link in followed:
+                raise Exception(f"Graph repeated an attachments nextLink for message {message_id}")
+            followed.add(next_link)
             page = await self._call_graph(
                 lambda client, url=next_link: client.client.me.messages.by_message_id(message_id).attachments.with_url(url).get()
             )

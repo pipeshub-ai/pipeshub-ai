@@ -2817,7 +2817,11 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # The data source has no nextLink parameter for this call, so later pages go
             # through the same Graph client it wraps.
             builder = self.external_outlook_client.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments
+            followed: set[str] = set()
             while page.odata_next_link:
+                if page.odata_next_link in followed:
+                    raise AttachmentListingError(f"Graph repeated an attachments nextLink for message {message_id}")
+                followed.add(page.odata_next_link)
                 page = await builder.with_url(page.odata_next_link).get()
                 attachments.extend(page.value or [])
             return attachments

@@ -567,7 +567,10 @@ class TestB0Baseline:
             {k: ids[k] for k in p_own + groupish},
         )
         # The org admin running the suite is not in the tenant: admin rights are not mail access.
-        admin = await ctx.graph.graph_find_user_by_email(os.environ["PIPESHUB_TEST_USER_EMAIL"])
+        admin_email = os.getenv("PIPESHUB_TEST_USER_EMAIL")
+        if not admin_email:  # a run that signs in with an OAuth client only
+            return
+        admin = await ctx.graph.graph_find_user_by_email(admin_email)
         assert admin is not None
         admin_id = str(admin.get("id") or admin.get("_key"))
         if admin_id not in (ctx.p.graph_id, ctx.s.graph_id):
