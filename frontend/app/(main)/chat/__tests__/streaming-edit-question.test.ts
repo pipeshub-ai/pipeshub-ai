@@ -16,9 +16,10 @@ import type { ConversationMessage } from '../types';
 
 installMemoryStorage();
 
-vi.mock('@/config', async () => {
+vi.mock('@/config', async (importOriginal) => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  const { chatExtension, chatSlots } = await importOriginal<typeof import('@/config')>();
+  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn(), chatExtension, chatSlots };
 });
 
 const { useAuthStore } = await import('@/lib/store/auth-store');

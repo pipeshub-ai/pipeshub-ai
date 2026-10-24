@@ -780,16 +780,17 @@ describe('ChatInput — regenerate and edit a previous message', () => {
   });
 
   it('turns @ mentions off while editing, so the question keeps the filters it was asked with', () => {
+    const mentionsOff = () => mentionField.rendered.mock.lastCall?.[0];
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    expect(mentionsOff()).toBe(false);
 
     act(() => {
       useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
     });
 
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    expect(mentionsOff()).toBe(true);
     fireEvent.keyDown(composer(), { key: 'Escape' });
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    expect(mentionsOff()).toBe(false);
   });
 
   describe('the files of the edited question', () => {
