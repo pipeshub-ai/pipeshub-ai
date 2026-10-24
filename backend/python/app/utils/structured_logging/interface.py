@@ -9,7 +9,6 @@ logging exactly as it is. A build can supply its own provider through
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class StructuredLoggingProvider(ABC):
@@ -24,7 +23,7 @@ class StructuredLoggingProvider(ABC):
         """Whether ``create_logger`` also writes ``logs/<service>.log``."""
 
     @abstractmethod
-    def hash_org_id(self, org_id: str) -> Optional[str]:
+    def hash_org_id(self, org_id: str) -> str | None:
         """Non-reversible stand-in for ``org_id``, set on the record as
         ``organization_id_hash``; ``None`` leaves the org off the record.
         Never return ``org_id`` itself."""
@@ -39,5 +38,5 @@ class DefaultLoggingProvider(StructuredLoggingProvider):
     def file_logging_enabled(self) -> bool:
         return True
 
-    def hash_org_id(self, org_id: str) -> Optional[str]:
+    def hash_org_id(self, org_id: str) -> str | None:
         return None

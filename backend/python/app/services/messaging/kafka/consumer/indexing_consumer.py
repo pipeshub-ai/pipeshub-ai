@@ -76,6 +76,7 @@ from app.utils.request_context import (
     bind_context,
     context_from_envelope,
     reset_context,
+    run_in_context,
 )
 
 if TYPE_CHECKING:
@@ -2312,11 +2313,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
 
+            # The handler's context is reset by now, and the send runs on the
+            # main loop under its own: re-bind the message's so the retry
+            # keeps its request id and org.
             await self._run_on_main_loop(
-                self.producer.send_event(
-                    topic=topic,
-                    event_type=message.eventType,
-                    payload=payload,
+                run_in_context(
+                    context_from_envelope(
+                        {"requestId": message.requestId, "orgId": message.orgId}
+                    ),
+                    self.producer.send_event(
+                        topic=topic,
+                        event_type=message.eventType,
+                        payload=payload,
+                    ),
                 )
             )
             self.logger.debug(

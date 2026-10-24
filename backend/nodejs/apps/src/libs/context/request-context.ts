@@ -121,13 +121,21 @@ export function contextFromEnvelope(
   newRoot: () => string = newAnonRoot,
 ): RequestContextStore {
   const env = (value ?? {}) as Record<string, unknown>;
-  const orgId = sanitizeRootId(env[ENVELOPE_ORG_ID] as string | undefined);
+  const orgId = sanitizeRootId(envelopeString(env, ENVELOPE_ORG_ID));
   return {
     rootId:
-      sanitizeRootId(env[ENVELOPE_REQUEST_ID] as string | undefined) ??
-      newRoot(),
+      sanitizeRootId(envelopeString(env, ENVELOPE_REQUEST_ID)) ?? newRoot(),
     ...(orgId ? { orgId } : {}),
   };
+}
+
+/** An envelope field is producer-supplied: anything but a string is ignored. */
+function envelopeString(
+  env: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const raw = env[key];
+  return typeof raw === 'string' ? raw : undefined;
 }
 
 function hasHeader(headers: Record<string, string>, name: string): boolean {

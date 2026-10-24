@@ -708,6 +708,17 @@ class TestRootHandlersUseProvider:
         handler, _ = self._run(monkeypatch, _FakeProvider(files=False, formatter=custom), "t_root_custom")
         assert handler.formatter is custom
 
+    def test_handler_without_formatter_keeps_logging_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import app.utils.logger as logger_module
+
+        handler = logging.StreamHandler()
+        monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+        logger_module._route_root_handlers(_FakeProvider(files=False))
+        record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello", None, None)
+        assert handler.format(record) == "hello"
+
     def test_routed_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import app.utils.logger as logger_module
 

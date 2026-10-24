@@ -96,5 +96,11 @@ describe('request-context org', () => {
     it('uses the given root factory without a request id', () => {
       expect(contextFromEnvelope({}, newSystemRoot).rootId).to.match(/^sys-/);
     });
+
+    it('ignores non-string ids instead of throwing', () => {
+      const ctx = contextFromEnvelope({ [ENVELOPE_REQUEST_ID]: 7, [ENVELOPE_ORG_ID]: {} });
+      expect(ctx.rootId).to.match(/^anon-/);
+      expect(ctx).to.not.have.property('orgId');
+    });
   });
 });

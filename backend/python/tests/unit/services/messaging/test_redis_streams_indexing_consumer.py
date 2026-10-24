@@ -2366,6 +2366,21 @@ class TestRetryDelayBeforeSemaphore:
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
 
     @pytest.mark.asyncio
+    async def test_requeue_message_keeps_request_id_and_org(self, consumer) -> None:
+        from app.utils.request_context import RequestContext, get_context
+
+        consumer.producer = AsyncMock()
+        seen: list[RequestContext | None] = []
+        consumer.producer.send_event.side_effect = lambda **_: seen.append(get_context())
+        message = StreamMessage(
+            eventType="newRecord", payload={"recordId": "r1"}, requestId="root-1", orgId="org-1"
+        )
+
+        await consumer._requeue_message("stream-a", message, "stable-id")
+
+        assert seen == [RequestContext(root_id="root-1", org_id="org-1")]
+
+    @pytest.mark.asyncio
     async def test_requeue_message_holds_for_a_given_delay(self, consumer) -> None:
         consumer.producer = AsyncMock()
         before = time.time()

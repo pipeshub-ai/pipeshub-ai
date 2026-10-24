@@ -260,7 +260,7 @@ def _route_root_handlers(provider: StructuredLoggingProvider) -> None:
         if getattr(handler, "_pipeshub_provider_routed", False):
             continue
         handler.setFormatter(
-            provider.console_formatter(handler.formatter or logging.Formatter(LOG_FORMAT))
+            provider.console_formatter(handler.formatter or logging.Formatter())
         )
         handler._pipeshub_provider_routed = True  # type: ignore[attr-defined]
 

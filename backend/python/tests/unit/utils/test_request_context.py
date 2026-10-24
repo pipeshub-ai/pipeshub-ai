@@ -192,6 +192,24 @@ class TestContextFromEnvelope:
         ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "@@@ ///"})
         assert ctx.root_id.startswith("anon-")
 
+    def test_non_string_ids_are_ignored(self) -> None:
+        ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: 7, rc.ENVELOPE_ORG_ID: {"a": 1}})
+        assert ctx.root_id.startswith("anon-")
+        assert ctx.org_id is None
+
+
+class TestRunInContext:
+    @pytest.mark.asyncio
+    async def test_binds_for_the_awaitable_then_restores(self) -> None:
+        rc.set_context("outer")
+
+        async def read() -> "rc.RequestContext | None":
+            return rc.get_context()
+
+        seen = await rc.run_in_context(rc.RequestContext(root_id="inner", org_id="org-1"), read())
+        assert seen == rc.RequestContext(root_id="inner", org_id="org-1")
+        assert rc.get_context() == rc.RequestContext(root_id="outer")
+
 
 class TestAdmittedInPropagation:
     def test_an_admission_stamp_rides_on_outbound_headers(self) -> None:
