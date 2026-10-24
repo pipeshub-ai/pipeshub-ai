@@ -72,7 +72,8 @@ def _matched_by_something_else(user: dict[str, Any], email: str) -> bool:
     shown = (user.get("emailAddress") or "").lower()
     if shown and shown != query:
         return True
-    return any(word.startswith(query) for word in str(user.get("displayName") or "").lower().split())
+    # Substring, not word prefix: "(alice@acme.com)" as a display name must not pass.
+    return query in str(user.get("displayName") or "").lower()
 
 
 class ConfluenceDataSource:

@@ -9539,6 +9539,7 @@ def test_a_jira_match_that_could_be_by_display_name_or_another_email_is_not_trus
     from app.sources.external.confluence.confluence import _matched_by_something_else
 
     assert _matched_by_something_else({"displayName": "bob@acme.com (not Bob)"}, "bob@acme.com")
+    assert _matched_by_something_else({"displayName": "Name<bob@acme.com>"}, "bob@acme.com")
     assert _matched_by_something_else({"displayName": "Bob", "emailAddress": "other@acme.com"}, "bob@acme.com")
     assert not _matched_by_something_else({"displayName": "Bob Jones"}, "bob@acme.com")
     assert not _matched_by_something_else({"displayName": "Bob", "emailAddress": "BOB@acme.com"}, "bob@acme.com")

@@ -2121,6 +2121,8 @@ class ConfluenceConnector(BaseConnector):
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+        # Read once: each read goes to the config service.
+        comments_indexed = await self._comments_indexed(record_type)
 
         try:
             self.logger.info(f"Starting {content_type} synchronization for space {space_key}...")
@@ -2416,7 +2418,7 @@ class ConfluenceConnector(BaseConnector):
                                                 embedded_image_ids.add(attachment_id)
 
                                 # Comments are streamed into the page only when indexed; otherwise their images stay files.
-                                if await self._comments_indexed(record_type):
+                                if comments_indexed:
                                     try:
                                         if content_type == "page":
                                             footer_comments_response = await datasource.get_page_footer_comments(
@@ -3862,7 +3864,11 @@ class ConfluenceConnector(BaseConnector):
                             batch.append(refreshed)
                             failed.discard(item_id)
                 if batch:
-                    await self._save_with_access(batch)
+                    try:
+                        await self._save_with_access(batch)
+                    except Exception as e:
+                        self.logger.warning(f"Could not save the access of items in space {space_key}: {e}")
+                        failed.update(str(r.external_record_id) for r, _ in batch)
                 next_url = (data.get("_links") or {}).get("next")
                 token = self._extract_cursor_from_next_link(next_url) if next_url else None
                 if not token or not results or token in followed:

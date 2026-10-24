@@ -2770,6 +2770,14 @@ class ConfluenceBlockParser:
                     parent = block_groups[parent_index]
                     if parent.children is None:
                         parent.children = BlockGroupChildren()
+                    # The items now hang under the list group: the parent keeps only its other blocks.
+                    kept = [
+                        idx
+                        for r in parent.children.block_ranges
+                        for idx in range(r.start, r.end + 1)
+                        if blocks[idx].parent_index == parent_index
+                    ]
+                    parent.children.block_ranges = BlockGroupChildren.from_indices(block_indices=kept).block_ranges
                     parent.children.add_block_group_index(group_index)
 
         for i, block in enumerate(blocks):
