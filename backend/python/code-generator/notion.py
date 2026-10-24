@@ -635,18 +635,6 @@ def main() -> None:
     try:
         generate_notion_api_client(output_dir)
         print("\n🎉 Complete Notion API client generation completed!")
-        print("📋 ALL APIs have been included:")
-        print("   ✅ Standard APIs:")
-        print("      • Authentication, Blocks, Pages, Databases, Comments, Search, Users")
-        print("      • Data Sources (create, update, retrieve, query)")
-        print("      • File Uploads (create, send, complete, retrieve, list)")
-        print("   ✅ Enterprise & Business APIs:")
-        print("      • SCIM v2.0 API (complete user/group provisioning)")
-        print("      • Organization Management (enterprise controls)")
-        print("      • Workspace Administration (advanced admin features)")
-        print("      • Integration Management (workspace integration controls)")
-        print("      • Security & Compliance (SAML SSO, domain verification)")
-        print("      • Content Management (enterprise content discovery & permissions)")
     except Exception as e:
         print(f"❌ Error: {e}")
         sys.exit(1)

@@ -2727,6 +2727,26 @@ class NotionBlockParser:
             return block_groups[parent].parent_index
         return parent
 
+    @staticmethod
+    def _lists_ended_by(
+        container: int | None, block_groups: list[BlockGroup], list_items: set[str]
+    ) -> list[int | None]:
+        """The containers whose list a block in `container` ends: a block inside a table, column list or
+        other group ends the list that group sits in, though the group puts no block of its own there.
+        A list item's wrapper (a nested list) and a list group do not end it."""
+        ended: list[int | None] = []
+        group_idx, seen = container, set()
+        while group_idx is not None and group_idx < len(block_groups) and group_idx not in seen:
+            seen.add(group_idx)
+            group = block_groups[group_idx]
+            in_list = group.type in (GroupType.LIST, GroupType.ORDERED_LIST) or (
+                group.type == GroupType.TEXT_SECTION and group.source_group_id in list_items
+            )
+            if not in_list:
+                ended.append(group.parent_index)
+            group_idx = group.parent_index
+        return ended
+
     def _calculate_list_indent_levels(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
         """
         Indent level of each list item: the number of list items it is nested under.
@@ -2753,12 +2773,15 @@ class NotionBlockParser:
         """
         Number numbered list items 1, 2, 3, ... among their siblings: per container, so a nested list
         starts again at 1 and its parent list continues after it. Any other block in the same container
-        ends the list.
+        ends the list, as does a group there (a table, a column list) through the blocks inside it.
         """
         groups = block_groups or []
+        list_items = {b.source_id for b in blocks if b.list_metadata and b.source_id}
         counters: dict[int | None, int] = {}
         for block in blocks:
             container = self._container(block, groups)
+            for ended in self._lists_ended_by(container, groups, list_items):
+                counters.pop(ended, None)
             if not (block.list_metadata and block.list_metadata.list_style == "numbered"):
                 counters.pop(container, None)
                 continue
@@ -2770,12 +2793,17 @@ class NotionBlockParser:
     def _group_list_items(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
         """
         Group each run of list items of one style that are siblings in one container into a list BlockGroup.
-        A run ends at any other block in that container; blocks in other containers (a nested list, another
-        column) do not end it, and never join it.
+        A run ends at any other block in that container, or at a group in it (a table, a column list); blocks
+        in a nested list or another column do not end it, and never join it.
         """
+        list_items = {b.source_id for b in blocks if b.list_metadata and b.source_id}
         runs: dict[int | None, tuple[str, list[int]]] = {}
         for i, block in enumerate(blocks):
             container = self._container(block, block_groups)
+            for ended in self._lists_ended_by(container, block_groups, list_items):
+                if ended in runs:
+                    style, members = runs.pop(ended)
+                    self._create_list_group(blocks, block_groups, members, style, ended)
             style = block.list_metadata.list_style if block.list_metadata else None
             run = runs.get(container)
             if run is not None and (style is None or run[0] != style):

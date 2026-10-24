@@ -212,13 +212,24 @@ class Notion:
 
             response = await self.client.create_page(request_body=request_body)
             ok, result = self._handle_response(response, "Page created successfully")
+            if not ok:
+                return ok, result
             # The rest of a long body goes in further requests of at most 100 blocks.
-            page_id = (self._json(response) or {}).get("id") if ok else None
+            page = self._json(response) or {}
             for i in range(_MAX_CHILDREN, len(blocks), _MAX_CHILDREN):
                 more = await self.client.append_block_children(
-                    block_id=page_id, request_body={"children": blocks[i:i + _MAX_CHILDREN]})
+                    block_id=page.get("id"), request_body={"children": blocks[i:i + _MAX_CHILDREN]})
                 if not more.success:
-                    return self._handle_response(more, "")
+                    # The page exists: say so, so the agent appends the rest instead of creating it again.
+                    failure = json.loads(self._handle_response(more, "")[1])
+                    failure.update({
+                        "partially_written": True,
+                        "page_id": page.get("id"),
+                        "url": page.get("url"),
+                        "message": f"Page created, but only its first {i} content blocks were written; "
+                                   "append the rest to this page instead of creating it again.",
+                    })
+                    return False, json.dumps(failure)
             return ok, result
 
         except Exception as e:

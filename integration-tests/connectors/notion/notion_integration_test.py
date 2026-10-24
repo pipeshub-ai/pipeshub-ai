@@ -45,6 +45,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
   order 39 TC-FILTER-*    — indexing filters (last: they force full syncs)
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -54,6 +55,7 @@ from typing import Any, AsyncGenerator
 
 import pytest
 import pytest_asyncio
+import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -108,6 +110,7 @@ from connectors.notion.notion_seed import (  # noqa: E402
 from connectors.notion.notion_source_helper import (  # noqa: E402
     NotionSourceHelper,
     file_upload_block,
+    normalize_notion_id,
     paragraph_block,
     rich_text,
 )
@@ -2009,3 +2012,91 @@ class TestNotionFilters:
             logger.info("TC-FILTER-004 passed")
         finally:
             await notion_source_helper.trash_page(page_id)
+
+
+# =============================================================================
+# TestNotionAccessRevoke
+# =============================================================================
+
+
+def _simulator_control_url() -> str:
+    """The simulator's base URL, from its reset URL; skips against real Notion, which has no
+    control API to unshare a page with."""
+    reset_url = os.environ.get("NOTION_TEST_RESET_URL") or ""
+    if not reset_url.endswith("/_sim/reset"):
+        pytest.skip("access revoke needs the Notion simulator (NOTION_TEST_RESET_URL)")
+    return reset_url[: -len("/_sim/reset")]
+
+
+async def _set_shared(base_url: str, node_id: str, shared: bool) -> None:
+    response = await asyncio.to_thread(
+        requests.post, f"{base_url}/_sim/notion/shares",
+        json={"node_id": node_id, "shared": shared}, timeout=30,
+    )
+    response.raise_for_status()
+
+
+async def _top_level_page(helper: NotionSourceHelper, page_id: str) -> str:
+    """The workspace-level ancestor of a page: the node a share applies to."""
+    current = page_id
+    for _ in range(20):
+        parent = (await helper.retrieve_page(current)).get("parent") or {}
+        if parent.get("type") != "page_id":
+            return normalize_notion_id(current)
+        current = str(parent["page_id"])
+    raise AssertionError(f"no workspace-level ancestor within 20 levels of {page_id}")
+
+
+async def _scoped_pages(graph_provider: GraphProviderProtocol, connector_id: str) -> set[str]:
+    return {
+        normalize_notion_id(i)
+        for i in await scoped_external_ids(graph_provider, connector_id, RecordType.WEBPAGE.value)
+    }
+
+
+class TestNotionAccessRevoke:
+    """Unsharing a page with the integration removes it at the next sync; sharing it again restores it."""
+
+    @pytest.mark.order(43)
+    async def test_tc_access_001_unshared_page_leaves_scope_and_returns_when_reshared(
+        self,
+        notion_connector: dict[str, Any],
+        notion_seed: NotionSeed,
+        notion_source_helper: NotionSourceHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-ACCESS-001: access revoked at the source is revoked in PipesHub.
+
+        Runs last: it unshares a shared top-level page outside the suite's fixture tree, so no
+        other case sees the change, and shares it again before it ends.
+        """
+        base_url = _simulator_control_url()
+        connector_id = notion_connector["connector_id"]
+        listing = await asyncio.to_thread(requests.get, f"{base_url}/_sim/notion/integrations", timeout=30)
+        listing.raise_for_status()
+        sync_integration = next(i for i in listing.json()["integrations"] if i["default"])
+        fixture_top = await _top_level_page(notion_source_helper, notion_seed.scratch_page_id)
+        in_scope = await _scoped_pages(graph_provider, connector_id)
+        victim = next(
+            (n for n in map(normalize_notion_id, sync_integration["shares"])
+             if n != fixture_top and n in in_scope),
+            None,
+        )
+        if victim is None:
+            pytest.skip("no synced top-level page outside the fixture tree to unshare")
+
+        await _set_shared(base_url, victim, False)
+        try:
+            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+            assert victim not in await _scoped_pages(graph_provider, connector_id), (
+                f"page {victim} unshared at the source is still in scope"
+            )
+        finally:
+            await _set_shared(base_url, victim, True)
+
+        await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        assert victim in await _scoped_pages(graph_provider, connector_id), (
+            f"page {victim} shared again is not back in scope"
+        )
+        logger.info("TC-ACCESS-001 passed")

@@ -7,11 +7,13 @@ Authentication: OAuth 2.0
 import base64
 import bisect
 import hashlib
+import math
 import mimetypes
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple, Union
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -121,6 +123,7 @@ from app.utils.url_redaction import redact_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
+    map_source_status,
     not_downloadable,
     not_found_at_source,
     raise_for_stream_fetch,
@@ -195,6 +198,29 @@ def _user_email(user: object) -> str:
         return ""
     email = (user.get("person") or {}).get("email")
     return email.strip() if isinstance(email, str) else ""
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) of a URL, the port defaulted by scheme; None when it has none."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except ValueError:
+        return None
+    if not parsed.hostname or port is None:
+        return None
+    return parsed.scheme, parsed.hostname, port
+
+
+def _failure_summary(error: BaseException) -> str:
+    """A sync error for a notification: the HTTP status and Notion's error ``code``, not the raw
+    body, whose ``request_id`` differs every time and would defeat the notification de-dup."""
+    text = str(error)
+    status = re.search(r"HTTP (\d{3})", text)
+    if not status:
+        return text[:200]
+    code = re.search(r'"code"\s*:\s*"(\w+)"', text)
+    return f"Notion answered HTTP {status.group(1)}" + (f" ({code.group(1)})" if code else "")
 
 
 class _RecordGone:
@@ -349,9 +375,13 @@ class NotionConnector(BaseConnector):
     _PLACEHOLDER_SWEEP_CONCURRENCY = 3
     # Runaway backstop only — `visited` already guarantees termination.
     _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
-    # Pages whose comments are re-read per sync, in rotation (see _recheck_page_comments).
-    # shortcut: a fixed slice, so a large workspace cycles slowly; upgrade to comment webhooks.
+    # Pages whose comments are re-read per sync, in rotation (see _recheck_page_comments): enough
+    # for one full cycle in about a day at the hourly schedule, within these bounds.
+    # shortcut: above 24 x the max (12,000 pages) a cycle takes longer than a day, and a comment
+    # change waits for the rotation; upgrade to comment webhooks.
     _COMMENT_RECHECK_PAGES_PER_SYNC = 15
+    _COMMENT_RECHECK_MAX_PAGES_PER_SYNC = 500
+    _COMMENT_RECHECK_SYNCS_PER_CYCLE = 24
     # Pages whose sync-time comments are kept for the stream that indexes them.
     _SYNC_COMMENTS_CACHE_MAX = 20000
 
@@ -408,6 +438,7 @@ class NotionConnector(BaseConnector):
         # Data sources whose rows changed (their table record is re-indexed after the walks), and
         # the ones the data source walk saved anew this sync, which need no second save.
         self._touched_data_sources: set[str] = set()
+        self._persisted_touched: list[str] = []
         self._fresh_data_sources: set[str] = set()
         # Pages whose blocks and comments this sync already read: the comment recheck skips them.
         self._walked_pages: set[str] = set()
@@ -509,8 +540,10 @@ class NotionConnector(BaseConnector):
         fails for another reason (a rate limit, an empty workspace) proves nothing and passes.
         """
         missing: list[str] = []
+        unauthorized = False
         try:
             users = await datasource.list_users(page_size=10)
+            unauthorized = getattr(users, "status_code", None) == _UNAUTHORIZED_STATUS
             if getattr(users, "status_code", None) == _FORBIDDEN_STATUS:
                 missing.append("Read user information including email addresses")
             elif users and users.success and users.data:
@@ -518,10 +551,12 @@ class NotionConnector(BaseConnector):
                     u for u in (users.data.json() or {}).get("results", [])
                     if isinstance(u, dict) and u.get("type") == "person" and u.get("id")
                 ]
-                if people:
+                # A member may hide their email: missing only when nobody listed shows one, and the
+                # first one's own record (which _sync_users also falls back to) shows none either.
+                if people and not any(_user_email(p) for p in people):
                     detail = await datasource.retrieve_user(people[0]["id"])
                     payload = detail.data.json() if detail and detail.success and detail.data else None
-                    if isinstance(payload, dict) and not ((payload.get("person") or {}).get("email")):
+                    if isinstance(payload, dict) and not _user_email(payload):
                         missing.append("Read user information including email addresses")
             pages = await datasource.search(request_body={
                 "filter": {"property": "object", "value": "page"}, "page_size": 1,
@@ -535,6 +570,11 @@ class NotionConnector(BaseConnector):
                     missing.append("Read comments")
         except Exception as e:
             self.logger.warning("Notion capability probe could not finish: %s", e)
+        if unauthorized:
+            raise ConnectorInitError(
+                "Notion rejected the API token: it is invalid or was revoked. Paste a current "
+                "integration secret from notion.so/my-integrations, then sync again."
+            )
         if missing:
             names = " and ".join(missing)
             raise ConnectorInitError(
@@ -662,7 +702,7 @@ class NotionConnector(BaseConnector):
             severity=NotificationSeverity.ERROR,
             title=f"{self.display_name}: sync failed",
             message=(
-                f"The Notion sync stopped: {str(error)[:200]}. "
+                f"The Notion sync stopped: {_failure_summary(error)}. "
                 + ("Reconnect the connector or check the integration's capabilities."
                    if unauthorized else "Recent Notion changes may not be reflected yet; run the sync again.")
             ),
@@ -870,7 +910,11 @@ class NotionConnector(BaseConnector):
                     self._sync_incomplete = True  # not confirmed either way: keep it
                 elif verdict[0] == "gone":
                     doomed.append(record)
-                # "in_scope": readable but not listed yet (search lags) — keep it
+                else:
+                    # "in_scope": readable but not listed yet (search lags), so the walk did not
+                    # write it either: keep it, and keep it linked through a full sync.
+                    self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
+                    await self._note_stored_files_kept(record.external_record_id)
             if doomed:
                 self.logger.info(
                     "Removing %d Notion %s record(s) the integration can no longer read",
@@ -896,19 +940,32 @@ class NotionConnector(BaseConnector):
         if not ids:
             return
         key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "notion_comment_recheck", "global")
-        after = ((await self.pages_sync_point.read_sync_point(key)) or {}).get("after") or ""
+        saved = (await self.pages_sync_point.read_sync_point(key)) or {}
+        after = saved.get("after") or ""
+        per_sync = min(
+            self._COMMENT_RECHECK_MAX_PAGES_PER_SYNC,
+            max(self._COMMENT_RECHECK_PAGES_PER_SYNC, math.ceil(len(ids) / self._COMMENT_RECHECK_SYNCS_PER_CYCLE)),
+        )
         start = bisect.bisect_right(ids, after)
-        slice_ids = (ids[start:] + ids[:start])[: self._COMMENT_RECHECK_PAGES_PER_SYNC]
+        slice_ids = (ids[start:] + ids[:start])[:per_sync]
+        # Pages whose recheck failed last sync go first, as the partial-sync notice promises.
+        id_set = set(ids)
+        retry = [i for i in saved.get("retry") or [] if i in id_set and i not in slice_ids]
+        failed: list[str] = []
         batch: list[tuple[Record, list[Permission]]] = []
-        for obj_id in slice_ids:
+        for obj_id in retry + slice_ids:
             records = await self._records_for_search_object(live[obj_id], "page", recheck_comments=True)
             if records:
                 batch.extend(records)
             elif records == []:
                 self._sync_incomplete = True
+                failed.append(obj_id)
         if batch:
             await self.data_entities_processor.on_new_records(batch)
-        await self.pages_sync_point.update_sync_point(key, {"after": slice_ids[-1]})
+        point: dict[str, Any] = {"after": slice_ids[-1]}
+        if failed:
+            point["retry"] = failed[: self._COMMENT_RECHECK_MAX_PAGES_PER_SYNC]
+        await self.pages_sync_point.update_sync_point(key, point)
 
     async def _refresh_touched_data_sources(self) -> None:
         """Save the data sources whose rows changed this sync under a new revision.
@@ -941,6 +998,18 @@ class NotionConnector(BaseConnector):
                 self._touched_data_sources.add(ds_id)
         if batch:
             await self.data_entities_processor.on_new_records(batch)
+        await self._persist_touched_data_sources()
+
+    def _touched_sync_point_key(self) -> str:
+        return generate_record_sync_point_key(RecordType.DATASOURCE.value, "notion_touched_data_sources", "global")
+
+    async def _persist_touched_data_sources(self) -> None:
+        """Keep the touched set in a sync point: it is drained only after the walks, so a crash or
+        restart before that would leave the tables of rows already saved stale."""
+        ids = sorted(self._touched_data_sources)
+        if ids != self._persisted_touched:
+            await self.pages_sync_point.update_sync_point(self._touched_sync_point_key(), {"ids": ids})
+            self._persisted_touched = ids
 
     async def _delete_records(self, records: list[Record]) -> bool:
         """Delete pages or data sources with their file records; True if every delete succeeded.
@@ -1364,7 +1433,24 @@ class NotionConnector(BaseConnector):
         )
         return record.parent_external_record_id
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def _retry_once_after_401[T](self, call: Callable[[], Awaitable[T]]) -> T:
+        """A preview or download that Notion refused with 401 (an expired OAuth access token):
+        refresh the token once and try again, as run_sync does, before telling the user to reconnect."""
+        try:
+            return await call()
+        except HTTPException as e:
+            reconnect = map_source_status(_UNAUTHORIZED_STATUS, connector=self.display_name)
+            if (e.status_code, e.detail) != (reconnect.status_code, reconnect.detail):
+                raise
+            if not await self._refresh_after_unauthorized():
+                raise
+        await self._get_fresh_datasource()
+        return await call()
+
+    async def get_signed_url(self, record: Record) -> str | None:
+        return await self._retry_once_after_401(lambda: self._get_signed_url_once(record))
+
+    async def _get_signed_url_once(self, record: Record) -> Optional[str]:
         """
         Get a signed URL for a file record by fetching the latest URL from Notion API.
 
@@ -1469,7 +1555,7 @@ class NotionConnector(BaseConnector):
         a block file is Notion-hosted when its type is "file", and user-supplied when "external"."""
         external_id = record.external_record_id or ""
         if external_id.startswith(("ca_", "comment_attachment_")):
-            return await self.get_signed_url(record), True
+            return await self._get_signed_url_once(record), True
         if not self.data_source:
             raise connector_not_ready(self.display_name)
         try:
@@ -1541,6 +1627,9 @@ class NotionConnector(BaseConnector):
             yield fetched.content[i:i + 64 * 1024]
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        return await self._retry_once_after_401(lambda: self._stream_record_once(record))
+
+    async def _stream_record_once(self, record: Record) -> StreamingResponse:
         """
         Stream record content from Notion.
 
@@ -1717,6 +1806,8 @@ class NotionConnector(BaseConnector):
             gone_count = 0
             gone: list[Record] = []
             for record in records:
+                # A reindex reads comments live: ones changed since the sync keep its revision.
+                self._sync_comments.pop(record.external_record_id, None)
                 try:
                     updated = await self._check_and_fetch_updated_record(record)
                     if updated is RECORD_GONE:
@@ -2210,6 +2301,12 @@ class NotionConnector(BaseConnector):
             if object_type == "data_source":
                 self._fresh_data_sources = set()
                 self._walked_pages = set()
+                # Comments the last sync kept for streams that never came (a page indexed late or
+                # not at all): drop them, so the cache holds only this sync's pages.
+                self._sync_comments = {}
+                saved = await self.pages_sync_point.read_sync_point(self._touched_sync_point_key())
+                self._touched_data_sources.update((saved or {}).get("ids") or [])
+                self._persisted_touched = sorted(self._touched_data_sources)
 
             # Get sync point key for this object type
             sync_point_key = generate_record_sync_point_key(
@@ -2360,6 +2457,8 @@ class NotionConnector(BaseConnector):
 
                 # Save batch
                 if records_with_permissions:
+                    # Before the rows: a crash after them must still find their tables touched.
+                    await self._persist_touched_data_sources()
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Saved batch of {len(records_with_permissions)} {object_type}(s) and files")
 
@@ -2519,6 +2618,7 @@ class NotionConnector(BaseConnector):
         elif not recheck_comments:
             # Unchanged since the last sync (the watermark overlap re-reads it): its attachments
             # and comments were read then, so skip the block walk.
+            await self._note_stored_files_kept(obj_id)
             return out
 
         try:
@@ -2550,9 +2650,12 @@ class NotionConnector(BaseConnector):
         )
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
-        # Full: keep the oldest, which indexing streams first; the rest read their comments again.
-        # shortcut: a page never streamed (indexing off) holds its slot; clear per sync if that bites.
-        if len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
+        # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
+        # whose revision did not change. Full: keep the oldest, which indexing streams first.
+        will_stream = indexing_enabled and not (
+            existing is not None and existing.external_revision_id == record.external_revision_id
+        )
+        if will_stream and len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
             self._sync_comments[obj_id] = (record.external_revision_id, comments_by_block)
 
         files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
@@ -2563,6 +2666,16 @@ class NotionConnector(BaseConnector):
         if existing is not None:
             await self._prune_removed_files(obj_id, {f.external_record_id for f in files})
         return out
+
+    async def _note_stored_files_kept(self, page_id: str) -> None:
+        """During a full sync, note a page's stored file records as kept: a page whose blocks are
+        not walked does not write them, and the unlink after a full sync would strip their access."""
+        if not self.data_entities_processor.full_sync_running(self.connector_id):
+            return
+        children = await self.data_entities_processor.get_records_by_parent(self.connector_id, page_id)
+        self.data_entities_processor.note_kept_records(
+            self.connector_id, [c.id for c in children or [] if c.record_type == RecordType.FILE]
+        )
 
     async def _prune_removed_files(self, page_id: str, current_ids: set) -> None:
         """Delete the file records of a page whose attachment or comment attachment is gone.
@@ -3574,10 +3687,10 @@ class NotionConnector(BaseConnector):
 
     async def _fetch_image(self, url: str) -> PublicFetchResponse | httpx.Response:
         """GET an image a page shows. Image URLs come from the page (an "external" image is any
-        URL its editor typed), so the fetch is SSRF-guarded. The one exception is a host that is
-        the configured Notion API itself (NOTION_API_BASE_URL pointing at a test server on a
+        URL its editor typed), so the fetch is SSRF-guarded. The one exception is the scheme, host
+        and port of the configured Notion API itself (NOTION_API_BASE_URL pointing at a test server on a
         private network), whose files are as trusted as the API."""
-        if urlparse(url).hostname == urlparse(notion_api_base_url()).hostname:
+        if _origin(url) == _origin(notion_api_base_url()):
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 response = await client.get(url)
             if len(response.content) > _IMAGE_MAX_BYTES:
@@ -4132,6 +4245,8 @@ class NotionConnector(BaseConnector):
                     # exists nowhere. Not synced yet: no link.
                     stored = await self.get_record_by_external_id(file_record.external_record_id)
                     if stored is not None:
+                        # Same id on both, so page-level comment groups find the file by it.
+                        file_record.id = stored.id
                         comment_attachments.append(CommentAttachment(name=stored.record_name, id=stored.id))
             except Exception as e:
                 self.logger.warning(f"Failed to create FileRecord from comment attachment: {e}")

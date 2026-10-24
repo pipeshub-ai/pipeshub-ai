@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -18,10 +18,33 @@ from app.sources.client.resilience import ResiliencePolicy
 DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1"
 
 
+_logger = logging.getLogger(__name__)
+_reported_overrides: set[str] = set()
+
+
 def notion_api_base_url() -> str:
     """The Notion API base URL: ``NOTION_API_BASE_URL`` when set (test stacks point it at a local
-    stand-in for the API), else Notion's own."""
-    return (os.environ.get("NOTION_API_BASE_URL") or DEFAULT_NOTION_API_BASE_URL).rstrip("/")
+    stand-in for the API), else Notion's own. The token goes wherever this points, so a value
+    that is not an http(s) URL with a host is refused, and the host in use is logged once."""
+    raw = (os.environ.get("NOTION_API_BASE_URL") or "").strip().rstrip("/")
+    if not raw:
+        return DEFAULT_NOTION_API_BASE_URL
+    parsed = urlparse(raw)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    valid = parsed.scheme in ("http", "https") and bool(parsed.hostname) and port != -1
+    if raw not in _reported_overrides:
+        _reported_overrides.add(raw)
+        if valid:
+            _logger.warning(
+                "NOTION_API_BASE_URL is set: Notion API calls go to %s://%s%s",
+                parsed.scheme, parsed.hostname, f":{port}" if port else "",
+            )
+        else:
+            _logger.error("NOTION_API_BASE_URL is not an http(s) URL with a host; using %s", DEFAULT_NOTION_API_BASE_URL)
+    return raw if valid else DEFAULT_NOTION_API_BASE_URL
 
 
 @dataclass
