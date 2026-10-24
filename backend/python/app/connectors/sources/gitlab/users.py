@@ -479,6 +479,10 @@ class UsersSync:
         progress_every = 200
 
         async def fetch_full_user(member_id: int, member: Any) -> tuple[int, Any]:
+            attributes = getattr(member, "attributes", None)
+            if isinstance(attributes, dict) and "public_email" in attributes:
+                # GitLab 16+ members payloads carry public_email already (null when unset).
+                return member_id, member
             async with sem:
                 try:
                     user_res = await c.runtime.ds_call(
