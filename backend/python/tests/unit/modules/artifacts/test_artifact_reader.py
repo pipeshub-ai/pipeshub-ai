@@ -25,10 +25,10 @@ from app.models.blocks import (
     ImageMetadata,
     SemanticMetadata,
 )
-from app.models.entities import Record, RecordType
+from app.models.entities import Record, RecordType, Status, TicketRecord
 from app.modules.artifacts import reader as reader_module
 from app.modules.artifacts import record_backend as backend_module
-from app.modules.artifacts.models import MANIFEST_PATH, Manifest
+from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH, Manifest
 from app.modules.artifacts.reader import (
     ArtifactFirstRecordArtifactReader,
     ConfiguredRecordArtifactReader,
@@ -190,6 +190,26 @@ class TestArtifactRecordBackend:
 
         assert await _backend(storage, mappings).read_record(VRID, ORG) == _as_stored(record)
         mappings.single.assert_awaited_once_with(VRID)
+
+    async def test_a_tickets_properties_file_is_listed_but_not_read(self, storage: FakeStorage) -> None:
+        ticket = TicketRecord(**{
+            **dict(_record()), "record_type": RecordType.TICKET, "connector_name": Connectors.JIRA,
+            "status": Status.OPEN, "assignee": "Ada", "labels": ["auth"],
+        })
+        lookup = await _write(storage, ticket)
+        assert _key(PROPERTIES_PATH) in storage.puts
+        backend = _backend(storage, _Mappings({}))
+        signed: list[str] = []
+        read_urls = backend._store.read_urls
+
+        async def spy(org_id: str, document_id: str, paths: list[str]) -> Any:  # noqa: ANN401
+            signed.extend(paths)
+            return await read_urls(org_id, document_id, paths)
+
+        backend._store.read_urls = spy  # type: ignore[method-assign]
+
+        assert await backend.read_record(VRID, ORG, lookup=lookup) == _as_stored(ticket)
+        assert PROPERTIES_PATH not in signed
 
     @pytest.mark.parametrize("lookup", [None, {"record_doc_id": "doc-1"}, {"record_doc_id": "d", "currentRev": REV}])
     async def test_no_pointer_is_unavailable(self, storage: FakeStorage, outcomes: list[str], lookup: Any) -> None:  # noqa: ANN401

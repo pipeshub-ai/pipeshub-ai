@@ -844,10 +844,10 @@ components:
       description: |
         A file inside an artifact set. Only these are accepted: `manifest.json`,
         `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
-        `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `properties.json`, `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
         `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
         Anything else, including `..`, a leading `/` or a backslash, is refused.
-      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
     ArtifactFileUrl:
       type: object
       required:
