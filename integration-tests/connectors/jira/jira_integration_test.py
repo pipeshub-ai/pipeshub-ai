@@ -1042,8 +1042,8 @@ class TestJiraBlocks:
             pytest.skip("JIRA_BLOCKS_ISSUE_KEY unset / not in primary / not synced — skipping")
 
         live_updated_ms = await get_jira_issue_updated_ms(jira_datasource, blocks_key)
-        expected, meta = load_expected()
-        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":
+        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":  # a bootstrap may have no snapshot yet: it writes one below
+            expected, meta = load_expected()
             assert_snapshot_source_unchanged(meta, issue_key=blocks_key, live_updated_ms=live_updated_ms)
 
         # External Jira issue id → internal graph record id (what stream_record expects).
