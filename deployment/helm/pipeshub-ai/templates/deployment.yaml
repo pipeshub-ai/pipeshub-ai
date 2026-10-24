@@ -73,11 +73,6 @@ spec:
             - name: indexing
               containerPort: 8081
               protocol: TCP
-            {{- if .Values.metrics.enabled }}
-            - name: metrics
-              containerPort: {{ .Values.metrics.port }}
-              protocol: TCP
-            {{- end }}
           env:
             # Core environment settings
             - name: PORT
@@ -280,6 +275,8 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            - name: REDIS_STREAMS_RETENTION_MODE
+              value: {{ .Values.messageBroker.redisStreamsRetentionMode | default "after_ack" | quote }}
             - name: FAIR_SCHEDULING_LANE_COUNT
               value: {{ .Values.messageBroker.laneCount | default "8" | quote }}
             - name: FAIR_SCHEDULING_LANE_ASSIGNMENT
@@ -444,16 +441,6 @@ spec:
             {{- end }}
             - name: MAX_AUTH_REQUESTS_PER_MINUTE
               value: {{ .Values.maxAuthRequestsPerMinute | default 10 | quote }}
-            
-            {{- if .Values.telemetry.enabled }}
-            # OpenTelemetry configuration
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ required "telemetry.otlp.endpoint is required when telemetry.enabled is true" .Values.telemetry.otlp.endpoint | quote }}
-            {{- if .Values.telemetry.otlp.tls.insecure }}
-            - name: OTEL_EXPORTER_OTLP_INSECURE
-              value: "true"
-            {{- end }}
-            {{- end }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

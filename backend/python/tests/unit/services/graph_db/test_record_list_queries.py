@@ -96,7 +96,8 @@ class _Hub:
         self._levels = {"step_app": ["records/r1"], "step_open": ["records/r2"],
                         "step_browse": ["records/r3"], "step_browse_open": ["records/r3"],
                         "step_up": ["records/s1"],
-                        "step_app_within": ["records/r1"], "step_open_within": ["records/r2"]}
+                        "step_app_within": ["records/r1"], "step_open_within": ["records/r2"],
+                        "step_hier": ["records/r1"]}
 
     async def __call__(self, query: str, bind_vars: dict[str, Any] | None = None, **_: object) -> list[Any]:
         self.calls.append((query, dict(bind_vars or {})))
@@ -153,7 +154,7 @@ async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
                     await provider.get_knowledge_hub_connector_page_v3(
                         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
                         flatten=flatten, start_id=start_id, start_type=start_type, include_scope=True,
-                        filters=filters,
+                        filters=filters, max_depth=2,
                     )
                     reached |= hub.sent
     provider = _arango()

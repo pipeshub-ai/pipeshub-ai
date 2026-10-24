@@ -8721,7 +8721,9 @@ class ConfluenceDataSource:
                 parsed = urlparse(self.base_url)
                 # Security: verify domain ends with .atlassian.net (not just contains it)
                 # This prevents URL injection attacks like "evil.com/phishing?.atlassian.net"
-                if parsed.netloc.endswith('.atlassian.net') or parsed.netloc == 'atlassian.net':
+                # hostname, not netloc: netloc carries the port and any userinfo
+                host = (parsed.hostname or '').lower()
+                if host.endswith('.atlassian.net') or host == 'atlassian.net':
                     # Construct Jira URL using verified domain
                     jira_base = f"{parsed.scheme}://{parsed.netloc}"
                     url = f"{jira_base}/rest/api/3/user/search"

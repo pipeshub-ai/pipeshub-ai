@@ -61,6 +61,8 @@ import {
   setConversationProjectVisibility,
   forkConversation,
   forkAgentConversation,
+  shareAgentConversation,
+  unshareAgentConversation,
 } from '../controller/es_controller';
 import {
   addMessage,
@@ -123,6 +125,8 @@ import {
   getAgentConversationByIdSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
+  agentConversationShareParamsSchema,
+  agentConversationUnshareParamsSchema,
 } from '../validators/es_validators';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -840,7 +844,33 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(getAgentConversationByIdSchema),
-    getAgentConversationById,
+    getAgentConversationById(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/share
+   * @desc Share an agent conversation read-only with other users in the org. Owner only.
+   * @body { userIds: string[], accessLevel?: 'read' }
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/share',
+    authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationShareParamsSchema),
+    shareAgentConversation(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/unshare
+   * @desc Remove read access to an agent conversation for specific users. Owner only.
+   * @body { userIds: string[] }
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/unshare',
+    authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationUnshareParamsSchema),
+    unshareAgentConversation(appConfig),
   );
 
   router.delete(

@@ -37,6 +37,11 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortOrder,
 )
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+    is_out_of_memory,
+)
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import NamedNode
@@ -395,6 +400,7 @@ class KnowledgeHubService:
         filters: dict[str, Any],
         flatten: bool,
         want_counts: bool,
+        max_depth: int = 50,
         access: dict[str, list[str]],
         excluded: frozenset[str] = frozenset(),
         within: frozenset[str] | None = None,
@@ -506,6 +512,7 @@ class KnowledgeHubService:
                     start_type=start_type,
                     include_scope=True,
                     via_parent_id=page_cursor.via_parent_id if page_cursor else None,
+                    max_depth=max_depth,
                 )
                 envelope = {
                     "partitions": [{
@@ -759,24 +766,31 @@ class KnowledgeHubService:
                 permissions_task = asyncio.create_task(self._get_permissions(
                     user_key, org_id, parent_id, parent_type, is_org_admin=is_org_admin,
                 ))
-            page_result, scope = await self._v2_nodes(
-                user_id=user_id,
-                user_key=user_key,
-                org_id=org_id,
-                access=access,
-                excluded=excluded,
-                parent_id=parent_id,
-                parent_type=parent_type,
-                limit=limit,
-                page=page,
-                cursor=cursor,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                filters=filters,
-                flatten=use_search_mode,
-                want_counts=bool(include and 'counts' in include),
-                within=within,
-            )
+            try:
+                page_result, scope = await self._v2_nodes(
+                    user_id=user_id,
+                    user_key=user_key,
+                    org_id=org_id,
+                    access=access,
+                    excluded=excluded,
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    limit=limit,
+                    page=page,
+                    cursor=cursor,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    filters=filters,
+                    flatten=use_search_mode,
+                    want_counts=bool(include and 'counts' in include),
+                    max_depth=max(1, depth) if depth else 50,
+                    within=within,
+                )
+            except KnowledgeHubListingTooLarge as too_large:
+                # 422: the request is fine, the view is too wide; the message says to open a folder.
+                raise BrowseRequestError(str(too_large), 422) from too_large
+            except KnowledgeHubListingBusy as busy:
+                raise BrowseRequestError(str(busy), 503) from busy
 
             # The start node's own admission decides this, and the 404 body is
             # constant: naming the node, or its type, would confirm it exists
@@ -922,19 +936,11 @@ class KnowledgeHubService:
 
         except BrowseRequestError as request_error:
             self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
-            return KnowledgeHubNodesResponse(
-                success=False,
-                error=request_error.message,  # user-written message
-                errorCode=request_error.status_code,
-                id=parent_id,
-                items=[],
-                pagination=PaginationInfo(
-                    page=page, limit=limit, totalItems=0, totalPages=0,
-                    hasNext=False, hasPrev=False
-                ),
-                filters=FiltersInfo(applied=AppliedFilters()),
-            )
+            return self._refusal(parent_id, page, limit, request_error.message, request_error.status_code)
         except Exception as e:
+            if is_out_of_memory(e):
+                # Some other statement of this request found the transaction pool spent: a retry, not a failure.
+                return self._refusal(parent_id, page, limit, str(KnowledgeHubListingBusy()), 503)
             self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,
@@ -956,6 +962,22 @@ class KnowledgeHubService:
                     task.cancel()
                 elif not task.cancelled():
                     task.exception()  # retrieved, so a discarded failure is not logged as unhandled
+
+    @staticmethod
+    def _refusal(parent_id: str | None, page: int, limit: int, message: str, code: int) -> KnowledgeHubNodesResponse:
+        """The empty failure response for a request this service can explain (``message`` is written for a reader)."""
+        return KnowledgeHubNodesResponse(
+            success=False,
+            error=message,
+            errorCode=code,
+            id=parent_id,
+            items=[],
+            pagination=PaginationInfo(
+                page=page, limit=limit, totalItems=0, totalPages=0,
+                hasNext=False, hasPrev=False
+            ),
+            filters=FiltersInfo(applied=AppliedFilters()),
+        )
 
     async def _get_available_filters(
         self,

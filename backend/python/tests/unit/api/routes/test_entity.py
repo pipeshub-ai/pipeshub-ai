@@ -575,6 +575,9 @@ class _TeamGraph:
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": "user-key-1"}
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return bool(explicit and self.honours_explicit)
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit_requests.append(explicit)

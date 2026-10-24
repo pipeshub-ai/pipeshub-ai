@@ -6,7 +6,7 @@ dotenv.config({ path: '.env.test' });
 const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 
 // Tests that need a real AI model; they run in the `ai` project below.
-const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /agents\/.*\.spec\.ts/];
+const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /chat\/chat-link-labels\.spec\.ts/, /agents\/.*\.spec\.ts/];
 
 // Sign-up and onboarding need a stack with no organization, so they run only
 // when asked for, before CI creates the org every other test signs in to.

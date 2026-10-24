@@ -7,6 +7,7 @@ that are built by factory functions and have no toolset registry entry.
 
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -230,7 +231,25 @@ def _unwrap_any_of(prop_schema: dict[str, Any]) -> dict[str, Any]:
     return chosen
 
 
+# Resolved schemas of pydantic model classes. Every request binds the same tool
+# classes, and generating plus inlining each schema was ~2% of query CPU.
+_resolved_schema_by_class: dict[type, dict[str, Any] | None] = {}
+
+
 def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa: ANN401
+    if isinstance(schema, type):
+        if schema not in _resolved_schema_by_class:
+            # Tools built per request can carry a fresh class each time.
+            if len(_resolved_schema_by_class) >= 2000:
+                _resolved_schema_by_class.clear()
+            _resolved_schema_by_class[schema] = _json_schema_dict_uncached(schema)
+        cached = _resolved_schema_by_class[schema]
+        # Callers adjust the dict they get (descriptions, required lists).
+        return copy.deepcopy(cached) if cached is not None else None
+    return _json_schema_dict_uncached(schema)
+
+
+def _json_schema_dict_uncached(schema: Any) -> dict[str, Any] | None:  # noqa: ANN401
     if schema is None:
         return None
     if isinstance(schema, dict):

@@ -27,8 +27,8 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
-from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.models.entities import substitute_user_email
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -107,7 +107,6 @@ from app.utils.aimodels import (
     get_generator_model,
     is_local_cpu_embedding_provider,
 )
-from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     describe_search_records,
@@ -116,7 +115,10 @@ from app.utils.chat_helpers import (
     group_child_results,
     valid_group_labels,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.query_instruction import instruct_query
+from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -446,6 +448,11 @@ _SELECTION_REQUEST_KEYS = frozenset(
 # Connector names only label citations; a slow graph must not hold up the search.
 CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
 
+# Connector instance display names for citations. Each search looked up the App
+# of every connector in its results, one query each; a rename shows within a minute.
+_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
+
+
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
@@ -682,28 +689,6 @@ class RetrievalService:
                 return SparseVector(indices=sparse["indices"], values=sparse["values"])
             return sparse
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
-
-    async def _preprocess_query(self, query: str) -> str:
-        """
-        Preprocess the query text.
-
-        Args:
-            query: Raw query text
-
-        Returns:
-            Preprocessed query text
-        """
-        try:
-            # Get current model name from config
-            model_name = await self.get_current_embedding_model_name(use_cache=False)
-
-            # Check if using BGE model before adding the prefix
-            if model_name and "bge" in model_name.lower():
-                return f"Represent this document for retrieval: {query.strip()}"
-            return query.strip()
-        except Exception as e:
-            self.logger.error(f"Error in query preprocessing: {str(e)}")
-            return query.strip()
 
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
@@ -2595,7 +2580,10 @@ class RetrievalService:
 
         dense_tasks = [
             await_with_retry(
-                lambda q=query: asyncio.wait_for(dense_embeddings.aembed_query(q), timeout=attempt_timeout),
+                lambda q=query: asyncio.wait_for(
+                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
+                    timeout=attempt_timeout,
+                ),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
@@ -2834,23 +2822,33 @@ class RetrievalService:
         connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
         if not connector_ids:
             return
-        try:
-            apps = await asyncio.wait_for(
-                asyncio.gather(
-                    *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in connector_ids),
-                    return_exceptions=True,
-                ),
-                timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            # Labels only: search results stay correct, the UI shows the type code.
-            self.logger.warning("Could not resolve connector names for citations: %s", e)
-            return
-        apps_by_id = {cid: app for cid, app in zip(connector_ids, apps) if isinstance(app, dict)}
+        names: dict[str, str | None] = {}
+        for cid in connector_ids:
+            hit, name = _connector_name_cache.get(cid)
+            if hit:
+                names[cid] = name
+        to_fetch = [cid for cid in connector_ids if cid not in names]
+        if to_fetch:
+            try:
+                apps = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
+                        return_exceptions=True,
+                    ),
+                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                # Labels only: search results stay correct, the UI shows the type code.
+                self.logger.warning("Could not resolve connector names for citations: %s", e)
+                apps = []
+            for cid, app in zip(to_fetch, apps):
+                if isinstance(app, dict):
+                    names[cid] = app.get("name")
+                    _connector_name_cache.set(cid, app.get("name"))
         for r in records:
-            app = apps_by_id.get(r.get("connectorId"))
-            if app and app.get("name"):
-                r["connectorInstanceName"] = app["name"]
+            name = names.get(r.get("connectorId"))
+            if name:
+                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,

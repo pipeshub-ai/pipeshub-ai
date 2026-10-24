@@ -339,10 +339,6 @@ export class InMemoryChatStore {
       assertSessionUsable(options)
       return withSession(new FakeQuery((state) => one(store.findMessages(filter)[0], state)), options)
     }) as never)
-    sinon.stub(ChatSessionMessage, 'findById').callsFake(((id: unknown, _projection?: unknown, options?: SessionOption) => {
-      assertSessionUsable(options)
-      return withSession(new FakeQuery((state) => one(store.messages.find((m) => String(m._id) === String(id)), state)), options)
-    }) as never)
     sinon.stub(ChatSessionMessage, 'findOneAndReplace').callsFake(((filter: Filter, replacement: Doc, options?: SessionOption) => {
       assertSessionUsable(options)
       const index = store.messages.findIndex((m) => matchesFilter(plain(m), filter))

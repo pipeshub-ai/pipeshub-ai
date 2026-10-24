@@ -6,6 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { MentionIcon } from '@/chat/components/mention-icon';
 import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
+import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -58,19 +59,41 @@ function MentionChip({ node }: { node: MentionNode }) {
   return text === node.name ? chip : <Tooltip content={node.name}>{chip}</Tooltip>;
 }
 
+function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const { start, end, url } of findUrls(text)) {
+    if (start > cursor) out.push(text.slice(cursor, start));
+    out.push(
+      <a
+        key={`${keyPrefix}-${start}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={url}
+        style={CHAT_LINK_STYLE}
+      >
+        {shortLinkLabel(url)}
+      </a>
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return out;
+}
+
 function withMentions(text: string, mentions: readonly MentionNode[]): React.ReactNode {
   const spans = locateMentionNames(text, mentions);
-  if (spans.length === 0) return text;
   const out: React.ReactNode[] = [];
   let cursor = 0;
   for (const span of spans) {
-    if (span.start > cursor) out.push(text.slice(cursor, span.start));
+    if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
     out.push(
       <MentionChip key={`${span.node.id}-${span.start}`} node={span.node} />
     );
     cursor = span.end;
   }
-  if (cursor < text.length) out.push(text.slice(cursor));
+  if (cursor < text.length) out.push(...withLinks(text.slice(cursor), `t${cursor}`));
   return out;
 }
 
@@ -210,7 +233,7 @@ export function ExpandableUserQuery({
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…'
+        ? question.slice(0, cutOutsideUrl(question, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
         : question;
 
     return (

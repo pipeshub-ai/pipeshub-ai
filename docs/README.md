@@ -17,3 +17,4 @@ In-repo design docs:
 - [Answer rules — the ANSWER_COMPOSITION_RULES, THOROUGH_RETRIEVAL and MULTI_STEP_ANSWER_RULES switches](./answer-rules.md)
 - [Vector database sizing — how much memory Qdrant needs for a given corpus, and the Services page warning](./deployment/vector-db-sizing.md)
 - [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)
+- [Query service profiling — one-command load test, flame graphs and resource usage](./query-profiling.md)

@@ -51,7 +51,7 @@ T = TypeVar("T")
 # Maximum concurrent blocking connector calls process-wide. Override with
 # CONNECTOR_THREAD_POOL_MAX_WORKERS; defaults to 4 to bound startup bursts.
 CONNECTOR_THREAD_POOL_MAX_WORKERS = max(
-    1, int(os.getenv("CONNECTOR_THREAD_POOL_MAX_WORKERS", "4"))
+    1, int(os.getenv("CONNECTOR_THREAD_POOL_MAX_WORKERS") or "4")
 )
 
 # Wall-clock budget for draining one lease during connector cleanup. A worker

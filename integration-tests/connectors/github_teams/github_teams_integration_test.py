@@ -65,6 +65,9 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from app.sources.external.github.github_async import (  # type: ignore[import-not-found]  # noqa: E402
+    GitHubAsyncRESTClient,
+)
 from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
@@ -1026,6 +1029,7 @@ class TestGitHubTeamsCodeFiles:
         self,
         github_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
+        github_rest: GitHubAsyncRESTClient,
     ) -> None:
         """TC-GH-CODE-001: CodeFileRecord and folder FileRecord properties."""
         connector_id = github_connector["connector_id"]
@@ -1035,17 +1039,23 @@ class TestGitHubTeamsCodeFiles:
         if not path:
             pytest.skip("No nested code path in the primary repo — seed one (see README.md)")
 
-        sha = next(
-            (e["sha"] for e in tree if e.get("path") == path and e.get("type") == "blob"), None,
+        blob = next(
+            (e for e in tree if e.get("path") == path and e.get("type") == "blob"), None,
         )
-        assert sha, f"no blob sha for {path}"
+        assert blob and blob.get("sha"), f"no blob sha for {path}"
+        # Nothing in this suite pushes to the primary repo, so its head is still the
+        # commit the full sync read the tree at.
+        head = await get_branch_head(
+            github_rest, github_connector["org"], repo["name"], repo["default_branch"],
+        )
 
         external_id = f"/{repo['id']}/blob/{path}"
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, external_id)
         assert actual is not None, f"typed CODE_FILE record missing for {external_id}"
         await assert_graph_entity_with_edges(
             GitHubExpected.code_file_record(
-                repo=repo, path=path, sha=sha, connector_id=connector_id,
+                repo=repo, path=path, sha=blob["sha"], size=blob.get("size"),
+                commit_sha=head, connector_id=connector_id,
             ),
             actual, entity="code_file_record",
             connector_id=connector_id, graph_provider=graph_provider,

@@ -137,6 +137,10 @@ export function MessageActions({
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
   const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
+  // so a recipient of a shared agent chat is not offered those buttons.
+  const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));
+  const canGiveFeedback = canFork || !isAgentThread;
 
   // ── Like popover state ──
   const [likeOpen, setLikeOpen] = useState(false);
@@ -372,7 +376,7 @@ export function MessageActions({
       {/* ── Left: Action buttons ── */}
       <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {/* ── Thumbs up with optional comment popover ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={likeOpen} onOpenChange={(open) => { if (!open) handleLikePopoverClose(); }}>
             <Tooltip content={t('chat.like', 'Helpful')} side="top">
               <Popover.Trigger>
@@ -511,7 +515,7 @@ export function MessageActions({
         )}
 
         {/* ── Thumbs down with category chips + optional text ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={dislikeOpen} onOpenChange={(open) => { if (!open) handleDislikePopoverClose(); }}>
             <Tooltip content={t('chat.dislike', 'Not helpful')} side="top">
               <Popover.Trigger>
@@ -760,7 +764,7 @@ export function MessageActions({
         )}
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId && canRegenerate && (
+        {isLastMessage && messageId && canRegenerate && canFork && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"

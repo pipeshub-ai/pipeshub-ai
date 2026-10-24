@@ -35,6 +35,17 @@ class RedisStreamsProducer(IMessagingProducer):
         self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
 
+    def _xadd_trim(self) -> dict[str, object]:
+        """Producer-side trimming applies only in legacy ``maxlen`` mode.
+
+        By default nothing is trimmed on write: ``MAXLEN`` ignores consumer
+        progress and drops unconsumed events. ``StreamRetention`` trims
+        behind the consumer groups instead.
+        """
+        if self.config.retention_mode != "maxlen":
+            return {}
+        return {"maxlen": self.config.max_len, "approximate": True}
+
     @override
     async def initialize(self) -> None:
         if self.redis is not None:
@@ -51,6 +62,12 @@ class RedisStreamsProducer(IMessagingProducer):
                 self.redis = self._provider.create_client(ClientOptions(decode_responses=True))
                 await self.redis.ping()
                 self._owner_loop = asyncio.get_running_loop()
+                if self.config.retention_mode == "maxlen":
+                    self.logger.warning(
+                        "REDIS_STREAMS_RETENTION_MODE=maxlen: streams are capped at ~%d entries "
+                        "and unconsumed events beyond that are dropped",
+                        self.config.max_len,
+                    )
                 self.logger.info(
                     "Redis Streams producer initialized at %s:%s",
                     self.config.host,
@@ -114,8 +131,7 @@ class RedisStreamsProducer(IMessagingProducer):
             await self.redis.xadd(  # type: ignore
                 topic,
                 fields,
-                maxlen=self.config.max_len,
-                approximate=True,
+                **self._xadd_trim(),
             )
 
             self.logger.debug("Message successfully published to Redis stream %s", topic)
@@ -165,8 +181,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 pipeline.xadd(
                     topic,
                     fields,
-                    maxlen=self.config.max_len,
-                    approximate=True,
+                    **self._xadd_trim(),
                 )
             # Per-message results, not one all-or-nothing raise: callers use
             # them to record exactly which records were accepted.

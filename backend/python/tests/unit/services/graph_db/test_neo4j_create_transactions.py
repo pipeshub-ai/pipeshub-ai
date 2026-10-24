@@ -171,8 +171,47 @@ class TestTheOptIn:
             assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
 
         kwargs = client_cls.call_args.kwargs
-        assert kwargs["explicit_transactions"] is False
+        assert kwargs["explicit_transactions"] is True
         assert kwargs["honour_explicit_requests"] is honour
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("value", "expected"), [(None, True), ("true", True), ("false", False)])
+    async def test_the_explicit_transactions_flag_defaults_on_and_false_is_honoured(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool,
+    ) -> None:
+        monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+        monkeypatch.delenv("NEO4J_CREATE_TRANSACTIONS", raising=False)
+        if value is None:
+            monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
+        else:
+            monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", value)
+        client_cls = MagicMock()
+        client_cls.return_value.connect = AsyncMock(return_value=True)
+        with patch.object(provider_module, "Neo4jClient", client_cls):
+            assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
+
+        assert client_cls.call_args.kwargs["explicit_transactions"] is expected
+
+    @pytest.mark.asyncio
+    async def test_a_plain_block_that_fails_midway_lands_nothing_by_default(self) -> None:
+        server = _Server(fail_at=2, error=RuntimeError("boom"))
+        store = GraphDataStore(MagicMock(), _provider(server, explicit_transactions=True))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with store.transaction() as tx_store:
+                assert tx_store.explicit
+                await tx_store.batch_upsert_nodes([{"id": "t1", "name": "T"}], "teams")
+                await tx_store.batch_upsert_nodes([{"id": "t2", "name": "U"}], "teams")
+
+        (tx,) = server.transactions
+        assert tx.rolled_back and not tx.committed
+        assert not server.landed
+
+    @pytest.mark.asyncio
+    async def test_with_the_flag_off_a_plain_block_is_not_marked_explicit(self) -> None:
+        store = GraphDataStore(MagicMock(), _provider(_Server()))
+        async with store.transaction() as tx_store:
+            assert not tx_store.explicit
 
     @pytest.mark.asyncio
     async def test_a_deadlock_in_an_explicit_block_is_rerun_from_a_clean_slate(self) -> None:

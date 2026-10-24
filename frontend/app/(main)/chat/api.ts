@@ -128,6 +128,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
     sharedBy: conv.sharedBy,
+    agentKey: conv.agentKey,
   };
 }
 
@@ -387,6 +388,10 @@ export const ChatApi = {
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
+      /** The edited question's files, replacing the stored ones; omitted keeps them. */
+      attachments?: AttachmentRef[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -412,6 +417,12 @@ export const ChatApi = {
     if (request.runId) {
       body.runId = request.runId;
     }
+    if (request.query) {
+      body.query = request.query;
+    }
+    if (request.attachments !== undefined) {
+      body.attachments = request.attachments;
+    }
 
     await runChatStream(endpoint, body, callbacks);
   },
@@ -436,6 +447,10 @@ export const ChatApi = {
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
+      /** The edited question's files, replacing the stored ones; omitted keeps them. */
+      attachments?: AttachmentRef[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -460,6 +475,12 @@ export const ChatApi = {
     }
     if (model.runId) {
       agentRegenBody.runId = model.runId;
+    }
+    if (model.query) {
+      agentRegenBody.query = model.query;
+    }
+    if (model.attachments !== undefined) {
+      agentRegenBody.attachments = model.attachments;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);

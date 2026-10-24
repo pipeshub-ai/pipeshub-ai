@@ -241,10 +241,6 @@ neo4j:
     NEO4J_dbms_memory_heap_max__size: 4g
     NEO4J_dbms_memory_pagecache_size: 2g
 
-# ----- Monitoring + network policies are opt-in -----
-monitoring:
-  serviceMonitor:
-    enabled: false   # set true if Prometheus Operator CRDs are installed
-
+# ----- Network policies are opt-in -----
 networkPolicy:
   enabled: false     # set true after you've validated your ingress namespace selector

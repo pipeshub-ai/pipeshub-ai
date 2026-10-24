@@ -174,6 +174,15 @@ export interface CreateOAuthAppRequest {
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own tokens act as.
+   *
+   * Required when the app allows `client_credentials`, and ignored otherwise.
+   * That grant has no person in it, so without this the app acts as whoever
+   * created it — and an app created by an administrator would carry
+   * administrator rights for as long as it exists.
+   */
+  tokenIdentityUserId?: string;
 }
 
 // Update OAuth App Request

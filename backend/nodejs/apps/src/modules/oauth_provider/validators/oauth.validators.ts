@@ -220,6 +220,9 @@ export const createAppSchema = z.object({
         )
         .optional(),
       allowedScopes: z.array(z.string()).min(1),
+      // Checked for real in the service, which can look the account up.
+      // Shape only here.
+      tokenIdentityUserId: z.string().min(1).optional(),
       homepageUrl: z.string().url().optional(),
       privacyPolicyUrl: z.string().url().optional(),
       termsOfServiceUrl: z.string().url().optional(),

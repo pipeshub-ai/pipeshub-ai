@@ -841,13 +841,33 @@ export const ChatResponse = React.memo(function ChatResponse({
     }
   };
 
+  // Mirrors the backend's regenerate rules: only the newest question, and not
+  // one that ran an approved action or is itself an approval answer. A turn that went
+  // through a question card can be edited once its card is answered (the whole turn is
+  // asked again), never while the card is still waiting.
+  const rowHasCard = askQuestionMatchesRow || Boolean(persistedAskUserQuestion);
+  const cardAnswered = Object.keys(persistedAskUserQuestionAnswers ?? {}).length > 0;
+  // Someone a chat was shared with reads it; the server only lets its owner edit.
+  const isChatOwner = useChatStore((st) =>
+    st.activeSlotId ? st.slots[st.activeSlotId]?.isOwner !== false : true,
+  );
+  const canEditQuestion =
+    isChatOwner &&
+    isLastMessage &&
+    !questionPending &&
+    (!rowHasCard || cardAnswered) &&
+    !ranApprovedCall &&
+    !question.trimStart().startsWith('Tool approval:');
+
   const handleEditQuery = useCallback(() => {
     if (!messageId || isStreaming) return;
     useCommandStore.getState().dispatch('showEditQuery', {
       messageId,
       text: question,
+      appliedFilters,
+      attachments,
     });
-  }, [messageId, question, isStreaming]);
+  }, [messageId, question, isStreaming, appliedFilters, attachments]);
 
   // When the active question card owns this row, read aloud the question text
   // and its options instead of the hidden bot response.
@@ -873,7 +893,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           isMobile={isMobile}
           messageId={messageId}
           isStreaming={isStreaming}
-          onEdit={handleEditQuery}
+          onEdit={canEditQuestion ? handleEditQuery : undefined}
           mentions={appliedNodes}
         />
         {createdAt && (

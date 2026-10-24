@@ -670,25 +670,30 @@ class SinkOrchestrator(Transformer):
             observe_extract(strategy, time.perf_counter() - started)
 
     async def reproject_named_entities(
-        self, ctx: TransformContext, *, retry_due: int | None = None, retry_attempts: int = 0,
+        self,
+        ctx: TransformContext,
+        *,
+        content_rev: str | None,
+        retry_due: int | None = None,
+        retry_attempts: int = 0,
     ) -> str | None:
-        """Write the record's named entities again from the extraction its blob
-        holds: no model call. Returns the persist outcome, or None when the blob
-        holds no extraction. ``retry_due`` makes it a persist retry's write."""
-        from app.modules.named_entities.domain.models import read_stored_extraction
+        """Write the record's named entities again from the extraction kept for its revision:
+        no model call. Returns the persist outcome, or None when none is kept. ``retry_due``
+        makes it a persist retry's write."""
+        from app.modules.named_entities.kept import read_kept_extraction
 
         metadata = ctx.record.semantic_metadata
-        extraction = read_stored_extraction(getattr(metadata, "named_entities", None) if metadata else None)
+        extraction = await read_kept_extraction(
+            self.graph_provider,
+            ctx.record.virtual_record_id,
+            content_rev,
+            getattr(metadata, "named_entities", None) if metadata else None,
+        )
         if extraction is None:
             return None
         return await self.persist_named_entities(
             ctx, extraction, retry_due=retry_due, retry_attempts=retry_attempts,
         )
-
-    def attach_named_entities(self, ctx: TransformContext, extraction) -> None:
-        from app.modules.named_entities.stage import attach_named_entities
-
-        attach_named_entities(ctx.record, extraction)
 
     async def persist_named_entities(
         self, ctx: TransformContext, extraction, *, retry_due: int | None = None, retry_attempts: int = 0,
@@ -750,12 +755,6 @@ class SinkOrchestrator(Transformer):
             self.logger.warning(
                 "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
             )
-
-    async def enrich_named_entities(self, ctx: TransformContext, *, client=None) -> None:
-        """Extract, attach and persist. Safe to call on its own; never raises."""
-        extraction = await self.extract_named_entities(ctx, client=client)
-        self.attach_named_entities(ctx, extraction)
-        await self.persist_named_entities(ctx, extraction)
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:

@@ -316,6 +316,33 @@ TRASH_STATE_FIELDS = (
     "trashedExternalRecordId",
 )
 
+# Bookkeeping the services keep on a stored record for their own use: the trash
+# state (the record endpoint refuses a trashed record, and a restore clears it),
+# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# taxonomy copy. No client reads them, and the record endpoint's response
+# schema rejects fields it does not list, so the endpoint leaves these out.
+# `deletedByUserId` predates the trash and is documented, so it stays in.
+INTERNAL_RECORD_FIELDS = frozenset({
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+    "rateLimitedSince",
+    "lastRepublishedAt",
+    "republishCount",
+    "duplicateReconcilePending",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+})
+
+
+def api_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
+
 # A Recently deleted row for a multi-select delete names this many of its other items.
 TRASH_LIST_OTHER_ROOT_NAMES = 3
 

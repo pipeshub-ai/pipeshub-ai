@@ -15,12 +15,14 @@ interface AgentChatHeaderProps {
   isMobile: boolean;
   /** When true the desktop left offset is increased to make room for the sidebar expand button. */
   hasExpandButton?: boolean;
+  /** A chat someone shared with the user: they cannot start chats on an agent they may not have. */
+  readOnly?: boolean;
 }
 
 /**
  * Top-left chat title for agent threads — name + chevron menu (ChatGPT-style).
  */
-export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButton }: AgentChatHeaderProps) {
+export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButton, readOnly }: AgentChatHeaderProps) {
   const router = useRouter();
   const { t } = useTranslation();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
@@ -29,7 +31,9 @@ export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButto
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const openMobileSidebar = useMobileSidebarStore((s) => s.open);
 
-  const title = displayName?.trim() || t('chat.agentNameLoading');
+  // The name only loads for someone allowed to open the agent; for a recipient it never will.
+  const sharedWithoutAgent = Boolean(readOnly) && !displayName?.trim();
+  const title = displayName?.trim() || (readOnly ? t('chat.sharedAgentChat') : t('chat.agentNameLoading'));
   const canEdit = Boolean(access?.canEdit);
   const showViewAgent = Boolean(access?.showViewAgent);
   const viewTooltip = showViewAgent
@@ -71,6 +75,11 @@ export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButto
         pointerEvents: 'auto',
       }}
     >
+      {sharedWithoutAgent ? (
+        <Text size="3" weight="medium" style={{ padding: 'var(--space-1) var(--space-2)', color: 'var(--slate-12)' }}>
+          {title}
+        </Text>
+      ) : (
       <DropdownMenu.Root>
         <DropdownMenu.Trigger>
           <button
@@ -138,6 +147,7 @@ export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButto
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
+      )}
     </Box>
   );
 }

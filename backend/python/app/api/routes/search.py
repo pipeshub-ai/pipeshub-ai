@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.knowledge_graph.ops.outside_dates import (
     OUTSIDE_DATES_SEARCH_LIMIT,
@@ -33,6 +33,7 @@ from app.api.middlewares.auth import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import within_connection
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -63,9 +64,15 @@ QUERY_TRANSFORM_TIMEOUT_SECONDS = 20.0
 
 
 # Pydantic models
+DEFAULT_SEARCH_RESULT_LIMIT = 10
+MAX_SEARCH_RESULT_LIMIT = 100
+
+
 class SearchQuery(BaseModel):
     query: str
-    limit: Optional[int] = 5
+    # Most passages (entries of ``searchResults``) the response holds, however
+    # many queries and expansions ran. Same default and bounds as the public API.
+    limit: Optional[int] = Field(DEFAULT_SEARCH_RESULT_LIMIT, ge=1, le=MAX_SEARCH_RESULT_LIMIT)
     filters: Optional[dict[str, Any]] = {}
     # Optional date bounds on the source's own created / last-modified time,
     # named as on the knowledge-graph navigate endpoint (createdAfter, modifiedAfter):
@@ -87,6 +94,8 @@ class SearchQuery(BaseModel):
     # on that date, and a plain ranked search otherwise. "off" is always the
     # plain ranked search.
     timeline: Literal["created", "modified", "off"] | None = None
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -205,6 +214,41 @@ def _queries_for_search(
     if not queries and original:
         queries = [original]
     return queries
+
+
+def _apply_result_limit(results: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Cut ``searchResults`` to ``limit`` passages, best first, and drop what they no longer cite.
+
+    Retrieval over several queries, and the expansion of a matched section into
+    its passages, can return more than ``limit``; ranking is left as it is.
+    """
+    hits = results.get("searchResults")
+    if not isinstance(hits, list) or len(hits) <= limit:
+        return results
+    # Children of an expanded section share its score; a matched passage goes
+    # before its own context, so the cut never keeps a neighbour over the match.
+    hits = sorted(hits, key=lambda h: (-((h or {}).get("score") or 0), (h or {}).get("distanceFromMatch") or 0))
+    kept, dropped = hits[:limit], hits[limit:]
+
+    def record_id(hit: dict | None) -> object:
+        return ((hit or {}).get("metadata") or {}).get("recordId")
+
+    kept_ids = {record_id(hit) for hit in kept}
+    omitted = dict(results.get("omittedPassages") or {})
+    for hit in dropped:
+        if record_id(hit) in kept_ids:
+            omitted[record_id(hit)] = omitted.get(record_id(hit), 0) + 1
+    results["searchResults"] = kept
+    if omitted:
+        results["omittedPassages"] = {k: v for k, v in omitted.items() if k in kept_ids}
+    if isinstance(results.get("records"), list):
+        results["records"] = [r for r in results["records"] if (r or {}).get("_key") in kept_ids]
+    if isinstance(results.get("virtual_to_record_map"), dict):
+        results["virtual_to_record_map"] = {
+            vid: r for vid, r in results["virtual_to_record_map"].items()
+            if (r or {}).get("_key") in kept_ids
+        }
+    return results
 
 
 async def _rewritten_queries(
@@ -364,6 +408,7 @@ async def search(
     timeline, automatic = _timeline_choice(body.timeline, time_range)
     span = _timeline_span(timeline, time_range) if timeline else None
     timer = StageTimer()
+    limit = body.limit or DEFAULT_SEARCH_RESULT_LIMIT
     try:
         async with call_scope(
             principal_from_request_user(request.state.user),
@@ -390,7 +435,7 @@ async def search(
                 )
 
             if span is None:
-                searched = run_search(time_range, body.limit)
+                searched = run_search(time_range, limit)
             else:
                 # ``limit`` is the matches per period when the caller set it. A
                 # caller who did not ask for a timeline meant it for the whole
@@ -400,6 +445,9 @@ async def search(
                     period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
                 searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
             results = await _with_search_without_dates(searched, run_search, time_range, logger)
+            if span is None:
+                # A timeline's ``limit`` is per period, so only a ranked search is cut.
+                results = _apply_result_limit(results, limit)
             timer.mark("retrieval")
             timer.emit(
                 logger, "search",
