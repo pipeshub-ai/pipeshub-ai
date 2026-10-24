@@ -90,7 +90,8 @@ def minio_connector(mock_logger, mock_data_entities_processor,
 
 class TestMinIOParseConsoleUrl:
     def test_http(self):
-        assert MinIOConnector._parse_console_url("http://localhost:9000") == "http://localhost:9000"
+        # The S3 API port does not serve the Console; MinIO's default puts it on 9001.
+        assert MinIOConnector._parse_console_url("http://localhost:9000") == "http://localhost:9001"
 
     def test_https(self):
         assert MinIOConnector._parse_console_url("https://minio.example.com") == "https://minio.example.com"
@@ -148,8 +149,7 @@ class TestMinIOConnectorInit:
 class TestMinIOWebUrls:
     def test_generate_web_url(self, minio_connector):
         url = minio_connector._generate_web_url("mybucket", "path/file.txt")
-        assert "localhost:9000" in url
-        assert "browser/mybucket/path/file.txt" in url
+        assert url == "http://localhost:9001/browser/mybucket/path%2Ffile.txt"
 
     def test_generate_parent_web_url_with_path(self, minio_connector):
         url = minio_connector._generate_parent_web_url("mybucket/folder")
