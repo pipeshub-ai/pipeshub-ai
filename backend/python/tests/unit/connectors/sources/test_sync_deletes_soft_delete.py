@@ -153,8 +153,12 @@ def _linear_store() -> _Store:
 
 
 async def _run_linear(store: _Store, external_record_id: str = "issue-ext") -> MagicMock:
-    conn = LinearConnector(MagicMock(), MagicMock(), MagicMock(), AsyncMock(), "linear-1", "team", "u1")
-    processor = _wire(conn, store)
+    # Linear removes through the processor it was built with, reading the store through it.
+    processor = _wire(MagicMock(), store)
+    processor.get_record_by_external_id = AsyncMock(side_effect=store.get_record_by_external_id)
+    processor.get_records_by_parent = AsyncMock(side_effect=store.get_records_by_parent)
+    processor.on_records_detached_from_parent = AsyncMock()
+    conn = LinearConnector(MagicMock(), processor, MagicMock(), AsyncMock(), "linear-1", "team", "u1")
     await conn._mark_record_and_children_deleted(external_record_id=external_record_id, record_type="issue")
     return processor
 

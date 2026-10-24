@@ -28,6 +28,10 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/connectors/core/base/data_store/**'
       - 'backend/python/app/modules/transformers/**'
+      # Connectors whose real-graph tests drive the connector itself (graph_db/test_<name>_*).
+      - 'backend/python/app/connectors/sources/linear/**'
+      - 'backend/python/app/sources/client/linear/**'
+      - 'backend/python/app/sources/external/linear/**'
       - 'backend/python/app/indexing_main.py'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/vector_db/**'
