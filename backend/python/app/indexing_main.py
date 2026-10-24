@@ -2399,8 +2399,15 @@ async def health_check(request: Request) -> JSONResponse:
         except Exception as stats_error:
             container.logger().warning("LLM gateway stats failed: %s", stats_error)
             content["llm_gateway"] = {"error": "unavailable"}
+        worker = getattr(container, "worker_loop", None)
+        failure = worker.failure if isinstance(worker, WorkerLoop) else None
+        if failure is not None:
+            # Its consumers stopped themselves; nothing on this node indexes until the process
+            # restarts. The type only: the traceback is in the CRITICAL log line.
+            content["status"] = "unhealthy"
+            content["worker_loop_failure"] = type(failure).__name__
         return JSONResponse(
-            status_code=200,
+            status_code=503 if failure is not None else 200,
             content=content,
         )
     except Exception:

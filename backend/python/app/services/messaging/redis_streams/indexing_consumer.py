@@ -470,11 +470,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         renewer, self.lease_renewer = self.lease_renewer, None
         return renewer
 
+    def _stop_taking_work(self) -> None:
+        """Called on the shared loop's thread when it dies: stops reads, dispatch and PEL recovery,
+        so no XAUTOCLAIM spends a delivery attempt on work no loop can run."""
+        self.running = False
+
     def _start_worker_thread(self) -> None:
         if self._shared_worker is not None:
             self.worker_loop_ready.clear()
             loop = self._shared_worker.start()
             self.worker_loop = loop
+            self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
             self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
@@ -692,6 +698,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._wait_for_active_futures()
         if self._shared_worker is not None:
             # The loop is shared: release only what this consumer started on it.
+            self._shared_worker.remove_exit_listener(self._stop_taking_work)
             if self.worker_loop is not None and self.worker_loop.is_running():
                 renewer = self._shared_worker.call(self._take_lease_renewer)
                 if renewer is not None:
