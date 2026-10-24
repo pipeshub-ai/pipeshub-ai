@@ -386,8 +386,8 @@ class TestTransformToFileRecord:
         assert result is not None
         assert result.extension == "jpg"
 
-    def test_pdf_default_name(self, connector):
-        """PDF block with no name gets default name document.pdf."""
+    def test_pdf_name_from_url(self, connector):
+        """A PDF block with no name is named after its URL's last path segment."""
         block = {
             "id": "block-10",
             "type": "pdf",
@@ -399,7 +399,10 @@ class TestTransformToFileRecord:
         }
         result = connector._transform_to_file_record(block, "page-1")
         assert result is not None
-        assert result.record_name == "document.pdf"
+        assert result.record_name == "file"
+        hosted = {"id": "block-11", "type": "pdf", "pdf": {
+            "type": "file", "file": {"url": "https://prod-files.s3.aws/ws/f1/Q3%20plan.pdf?X-Amz-Signature=s"}}}
+        assert connector._transform_to_file_record(hosted, "page-1").record_name == "Q3 plan.pdf"
 
     def test_named_file(self, connector):
         block = {

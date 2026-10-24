@@ -676,8 +676,8 @@ async def _seed_commented_page(helper: NotionSourceHelper, seed: NotionSeed) -> 
     )
     seed.reply_comment_id = _normalize_id(reply["id"])
 
-    # Two uploads of the SAME filename on one comment: the connector dedups by normalized
-    # filename per comment, so this must yield exactly one FileRecord.
+    # Two uploads of the SAME filename on one comment: they are two files, so they stay two
+    # FileRecords, ``ca_{comment}_{name}`` and ``ca_{comment}_{name}~2``.
     duplicate_uploads = [
         await helper.upload_sample_file(COMMENT_ATTACHMENT_SAMPLE_PATH, "application/pdf")
         for _ in range(2)
@@ -774,8 +774,9 @@ def _finalize(
     }
     seed.expected_data_source_ids.discard(archived_data_source_id)
 
+    # The attachment comment carries two files of one name (see _seed_commented_page).
     seed.expected_file_ids = set(seed.file_block_ids.values()) | {
-        seed.comment_attachment_external_id
+        seed.comment_attachment_external_id, f"{seed.comment_attachment_external_id}~2"
     }
 
 

@@ -358,19 +358,21 @@ class TestFinalizeIndicesAndMetadata:
 class TestCalculateListIndentLevels:
     def test_nested_list_items(self):
         parser = _p()
-        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None)
-        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0)
-        b0 = Block(index=0, parent_index=0, type=BlockType.BULLET_LIST,
+        # As the connector builds it: b0 has children, so it is the first child of its wrapper group0;
+        # b1 is one of those children and has children too (its own wrapper group1, inside group0).
+        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None, source_group_id="b0")
+        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0, source_group_id="b1")
+        b0 = Block(index=0, parent_index=0, source_id="b0", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="item",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
-        b1 = Block(index=1, parent_index=1, type=BlockType.BULLET_LIST,
+        b1 = Block(index=1, parent_index=1, source_id="b1", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="nested",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
         parser._calculate_list_indent_levels([b0, b1], [group0, group1])
-        assert b0.list_metadata.indent_level == 1
-        assert b1.list_metadata.indent_level == 2
+        assert b0.list_metadata.indent_level == 0  # its own wrapper is not a nesting level
+        assert b1.list_metadata.indent_level == 1  # nested under b0
 
 
 class TestFixNumberedListNumbering:

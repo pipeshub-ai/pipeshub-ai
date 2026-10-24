@@ -3876,7 +3876,7 @@ class TestConvertImageBlocksToBase64Conversion:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.notion.connector.ImageParser")
-    async def test_non_image_content_type_raises(self, mock_parser_cls):
+    async def test_non_image_content_type_is_demoted(self, mock_parser_cls):
         conn = _make_connector_fullcov()
         conn._fetch_image = AsyncMock(return_value=PublicFetchResponse(
             url="u", status_code=200, headers={"content-type": "text/html"}, content=b"<html></html>"))
@@ -3887,8 +3887,8 @@ class TestConvertImageBlocksToBase64Conversion:
                 data="old", public_data_link="https://notion.so/notimage.html",
             ),
         ]
-        with pytest.raises(Exception):
-            await conn._convert_image_blocks_to_base64(blocks)
+        await conn._convert_image_blocks_to_base64(blocks)  # a 200 HTML page is not retried: the image becomes text
+        assert blocks[0].format != DataFormat.BASE64
 
 
 # ===================================================================
@@ -4591,7 +4591,7 @@ class TestExtractCommentAttachmentFileRecordsBasic:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_skips_duplicate_filenames(self):
+    async def test_same_named_files_stay_distinct(self):
         conn = _make_connector_fullcov()
         fr = _make_file_record()
         conn._transform_to_comment_file_record = AsyncMock(return_value=fr)
@@ -4606,7 +4606,9 @@ class TestExtractCommentAttachmentFileRecordsBasic:
             ],
         }
         result = await conn._extract_comment_attachment_file_records(comments, "page-1")
-        assert len(result) == 1
+        assert len(result) == 2
+        ids = [c.kwargs["external_id"] for c in conn._transform_to_comment_file_record.call_args_list]
+        assert ids == ["ca_c1_same.pdf", "ca_c1_same.pdf~2"]  # two files of one name stay two records
 
     @pytest.mark.asyncio
     async def test_no_comment_id_skipped(self):
@@ -5324,7 +5326,7 @@ class TestProcessCommentAttachments:
         assert len(file_records) == 0
 
     @pytest.mark.asyncio
-    async def test_duplicate_filenames_skipped(self):
+    async def test_same_named_files_get_distinct_ids(self):
         conn = _make_connector_fullcov()
         fr = _make_file_record()
         conn._transform_to_comment_file_record = AsyncMock(return_value=fr)
@@ -5335,7 +5337,9 @@ class TestProcessCommentAttachments:
             {"file": {"url": "https://s3/b.pdf"}},
         ]}
         file_records, attachments = await conn._process_comment_attachments(comment, "c1", "p1", None)
-        assert len(file_records) == 1
+        assert len(file_records) == 2
+        ids = [c.kwargs["external_id"] for c in conn._transform_to_comment_file_record.call_args_list]
+        assert ids == ["ca_c1_same.pdf", "ca_c1_same.pdf~2"]  # two files of one name stay two records
 
     @pytest.mark.asyncio
     async def test_transform_error_continues(self):
@@ -6399,7 +6403,7 @@ class TestStreamRecordJsonGenerators:
 
 class TestExtractCommentAttachmentFileRecords:
     @pytest.mark.asyncio
-    async def test_duplicate_attachment_skipped(self):
+    async def test_same_named_attachments_are_both_kept(self):
         conn = _make_connector_fullcov()
         conn._normalize_filename_for_id = MagicMock(return_value="same.pdf")
         fr = _make_file_record(external_record_id="ca_c1_same.pdf")
@@ -6414,7 +6418,9 @@ class TestExtractCommentAttachmentFileRecords:
             }, "page-1")],
         }
         result = await conn._extract_comment_attachment_file_records(comments, "page-1", "")
-        assert len(result) == 1
+        assert len(result) == 2
+        ids = [c.kwargs["external_id"] for c in conn._transform_to_comment_file_record.call_args_list]
+        assert ids == ["ca_c1_same.pdf", "ca_c1_same.pdf~2"]  # two files of one name stay two records
 
     @pytest.mark.asyncio
     async def test_block_level_attachment_error_continues(self):

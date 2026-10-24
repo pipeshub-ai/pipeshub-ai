@@ -1322,21 +1322,9 @@ class NotionConnector(BaseConnector):
         if not attachments:
             return None
 
-        # Match attachment by normalized filename
-        for attachment in attachments:
-            if "file" in attachment and isinstance(attachment["file"], dict):
-                url = attachment["file"].get("url", "")
-                if url:
-                    # Extract and normalize filename from attachment
-                    parsed_url = urlparse(url)
-                    path = unquote(parsed_url.path)
-                    url_filename = path.split("/")[-1] if "/" in path else ""
-                    file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
-                    attachment_normalized = self._normalize_filename_for_id(file_name)
-
-                    # Match by normalized filename
-                    if attachment_normalized == normalized_filename:
-                        return url
+        for attachment_id, attachment in self._comment_attachment_ids(comment_id, attachments):
+            if attachment_id == external_id:
+                return attachment["file"].get("url") or None
 
         # No match found - return None (removed fallback to first attachment)
         self.logger.warning(
@@ -1393,6 +1381,9 @@ class NotionConnector(BaseConnector):
             return None, True
 
         block_data = response.data.json() if hasattr(response.data, 'json') else {}
+        if block_data.get("in_trash") or block_data.get("archived"):
+            # Notion still returns a trashed block; its file is gone from the page.
+            return None, True
         block_type = block_data.get("type", "")
         type_data = block_data.get(block_type, {})
 
@@ -3189,16 +3180,34 @@ class NotionConnector(BaseConnector):
                     f"Block type {notion_block.get('type')} returned None from parser "
                     f"but has children (id: {block_id}). Processing children anyway to avoid data loss."
                 )
-                # Process children with same parent
-                await self._process_blocks_recursive(
+                # The children keep their nesting under a wrapper of their own (an empty toggle or
+                # paragraph, a tab): flattened into the parent, they would be in no group's children.
+                wrapper_group = BlockGroup(
+                    id=str(uuid4()),
+                    index=len(block_groups),
+                    parent_index=parent_group_index,
+                    type=GroupType.TEXT_SECTION,
+                    sub_type=GroupSubType.NESTED_BLOCK,
+                    source_group_id=block_id,
+                    description=f"Wrapper for the children of a {block_type} block",
+                    children=BlockGroupChildren(),
+                )
+                block_groups.append(wrapper_group)
+                child_indices = await self._process_blocks_recursive(
                     block_id,
                     parser,
                     blocks,
                     block_groups,
-                    parent_group_index,
+                    wrapper_group.index,
                     parent_page_url,  # Pass parent page URL
                     parent_page_id  # Pass parent page ID
                 )
+                for child_idx in child_indices:
+                    if child_idx.block_index is not None:
+                        wrapper_group.children.add_block_index(child_idx.block_index)
+                    if child_idx.block_group_index is not None:
+                        wrapper_group.children.add_block_group_index(child_idx.block_group_index)
+                current_level_indices.append(BlockContainerIndex(block_group_index=wrapper_group.index))
 
         return current_level_indices
 
@@ -3290,9 +3299,9 @@ class NotionConnector(BaseConnector):
                 content_type = fetched.headers.get('content-type', '').lower()
                 content_type_clean = content_type.split(';')[0].strip()
                 if not content_type_clean.startswith('image/'):
-                    # Retryable: a 200 that is not an image is usually a CDN
-                    # or proxy error page, not a permanently bad block.
-                    raise Exception(f"Invalid content type: {content_type_clean}")
+                    # A pasted page link, a login redirect or an HTML error page: retrying
+                    # fails the same way and would keep the whole page from indexing.
+                    raise UnconvertibleImageError(f"Invalid content type: {content_type_clean}")
 
                 image_bytes = fetched.content
                 if not image_bytes:
@@ -3685,6 +3694,11 @@ class NotionConnector(BaseConnector):
                     if not block.table_row_metadata:
                         block.table_row_metadata = TableRowMetadata()
                     block.table_row_metadata.children_records = [child_record_map[ext_id]]
+            # A link carries only an id; the parser put "Page 1a2b3c4d" there until the title is known.
+            names = [c.child_name for c in (block.table_row_metadata.children_records if block.table_row_metadata
+                                           else None) or [] if c.child_name]
+            if reference_type in ("link_to_page", "link_to_database") and names:
+                block.data = block.source_name = ", ".join(names)
 
     async def _resolve_table_row_children(
         self,
@@ -3763,44 +3777,15 @@ class NotionConnector(BaseConnector):
                     if not comment_id:
                         continue
 
-                    # Track seen normalized filenames per comment to prevent duplicates
-                    seen_filenames: set[str] = set()
-
-                    # Process attachments
                     attachments = comment_dict.get("attachments", [])
-                    for attachment in attachments:
+                    for external_id, attachment in self._comment_attachment_ids(comment_id, attachments):
                         try:
-                            # Extract filename to check for duplicates
-                            file_url = None
-                            if "file" in attachment:
-                                file_obj = attachment["file"]
-                                if isinstance(file_obj, dict):
-                                    file_url = file_obj.get("url", "")
-
-                            if file_url:
-                                # Extract and normalize filename
-                                parsed_url = urlparse(file_url)
-                                path = unquote(parsed_url.path)
-                                url_filename = path.split("/")[-1] if "/" in path else ""
-                                file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
-                                normalized_filename = self._normalize_filename_for_id(file_name)
-
-                                # Skip if we've already seen this normalized filename for this comment
-                                if normalized_filename in seen_filenames:
-                                    self.logger.debug(
-                                        f"Skipping duplicate comment attachment: {normalized_filename} "
-                                        f"for comment {comment_id}"
-                                    )
-                                    continue
-
-                                # Create FileRecord
-                                file_record = await self._transform_to_comment_file_record(
-                                    attachment, comment_id, page_id, page_url,
-                                    revision=(revisions or {}).get(comment_id),
-                                )
-                                if file_record:
-                                    all_file_records.append(file_record)
-                                    seen_filenames.add(normalized_filename)
+                            file_record = await self._transform_to_comment_file_record(
+                                attachment, comment_id, page_id, page_url,
+                                revision=(revisions or {}).get(comment_id), external_id=external_id,
+                            )
+                            if file_record:
+                                all_file_records.append(file_record)
                         except Exception as e:
                             self.logger.warning(f"Failed to create FileRecord from comment attachment: {e}")
                             continue
@@ -3952,44 +3937,14 @@ class NotionConnector(BaseConnector):
         file_records: List[FileRecord] = []
         comment_attachments: List[CommentAttachment] = []
 
-        # Track seen normalized filenames per comment to prevent duplicates
-        seen_filenames: set[str] = set()
-
         attachments = notion_comment.get("attachments", [])
-        for attachment in attachments:
+        for external_id, attachment in self._comment_attachment_ids(comment_id, attachments):
             try:
-                # Extract filename to check for duplicates
-                file_url = None
-                if "file" in attachment:
-                    file_obj = attachment["file"]
-                    if isinstance(file_obj, dict):
-                        file_url = file_obj.get("url", "")
-
-                if not file_url:
-                    continue
-
-                # Extract and normalize filename
-                parsed_url = urlparse(file_url)
-                path = unquote(parsed_url.path)
-                url_filename = path.split("/")[-1] if "/" in path else ""
-                file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
-                normalized_filename = self._normalize_filename_for_id(file_name)
-
-                # Skip if we've already seen this normalized filename for this comment
-                if normalized_filename in seen_filenames:
-                    self.logger.debug(
-                        f"Skipping duplicate comment attachment: {normalized_filename} "
-                        f"for comment {comment_id}"
-                    )
-                    continue
-
-                # Create FileRecord
                 file_record = await self._transform_to_comment_file_record(
-                    attachment, comment_id, page_id, page_url
+                    attachment, comment_id, page_id, page_url, external_id=external_id
                 )
                 if file_record:
                     file_records.append(file_record)
-                    seen_filenames.add(normalized_filename)
                     # Link to the record sync stored, not to this freshly built one, whose id
                     # exists nowhere. Not synced yet: no link.
                     stored = await self.get_record_by_external_id(file_record.external_record_id)
@@ -4710,15 +4665,9 @@ class NotionConnector(BaseConnector):
                 return None
 
             # Extract or generate file name
-            file_name = type_data.get("name", "")
+            file_name = type_data.get("name", "") or unquote(urlparse(file_url).path.rsplit("/", 1)[-1])
             if not file_name:
-                if block_type == "pdf":
-                    file_name = "document.pdf"  # Default for PDFs
-                else:
-                    # Extract from URL
-                    file_name = file_url.split("/")[-1].split("?")[0]
-                    if not file_name:
-                        file_name = f"attachment_{block_id[:8]}"
+                file_name = "document.pdf" if block_type == "pdf" else f"attachment_{block_id[:8]}"
 
             # Determine extension and MIME type
             extension = file_name.split(".")[-1].lower() if "." in file_name else None
@@ -4778,9 +4727,11 @@ class NotionConnector(BaseConnector):
         page_id: str,
         page_url: Optional[str] = None,
         revision: str | None = None,
+        external_id: str | None = None,
     ) -> Optional[FileRecord]:
         """
-        Create FileRecord from a comment attachment. ``revision``: the comment's last_edited_time.
+        Create FileRecord from a comment attachment. ``revision``: the comment's last_edited_time;
+        ``external_id``: from ``_comment_attachment_ids`` (default: the first file of its name).
 
         Args:
             attachment: Attachment dict from Notion comment
@@ -4813,30 +4764,22 @@ class NotionConnector(BaseConnector):
             # Normalize filename for external_record_id
             normalized_filename = self._normalize_filename_for_id(file_name)
 
-            # Determine MIME type
-            category = attachment.get("category", "")
-            mime_type = MimeTypes.BIN.value
-
-            if category:
-                category_mime_map = {
-                    "productivity": MimeTypes.BIN.value,
+            # The file's own type first: Notion's category is coarse ("productivity" covers pdf,
+            # docx, csv, ...), so it is only the fallback for a name without a known extension.
+            mime_type, _ = mimetypes.guess_type(file_name)
+            if not mime_type:
+                mime_type = {
                     "image": MimeTypes.PNG.value,
                     "video": "video/mp4",
                     "audio": "audio/mpeg",
-                }
-                mime_type = category_mime_map.get(category, MimeTypes.BIN.value)
-            else:
-                guessed_type, _ = mimetypes.guess_type(file_url)
-                if guessed_type:
-                    mime_type = guessed_type
+                }.get(attachment.get("category", ""), MimeTypes.BIN.value)
 
             # Extract extension
             extension = ""
             if file_name and "." in file_name:
                 extension = file_name.split(".")[-1]
 
-            # Use normalized filename in external_record_id format: ca_{comment_id}_{normalized_filename}
-            file_id = f"ca_{comment_id}_{normalized_filename}"
+            file_id = external_id or f"ca_{comment_id}_{normalized_filename}"
 
             file_record = FileRecord(
                 org_id=self.data_entities_processor.org_id,
@@ -4865,6 +4808,33 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error creating FileRecord from comment attachment: {e}")
             return None
+
+    @staticmethod
+    def _attachment_file_name(attachment: dict[str, Any]) -> str | None:
+        """A comment attachment's file name: the URL path's last segment, else its name."""
+        file_url = ((attachment.get("file") or {}).get("url")) if isinstance(attachment.get("file"), dict) else None
+        if not file_url:
+            return None
+        path = unquote(urlparse(file_url).path)
+        url_filename = path.split("/")[-1] if "/" in path else ""
+        return url_filename or attachment.get("name") or "attachment"
+
+    def _comment_attachment_ids(self, comment_id: str, attachments: list[dict[str, Any]]
+                                ) -> list[tuple[str, dict[str, Any]]]:
+        """(external id, attachment) for each attachment of a comment that has a file. The first file of a name
+        is ``ca_{comment}_{name}``; a later file of the same name is ``ca_{comment}_{name}~{n}``, so two different
+        files never collapse into one record and the first keeps the id it always had."""
+        out: list[tuple[str, dict[str, Any]]] = []
+        seen: dict[str, int] = {}
+        for attachment in attachments or []:
+            file_name = self._attachment_file_name(attachment)
+            if not file_name:
+                continue
+            normalized = self._normalize_filename_for_id(file_name)
+            seen[normalized] = seen.get(normalized, 0) + 1
+            suffix = f"~{seen[normalized]}" if seen[normalized] > 1 else ""
+            out.append((f"ca_{comment_id}_{normalized}{suffix}", attachment))
+        return out
 
     def _normalize_filename_for_id(self, filename: str) -> str:
         """

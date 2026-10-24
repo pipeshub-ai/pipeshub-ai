@@ -30,7 +30,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
   order 11 TC-DS-003      — data source at workspace root (parent None)
   order 12 TC-FILE-001    — block attachments (file / pdf)
   order 13 TC-FILE-002    — image / embed / bookmark are NOT FileRecords
-  order 14 TC-FILE-003    — comment attachment + per-comment filename dedup
+  order 14 TC-FILE-003    — comment attachments, two files of one name stay two records
   order 15 TC-TITLE-001   — title extraction (standard / Name / fallback)
   order 16 TC-STREAM-001  — page BlocksContainer snapshot + recursion
   order 17 TC-STREAM-002  — image base64 + SVG→PNG
@@ -752,10 +752,10 @@ class TestNotionRecordProperties:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILE-003: comment attachments sync as ``ca_{comment_id}_{filename}``, deduped.
+        """TC-FILE-003: comment attachments sync as ``ca_{comment_id}_{filename}``.
 
-        The seeded comment carries the SAME filename twice, so the connector's per-comment
-        normalized-filename dedup must collapse them into one record.
+        The seeded comment carries two files of the SAME name: they are two records, the first
+        ``ca_{comment_id}_{filename}`` and the second ``ca_{comment_id}_{filename}~2``.
         """
         connector_id = notion_connector["connector_id"]
 
@@ -774,7 +774,7 @@ class TestNotionRecordProperties:
         attachments = source_comment.get("attachments") or []
         assert len(attachments) >= 2, (
             f"expected 2 same-named attachments on the comment, got {len(attachments)} — "
-            "the dedup assertion below would be vacuous"
+            "the same-name assertion below would be vacuous"
         )
 
         expected = NotionExpected.comment_file_record(
@@ -787,15 +787,16 @@ class TestNotionRecordProperties:
         assert str(actual.parent_external_record_id) == notion_seed.commented_page_id
         assert actual.is_file is True
 
-        # Dedup: exactly one FileRecord for this comment despite two attachments.
+        # Two files of one name: two records, not one.
         comment_files = {
             fid for fid in await scoped_external_ids(
                 graph_provider, connector_id, RecordType.FILE.value
             )
             if fid.startswith(f"ca_{notion_seed.attachment_comment_id}_")
         }
-        assert len(comment_files) == 1, (
-            f"expected 1 deduped comment attachment record, got {sorted(comment_files)}"
+        first = notion_seed.comment_attachment_external_id
+        assert comment_files == {first, f"{first}~2"}, (
+            f"expected the two same-named attachments as two records, got {sorted(comment_files)}"
         )
         logger.info("TC-FILE-003 passed")
 

@@ -91,8 +91,8 @@ SAMPLE_FILE_FIXTURES: tuple[tuple[str, str, str], ...] = (
     ("sets/1/report.pdf", "application/pdf", "pdf"),
 )
 
-# Comment attachment source. The same file is attached twice to one comment, which exercises
-# the connector's normalized-filename dedup.
+# Comment attachment source. The same file is attached twice to one comment: two files of one
+# name, which must stay two records.
 COMMENT_ATTACHMENT_SAMPLE_PATH = "sets/1/report.pdf"
 COMMENT_ATTACHMENT_FILENAME = "report.pdf"
 
