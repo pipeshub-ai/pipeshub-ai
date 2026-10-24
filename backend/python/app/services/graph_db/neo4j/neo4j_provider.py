@@ -19976,7 +19976,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         state = await self._kh_listing_state_ready()
         lists_placeholders = self._kh_lists_placeholders(flatten=flatten, filters=filters)
         name_matches: list[str] | None = None
-        if start_is_app and flatten and filters.get("search_query"):
+        # The name-first scope places matches without counting hops, so a depth-bounded
+        # flatten takes the full walk, which applies the bound.
+        if start_is_app and flatten and filters.get("search_query") and max_depth >= 50:
             search = filters["search_query"]
             # Shared: a global search runs one page per connector at once, and the
             # names are matched across the org.

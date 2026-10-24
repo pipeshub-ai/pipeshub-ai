@@ -73,6 +73,7 @@ async def search_page(
     access: dict[str, Any] | None = None,
     max_concurrency: int | None = DEFAULT_MAX_CONCURRENCY,
     limit_apps: list[str] | None = None,
+    max_depth: int = 50,
 ) -> SearchPage:
     """Assemble one page. A bad cursor raises `CursorError`; the caller answers 400.
 
@@ -128,7 +129,7 @@ async def search_page(
         after=cursor.boundary.as_after() if cursor else None,
         direction=direction, include_total=not reuse_total,
         max_concurrency=max_concurrency,
-        user_key=user_key, grants_read=grants_read,
+        user_key=user_key, grants_read=grants_read, max_depth=max_depth,
     )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
@@ -273,6 +274,7 @@ async def _run(
     max_concurrency: int | None,
     user_key: str | None = None,
     grants_read: dict[str, list[str]] | None = None,
+    max_depth: int = 50,
 ) -> list[dict[str, Any]]:
     """One page per connector. Any failure aborts the page. With ``grants_read``
     each page reads its connector's grants itself and leaves them there."""
@@ -298,6 +300,7 @@ async def _run(
                 include_total=include_total,
                 # Named once for the merged page, not once per connector.
                 name_parents=False,
+                max_depth=max_depth,
                 **own_grants,
             )
 

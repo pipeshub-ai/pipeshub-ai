@@ -106,12 +106,12 @@ export interface TurnViewer {
   orgId: string;
 }
 
-export const continueConversation = (
+export const continueConversation = async (
   filter: Record<string, unknown>,
   userMessage: IMessage,
   viewer: TurnViewer,
-): Promise<ContinuedConversation> =>
-  inShortTransaction(async (session) => {
+): Promise<ContinuedConversation> => {
+  const { conversation, rows } = await inShortTransaction(async (session) => {
     const conversation = await ChatSession.findOne(
       filter,
       null,
@@ -120,7 +120,7 @@ export const continueConversation = (
     if (!conversation) {
       throw new NotFoundError('Conversation not found');
     }
-    // Other users' turns reach the model only as this requester may read them.
+    // Read before the new question is appended, so the history is this turn's.
     const rows = (await getMessages(
       conversation._id as mongoose.Types.ObjectId,
       {
@@ -129,14 +129,6 @@ export const continueConversation = (
       },
       session,
     )) as Array<Record<string, unknown>>;
-    const initiator = conversation.initiator as
-      mongoose.Types.ObjectId | undefined;
-    const history = await redactMessagesFor(
-      viewer.appConfig,
-      rows,
-      initiator?.toString(),
-      { userId: viewer.userId, orgId: viewer.orgId },
-    );
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
@@ -148,11 +140,24 @@ export const continueConversation = (
     conversation.failReason = undefined;
     conversation.lastActivityAt = Date.now();
     await conversation.save(withSession(session));
-    return {
-      conversation,
-      previousConversations: formatPreviousConversations(history as IMessage[]),
-    };
+    return { conversation, rows };
   });
+  // Other users' turns reach the model only as this requester may read them. The
+  // access check is a network call, so it runs after the commit: inside, it would
+  // hold the transaction open and be repeated by every retry.
+  const initiator = conversation.initiator as
+    mongoose.Types.ObjectId | undefined;
+  const history = await redactMessagesFor(
+    viewer.appConfig,
+    rows,
+    initiator?.toString(),
+    { userId: viewer.userId, orgId: viewer.orgId },
+  );
+  return {
+    conversation,
+    previousConversations: formatPreviousConversations(history as IMessage[]),
+  };
+};
 
 const STATUS_CODE_NAMES: Record<number, string> = {
   400: 'BAD_REQUEST',

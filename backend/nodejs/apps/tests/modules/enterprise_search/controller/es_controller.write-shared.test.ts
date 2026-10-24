@@ -2,13 +2,13 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { appendMessages } from '../../../../src/modules/enterprise_search/utils/utils'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { conversationShareParamsSchema } from '../../../../src/modules/enterprise_search/validators/es_validators'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
-import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, fakeReplicaSetSession, oid, settle } from './chat-test-harness'
 
 /**
  * Write-shared conversations, end to end against the in-memory store and a fake AI
@@ -197,6 +197,38 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       expect(json, 'B’s own turn is whole').to.include(B_CHUNK)
       expect(w.ai.calls.find((c) => /\/api\/v1\/chat$/.test(c.url))?.headers.authorization).to.equal('Bearer token-B')
       expect(String(w.messages().at(-1)!.authorUserId)).to.equal(String(B))
+    })
+  })
+
+  describe('on a replica set', () => {
+    it('checks access for the history after the question is committed, not inside the transaction', async () => {
+      const previous = process.env.REPLICA_SET_AVAILABLE
+      process.env.REPLICA_SET_AVAILABLE = 'true'
+      try {
+        const w = world()
+        const session = fakeReplicaSetSession()
+        // How many AI-service calls had been made when each transaction committed.
+        const committedAt: number[] = []
+        session.withTransaction = (async (fn: () => Promise<unknown>) => {
+          const out = await fn()
+          committedAt.push(w.ai.calls.length)
+          return out
+        }) as never
+        sinon.stub(mongoose, 'startSession').resolves(session as never)
+        w.ai.reply(/\/api\/v1\/chat$/, 200, { answer: `Layoffs are planned ${B1}.`, citations: [bCitation], confidence: 'High' })
+        const res = new FakeSSEResponse()
+        const next = sinon.stub()
+        await (controller.addMessage(appConfig) as Handler)(requestFor(B, { conversationId: w.chatId }, { query: 'B asks' }), res as never, next as never)
+        await settle()
+
+        expect(next.firstCall?.args[0]).to.equal(undefined)
+        const firstAccess = w.ai.calls.findIndex((c) => /\/chat\/records\/access$/.test(c.url))
+        expect(firstAccess, 'the history was checked').to.be.greaterThan(-1)
+        expect(firstAccess, 'no access check inside the first transaction').to.be.at.least(committedAt[0]!)
+      } finally {
+        if (previous === undefined) delete process.env.REPLICA_SET_AVAILABLE
+        else process.env.REPLICA_SET_AVAILABLE = previous
+      }
     })
   })
 

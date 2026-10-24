@@ -10947,7 +10947,6 @@ components:
         accessLevel:
           type: string
           enum: [read, write]
-          default: read
           description: |
             Permission level for shared users:
 
@@ -39412,8 +39411,10 @@ paths:
 
         Sharing is additive (existing recipients are kept) and idempotent. The
         recipients are also granted read access to the conversation's artifacts
-        and chat attachments. Recipients see the full transcript, including
-        citations and tool output, as the owner sees it.
+        and chat attachments. Recipients see the transcript redacted for
+        them: a source they cannot read is redacted (see `MessageRedaction`),
+        and tool output, reasoning and the activity transcript of a turn are
+        shown only to the user it was generated for.
       operationId: shareAgentConversation
       x-pipeshub-sdk: false
       security:
