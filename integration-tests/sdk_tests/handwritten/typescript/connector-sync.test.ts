@@ -38,8 +38,11 @@ test("Handwritten Connector Sync", async () => {
   });
   const connectorId = created.connector.connectorId;
   try {
-    // RSS has no auth, so it has no filter options, and it cannot resync before it is enabled.
-    await expectStatus(pipeshub.connectorFilters.getConnectorFilters({ connectorId }), 400);
+    // RSS needs no auth and defines no filters, so it answers with no filter options, and
+    // it cannot resync before it is enabled.
+    const filters = await pipeshub.connectorFilters.getConnectorFilters({ connectorId });
+    expect(filters.success).toBe(true);
+    expect(filters.filterOptions).toEqual({});
     await expectStatus(
       pipeshub.connectorFilters.getFilterFieldOptions({
         connectorId,
