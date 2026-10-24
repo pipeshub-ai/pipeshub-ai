@@ -60,7 +60,7 @@ _IMAGE_TYPES = {"png": ("png", "image/png"), "jpeg": ("jpg", "image/jpeg"),
                 "jpg": ("jpg", "image/jpeg"), "webp": ("webp", "image/webp")}
 _DATA_URI = re.compile(r"^data:image/([a-z0-9.+-]+);base64,", re.IGNORECASE)
 # The storage service accepts a revision id of 8 to 64 lowercase hex digits.
-_REV = re.compile(r"^[0-9a-f]{8,64}$")
+REV_PATTERN = re.compile(r"^[0-9a-f]{8,64}$")
 
 
 def canonical_json(obj: Any) -> bytes:  # noqa: ANN401 - free-form content
@@ -264,7 +264,7 @@ class ArtifactWriter:
         """
         if not artifact_writes_available():
             return None
-        if not _REV.match(rev):
+        if not REV_PATTERN.match(rev):
             raise ValueError("revision is not 8 to 64 lowercase hex digits")
         # Off the event loop: encoding and hashing a large record takes a while.
         built = await asyncio.to_thread(

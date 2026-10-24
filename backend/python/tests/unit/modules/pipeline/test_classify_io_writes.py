@@ -285,3 +285,108 @@ async def test_classification_and_entities_are_written_under_the_jobs_virtual_re
     )
     await entities.save(_job("entities"), ["rec-1"], _extraction())
     assert seen == ["vr-1", "vr-1"]
+
+
+class _Sidecars:
+    """Records each sidecar write with whether the record's lease was held and how many stored
+    record writes had landed by then."""
+
+    def __init__(self, manager: _Leases, blob: _Blob) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._manager, self._blob = manager, blob
+
+    async def write(
+        self, org_id: str, virtual_record_id: str, rev: str | None, name: str, version: int, payload: dict[str, Any],
+    ) -> bool:
+        self.calls.append({
+            "at": (org_id, virtual_record_id, rev, name, version), "payload": payload,
+            "held": "record:rec-1" in self._manager.held, "saves": self._blob.saves,
+        })
+        return True
+
+
+def _with_sidecars(
+    blob: _Blob, *, rev: str = "rev-a", entities: bool = False, sink: MagicMock | None = None,
+) -> tuple[GraphClassifyIO | GraphEntitiesIO, _Sidecars]:
+    leases, manager = _bound_leases()
+    sidecars = _Sidecars(manager, blob)
+    common: dict[str, Any] = {
+        "policy": DEFAULT_POLICY, "graph": _graph(rev), "blob_storage": blob, "sink": sink or _sink(),
+        "config_service": MagicMock(), "record_from_document": _record, "record_leases": leases,
+        "sidecars": sidecars,
+    }
+    if entities:
+        return GraphEntitiesIO(_job("entities"), Deadline(30), **common), sidecars
+    return GraphClassifyIO(_job(), Deadline(30), classifier=AsyncMock(), **common), sidecars
+
+
+@pytest.mark.asyncio
+async def test_classify_files_its_sidecar_under_the_lease_after_the_stored_record() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io, sidecars = _with_sidecars(blob)
+    metadata = SemanticMetadata(summary="s", topics=["VPN"], named_entities={"entities": []})
+
+    await io.save(_job(), ["rec-1"], metadata)  # type: ignore[arg-type]
+
+    [call] = sidecars.calls
+    assert call["at"] == ("org-1", "vr-1", "rev-a", "classification", 1)
+    assert call["held"] is True and call["saves"] == 1
+    assert call["payload"] == metadata.model_dump(mode="json", exclude={"named_entities"})
+
+
+@pytest.mark.asyncio
+async def test_classify_files_no_sidecar_when_the_stored_record_was_not_written() -> None:
+    superseded_blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io, superseded = _with_sidecars(superseded_blob, rev="rev-b")
+    with pytest.raises(RevisionSuperseded):
+        await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
+
+    io, missing = _with_sidecars(_Blob(None))
+    with pytest.raises(StoredRecordMissing):
+        await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
+
+    failing_blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    failing_blob.save_semantic_metadata = AsyncMock(side_effect=RuntimeError("storage down"))
+    io, failed = _with_sidecars(failing_blob)
+    with pytest.raises(RuntimeError):
+        await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
+
+    assert superseded.calls == missing.calls == failed.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_restored_classification_files_its_sidecar_for_the_jobs_revision() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io, sidecars = _with_sidecars(blob)
+
+    async def superseded() -> bool:
+        return False
+
+    with pytest.raises(RevisionSuperseded):
+        await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"), still_current=superseded)  # type: ignore[union-attr]
+    assert sidecars.calls == []
+
+    await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))  # type: ignore[union-attr]
+    [call] = sidecars.calls
+    assert call["at"] == ("org-1", "vr-1", "rev-a", "classification", 1)
+    assert call["held"] is True and call["saves"] == 1 and call["payload"]["summary"] == "kept"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("outcome", "filed"), [("written", True), ("kept", False), ("disabled", False), ("failed", False)])
+async def test_entities_files_its_sidecar_only_for_a_written_extraction(outcome: str, filed: bool) -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    sink = _sink()
+    sink.persist_named_entities = AsyncMock(return_value=outcome)
+    io, sidecars = _with_sidecars(blob, entities=True, sink=sink)
+    extraction = _extraction()
+
+    assert await io.save(_job("entities"), ["rec-1"], extraction) == outcome  # type: ignore[arg-type]
+
+    if not filed:
+        assert sidecars.calls == []
+        return
+    [call] = sidecars.calls
+    assert call["at"] == ("org-1", "vr-1", "rev-a", "entities", 1)
+    assert call["held"] is True and call["payload"] == extraction.model_dump(mode="json")
+    assert blob.saves == 0

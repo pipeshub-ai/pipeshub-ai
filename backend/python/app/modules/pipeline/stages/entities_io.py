@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import BlocksContainer
+from app.modules.artifacts.sidecars import ENTITIES, ArtifactSidecars
 from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
@@ -49,6 +50,7 @@ class GraphEntitiesIO(RecordStageIO):
         record_leases: RecordLeases,
         extraction_client: "ExtractionClient | None" = None,
         logger: logging.Logger | None = None,
+        sidecars: ArtifactSidecars | None = None,
     ) -> None:
         super().__init__(
             job,
@@ -62,6 +64,7 @@ class GraphEntitiesIO(RecordStageIO):
         self._sink = sink
         self._config_service = config_service
         self._extraction_client = extraction_client
+        self._sidecars = sidecars
         self._logger = logger or logging.getLogger(__name__)
         self._enabled: bool | None = None
 
@@ -113,6 +116,13 @@ class GraphEntitiesIO(RecordStageIO):
         # moving on is the job's (RevisionSuperseded), a bound record's is skipped.
         async with self._holding(job, owner):
             await persist(owner)
+            # Only an extraction the graph now holds: a kept, failed or turned-off run leaves
+            # the revision's entities as they were, so it has no new output to file.
+            if outcomes.get(owner) == "written" and self._sidecars is not None:
+                _ = await self._sidecars.write(
+                    job.org_id, job.virtual_record_id, job.rev, ENTITIES, job.stage_version,
+                    extraction.model_dump(mode="json"),
+                )
         for record_id in record_ids[1:]:
             _ = await self._for_bound_record(job, record_id, lambda rid=record_id: persist(rid))
         outcome = outcomes.get(owner, "kept")

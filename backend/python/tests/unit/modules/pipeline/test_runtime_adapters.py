@@ -9,6 +9,7 @@ import pytest
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import SemanticMetadata
 from app.models.entities import Record
+from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.pipeline.leases import RecordLeases
 from app.modules.pipeline.models import RETRYABLE_STAGES, Priority, StageJob
 from app.modules.pipeline.policy import DEFAULT_POLICY
@@ -168,3 +169,11 @@ def test_every_retryable_stage_is_registered_with_the_status_field_the_api_selec
     registry = _runtime().registry
     for name, field in RETRYABLE_STAGES.items():
         assert registry.get(name).headline is field
+
+
+def test_both_stages_file_their_sidecars_through_one_store() -> None:
+    runtime = _runtime()
+    classify = runtime.handler._io_for(_job(), Deadline(30))
+    entities = runtime.handler._io_for(_job(stage="entities"), Deadline(30))
+    assert isinstance(classify._sidecars, ArtifactSidecars)  # type: ignore[attr-defined]
+    assert classify._sidecars is entities._sidecars  # type: ignore[attr-defined]

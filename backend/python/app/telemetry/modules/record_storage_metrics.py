@@ -15,10 +15,12 @@ def record_rejected_too_large(status: int) -> None:
 
 
 # outcome: written (manifest stored), failed (indexing went on without it),
-# unavailable (the storage service has no artifact routes).
+# unavailable (the storage service has no artifact routes); and for a stage's
+# enrichment sidecar of a revision, sidecar_written, sidecar_failed and
+# sidecar_unavailable.
 ARTIFACT_WRITES = METRICS_BACKEND.counter(
     "pipeshub_record_artifact_writes_total",
-    "Content revisions indexing tried to store as artifact sets, by outcome",
+    "Content revisions indexing tried to store as artifact sets, and their enrichment sidecars, by outcome",
     ["outcome"],
 )
 

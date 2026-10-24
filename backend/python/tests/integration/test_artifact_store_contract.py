@@ -21,7 +21,7 @@ import logging
 import os
 import uuid
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,10 +29,12 @@ from app.config.constants.arangodb import Connectors
 from app.config.constants.service import Routes, config_node_constants
 from app.models.blocks import Block, BlocksContainer, BlockType, ImageMetadata
 from app.models.entities import Record, RecordType
+from app.modules.artifacts import sidecars as sidecars_module
 from app.modules.artifacts import store as store_module
 from app.modules.artifacts.models import MANIFEST_PATH
+from app.modules.artifacts.sidecars import ArtifactSidecars, sidecar_path
 from app.modules.artifacts.store import NodeArtifactStore
-from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.artifacts.writer import ArtifactWriter, canonical_json
 from app.modules.transformers.blob_storage import (
     BlobStorage,
     close_shared_session,
@@ -189,3 +191,27 @@ async def test_the_stored_record_uploads_through_its_signed_url(blob: BlobStorag
             body = await response.read()
     assert json.loads(body)["record"]["record_name"] == "contract"
     assert await blob.purge_virtual_record_documents(ORG_ID, vrid) == 1
+
+
+async def test_a_sidecar_lands_in_its_revisions_document(blob: BlobStorage) -> None:
+    vrid = str(uuid.uuid4())
+    rev = uuid.uuid4().hex[:16]
+    record = _record(vrid, [Block(index=0, type=BlockType.TEXT, data="one paragraph")])
+    store = NodeArtifactStore(blob, logger)
+    written = await ArtifactWriter(store, logger).write_revision(record, ORG_ID, vrid, rev, record.block_containers)
+    assert written is not None
+    payload = {"summary": "a contract", "topics": ["Renewal", "Ünïcode"]}
+
+    with patch.object(sidecars_module, "is_artifact_write_enabled", AsyncMock(return_value=True)):
+        assert await ArtifactSidecars(store, MagicMock(), logger).write(
+            ORG_ID, vrid, rev, "classification", 1, payload,
+        ) is True
+
+    path = sidecar_path("classification", 1)
+    document_id = written.manifest_ref.document_id
+    urls = await store.read_urls(ORG_ID, document_id, [path, MANIFEST_PATH])
+    assert await store.get(urls[path]) == canonical_json(payload)
+    # Beside the revision, not in it: the manifest is unchanged.
+    assert json.loads(await store.get(urls[MANIFEST_PATH]))["artifacts"].keys() == written.manifest.artifacts.keys()
+    assert [r["documentId"] for r in await store.list_revisions(ORG_ID, vrid)] == [document_id]
+    assert await store.delete_revision(ORG_ID, document_id) == 1
