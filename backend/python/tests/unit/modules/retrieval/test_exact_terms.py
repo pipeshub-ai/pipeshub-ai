@@ -5,6 +5,7 @@ import pytest
 from app.modules.retrieval import exact_terms
 from app.modules.retrieval.exact_terms import (
     EXACT_TEXT_SEARCH_GATE_ENV_VAR,
+    exact_text_search_called_for,
     exact_text_search_gated,
     exact_text_search_wanted,
     has_exact_terms,
@@ -140,3 +141,14 @@ def test_with_the_gate_on_an_anchor_or_the_agent_asks(monkeypatch: pytest.Monkey
     assert not exact_text_search_wanted("how do we handle refunds")
     assert exact_text_search_wanted("rollback plan for PAY-4312")
     assert exact_text_search_wanted("how do we handle refunds", exact_match=True)
+
+
+def test_a_query_calls_for_it_by_asking_or_by_an_anchor_under_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the gate off every search runs it, so an anchor alone calls for nothing more."""
+    monkeypatch.delenv(EXACT_TEXT_SEARCH_GATE_ENV_VAR, raising=False)
+    assert not exact_text_search_called_for("rollback plan for PAY-4312")
+    assert exact_text_search_called_for("how do we handle refunds", exact_match=True)
+    monkeypatch.setenv(EXACT_TEXT_SEARCH_GATE_ENV_VAR, "true")
+    assert exact_text_search_called_for("rollback plan for PAY-4312")
+    assert not exact_text_search_called_for("how do we handle refunds")
+    assert not exact_text_search_called_for(None)

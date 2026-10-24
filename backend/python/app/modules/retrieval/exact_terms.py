@@ -152,15 +152,23 @@ def exact_text_search_gated() -> bool:
     return env_bool(EXACT_TEXT_SEARCH_GATE_ENV_VAR, False)
 
 
+def exact_text_search_called_for(query: str | None, *, exact_match: bool = False) -> bool:
+    """Whether a search for ``query`` needs its exact-text pass, not merely
+    runs it as every search does with the gate off: the agent asked
+    (``exact_match``), or the gate is on and the query holds an exact anchor."""
+    return exact_match or (exact_text_search_gated() and has_exact_terms(query))
+
+
 def exact_text_search_wanted(query: str | None, *, exact_match: bool = False) -> bool:
     """Whether a search for ``query`` runs its exact-text pass: always with
     the gate off; with it on, when the agent asked (``exact_match``) or the
     query holds an exact anchor."""
-    return not exact_text_search_gated() or exact_match or has_exact_terms(query)
+    return not exact_text_search_gated() or exact_text_search_called_for(query, exact_match=exact_match)
 
 
 __all__ = [
     "EXACT_TEXT_SEARCH_GATE_ENV_VAR",
+    "exact_text_search_called_for",
     "exact_text_search_gated",
     "exact_text_search_wanted",
     "has_exact_terms",

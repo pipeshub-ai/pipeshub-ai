@@ -65,7 +65,10 @@ from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
-from app.modules.retrieval.exact_terms import exact_text_search_wanted
+from app.modules.retrieval.exact_terms import (
+    exact_text_search_called_for,
+    exact_text_search_wanted,
+)
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.result_merging import (
     CollectionResults,
@@ -504,15 +507,16 @@ async def execute_search(
     ``exact_match`` runs the exact-text pass whatever the query looks like
     (``exact_text_search_wanted``).
 
-    Without a scope or ``exact_match``, dates over a span longer than a month
-    run the timeline tool's search instead
-    (``ops/timeline.automatic_timeline_search``), which has no exact-text pass.
+    Without a scope, dates over a span longer than a month run the timeline
+    tool's search instead (``ops/timeline.automatic_timeline_search``), unless
+    the query calls for the exact-text pass, which that search does not have
+    (``exact_text_search_called_for``).
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
     (``ops/outside_dates``).
     """
-    if scope_virtual_record_ids is None and not exact_match:
+    if scope_virtual_record_ids is None and not exact_text_search_called_for(query, exact_match=exact_match):
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
