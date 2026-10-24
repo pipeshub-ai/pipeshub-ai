@@ -46,6 +46,14 @@ on:
       - 'backend/python/app/connectors/sources/github/**'
       - 'backend/python/app/sources/external/github/**'
       - 'backend/python/app/sources/client/github/**'
+      # The GitLab connector end to end against a simulated GitLab
+      # (tests/integration/gitlab_simulated): any change to the connector or its clients.
+      - 'backend/python/tests/integration/gitlab_simulated/**'
+      - 'backend/python/app/connectors/sources/gitlab/**'
+      - 'backend/python/app/connectors/sources/gitlab_personal/**'
+      - 'backend/python/app/sources/external/gitlab/**'
+      - 'backend/python/app/sources/client/gitlab/**'
+      - 'backend/python/app/modules/parsers/code_parser/**'
       - 'backend/python/app/connectors/core/base/sync_point/**'
       - 'backend/python/app/connectors/core/registry/filters.py'
       - 'backend/python/pyproject.toml'
@@ -119,6 +127,19 @@ jobs:
             compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
             services: arango-graph-it redis-messaging-it qdrant-vector-it
             discover: NEO4J_IT_URI|ARANGO_IT_URL
+            select: arango
+          # A job of its own: inside the graph jobs it would take them past their timeout.
+          - suite: gitlab
+            backend: neo4j
+            compose: docker-compose.integration.graph-db.yml
+            services: neo4j-graph-it
+            tests: tests/integration/gitlab_simulated
+            select: neo4j
+          - suite: gitlab
+            backend: arangodb
+            compose: docker-compose.integration.graph-db.yml
+            services: arango-graph-it
+            tests: tests/integration/gitlab_simulated
             select: arango
           - suite: kv
             backend: etcd
@@ -206,9 +227,10 @@ jobs:
           import xml.etree.ElementTree as ET
 
           root = ET.parse(os.environ["REPORT"]).getroot()
-          suite = root if root.tag == "testsuite" else root.find("testsuite")
-          tests = int(suite.get("tests", 0))
-          skipped = int(suite.get("skipped", 0))
+          cases = list(root.iter("testcase"))
+          tests = len(cases)
+          # A strict xfail ran (a known gap, documented in its marker); junit files it as a skip.
+          skipped = sum(1 for c in cases for s in c.findall("skipped") if s.get("type") != "pytest.xfail")
           if tests == 0 or skipped:
               print(
                   f"::error::{tests} collected, {skipped} skipped. Each skip "

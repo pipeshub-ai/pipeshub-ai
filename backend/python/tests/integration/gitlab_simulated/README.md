@@ -19,9 +19,9 @@ cd backend/python && pytest tests/integration/gitlab_simulated -m integration
 GITLAB_SIM_TRASH=1 pytest tests/integration/gitlab_simulated -m integration   # with the trash on
 ```
 
-CI: `.github/workflows/gitlab-simulated.yml` runs it on both stores, with the trash on
-and off, on pull requests that touch the connector or the platform code under it, and
-nightly on main. Any skip fails that job.
+CI: `backend-matrix` runs it on both stores (the `gitlab` jobs, trash off) on pull
+requests that touch the connector, its clients or the platform code under it, and
+nightly on main. Any skip fails the job; the strict expected failure does not.
 
 Where each simulated behaviour comes from (docs, GitLab's source, live checks) is listed
 in `SOURCES.md`, with the confidence of each. When the connector starts using a field or
