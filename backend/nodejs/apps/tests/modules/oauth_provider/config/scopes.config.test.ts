@@ -37,6 +37,17 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(getAllowedScopeNamesForRole(false)).to.include('code:read')
   })
 
+  // The MCP write tools create collections and upload into them. The agent
+  // preset grants that, never delete; and every preset scope must also be in
+  // the stock MCP_SCOPES, or Dynamic Client Registration with the default
+  // scope set fails with "scope is not in MCP_SCOPES".
+  it('the agent preset can create and upload, not delete, and stays inside MCP_SCOPES', () => {
+    expect(AgentMcpScopes).to.include.members(['kb:write', 'kb:upload'])
+    expect(AgentMcpScopes).to.not.include('kb:delete')
+    expect(DefaultMcpScopes).to.include.members([...AgentMcpScopes])
+    expect(getAllowedScopeNamesForRole(false)).to.include.members(['kb:write', 'kb:upload'])
+  })
+
   it('getScopesGroupedByCategoryForRole filters admin-only scopes for non-admin', () => {
     const grouped = getScopesGroupedByCategoryForRole(false)
     const flat = Object.values(grouped).flat()
