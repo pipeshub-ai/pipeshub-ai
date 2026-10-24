@@ -891,7 +891,7 @@
     "toolCard": {
       "arguments": "Arguments",
       "query": "Query",
-      "queryCutOff": "… [truncated]",
+      "queryCutOff": "Only the start of this query was kept, so it can't be copied.",
       "result": "Result",
       "error": "Error",
       "blocked": "Blocked",

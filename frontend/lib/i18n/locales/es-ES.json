@@ -903,7 +903,7 @@
     "toolCard": {
       "arguments": "Argumentos",
       "query": "Consulta",
-      "queryCutOff": "… [truncado]",
+      "queryCutOff": "Solo se guardó el principio de esta consulta, así que no se puede copiar.",
       "result": "Resultado",
       "error": "Error",
       "blocked": "Bloqueado",

@@ -152,4 +152,11 @@ describe('extractSqlQuery', () => {
       cutOff: false,
     });
   });
+
+  it("flags a query the server shortened, without the server's note", () => {
+    expect(extractSqlQuery('sql__execute_sql_query', args('SELECT id -- note… [truncated, 1200 of 5000 chars]'))).toEqual({
+      text: 'SELECT id -- note',
+      cutOff: true,
+    });
+  });
 });

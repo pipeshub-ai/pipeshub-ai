@@ -963,13 +963,19 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
           <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
             {t('chat.toolCard.query')}
           </Text>
-          {/* The marker stays in the code, so a copied cut-off query fails instead of running as a prefix. */}
+          {/* No copy or download for a cut-off query: it can still run, e.g. when the cut falls in a `--` comment. */}
           <CodeBlock
             language="sql"
-            codeText={sqlQuery.cutOff ? `${sqlQuery.text}${t('chat.toolCard.queryCutOff')}` : sqlQuery.text}
+            codeText={sqlQuery.text}
+            actions={!sqlQuery.cutOff}
             maxHeight="260px"
             style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
           />
+          {sqlQuery.cutOff && (
+            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+              {t('chat.toolCard.queryCutOff')}
+            </Text>
+          )}
         </Box>
       )}
       {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content
