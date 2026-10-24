@@ -319,6 +319,7 @@ class KnowledgeHubService:
         user_id: str,
         org_id: str,
         want_counts: bool,
+        limit_apps: list[str] | None = None,
     ) -> SearchPage:
         """A single-partition listing (root or scoped) as a page, with its cursors.
 
@@ -368,6 +369,7 @@ class KnowledgeHubService:
                     mode=mode,
                     user_id=user_id,
                     org_id=org_id,
+                    limit_apps=limit_apps,
                 ),
                 secret,
             )
@@ -404,6 +406,7 @@ class KnowledgeHubService:
         access: dict[str, list[str]],
         excluded: frozenset[str] = frozenset(),
         within: frozenset[str] | None = None,
+        limit_apps: list[str] | None = None,
     ) -> tuple[SearchPage, dict[str, Any] | None]:
         """One page of a listing or search, plus the `scope` a scoped request carries.
 
@@ -425,8 +428,14 @@ class KnowledgeHubService:
             # A cursor carries the total it was first counted with. One issued
             # to a listing that was not narrowed to the same Apps would report
             # rows outside them in that total.
-            issued_apps = (issued.filters or {}).get("connector_ids") or ()
+            issued_filters = issued.filters or {}
+            issued_apps = issued_filters.get("connector_ids") or ()
             if within is not None and (not issued_apps or not set(issued_apps) <= within):
+                raise BrowseRequestError("Invalid cursor: issued for a different listing", 400)
+            # The Apps it may page over can be a filter's subset of the limit,
+            # so the limit itself is compared: a smaller limit's cursor would
+            # resume, and report its total, over a larger one.
+            if issued.limit_apps != limit_apps:
                 raise BrowseRequestError("Invalid cursor: issued for a different listing", 400)
             flatten = _flatten_for_cursor(issued.mode, request_flatten=flatten)
         sort_field = self._sort_field(sort_by)
@@ -451,7 +460,7 @@ class KnowledgeHubService:
                     user_key=user_key, user_id=user_id, org_id=org_id,
                     limit=limit, sort_field=sort_field, sort_dir=sort_dir,
                     filters=filters, cursor_token=token, secret=secret,
-                    access=access,
+                    access=access, limit_apps=limit_apps,
                 )
             try:
                 global_page = await self._walk_pages(fetch_global, cursor, page)
@@ -529,7 +538,7 @@ class KnowledgeHubService:
                 envelope["partitions"][0], page_cursor, secret,
                 filters=active, sort_field=field, sort_dir=order,
                 parent_id=parent_id, parent_type=parent_type, mode=mode,
-                user_id=user_id, org_id=org_id, want_counts=want_counts,
+                user_id=user_id, org_id=org_id, want_counts=want_counts, limit_apps=limit_apps,
             )
 
         return await self._walk_pages(fetch_single, cursor, page), scope
@@ -749,7 +758,8 @@ class KnowledgeHubService:
                 within = frozenset(within_app_ids)
                 if connector_ids:
                     within &= frozenset(connector_ids)
-                # Carried in the cursor too, so a later page keeps to the same Apps.
+                # Carried in the cursor too, so a later page keeps to the same Apps,
+                # beside the limit they came from.
                 filters["connector_ids"] = sorted(within)
                 access = _only_apps(access, within)
             if parent_id is None:
@@ -785,6 +795,7 @@ class KnowledgeHubService:
                     want_counts=bool(include and 'counts' in include),
                     max_depth=max(1, depth) if depth else 50,
                     within=within,
+                    limit_apps=sorted(frozenset(within_app_ids)) if within is not None else None,
                 )
             except KnowledgeHubListingTooLarge as too_large:
                 # 422: the request is fine, the view is too wide; the message says to open a folder.
