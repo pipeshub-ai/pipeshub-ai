@@ -3830,7 +3830,7 @@ class JiraConnector(BaseConnector):
         allowed_keys, project_keys_operator = self._project_keys_filter()
         return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
 
-    def _project_keys_filter(self) -> tuple[Optional[list[str]], Optional[FilterOperatorType]]:
+    def _project_keys_filter(self) -> tuple[list[str] | None, FilterOperatorType | None]:
         """The project-keys sync filter's keys and operator (None, None without one)."""
         allowed_keys = None
         project_keys_operator = None
