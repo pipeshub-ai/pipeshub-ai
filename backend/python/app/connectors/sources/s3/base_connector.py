@@ -1050,7 +1050,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                         has_more = False
                         continue
 
-                    if continuation_token:
+                    # A saved token marks the pages before it done: their records are written first,
+                    # and after a failed object the token stays before it.
+                    if continuation_token and not failed.count:
+                        if batch_records:
+                            await self._save_records(*self._split_moves(batch_records, bucket_name))
+                            batch_records = []
                         await self.record_sync_point.update_sync_point(
                             sync_point_key,
                             {

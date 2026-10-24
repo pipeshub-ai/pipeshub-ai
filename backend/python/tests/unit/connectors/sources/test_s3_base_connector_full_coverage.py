@@ -1562,8 +1562,8 @@ class TestFailedObjectCheckpoint:
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
-        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
-        assert saved["continuation_token"] is None
+        saved = connector.record_sync_point.saved.get("FILE/bucket/b1", {})
+        assert saved.get("continuation_token") is None
         assert "last_sync_time" not in saved
 
     @pytest.mark.asyncio

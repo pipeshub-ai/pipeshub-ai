@@ -154,6 +154,73 @@ class TestChangesDuringTheListing:
         assert path("b.txt") in db.written
 
 
+class _WorkerStopped(BaseException):
+    """The worker stops midway, past every ``except Exception``."""
+
+
+def fail_second_token_write(checkpoints: FakeCheckpointStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sync point write for the second page's token fails, as if the database went down."""
+    tokens = 0
+    update = checkpoints.update_sync_point
+
+    async def update_sync_point(key: str, data: dict) -> None:
+        nonlocal tokens
+        if data.get("continuation_token"):
+            tokens += 1
+            if tokens == 2:
+                raise RuntimeError("database unavailable (update_sync_point)")
+        await update(key, data)
+
+    monkeypatch.setattr(checkpoints, "update_sync_point", update_sync_point)
+
+
+@pytest.mark.parametrize("kind", ["s3", "minio"])
+class TestResumeToken:
+    @pytest.mark.asyncio
+    async def test_records_buffered_before_a_saved_token_are_written_by_the_next_sync(
+        self, connector, store, db, checkpoints, monkeypatch,
+    ) -> None:
+        """A page's records sit in a part-full batch; the token after the page must not outlive them."""
+        connector.batch_size = 5
+        for key in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt"):
+            store.put(key)
+        with monkeypatch.context() as patch:
+            fail_second_token_write(checkpoints, patch)
+            with pytest.raises(RuntimeError):
+                await connector.run_sync()
+
+        await connector.run_sync()
+
+        assert {path("a.txt"), path("b.txt")} <= db.paths()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_object_is_retried_after_the_sync_is_stopped_midway(
+        self, connector, store, db, monkeypatch,
+    ) -> None:
+        for key in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt"):
+            store.put(key)
+        process = connector._process_s3_object
+
+        async def process_s3_object(obj: dict, bucket_name: str) -> tuple:
+            if obj.get("Key") == "b.txt":
+                raise RuntimeError("could not read b.txt")
+            return await process(obj, bucket_name)
+
+        def stop() -> None:
+            raise _WorkerStopped
+
+        store.before_page[2] = stop
+        with monkeypatch.context() as patch:
+            patch.setattr(connector, "_process_s3_object", process_s3_object)
+            with pytest.raises(BaseExceptionGroup) as stopped:
+                await connector.run_sync()
+        assert stopped.value.subgroup(_WorkerStopped)
+
+        await connector.run_sync()
+
+        assert path("b.txt") in db.paths()
+
+
 def test_a_resume_without_a_recorded_start_keeps_the_saved_bookmark() -> None:
     # A token saved before the start was recorded: the listing's start is unknown.
     assert listing_checkpoint(1_000_000_000_000, None) is None
