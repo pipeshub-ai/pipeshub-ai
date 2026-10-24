@@ -149,21 +149,48 @@ def reset_builtin_reconcile_state() -> None:
     _reconcile_tasks.clear()
 
 
-async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: str) -> None:
-    """Seeds/upgrades this org's copies of the in-repo builtin packs, at most
-    once per (org, pack versions) per process. Idempotent (the seeder upserts),
-    so concurrent workers converge; never raises — a failure is logged and
-    retried on the next call."""
+async def _reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
     seeder = get_builtin_seeder()
     if seeder is None or _is_reconciled(org_id, seeder):
         return
     seed_store = GraphSkillStore(graph_provider, org_id, SEED_IDENTITY)
     try:
-        await seeder.sync(seed_store)
+        settled = await seeder.sync(seed_store)
     except Exception:
         logger.exception("skills: builtin skill seeding failed for org %s", org_id)
         return
-    _reconciled_orgs[org_id] = _versions_key(seeder)
+    if settled:
+        _reconciled_orgs[org_id] = _versions_key(seeder)
+    else:
+        logger.warning("skills: builtin skill seeding incomplete for org %s; the next request retries", org_id)
+
+
+def _reconcile_task(graph_provider: "IGraphDBProvider", org_id: str) -> asyncio.Task:
+    """The org's one in-flight reconcile, started if none is running, so startup,
+    agent requests and the skills listing never sync the same org twice at once."""
+    task = _reconcile_tasks.get(org_id)
+    if task is None:
+        task = asyncio.get_running_loop().create_task(_reconcile(graph_provider, org_id))
+        _reconcile_tasks[org_id] = task
+
+        def _forget(done: asyncio.Task) -> None:
+            if _reconcile_tasks.get(org_id) is done:
+                del _reconcile_tasks[org_id]
+
+        task.add_done_callback(_forget)
+    return task
+
+
+async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: str) -> None:
+    """Seeds/upgrades this org's copies of the in-repo builtin packs, at most
+    once per (org, pack versions) per process. Idempotent (the seeder upserts),
+    so concurrent workers converge; never raises — a failure, or a pack the
+    seeder could not write, is logged and retried on the next call."""
+    seeder = get_builtin_seeder()
+    if seeder is None or _is_reconciled(org_id, seeder):
+        return
+    # Shielded: a caller that is cancelled must not cancel the reconcile others share.
+    await asyncio.shield(_reconcile_task(graph_provider, org_id))
 
 
 async def reconcile_builtin_skills_for_orgs(
@@ -182,11 +209,9 @@ def schedule_builtin_skill_reconcile(graph_provider: "IGraphDBProvider", org_id:
     since, or startup failed): starts one background reconcile per org and
     returns immediately."""
     seeder = get_builtin_seeder()
-    if seeder is None or _is_reconciled(org_id, seeder) or org_id in _reconcile_tasks:
+    if seeder is None or _is_reconciled(org_id, seeder):
         return
-    task = asyncio.get_running_loop().create_task(reconcile_builtin_skills(graph_provider, org_id))
-    _reconcile_tasks[org_id] = task
-    task.add_done_callback(lambda _t: _reconcile_tasks.pop(org_id, None))
+    _reconcile_task(graph_provider, org_id)
 
 
 async def sync_builtin_skills(

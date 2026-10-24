@@ -123,12 +123,75 @@ async def test_reconcile_is_idempotent_and_rechecks_on_new_pack_version(
 
 
 async def test_failed_reconcile_is_retried(packs_root_v1: str) -> None:
-    seeder = _counting_seeder(packs_root_v1)
-    seeder.sync.side_effect = [RuntimeError("graph down"), None]
+    graph = FakeGraphProvider()
+    seeder = BuiltinSkillSeeder(packs_root_v1)
+    real_sync = seeder.sync
+    calls = iter([RuntimeError("graph down")])
+
+    async def _sync(store: GraphSkillStore) -> bool:
+        for failure in calls:
+            raise failure
+        return await real_sync(store)
+
+    seeder.sync = AsyncMock(side_effect=_sync)  # type: ignore[method-assign]
     with patch.object(mf, "get_builtin_seeder", return_value=seeder):
-        await mf.reconcile_builtin_skills(FakeGraphProvider(), "org-1")
-        await mf.reconcile_builtin_skills(FakeGraphProvider(), "org-1")
+        await mf.reconcile_builtin_skills(graph, "org-1")
+        await mf.reconcile_builtin_skills(graph, "org-1")
+        await mf.reconcile_builtin_skills(graph, "org-1")
     assert seeder.sync.await_count == 2
+    assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
+
+
+async def test_a_pack_the_seeder_could_not_write_is_retried(packs_root_v1: str) -> None:
+    """`BuiltinSkillSeeder.sync` logs a failed pack and returns; that must not
+    mark the org reconciled, or no later request would ever seed the pack."""
+    graph = FakeGraphProvider()
+    real_create = GraphSkillStore.create_skill
+    failures = {"pack-a": 1}
+
+    async def _create(self: GraphSkillStore, name: str, *args: object, **kwargs: object) -> object:
+        if failures.get(name):
+            failures[name] -= 1
+            raise RuntimeError("graph down")
+        return await real_create(self, name, *args, **kwargs)
+
+    seeder = _counting_seeder(packs_root_v1)
+    with patch.object(mf, "get_builtin_seeder", return_value=seeder), \
+         patch.object(GraphSkillStore, "create_skill", _create):
+        await mf.reconcile_builtin_skills(graph, "org-1")
+        assert await _builtin_names(graph, "org-1") == {"pack-b"}
+        await mf.reconcile_builtin_skills(graph, "org-1")
+        await mf.reconcile_builtin_skills(graph, "org-1")
+
+    assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
+    assert seeder.sync.await_count == 2
+
+
+async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> None:
+    graph = FakeGraphProvider()
+    seeder = BuiltinSkillSeeder(packs_root_v1)
+    real_sync = seeder.sync
+
+    async def _slow_sync(store: GraphSkillStore) -> bool:
+        # A real graph write yields; without it the first caller finishes before the others start.
+        await asyncio.sleep(0.01)
+        return await real_sync(store)
+
+    seeder.sync = AsyncMock(side_effect=_slow_sync)  # type: ignore[method-assign]
+    manager = MagicMock()
+    manager.refresh = AsyncMock()
+    manager.catalog_snapshot.return_value = []
+    with patch.object(mf, "get_builtin_seeder", return_value=seeder):
+        mf.schedule_builtin_skill_reconcile(graph, "org-1")
+        await asyncio.gather(
+            mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}]),
+            mf.sync_builtin_skills(graph, "org-1", manager),
+            mf.reconcile_builtin_skills(graph, "org-1"),
+        )
+        await _drain()
+
+    assert seeder.sync.await_count == 1
+    assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
 
 
 async def test_startup_reconciles_every_org(packs_root_v1: str) -> None:
