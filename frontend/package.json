@@ -106,7 +106,7 @@
     "electron-builder": "^26.15.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
-    "jsdom": "^26.1.0",
+    "jsdom": "^30.1.2",
     "monocart-reporter": "^2.12.4",
     "pngjs": "^7.0.0",
     "sharp": "^0.35.5",
