@@ -33,7 +33,9 @@ _OCCURRENCE_SCOPE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-_QUOTED_PHRASE_RE = re.compile(r"""["“”'](?P<phrase>[^"“”']+)["“”']""")
+_QUOTED_PHRASE_RE = re.compile(
+    r"""(?:["“”]|(?<!\w)')(?P<phrase>[^"“”]+?)(?:["“”]|(?<=\S)'(?!\w))"""
+)
 
 _PHRASE_AFTER_TIMES_RE = re.compile(
     r"""

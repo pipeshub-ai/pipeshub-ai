@@ -393,6 +393,11 @@ async def execute_fetch_record(
         budget.charge_framing(entity_note)
         focus_note = _focused_read_note(focus) if focus else ""
         budget.charge_framing(focus_note)
+        occurrence_note = _occurrence_count_note(
+            context.tool_state.get("query") or "",
+            records,
+        )
+        budget.charge_framing(occurrence_note)
         budget.charge_framing_chars(
             len(_CITATION_RULE)
             + len(_unavailable_note(
@@ -510,6 +515,8 @@ async def execute_fetch_record(
         if focus and selected_now:
             text += focus_note
         text += entity_note
+        if occurrence_note:
+            text += "\n\n" + occurrence_note
         # TEMPORARY token-savings experiment: shorten every "Record ID:"
         # this fetch prints back down to the same "R<n>" label the model
         # already saw — see `RecordIdShortener`. No-op (full ids as-is)
@@ -517,12 +524,6 @@ async def execute_fetch_record(
         if record_id_shortener is not None:
             text = record_id_shortener.shorten_record_ids_in_text(text)
         text += _CITATION_RULE
-        occurrence_note = _occurrence_count_note(
-            context.tool_state.get("query") or "",
-            result["records"],
-        )
-        if occurrence_note:
-            text += "\n\n" + occurrence_note
         text += _unavailable_note(
             result.get("not_available_ids", []),
             result.get("unavailable_reasons", {}),

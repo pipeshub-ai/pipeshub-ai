@@ -64,6 +64,15 @@ class TestParseOccurrencePhrase:
             == "Harry Potter"
         )
 
+    def test_possessive_apostrophe_is_not_treated_as_quote_delimiter(self) -> None:
+        """Regression: possessive apostrophes (e.g. Harry's) must not falsely delimit quotes."""
+        assert (
+            parse_occurrence_phrase(
+                "How many times is Harry's wand mentioned in Ron's notes?"
+            )
+            == "Harry's wand"
+        )
+
     def test_count_occurrences_of(self) -> None:
         assert (
             parse_occurrence_phrase("count the occurrences of GDPR in the document")
