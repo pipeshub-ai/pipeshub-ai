@@ -340,6 +340,14 @@ _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
 
 
+def _remove_opts(transaction: str | None) -> str:
+    """AQL OPTIONS for a REMOVE. ``ignoreErrors`` swallows every per-document error,
+    including a write-write conflict, so inside a transaction it would let the caller
+    commit with deletes silently lost. Only a statement that runs on its own may
+    keep the best-effort behaviour."""
+    return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
+
+
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
@@ -3324,15 +3332,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             arango_nodes = self._translate_nodes_to_arango(nodes)
 
             # Build AQL query for batch UPDATE (not UPSERT)
-            # This will only update existing documents and skip non-existent ones
+            # Missing documents are skipped by the FILTER (reported as False below).
+            # Any other per-document error, such as a write-write conflict, raises so a
+            # caller's transaction aborts instead of committing without the write.
             bind_vars: dict[str, Any] = {
                 "nodes": arango_nodes
             }
 
             aql_query = f"""
                 FOR doc IN @nodes
+                    FILTER DOCUMENT(@@collection, doc._key) != null
                     UPDATE doc IN @@collection
-                    OPTIONS {{ ignoreErrors: true }}
                     RETURN NEW
             """
 
@@ -4217,7 +4227,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             (FOR nid IN @node_ids FOR e IN {edge_collection} FILTER e._to == nid RETURN e._key)
         )
         FOR key IN edge_keys
-            REMOVE key IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
+            REMOVE key IN {edge_collection} {_remove_opts(transaction)}
             RETURN 1
         """
         try:
@@ -4421,7 +4431,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = f"""
         FOR edge IN {edge_collection}
             FILTER {" AND ".join(conditions)}
-            REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
+            REMOVE edge IN {edge_collection} {_remove_opts(transaction)}
             RETURN 1
         """
         try:
@@ -10840,10 +10850,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction rolls back and a write conflict can still be told apart."""
         total_deleted = 0
         failed_collections: list[str] = []
-        query = """
+        query = f"""
         FOR edge IN @@edge_collection
             FILTER edge._from IN @node_ids OR edge._to IN @node_ids
-            REMOVE edge IN @@edge_collection OPTIONS { ignoreErrors: true }
+            REMOVE edge IN @@edge_collection {_remove_opts(transaction)}
             RETURN 1
         """
         for edge_collection in list(dict.fromkeys(
@@ -13438,13 +13448,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR edge IN @@edge_collection
                 FILTER edge._from IN @node_ids
                 REMOVE edge IN @@edge_collection
-                OPTIONS { ignoreErrors: true }
             """
             delete_edges_to_query = """
             FOR edge IN @@edge_collection
                 FILTER edge._to IN @node_ids
                 REMOVE edge IN @@edge_collection
-                OPTIONS { ignoreErrors: true }
             """
 
             for edge_collection in edge_collections:
@@ -15441,12 +15449,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             (FOR bid IN @block_ids FOR e IN {edges} FILTER e._to == bid RETURN e._key)
         )
         FOR key IN edge_keys
-            REMOVE key IN {edges} OPTIONS {{ ignoreErrors: true }}
+            REMOVE key IN {edges} {_remove_opts(transaction)}
             RETURN 1
         """
         node_query = f"""
         FOR key IN @keys
-            REMOVE key IN {blocks} OPTIONS {{ ignoreErrors: true }}
+            REMOVE key IN {blocks} {_remove_opts(transaction)}
             RETURN 1
         """
         total = 0

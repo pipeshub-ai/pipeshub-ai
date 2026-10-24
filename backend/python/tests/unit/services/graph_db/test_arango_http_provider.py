@@ -2575,7 +2575,8 @@ class TestBatchUpdateNodes:
         )
         assert result is False
         aql_query = connected_provider.http_client.execute_aql.call_args[0][0]
-        assert "ignoreErrors: true" in aql_query
+        assert "ignoreErrors" not in aql_query
+        assert "DOCUMENT(@@collection, doc._key) != null" in aql_query
 
     @pytest.mark.asyncio
     async def test_all_updates_succeed(self, connected_provider):
@@ -2586,6 +2587,31 @@ class TestBatchUpdateNodes:
             [{"id": "r1", "indexingStatus": "COMPLETED"}], "records"
         )
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_write_conflict_in_transaction_raises(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception(
+            '{"errorNum":1200,"errorMessage":"conflict: cannot update document"}'
+        )
+        with pytest.raises(Exception, match="1200"):
+            await connected_provider.batch_update_nodes(
+                [{"id": "r1", "status": "OK"}], "records", transaction="txn-1"
+            )
+        assert connected_provider.http_client.execute_aql.call_args.kwargs["txn_id"] == "txn-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("transaction", "expect_ignore"), [("txn-1", False), (None, True)]
+    )
+    async def test_remove_ignores_errors_only_outside_transaction(
+        self, connected_provider, transaction, expect_ignore
+    ) -> None:
+        connected_provider.http_client.execute_aql.return_value = [1]
+        await connected_provider.delete_edges_by_source_keys(
+            ["records/r1"], "recordRelations", transaction=transaction
+        )
+        query = connected_provider.http_client.execute_aql.call_args[0][0]
+        assert ("ignoreErrors: true" in query) is expect_ignore
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
