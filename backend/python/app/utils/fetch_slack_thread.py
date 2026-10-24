@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeGuard
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -635,7 +635,10 @@ async def _read_channel_record(
         })
 
     from app.modules.retrieval.selection_scope import connection_sources_of
-    from app.utils.chat_helpers import enrich_read_records_with_address_links, keep_record_text_inside_connection
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
+    )
 
     limit = connection_sources_of((scope_state or {}).get("filters"))
     await enrich_read_records_with_address_links(
@@ -832,7 +835,10 @@ async def _fetch_thread_records_impl(
     # A reply that pasted a pull request's or a ticket's link shows it, with
     # whether and when it merged or closed.
     from app.modules.retrieval.selection_scope import connection_sources_of
-    from app.utils.chat_helpers import enrich_read_records_with_address_links, keep_record_text_inside_connection
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
+    )
 
     limit = connection_sources_of((scope_state or {}).get("filters"))
     await enrich_read_records_with_address_links(

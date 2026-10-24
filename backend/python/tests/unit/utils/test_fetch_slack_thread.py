@@ -1462,7 +1462,7 @@ class TestAConnectedAppsLimit:
     source parent, outside it."""
 
     @staticmethod
-    def _patched():
+    def _patched() -> tuple:
         return (
             patch("app.utils.chat_helpers.enrich_read_records_with_address_links", new_callable=AsyncMock),
             patch("app.utils.chat_helpers.keep_record_text_inside_connection", new_callable=AsyncMock),

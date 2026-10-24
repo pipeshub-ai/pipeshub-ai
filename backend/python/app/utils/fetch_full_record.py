@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from collections.abc import Callable, Iterable, Mapping
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -28,6 +28,9 @@ from app.utils.chat_helpers import (
 )
 from app.utils.logger import create_logger
 from app.utils.not_indexed import record_metadata_lines
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
 
 logger = create_logger(__name__)
 

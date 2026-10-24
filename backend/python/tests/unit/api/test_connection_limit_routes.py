@@ -880,7 +880,9 @@ class TestACollectionUpdateResponse:
 
     @staticmethod
     async def _response(limit: dict | None) -> dict:
-        from app.connectors.sources.localKB.api.kb_router import _keep_update_inside_connection
+        from app.connectors.sources.localKB.api.kb_router import (
+            _keep_update_inside_connection,
+        )
 
         response = {
             "updatedRecord": {**_file_doc(), "fileRecord": {"path": SOURCE_PATH}},

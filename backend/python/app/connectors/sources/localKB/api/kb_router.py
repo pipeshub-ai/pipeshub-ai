@@ -1020,7 +1020,7 @@ async def get_kb_children(
         )
 
 
-async def _keep_update_inside_connection(request: Request, response: Dict[str, Any], kb_id: str) -> None:
+async def _keep_update_inside_connection(request: Request, response: dict[str, Any], kb_id: str) -> None:
     """A connected app limited to part of a collection is told nothing of the
     rest of it: not the collection, its other folders, the updated record's
     parents outside the limit, or the file's source path."""
