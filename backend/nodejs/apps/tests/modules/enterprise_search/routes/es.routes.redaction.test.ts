@@ -5,7 +5,6 @@ import path from 'path'
 import { Router } from 'express'
 import * as es from '../../../../src/modules/enterprise_search/routes/es.routes'
 import { createProjectsRouter } from '../../../../src/modules/projects/routes/project.routes'
-import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 
 /**
  * Runtime route enumeration. The real routers are built and walked, so one-line routes,
@@ -187,23 +186,30 @@ describe('conversation routes and per-viewer redaction (runtime enumeration)', (
     it('router.route(path).get(...)', () => {
       expect(planted((r) => { r.route('/x').get((_q, s) => s.json({})).post((_q, s) => s.json({})) })).to.have.length(2)
     })
-    it('an inline arrow that reads message rows, even when classified metadata-only', () => {
+    it('gives the audit exactly the source of the handler a route runs', () => {
       const r = Router()
-      r.get('/export', async (_q, s) => s.json(await ChatSessionMessage.find({}).lean()))
-      expect(audit(enumerate(r), { 'GET /export': 'M' })).to.deep.equal(['GET /export: classified metadata-only but reads message rows'])
+      const handler = (_q: unknown, s: { json: (b: unknown) => void }) => s.json({})
+      r.get('/s', handler)
+      expect(enumerate(r)).to.deep.equal([{ key: 'GET /s', source: String(handler) }])
+    })
+    // The cases below are handler source text (what `enumerate` hands the audit), not routes:
+    // nothing here should mount a handler that reads message rows.
+    const fixture = (key: string, source: string): RouteInfo => ({ key, source })
+    it('an inline arrow that reads message rows, even when classified metadata-only', () => {
+      const route = fixture('GET /export', 'async (_q, s) => s.json(await ChatSessionMessage.find({}).lean())')
+      expect(audit([route], { 'GET /export': 'M' })).to.deep.equal(['GET /export: classified metadata-only but reads message rows'])
     })
     it('a metadata-only route that reads message rows through a helper', () => {
-      const r = Router()
-      // Not executed: only the handler's source is read.
-      r.get('/h', (_q: any, s: any) => s.json((globalThis as any).withTurnAttachments()))
-      expect(audit(enumerate(r), { 'GET /h': 'M' })).to.deep.equal(['GET /h: classified metadata-only but reads message rows'])
+      const route = fixture('GET /h', '(_q, s) => s.json(withTurnAttachments())')
+      expect(audit([route], { 'GET /h': 'M' })).to.deep.equal(['GET /h: classified metadata-only but reads message rows'])
     })
     it('a metadata-only route that calls an imported reader in CommonJS form', () => {
-      const r = Router()
-      // Not executed: compiled, these read `(0, globalThis.m.getMessages)()`, as an import would.
-      r.get('/c', (_q: any, s: any) => s.json((0, (globalThis as any).m.getMessages)()))
-      r.get('/d', (_q: any, s: any) => s.json((0, (globalThis as any).m.withTurnAttachments)()))
-      expect(audit(enumerate(r), { 'GET /c': 'M', 'GET /d': 'M' })).to.deep.equal([
+      // How the compiled code calls an imported function: `(0, module_1.fn)(...)`.
+      const routes = [
+        fixture('GET /c', '(_q, s) => s.json((0, utils_1.getMessages)(id))'),
+        fixture('GET /d', '(_q, s) => s.json((0, utils_1.withTurnAttachments)(id))'),
+      ]
+      expect(audit(routes, { 'GET /c': 'M', 'GET /d': 'M' })).to.deep.equal([
         'GET /c: classified metadata-only but reads message rows',
         'GET /d: classified metadata-only but reads message rows',
       ])
