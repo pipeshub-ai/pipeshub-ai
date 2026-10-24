@@ -583,11 +583,86 @@ class TestFailureReports:
         sent = connector.notify.await_args.kwargs
         assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
         assert sent["title"].endswith("Credentials rejected")
-        assert "HTTP 403 AuthorizationPermissionMismatch" in sent["message"]
-        assert "1 file(s) could not be synced" in sent["message"]
+        assert sent["message"].startswith(
+            "Azure refused the connector's credentials for 1 file(s): HTTP 403 AuthorizationPermissionMismatch"
+        )
+        assert "could not be synced" not in sent["message"]
         assert_nothing_secret(sent["message"])
         assert_nothing_secret(caplog.text)
         assert path("good.txt") in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_refused_and_other_failed_files_are_counted_apart(self, connector, store) -> None:
+        store.put("refused.txt")
+        store.put("broken.txt")
+        real = connector._process_azure_blob
+
+        async def fail_two(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "refused.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            if blob["name"] == "broken.txt":
+                raise ValueError("unreadable properties")
+            return await real(blob, *args)
+        connector._process_azure_blob = fail_two
+
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert "credentials for 1 file(s)" in sent["message"]
+        assert "1 other file(s) could not be synced. The next sync retries them" in sent["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_file_does_not_make_another_containers_failure_an_auth_error(
+        self, connector, config, store, other,
+    ) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("refused.txt")
+        other.put("c.txt")
+        connector.data_source.refused[OTHER] = azure_error(
+            HttpResponseError, "The server is busy.\nRequestId:1", 503, "ServerBusy",
+        )
+        real = connector._process_azure_blob
+
+        async def refuse(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "refused.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(blob, *args)
+        connector._process_azure_blob = refuse
+
+        with pytest.raises(RuntimeError, match=OTHER):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        assert sent["title"].endswith("Some containers failed to sync")
+        assert f"{OTHER}: HTTP 503 ServerBusy" in sent["message"]
+        # The files that failed in the container that synced are reported in the same notice.
+        assert "Azure refused the connector's credentials for 1 file(s)" in sent["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_old_copy_is_counted_as_a_failed_file(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        connector.notify.reset_mock()
+        real = connector._create_azure_blob_permissions
+
+        async def refuse(container_name: str, blob_name: str) -> list:
+            if blob_name == "a.pdf":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(container_name, blob_name)
+        connector._create_azure_blob_permissions = refuse
+
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert "credentials for 1 file(s)" in sent["message"]
+        assert "other file(s)" not in sent["message"]
+        assert path("a.pdf") not in db.paths()
 
     @pytest.mark.asyncio
     async def test_a_refused_container_list_is_an_auth_error(self, connector, config) -> None:

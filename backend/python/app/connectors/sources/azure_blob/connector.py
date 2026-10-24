@@ -508,8 +508,11 @@ class AzureBlobConnector(BaseConnector):
         self._queued_removals: list[tuple[str, Callable[[], Awaitable[None]]]] | None = None
         # Part of the source was not read (a container, a listing or a blob failed).
         self._sync_incomplete = False
-        # Blobs this sync could not process, and Azure's reason when it refused the credentials.
+        # Blobs this sync could not process, how many of them Azure refused for the credentials and
+        # its reason; and its reason when it refused the credentials for a container or a listing.
         self._failed_blob_count = 0
+        self._refused_blob_count = 0
+        self._blob_auth_error: str | None = None
         self._auth_error: str | None = None
 
     def full_sync_coverage(self) -> FullSyncCoverage:
@@ -527,14 +530,21 @@ class AzureBlobConnector(BaseConnector):
             type=kind, severity=NotificationSeverity.ERROR, title=f"{self.display_name}: {title}", message=message,
         )
 
-    def _log_failure(self, what: str, error: BaseException) -> str:
+    def _log_failure(self, what: str, error: BaseException, *, blob: bool = False) -> str:
         """Log a failed call and return its reason. An Azure error is logged by status, code and
-        message only: its own text, which a traceback prints, can hold the request signature."""
+        message only: its own text, which a traceback prints, can hold the request signature.
+
+        A refused ``blob`` is recorded apart from a refused container or listing, so one file's
+        refusal does not name a container that failed for another reason."""
         azure = error if isinstance(error, AzureError) else error.__cause__
         if isinstance(azure, AzureError):
             reason = azure_error_text(azure)
             if azure_error_code(azure) in _AUTH_ERROR_CODES:
-                self._auth_error = reason
+                if blob:
+                    self._refused_blob_count += 1
+                    self._blob_auth_error = reason
+                else:
+                    self._auth_error = reason
             self.logger.error(f"{what}: {reason}")
             return reason
         self.logger.error(f"{what}: {error}", exc_info=True)
@@ -759,6 +769,7 @@ class AzureBlobConnector(BaseConnector):
             await self._create_record_groups_for_containers(containers_to_sync, container_ts_ms)
 
             failed = await self._sync_containers(containers_to_sync)
+            files = self._failed_files_text()
             if failed:
                 self._sync_incomplete = True
                 names = ", ".join(sorted(failed))
@@ -766,34 +777,41 @@ class AzureBlobConnector(BaseConnector):
                     await self._notify_error(
                         NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected",
                         f"Azure refused the connector's credentials while syncing {names}: {self._auth_error}. "
-                        "Update the credentials or their permissions; nothing was removed.",
+                        f"Update the credentials or their permissions; nothing was removed. {files}".rstrip(),
                     )
                 else:
                     first = min(failed)
                     await self._notify_error(
                         NotificationType.CONNECTOR_SYNC_ERROR, "Some containers failed to sync",
                         f"Could not sync {len(failed)} container(s): {names}. {first}: {failed[first]}. "
-                        "The next sync retries them.",
+                        f"The next sync retries them. {files}".rstrip(),
                     )
                 raise RuntimeError(f"Azure Blob sync failed for container(s): {names}")
-            if self._failed_blob_count and self._auth_error:
-                await self._notify_error(
-                    NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected",
-                    f"Azure refused the connector's credentials while syncing files: {self._auth_error}. "
-                    f"{self._failed_blob_count} file(s) could not be synced. "
-                    "Update the credentials or their permissions.",
-                )
+            if self._refused_blob_count:
+                await self._notify_error(NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected", files)
             elif self._failed_blob_count:
-                await self._notify_error(
-                    NotificationType.CONNECTOR_SYNC_ERROR, "Some files failed to sync",
-                    f"{self._failed_blob_count} file(s) could not be synced. The next sync retries them; "
-                    "the connector's log names each one.",
-                )
+                await self._notify_error(NotificationType.CONNECTOR_SYNC_ERROR, "Some files failed to sync", files)
 
             self.logger.info("Azure Blob full sync completed.")
         except Exception as ex:
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
+
+    def _failed_files_text(self) -> str:
+        """What this sync's failed files come to, for its closing notice; "" when none failed."""
+        text = []
+        if self._refused_blob_count:
+            text.append(
+                f"Azure refused the connector's credentials for {self._refused_blob_count} file(s): "
+                f"{self._blob_auth_error}. Update the credentials or their permissions."
+            )
+        others = self._failed_blob_count - self._refused_blob_count
+        if others > 0:
+            text.append(
+                f"{others} {'other ' if self._refused_blob_count else ''}file(s) could not be synced. "
+                "The next sync retries them; the connector's log names each one."
+            )
+        return " ".join(text)
 
     async def _remove_containers_of_cleared_selection(self) -> int:
         """Remove what a team connector synced once its Container Names are cleared, since the
@@ -1185,7 +1203,11 @@ class AzureBlobConnector(BaseConnector):
                 record, permissions = await self._process_azure_blob(blob_dict, container_name)
                 if record:
                     await self._save([(record, permissions)])
-                elif holder is not None:
+                    continue
+                if blob_name.lstrip("/"):
+                    # The processor returns no record for a real name only on an error.
+                    self._failed_blob_count += 1
+                if holder is not None:
                     listed.add(holder.external_record_id or "")
             except Exception as e:
                 self.logger.error(f"Error giving {blob_name} the record of its content: {e}", exc_info=True)
@@ -1350,7 +1372,9 @@ class AzureBlobConnector(BaseConnector):
                         failed.add(obj_timestamp_ms)
                 except Exception as e:
                     error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
-                    self._log_failure(f"Error processing blob {error_blob_name} in container {container_name}", e)
+                    self._log_failure(
+                        f"Error processing blob {error_blob_name} in container {container_name}", e, blob=True,
+                    )
                     failed.add(obj_timestamp_ms)
                     # An object that errored before it was judged may still be kept.
                     unjudged = unjudged or not judged
@@ -1712,7 +1736,7 @@ class AzureBlobConnector(BaseConnector):
             return file_record, permissions
 
         except Exception as e:
-            self._log_failure(f"Error processing blob {blob.get('name')} in container {container_name}", e)
+            self._log_failure(f"Error processing blob {blob.get('name')} in container {container_name}", e, blob=True)
             return None, []
 
     async def _paced(self, blobs: "AsyncItemPaged | AsyncIterator[dict]") -> AsyncIterator["BlobProperties | dict"]:
