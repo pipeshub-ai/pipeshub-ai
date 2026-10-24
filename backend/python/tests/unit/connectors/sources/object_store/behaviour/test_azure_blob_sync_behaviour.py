@@ -611,12 +611,13 @@ class TestClearedTeamSelection:
         assert BUCKET in db.record_groups
 
     @pytest.mark.asyncio
-    async def test_a_not_in_filter_still_names_containers_and_removes_nothing(self, connector, store, db, config) -> None:
+    @pytest.mark.parametrize("excluded", [[OTHER], []], ids=["naming-one", "naming-none"])
+    async def test_a_not_in_filter_removes_nothing(self, connector, store, db, config, excluded) -> None:
         choose_containers(connector, config, [BUCKET])
         store.put("a.txt")
         await connector.run_sync()
 
-        config.set_selection("containers", [OTHER], "not_in")
+        config.set_selection("containers", excluded, "not_in")
         with pytest.raises(ValueError, match="Container Names"):
             await connector.run_sync()
 

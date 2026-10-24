@@ -792,9 +792,9 @@ class AzureBlobConnector(BaseConnector):
         """Remove what a team connector synced once its Container Names are cleared, since the
         whole org could still read it. Returns how many containers were removed.
 
-        Only on a fresh read of the saved filters whose Container Names is unset or empty: a
+        Only on a fresh read of the saved filters whose Container Names is unset or an empty In: a
         failed or empty read, which ``load_connector_filters`` cannot tell from a cleared filter,
-        removes nothing, and neither does a Not in filter, which still names containers.
+        removes nothing, and neither does a Not in filter, even one naming no container.
         """
         try:
             config = await self.config_service.get_config(
@@ -809,7 +809,9 @@ class AzureBlobConnector(BaseConnector):
         if not isinstance(values, dict):
             return 0
         containers = FilterCollection.from_dict(values, self.logger).get("containers")
-        if containers is not None and not containers.is_empty():
+        if containers is not None and (
+            not containers.is_empty() or containers.operator_value == FilterOperator.NOT_IN
+        ):
             return 0
         try:
             stored = await stored_containers(self.data_entities_processor, self.connector_id)
