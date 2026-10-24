@@ -554,8 +554,14 @@ async def preview_jira_browse_projects_permission_edges_to_record_group(
                 edge_slots += 1
         elif holder_type == "applicationRole":
             role_key = holder_param
-            if role_key and role_key in app_roles_mapping:
-                for group_info in app_roles_mapping[role_key]:
+            # A bare holder ("Any logged in user") is the union of every role's groups, as the
+            # connector grants it since #4383, not one ORG edge.
+            if role_key:
+                role_groups = app_roles_mapping.get(role_key)
+            else:
+                role_groups = [g for groups in app_roles_mapping.values() for g in groups] or None
+            if role_groups is not None:
+                for group_info in role_groups:
                     group_id = group_info.get("groupId")
                     if not group_id:
                         continue
