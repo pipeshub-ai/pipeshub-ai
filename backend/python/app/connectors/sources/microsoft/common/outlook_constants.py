@@ -23,8 +23,7 @@ class OutlookOAuthRedirectURIs:
 class OutlookDocs:
     """Documentation URLs."""
     AZURE_AD_SETUP_URL = "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
-    # No separate Personal page yet; the Outlook page covers the Azure app setup both use.
-    PIPESHUB_DOCS_URL_PERSONAL = "https://docs.pipeshub.com/connectors/microsoft-365/outlook"
+    PIPESHUB_DOCS_URL_PERSONAL = "https://docs.pipeshub.com/connectors/microsoft-365/outlook-personal"
     PIPESHUB_DOCS_URL_TEAM = "https://docs.pipeshub.com/connectors/microsoft-365/outlook"
 
 

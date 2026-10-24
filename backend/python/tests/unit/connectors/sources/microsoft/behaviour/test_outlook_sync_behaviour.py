@@ -2140,7 +2140,8 @@ class TestConnectorMetadata:
         assert metadata["resilienceConfig"]["rate_limit"] == OutlookSyncConfig.GRAPH_RATE_LIMIT
         assert metadata["connectorInfo"]
         urls = [link["url"] for link in metadata["config"]["documentationLinks"]]
-        assert "https://docs.pipeshub.com/connectors/microsoft-365/outlook" in urls
+        page = "outlook-personal" if connector_class is OutlookIndividualConnector else "outlook"
+        assert f"https://docs.pipeshub.com/connectors/microsoft-365/{page}" in urls
 
     def test_team_shows_no_redirect_uri_it_does_not_have(self) -> None:
         assert OutlookConnector._connector_metadata["config"]["auth"]["conditionalDisplay"] == {}
