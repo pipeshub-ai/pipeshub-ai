@@ -26,7 +26,6 @@ Test cases:
   TC-LINEAR-SEC-001   — Every FILE record is a Linear upload (the API key goes nowhere else)
   TC-LINEAR-SCOPE-001 — Every stored issue is filed under its current Linear team
   TC-LINEAR-SCOPE-002 — No stored issue comes from a team outside the filter (sub-teams included)
-  TC-LINEAR-AUTH-002  — The connection check refuses a wrong API key and accepts the suite's
 
 Every run shares one Linear workspace with every other CI leg and PR; ``README.md`` in
 this directory is the contract that keeps them from touching each other. In short: the
@@ -106,7 +105,6 @@ from helper.indexing_wait import (  # noqa: E402
 )
 from helper.record_access import wait_for_record_access  # noqa: E402
 from helper.second_user import SecondUser  # noqa: E402
-from helper.clients.connectors_client import ConnectorsClient  # noqa: E402
 from app.sources.client.linear.upload_urls import is_linear_upload_url  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("linear-lifecycle-test")
@@ -1370,23 +1368,6 @@ class TestLinearInvariants:
             if not doc.get("isPlaceholder") and doc.get("externalGroupId") not in synced
         ]
         assert not outside, f"issues from teams outside the filter (name, team): {outside[:5]}"
-
-    @pytest.mark.order(26)
-    async def test_tc_linear_auth_002_connection_check(
-        self,
-        pipeshub_client: PipeshubClient,
-    ) -> None:
-        """TC-LINEAR-AUTH-002: the check the UI runs before saving refuses a wrong key with
-        a message that says so, and accepts the suite's key."""
-        connectors = ConnectorsClient(pipeshub_client)
-        wrong = connectors.test_connection("Linear", {"authType": "API_TOKEN", "apiToken": "lin_api_" + "0" * 40})
-        right = connectors.test_connection(
-            "Linear", {"authType": "API_TOKEN", "apiToken": os.environ["LINEAR_TEST_API_TOKEN"]})
-        assert wrong.status_code == 200 and right.status_code == 200, (wrong.status_code, right.status_code)
-        assert wrong.json().get("success") is False, wrong.text
-        assert "API key" in str(wrong.json().get("message")), wrong.text
-        assert right.json().get("success") is True, right.text
-
 
 async def _team_from_linear(datasource: LinearDataSource, team_id: str) -> Dict[str, Any] | None:
     """A team outside the suite's filter, as the connector reads it for a restricted child."""

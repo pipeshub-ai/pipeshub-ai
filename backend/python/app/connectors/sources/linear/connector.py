@@ -31,7 +31,6 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
-    ConnectionCheckResult,
     ConnectorInitError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -84,7 +83,6 @@ from app.connectors.sources.linear.api_gateway import (
     LinearGateway,
     LinearNotFound,
     LinearRateLimited,
-    classify,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
 from app.connectors.sources.linear.listing_checkpoint import (
@@ -141,7 +139,7 @@ from app.services.notification.types import (
     NotificationType,
 )
 from app.sources.client.graphql.response import GraphQLResponse
-from app.sources.client.linear.linear import LinearClient, LinearTokenConfig
+from app.sources.client.linear.linear import LinearClient
 from app.sources.client.linear.upload_urls import (
     content_disposition,
     is_linear_upload_url,
@@ -5278,39 +5276,6 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Connection test failed: {e}", exc_info=True)
             return False
-
-    @classmethod
-    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
-        """Try an API key before it is saved: it must sign in and be able to read teams.
-
-        OAuth is checked by Linear itself when the user authorizes the app, so there is
-        nothing to try before that."""
-        if str(auth_config.get("authType") or "API_TOKEN").upper() != "API_TOKEN":
-            return ConnectionCheckResult(success=True, message="Linear checks access when you connect with OAuth.")
-        token = str(auth_config.get("apiToken") or "").strip()
-        if not token:
-            return ConnectionCheckResult(success=False, message="Enter a Linear API key.")
-        datasource = LinearDataSource(LinearClient.build_with_config(LinearTokenConfig(token=token)))
-        viewer = await datasource.viewer()
-        error = classify(viewer)
-        if isinstance(error, LinearAuthError):
-            return ConnectionCheckResult(success=False, message=(
-                "Linear did not accept this API key. Create a personal API key in Linear under "
-                "Settings > Security & access, and paste it whole."))
-        if error is not None:
-            logger.info("Linear connection check failed: %s", error)
-            return ConnectionCheckResult(success=False, message=f"Could not reach Linear: {error}")
-        teams = await datasource.teams(first=1)
-        error = classify(teams)
-        if error is not None:
-            return ConnectionCheckResult(success=False, message=(
-                f"The API key signs in but cannot read teams ({error}). Give it read access to the "
-                "teams you want to sync."))
-        org = await datasource.organization()
-        organization = ((org.data or {}).get("organization") or {}) if classify(org) is None else {}
-        user = (viewer.data or {}).get("viewer") or {}
-        where = f" to {organization['name']}" if organization.get("name") else ""
-        return ConnectionCheckResult(success=True, message=f"Connected{where} as {user.get('name') or user.get('email') or 'this key'}.")
 
     async def get_signed_url(self, record: Record) -> str:
         """Create a signed URL for a specific record"""
