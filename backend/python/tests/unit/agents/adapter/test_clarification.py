@@ -145,19 +145,3 @@ class TestNoQuestionEmitsNoCard:
         assert result["answer"] == "Which channel?"
         tool_data = next(e for e in sink.events if e["event"] == "ask_user_question")["data"]["toolData"]
         assert [q["question"] for q in tool_data["questions"]] == ["Which channel?"]
-
-    async def test_the_question_counts_the_turns_attachments_as_its_sources(self) -> None:
-        """The intent model read the attachments, so a viewer who cannot read them must not
-        see the question; an attachment with no record id cannot be checked by anyone."""
-        context = make_context(has_ui_client=False)
-        context.tool_state["attachments"] = [{"recordId": "r2"}, {"recordId": "r1"}]
-        data = await emit_pre_run_clarification(context, "intent", [_question()], event_sink=_FakeEventSink())
-        assert data["sourceRecordIds"] == ["r1", "r2"]
-
-        context.tool_state["attachments"] = [{"recordId": "r1"}, {"virtualRecordId": "v9"}]
-        data = await emit_pre_run_clarification(context, "intent", [_question()], event_sink=_FakeEventSink())
-        assert data["sourceRecordIds"] == ["r1", "*"]
-
-        context.tool_state["attachments"] = []
-        data = await emit_pre_run_clarification(context, "intent", [_question()], event_sink=_FakeEventSink())
-        assert data["sourceRecordIds"] == []

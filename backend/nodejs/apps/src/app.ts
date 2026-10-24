@@ -57,7 +57,6 @@ import {
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
-  createAccessRequestRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -664,12 +663,6 @@ export class Application {
     this.app.use(
       '/api/v1/chat',
       createChatSpeechRouter(this.esAgentContainer),
-    );
-
-    // access requests for content redacted from shared chats and searches
-    this.app.use(
-      '/api/v1/access-requests',
-      createAccessRequestRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes

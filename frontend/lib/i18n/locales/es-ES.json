@@ -321,23 +321,7 @@
     "filterTooltip": "Filtro: {{filter}}",
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
-    "removeFailed": "No se pudo eliminar la notificación",
-    "accessRequest": {
-      "approve": "Aprobar",
-      "deny": "Denegar",
-      "approved": "Acceso concedido",
-      "denied": "Solicitud rechazada",
-      "failed": "No se pudo guardar tu decisión. Inténtalo de nuevo.",
-      "approveTitle": "¿Aprobar el acceso?",
-      "approveBodyCollection": "Esto da a {{user}} acceso de lectura a toda la colección «{{name}}».",
-      "approveBodyRecord": "Esto da a {{user}} acceso de lectura a este registro.",
-      "cancel": "Cancelar",
-      "alreadyDecided": "Esta solicitud ya se resolvió.",
-      "someone": "Alguien",
-      "alreadyApproved": "Ya aprobada",
-      "alreadyDeclined": "Ya rechazada",
-      "forwarded": "El acceso a este registro se concede en su sistema de origen."
-    }
+    "removeFailed": "No se pudo eliminar la notificación"
   },
   "action": {
     "find": "Buscar",
@@ -809,8 +793,6 @@
     "sharedChats": "Chats compartidos",
     "sharedBy": "Compartido por {{name}}",
     "agentChat": "Chat de agente",
-    "askedBy": "{{name}} preguntó",
-    "askedByUnknown": "Otro usuario preguntó",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
@@ -1426,20 +1408,7 @@
       "download": "Descargar artefacto",
       "downloading": "Descargando artefacto"
     },
-    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
-    "redaction": {
-      "partial": "Esta respuesta se basa en parte en fuentes a las que no tienes acceso.",
-      "hidden": "Esta respuesta se basa en fuentes a las que no tienes acceso.",
-      "sourceLabel": "Fuente sin acceso",
-      "requestAccess": "Solicitar acceso",
-      "requested": "Acceso solicitado",
-      "requestFailed": "No se pudo enviar la solicitud. Inténtalo de nuevo.",
-      "openInSource": "Abrir en el origen",
-      "inlineHidden": "Oculto: no tienes acceso",
-      "alreadyAccessible": "Ya puedes abrir esta fuente. Actualiza el chat.",
-      "detailsHidden": "Los detalles, como los resultados de herramientas y el razonamiento, están ocultos para quienes ven un chat compartido.",
-      "collectionLabel": "Solicitar acceso a la colección que contiene esta fuente"
-    }
+    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -5503,10 +5472,6 @@
         "label": "Puede ver",
         "description": "Solo acceso de lectura"
       }
-    },
-    "chatRoles": {
-      "writer": "Puede ver y enviar mensajes. Sus respuestas usan su propio acceso.",
-      "reader": "Solo puede ver el chat."
     },
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",

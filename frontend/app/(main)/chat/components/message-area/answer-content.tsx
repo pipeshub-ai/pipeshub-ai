@@ -15,7 +15,6 @@ import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
-import { REDACTED_TOKEN, RedactedInline } from './redacted-sources';
 import type {
   CitationMaps,
   CitationCallbacks,
@@ -721,12 +720,6 @@ export function parseInlineCitations(
   citationMaps?: CitationMaps,
   citationCallbacks?: CitationCallbacks,
 ): React.ReactNode[] {
-  if (text.includes(REDACTED_TOKEN)) {
-    return text.split(REDACTED_TOKEN).flatMap((segment, i) => [
-      ...(i > 0 ? [<RedactedInline key={`redacted-${i}`} />] : []),
-      ...(segment ? parseInlineCitations(segment, citationMaps, citationCallbacks) : []),
-    ]);
-  }
   const citationRegex = /\[{1,2}(\d+)\]{1,2}/g;
   const parts: React.ReactNode[] = [];
 

@@ -38,7 +38,6 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
-from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -84,7 +83,6 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
-from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
@@ -1333,161 +1331,6 @@ async def revoke_artifact_permissions(
         graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
     )
     return {"revoked": revoked}
-
-
-class RecordAccessRequest(BaseModel):
-    recordIds: list[str] = Field(max_length=500)
-    includeOwners: bool = False
-
-
-class RecordAccessGrantRequest(BaseModel):
-    userId: str
-    recordIds: list[str] = Field(max_length=100)
-
-
-async def _collection_of(
-    graph_provider: IGraphDBProvider, org_id: str, record: dict[str, Any],
-) -> dict[str, Any] | None:
-    """The collection (knowledge base) an uploaded record belongs to: records of a
-    KB carry ``connectorId == <KB app id>``. Access to them exists only at this
-    level, so a request for such a record is a request for its collection."""
-    kb_id = record.get("connectorId")
-    app = await graph_provider.get_document(kb_id, CollectionNames.APPS.value) if kb_id else None
-    if not app or app.get("type") != Connectors.KNOWLEDGE_BASE.value or app.get("orgId") != org_id:
-        return None
-    return {"id": kb_id, "name": app.get("name")}
-
-
-async def _denied_record_details(
-    graph_provider: IGraphDBProvider, org_id: str, record_ids: list[str],
-) -> list[dict[str, Any]]:
-    """Per denied record: ``kind`` ("native" = uploaded to PipesHub, "connector" =
-    synced from a source system, "unknown" = missing or another org's, so nothing
-    is revealed), the record's name and source URL (for the owners' notification
-    and the connector deep link) and ``ownerUserIds`` (auth user ids). For a
-    collection record the owners are the collection's OWNERs and ``collection``
-    names it; otherwise they are the record's own OWNER edges."""
-
-    async def edge_owner_user_ids(record_id: str) -> list[str]:
-        edges = await graph_provider.get_edges_to_node(
-            f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value,
-        )
-        owners: list[str] = []
-        for edge in edges or []:
-            if edge.get("role") != "OWNER":
-                continue
-            if edge.get("_from"):
-                collection, _, key = edge["_from"].partition("/")
-            else:
-                collection, key = edge.get("from_collection", ""), edge.get("from_id", "")
-            if collection != CollectionNames.USERS.value or not key:
-                continue
-            user = await graph_provider.get_document(key, CollectionNames.USERS.value)
-            if (user or {}).get("userId"):
-                owners.append(user["userId"])
-        return owners
-
-    async def collection_owner_user_ids(kb_id: str) -> list[str]:
-        permissions = await graph_provider.list_kb_permissions(kb_id)
-        return [
-            p["userId"] for p in permissions or []
-            if p.get("role") == "OWNER" and p.get("userId")
-        ]
-
-    async def detail(record_id: str) -> dict[str, Any]:
-        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        if not record or record.get("orgId") != org_id:
-            return {"recordId": record_id, "kind": "unknown"}
-        kind = "connector" if record.get("origin") == "CONNECTOR" else "native"
-        collection = await _collection_of(graph_provider, org_id, record) if kind == "native" else None
-        owners = (
-            await collection_owner_user_ids(collection["id"]) if collection
-            else await edge_owner_user_ids(record_id)
-        )
-        return {
-            "recordId": record_id,
-            "kind": kind,
-            "recordName": record.get("recordName"),
-            "webUrl": record.get("webUrl") if kind == "connector" else None,
-            "collection": collection,
-            "ownerUserIds": owners,
-        }
-
-    return await gather_with_concurrency(_OWNERSHIP_CHECKS_AT_ONCE, *(detail(r) for r in record_ids))
-
-
-@router.post("/chat/records/access")
-@inject
-async def check_viewer_record_access(
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
-) -> dict[str, Any]:
-    """Which of these records the viewer named in the service token may read, by
-    the same `check_access` as search and `fetch_record`. Node signs the viewer's
-    own ids after authenticating them, so a shared chat is rendered for the person
-    looking at it. With `includeOwners`, each denied record also reports its kind
-    and native owner, for the access-request flow."""
-    org_id, viewer_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, RecordAccessRequest)
-    ids = list(dict.fromkeys(r for r in payload.recordIds if r))
-    try:
-        readable = await accessible_node_ids(graph_provider, set(ids), viewer_id, org_id)
-    except PermissionVerificationUnavailableError as exc:
-        raise HTTPException(status_code=503, detail="Access check unavailable") from exc
-    denied = [r for r in ids if r not in readable]
-    out: dict[str, Any] = {"accessible": [r for r in ids if r in readable], "denied": denied}
-    if payload.includeOwners:
-        out["deniedDetails"] = await _denied_record_details(graph_provider, org_id, denied)
-    return out
-
-
-@router.post("/chat/records/access-grant")
-@inject
-async def grant_record_access(
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
-) -> dict[str, Any]:
-    """Approve an access request. Access to a collection's records exists only at
-    the collection, so for those the target user becomes READER of the whole
-    collection, and only if the token's user OWNs it. Other uploads (chat
-    attachments) get a READER edge on the record, if the token's user owns it.
-    Connector records are never granted here: the next permission sync would
-    overwrite the grant and diverge from the source's ACL."""
-    org_id, owner_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, RecordAccessGrantRequest)
-    owner_keys = await _resolve_user_keys(graph_provider, [owner_user_id])
-    target_keys = await _org_user_keys(graph_provider, org_id, [payload.userId])
-    if not owner_keys or not target_keys:
-        return {"granted": 0}
-    owner_key, target_key = owner_keys[0], target_keys[0]
-
-    singles: list[str] = []
-    collections: dict[str, None] = {}
-    for record_id in dict.fromkeys(payload.recordIds):
-        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        if not record or record.get("orgId") != org_id or record.get("origin") != "UPLOAD":
-            continue
-        collection = await _collection_of(graph_provider, org_id, record)
-        if collection:
-            collections[collection["id"]] = None
-        else:
-            singles.append(record_id)
-
-    granted = await _grant_reader_permissions(graph_provider, org_id, owner_user_id, [payload.userId], singles)
-    for kb_id in collections:
-        if await graph_provider.get_user_kb_permission(kb_id, owner_key) != "OWNER":
-            continue
-        existing = await graph_provider.get_kb_permissions(kb_id=kb_id, user_ids=[target_key])
-        if target_key in (existing or {}).get("users", {}):
-            continue  # a member keeps their role; never downgrade
-        result = await graph_provider.create_kb_permissions(
-            kb_id=kb_id, requester_id=owner_user_id, user_ids=[target_key], team_ids=[], role="READER",
-        )
-        if (result or {}).get("success"):
-            granted += 1
-    return {"granted": granted}
 
 
 # Node's conversation routes (conversation:chat) and agent conversation routes

@@ -8,7 +8,6 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
-import { AccessRequestActions } from './access-request-actions';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -399,13 +398,6 @@ export function NotificationRow({
               >
                 show less
               </span>
-            )}
-            {n.type === 'accessRequest' && typeof n.payload?.requestId === 'string' && (
-              <AccessRequestActions
-                requestId={n.payload.requestId}
-                requesterName={typeof n.payload.requesterName === 'string' ? n.payload.requesterName : undefined}
-                collectionName={typeof n.payload.collectionName === 'string' ? n.payload.collectionName : undefined}
-              />
             )}
           </Flex>
 

@@ -402,10 +402,6 @@ describe('Enterprise Search Controller', () => {
     if (!(searchUtils.reserveRun as any).restore) {
       sinon.stub(searchUtils, 'reserveRun').resolves(null)
     }
-    // The read-only-share check is covered in es_controller.ownership.test.ts.
-    if (!(searchUtils.assertNotReadOnlyViewer as any).restore) {
-      sinon.stub(searchUtils, 'assertNotReadOnlyViewer').resolves()
-    }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
     // project-shared conversations; default to "no accessible projects" so
@@ -1111,6 +1107,17 @@ describe('Enterprise Search Controller', () => {
       } catch (error: any) {
         expect(error.message).to.equal('Query is required')
       }
+    })
+
+    it('should pass the missing-query error to next when Express gives one', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      const next = sinon.stub()
+
+      await handler(createMockRequest({ body: {} }), createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should set SSE headers and process stream on happy path', async () => {
@@ -2746,7 +2753,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
+      await listAllArchivesConversation(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -2774,7 +2781,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
+      await listAllArchivesConversation(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3138,7 +3145,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory({} as any)(req, res, next)
+      await searchHistory(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3164,7 +3171,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory({} as any)(req, res, next)
+      await searchHistory(req, res, next)
 
       // the count must use the same org/user filter as the page query
       expect(countStub.firstCall.args[0]).to.equal((EnterpriseSemanticSearch.find as sinon.SinonStub).firstCall.args[0])
@@ -3184,7 +3191,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById({} as any)(req, res, next)
+      await getSearchById(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3194,7 +3201,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById({} as any)(req, res, next)
+      await getSearchById(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3215,7 +3222,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById({} as any)(req, res, next)
+      await getSearchById(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -4145,6 +4152,20 @@ describe('Enterprise Search Controller', () => {
       } catch (error: any) {
         expect(error.message).to.equal('Query is required')
       }
+    })
+
+    it('should pass the missing-query and missing-user errors to next when Express gives one', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const params = { conversationId: VALID_OID, agentKey: 'agent-1' }
+      const next = sinon.stub()
+
+      await handler(createMockRequest({ params, body: {} }), createMockResponse(), next)
+      await handler(createMockRequest({ params, body: { query: 'hi' }, user: { orgId: VALID_OID } }), createMockResponse(), next)
+
+      expect(next.callCount).to.equal(2)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
+      expect(next.secondCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.secondCall.args[0].message).to.equal('User ID is required')
     })
 
     it('should set SSE headers and stream on happy path', async () => {
@@ -5410,7 +5431,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory({} as any)(req, res, next)
+      await searchHistory(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -8306,7 +8327,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory({} as any)(req, res, next)
+      await searchHistory(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -8331,7 +8352,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById({} as any)(req, res, next)
+      await getSearchById(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -8755,7 +8776,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
+      await listAllArchivesConversation(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -9297,7 +9318,7 @@ describe('Enterprise Search Controller', () => {
       const filter = (searchUtils.reserveRun as sinon.SinonStub).firstCall.args[0]
       expect(String(filter._id)).to.equal(VALID_OID)
       expect(String(filter.orgId)).to.equal(VALID_OID2)
-      expect(JSON.stringify(filter.$or)).to.include(VALID_OID)
+      expect(String(filter.userId)).to.equal(VALID_OID)
     })
 
     it('addMessageStreamToAgentConversation refuses the message and never starts a second run', async () => {

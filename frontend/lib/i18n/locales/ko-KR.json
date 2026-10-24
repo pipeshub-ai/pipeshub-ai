@@ -398,23 +398,7 @@
     "filterTooltip": "필터: {{filter}}",
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
-    "removeFailed": "알림을 제거할 수 없습니다",
-    "accessRequest": {
-      "approve": "승인",
-      "deny": "거부",
-      "approved": "접근 권한을 부여했습니다",
-      "denied": "요청을 거부했습니다",
-      "failed": "결정을 저장하지 못했습니다. 다시 시도해 주세요.",
-      "approveTitle": "접근을 승인할까요?",
-      "approveBodyCollection": "{{user}}에게 컬렉션 “{{name}}” 전체에 대한 읽기 권한이 부여됩니다.",
-      "approveBodyRecord": "{{user}}에게 이 레코드에 대한 읽기 권한이 부여됩니다.",
-      "cancel": "취소",
-      "alreadyDecided": "이미 처리된 요청입니다.",
-      "someone": "누군가",
-      "alreadyApproved": "이미 승인됨",
-      "alreadyDeclined": "이미 거부됨",
-      "forwarded": "이 레코드에 대한 액세스는 원본 시스템에서 부여됩니다."
-    }
+    "removeFailed": "알림을 제거할 수 없습니다"
   },
   "action": {
     "find": "찾기",
@@ -886,8 +870,6 @@
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
     "agentChat": "에이전트 채팅",
-    "askedBy": "{{name}}님이 질문함",
-    "askedByUnknown": "다른 사용자가 질문함",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -1489,20 +1471,7 @@
       "download": "아티팩트 다운로드",
       "downloading": "아티팩트 다운로드 중"
     },
-    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
-    "redaction": {
-      "partial": "이 답변은 접근 권한이 없는 출처를 일부 바탕으로 합니다.",
-      "hidden": "이 답변은 접근 권한이 없는 출처를 바탕으로 합니다.",
-      "sourceLabel": "접근 권한이 없는 출처",
-      "requestAccess": "접근 권한 요청",
-      "requested": "접근 권한을 요청했습니다",
-      "requestFailed": "요청을 보내지 못했습니다. 다시 시도해 주세요.",
-      "openInSource": "출처에서 열기",
-      "inlineHidden": "숨김: 접근 권한 없음",
-      "alreadyAccessible": "이미 이 출처를 열 수 있습니다. 채팅을 새로고침하세요.",
-      "detailsHidden": "도구 결과와 추론 같은 세부 정보는 공유 보기에서 숨겨집니다.",
-      "collectionLabel": "이 출처가 포함된 컬렉션에 대한 접근 권한 요청"
-    }
+    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -5411,10 +5380,6 @@
         "label": "보기 가능",
         "description": "보기 권한만"
       }
-    },
-    "chatRoles": {
-      "writer": "대화를 보고 메시지를 보낼 수 있습니다. 답변은 본인의 접근 권한을 사용합니다.",
-      "reader": "대화를 보기만 할 수 있습니다."
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",

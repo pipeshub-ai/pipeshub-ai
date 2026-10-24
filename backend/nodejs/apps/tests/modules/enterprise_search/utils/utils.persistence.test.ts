@@ -139,23 +139,6 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(insert.called).to.equal(false)
     })
 
-    it('adds to an answer the attachments of the question just before it, not of an earlier one', async () => {
-      const store = new InMemoryChatStore()
-      store.install()
-      const owner = new mongoose.Types.ObjectId()
-      const session = store.addSession({ orgId: new mongoose.Types.ObjectId(), userId: owner, initiator: owner, title: 't' })
-      store.addMessage(session, { messageType: 'user_query', content: 'first', attachments: [{ recordId: 'r-first' }] })
-      store.addMessage(session, { messageType: 'bot_response', content: 'a1', sourceRecordIds: ['r-first'] })
-      store.addMessage(session, { messageType: 'user_query', content: 'second', attachments: [{ recordId: 'r-second' }] })
-
-      // The answer is appended on its own, so its question is looked up by seq.
-      await appendMessages(session._id, session.orgId, [
-        { messageType: 'bot_response', content: 'a2', sourceRecordIds: ['cited'] } as unknown as IMessage,
-      ])
-
-      expect(store.messagesOf(session._id).at(-1)?.sourceRecordIds).to.deep.equal(['cited', 'r-second'])
-    })
-
     it('allocates against the given session id only', async () => {
       const sessionId = new mongoose.Types.ObjectId()
       const { allocate } = stubAppend(3)
