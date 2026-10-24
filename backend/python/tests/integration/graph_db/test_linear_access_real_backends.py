@@ -110,19 +110,19 @@ class _Env:
         await connector.run_sync()
         self.ws.tick(5 * 60_000)  # syncs run minutes apart; the connector re-reads a short overlap
 
-    async def full_sync(self, *, complete: bool = True) -> None:
+    async def full_sync(self, *, owes_retry: bool = False) -> None:
         """A full sync as the platform runs one, which every filter change asks for: the
         checkpoints are forgotten, the connector syncs, then the platform unlinks every
-        node that sync did not write. A sync that skipped part of the source
-        (``complete=False``) unlinks nothing and owes the platform one more full sync."""
+        node that sync did not write. A sync that skipped part of the source unlinks nothing
+        and owes the platform one more full sync (``owes_retry``), unless it was that retry."""
         connector = await self._connector()
         await self.graph.delete_sync_points_by_connector_id(connector_id=self.connector_id)
         processor, seen = _begin_full_sync_run(connector, self.connector_id)
         assert seen is not None
         try:
             await self.sync()
-            owes_nothing = await _unlink_what_full_sync_missed(connector, self.connector_id, self.graph, logger, seen)
-            assert owes_nothing is complete
+            done = await _unlink_what_full_sync_missed(connector, self.connector_id, self.graph, logger, seen)
+            assert done is not owes_retry
         finally:
             processor.end_full_sync_run(self.connector_id, seen)
 
@@ -509,7 +509,9 @@ async def test_a_full_sync_that_fails_partway_takes_no_access_away(env: _Env) ->
     await env.assert_matches_linear()
 
     ws.failing["issues"] = lambda variables: bool(variables.get("after"))  # every later page, every retry
-    await env.full_sync(complete=False)
+    await env.full_sync(owes_retry=True)  # the first partial sync owes one retry
+    await env.assert_matches_linear()
+    await env.full_sync()  # a source that keeps failing owes no second retry
     del ws.failing["issues"]
 
     await env.assert_matches_linear()
