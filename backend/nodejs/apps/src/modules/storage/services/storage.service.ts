@@ -1,4 +1,11 @@
-import { Document, FilePayload, StorageServiceResponse } from "../types/storage.service.types";
+import type { FileHandle } from 'fs/promises';
+import {
+  Document,
+  FilePayload,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
+  StorageServiceResponse,
+} from '../types/storage.service.types';
 
 /**
  * Interface for a storage service to handle file operations in different storage systems.
@@ -190,4 +197,26 @@ export interface StorageServiceInterface {
     prefix: string,
     documentIds: string[],
   ): Promise<Map<string, string>>;
+
+  /**
+   * Signs a URL for reading or writing one object by its storage key. Only the
+   * remote vendors implement it; local storage is served through the API.
+   */
+  signObjectUrl?(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl>;
+
+  /**
+   * Writes bytes at a storage key, replacing any file already there. Local only.
+   */
+  writeObject?(storageKey: string, data: Buffer): Promise<void>;
+
+  /**
+   * Opens a storage key for reading, checked to be a regular file inside the
+   * mount; null when it does not exist. The caller closes the handle. Local only.
+   */
+  openObject?(
+    storageKey: string,
+  ): Promise<{ handle: FileHandle; size: number } | null>;
 }

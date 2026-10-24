@@ -833,6 +833,44 @@ components:
           type: integer
           minimum: 0
           description: Number of documents removed.
+    ArtifactFilePath:
+      type: string
+      description: |
+        A file inside an artifact set. Only these are accepted: `manifest.json`,
+        `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
+        `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
+        Anything else, including `..`, a leading `/` or a backslash, is refused.
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+    ArtifactFileUrl:
+      type: object
+      required:
+        - path
+        - method
+        - url
+        - headers
+      properties:
+        path:
+          $ref: '#/components/schemas/ArtifactFilePath'
+        method:
+          type: string
+          enum:
+            - GET
+            - PUT
+        url:
+          type: string
+          description: |
+            A signed S3 or Azure URL, or on local storage this API's
+            `/document/internal/artifacts/{documentId}/files/{path}` route.
+            A credential: do not log it.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Headers to send with the request, exactly as given: the signed
+            `Content-Type` on S3, `x-ms-blob-type` on Azure, the storage token
+            on local storage.
     # ==================== COMMON SCHEMAS ====================
 
     ArtifactGalleryItem:
@@ -27572,6 +27610,331 @@ paths:
           description: The body is not a list of 1 to 500 ids.
         '401':
           description: The storage scoped token was missing or invalid.
+  /document/internal/artifacts/presign:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get upload URLs for every file of one content revision (service-to-service)
+      description: |
+        Finds or creates the one document that stands for this content revision
+        of the virtual record, and returns an upload URL for each file. Its files
+        live under `record-revisions/{virtualRecordId}/{rev}/` in the organisation, which
+        comes from the storage token only. Calling again for the same revision
+        returns the same document, so the call is safe to repeat. URLs expire
+        after 15 minutes.
+      operationId: internalPresignArtifactSet
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The revision and the files to upload.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - virtualRecordId
+                - rev
+                - files
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                virtualRecordId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{1,128}$'
+                rev:
+                  type: string
+                  pattern: '^[0-9a-f]{8,64}$'
+                  description: The content revision, as lowercase hex.
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - contentType
+                    properties:
+                      path:
+                        $ref: '#/components/schemas/ArtifactFilePath'
+                      contentType:
+                        type: string
+                        maxLength: 127
+                        description: The file's media type, e.g. `application/json`.
+      responses:
+        '200':
+          description: The revision's document and one upload URL per file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - documentId
+                  - virtualRecordId
+                  - rev
+                  - root
+                  - expiresInSeconds
+                  - files
+                properties:
+                  documentId:
+                    type: string
+                  virtualRecordId:
+                    type: string
+                  rev:
+                    type: string
+                  root:
+                    type: string
+                    description: The storage key prefix holding the revision's files.
+                  expiresInSeconds:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactFileUrl'
+        '400':
+          description: The body is not valid (an id, a revision, or a path that is not accepted).
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '403':
+          description: The body names a different organisation than the storage token. Nothing was created.
+  /document/internal/artifacts:
+    get:
+      tags:
+        - Internal Storage
+      summary: List the stored content revisions of a virtual record (service-to-service)
+      description: Lists the artifact-set documents of one virtual record in the caller's organisation, oldest first.
+      operationId: internalListArtifactSets
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: The revisions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - revisions
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - documentId
+                        - virtualRecordId
+                        - rev
+                      properties:
+                        documentId:
+                          type: string
+                        virtualRecordId:
+                          type: string
+                        rev:
+                          type: string
+                        storageVendor:
+                          type: string
+                        createdAt:
+                          type: integer
+                          description: Milliseconds since the epoch.
+                        updatedAt:
+                          type: integer
+                          description: Milliseconds since the epoch.
+        '400':
+          description: The virtual record id is missing or not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/artifacts/{documentId}:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a content revision and all its files (service-to-service)
+      description: |
+        Removes every file under the revision's root, then its document. A
+        revision that is already gone counts as purged, so the call is safe to
+        repeat. If the files cannot be removed the document is kept and the call
+        answers 503, so it can be retried.
+      operationId: internalPurgeArtifactSet
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: The files could not be removed; the document was kept so the removal can be retried.
+  /document/internal/artifacts/{documentId}/read-urls:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get download URLs for files of one content revision (service-to-service)
+      description: |
+        Returns a download URL for each requested file of the revision. On S3
+        and Azure these are signed URLs that expire after 15 minutes; on local
+        storage they point at this API's file route. Each supports HTTP Range.
+      operationId: internalGetArtifactReadUrls
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The files to read.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - paths
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                paths:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    $ref: '#/components/schemas/ArtifactFilePath'
+      responses:
+        '200':
+          description: One download URL per path.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - documentId
+                  - expiresInSeconds
+                  - files
+                properties:
+                  documentId:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactFileUrl'
+        '400':
+          description: The document id or a path is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '403':
+          description: The body names a different organisation than the storage token.
+        '404':
+          description: No such revision in the caller's organisation.
+  /document/internal/artifacts/{documentId}/files/{path}:
+    parameters:
+      - $ref: '#/components/parameters/InternalDocumentId'
+      - name: path
+        in: path
+        required: true
+        description: The file inside the revision; may contain `/`.
+        schema:
+          $ref: '#/components/schemas/ArtifactFilePath'
+    put:
+      tags:
+        - Internal Storage
+      summary: Write one file of a content revision on local storage (service-to-service)
+      description: |
+        The local-storage counterpart of a signed upload URL, as returned by
+        presign. Replaces the file whole or leaves the old one in place. Only
+        answered when storage is local.
+      operationId: internalPutArtifactFile
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The file's bytes.
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: The file was stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - path
+                  - size
+                properties:
+                  path:
+                    type: string
+                  size:
+                    type: integer
+        '400':
+          description: The document id or path is not valid, the body was not sent as bytes, or storage is not local.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such revision in the caller's organisation.
+        '413':
+          description: The file is larger than 100 MB.
+        '503':
+          description: The file could not be saved. Safe to retry.
+    get:
+      tags:
+        - Internal Storage
+      summary: Read one file of a content revision on local storage (service-to-service)
+      description: |
+        The local-storage counterpart of a signed download URL, as returned by
+        read-urls. Supports HTTP Range. Only answered when storage is local.
+      operationId: internalGetArtifactFile
+      security:
+        - scopedToken: []
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: The requested byte range of the file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: The document id or path is not valid, or storage is not local.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such revision or file.
+        '416':
+          description: The requested range is outside the file.
   /document/internal/{documentId}/download:
     get:
       tags:

@@ -348,4 +348,86 @@ describe('Storage adapters against a real storage server', function () {
     const got = await download(documentFor(target, done.data!.url));
     expect(got.equals(Buffer.concat(partBodies))).to.equal(true);
   });
+
+  describe('artifact sets', () => {
+    // One content revision's files, as the presign route lays them out.
+    const revisionRoot = (rev: string): string => `${orgPrefix}/record-revisions/${runId}-vr/${rev}`
+    const files: Array<{ path: string; contentType: string; body: Buffer }> = [
+      { path: 'manifest.json', contentType: 'application/json', body: Buffer.from('{"rev":"r"}') },
+      { path: 'blocks/part-0000.jsonl', contentType: 'application/x-ndjson', body: Buffer.from('{"i":0}\n{"i":1}\n') },
+      { path: `images/${'d'.repeat(64)}.png`, contentType: 'image/png', body: randomBytes(70 * 1024) },
+      { path: 'enrich/summary@1.json', contentType: 'application/json', body: Buffer.from('{}') },
+    ]
+
+    async function putRevision(root: string): Promise<void> {
+      for (const f of files) {
+        const signed = await target.adapter.signObjectUrl!(`${root}/${f.path}`, {
+          method: 'PUT',
+          contentType: f.contentType,
+          expiresInSeconds: 900,
+        })
+        const put = await fetch(signed.url, { method: 'PUT', body: f.body, headers: signed.headers })
+        expect(put.status, `${f.path}: ${await put.text()}`).to.be.oneOf([200, 201])
+      }
+    }
+
+    async function readUrl(root: string, filePath: string): Promise<{ url: string; headers: Record<string, string> }> {
+      return target.adapter.signObjectUrl!(`${root}/${filePath}`, { method: 'GET', expiresInSeconds: 900 })
+    }
+
+    it('accepts uploads to signed PUT URLs sent with their headers, and serves them back through signed GET URLs', async () => {
+      const root = revisionRoot('0123456789abcdef')
+      await putRevision(root)
+
+      for (const f of files) {
+        const signed = await readUrl(root, f.path)
+        const res = await fetch(signed.url, { headers: signed.headers })
+        expect(res.status, f.path).to.equal(200)
+        expect(res.headers.get('content-type'), f.path).to.equal(f.contentType)
+        expect(Buffer.from(await res.arrayBuffer()).equals(f.body), f.path).to.equal(true)
+      }
+    })
+
+    it('serves a byte range through a signed GET URL', async () => {
+      const root = revisionRoot('1111111111111111')
+      await putRevision(root)
+      const image = files[2]!
+
+      const signed = await readUrl(root, image.path)
+      const res = await fetch(signed.url, { headers: { ...signed.headers, range: 'bytes=100-199' } })
+
+      expect(res.status).to.equal(206)
+      expect(Buffer.from(await res.arrayBuffer()).equals(image.body.subarray(100, 200))).to.equal(true)
+    })
+
+    it('removes every file of a revision with deleteTree, and only that revision', async () => {
+      const gone = revisionRoot('2222222222222222')
+      const kept = revisionRoot('22222222222222220000')
+      await putRevision(gone)
+      await putRevision(kept)
+
+      await target.adapter.deleteTree!(gone)
+
+      for (const f of files) {
+        expect(await target.adapter.objectExistsAtPath!(`${gone}/${f.path}`), `${gone}/${f.path}`).to.equal(false)
+        expect(await target.adapter.objectExistsAtPath!(`${kept}/${f.path}`), `${kept}/${f.path}`).to.equal(true)
+      }
+      const signed = await readUrl(gone, 'manifest.json')
+      expect((await fetch(signed.url)).status).to.equal(404)
+    })
+
+    it('refuses a signed PUT URL once it has expired', async () => {
+      const signed = await target.adapter.signObjectUrl!(`${revisionRoot('3333333333333333')}/record.json`, {
+        method: 'PUT',
+        contentType: 'application/json',
+        expiresInSeconds: 1,
+      })
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+
+      const put = await fetch(signed.url, { method: 'PUT', body: Buffer.from('{}'), headers: signed.headers })
+
+      expect(put.status).to.equal(403)
+    })
+  });
 });
+

@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -23,6 +23,11 @@ import {
   RelocateVirtualRecordsSchema,
   MissingDocumentsSchema,
   FlatRecordDocumentsQuery,
+  PresignArtifactsSchema,
+  ArtifactReadUrlsSchema,
+  ArtifactFileParams,
+  ArtifactSetParams,
+  ListArtifactSetsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
@@ -35,6 +40,7 @@ import { StorageController } from '../controllers/storage.controller';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import { ARTIFACT_FILE_MAX_BYTES } from '../constants/constants';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -117,6 +123,113 @@ export function createStorageRouter(container: Container): Router {
           res,
           next,
         );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Artifact sets: one document per content revision of a virtual record,
+  // holding many files. Registered ahead of /internal/:documentId, which would
+  // otherwise take "artifacts" for a document id.
+  router.post(
+    '/internal/artifacts/presign',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PresignArtifactsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.presignArtifactSet(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/artifacts',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ListArtifactSetsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.listArtifactSets(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/artifacts/:documentId/read-urls',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ArtifactReadUrlsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.getArtifactReadUrls(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.put(
+    '/internal/artifacts/:documentId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    // The path is checked before the body is read.
+    ValidationMiddleware.validate(ArtifactFileParams),
+    express.raw({ type: () => true, limit: ARTIFACT_FILE_MAX_BYTES }),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.putArtifactFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/artifacts/:documentId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ArtifactFileParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.getArtifactFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/artifacts/:documentId',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ArtifactSetParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgeArtifactSet(req, res, next);
       } catch (error) {
         next(error);
       }

@@ -8,6 +8,8 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -452,6 +454,38 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate presigned URL', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async signObjectUrl(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl> {
+    try {
+      if (options.method === 'PUT') {
+        // Sent by the uploader, it becomes the stored object's Content-Type.
+        const contentType = options.contentType ?? 'application/octet-stream';
+        const url = await this.s3.getSignedUrlPromise('putObject', {
+          Bucket: this.bucketName,
+          Key: storageKey,
+          ContentType: contentType,
+          Expires: options.expiresInSeconds,
+        });
+        return { url, headers: { 'Content-Type': contentType } };
+      }
+      const url = await this.s3.getSignedUrlPromise('getObject', {
+        Bucket: this.bucketName,
+        Key: storageKey,
+        Expires: options.expiresInSeconds,
+      });
+      return { url, headers: {} };
+    } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new PresignedUrlError('Failed to generate signed URL', {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
     }

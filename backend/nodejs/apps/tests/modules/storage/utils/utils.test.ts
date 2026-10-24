@@ -3,6 +3,8 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import {
   parseBoolean,
+  getArtifactSetFolder,
+  getArtifactSetRoot,
   isValidStorageVendor,
   getExtension,
   hasExtension,
@@ -904,6 +906,21 @@ describe('storage/utils/utils - additional coverage', () => {
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
+      }
+    })
+  })
+
+  describe('artifact set paths', () => {
+    it('roots a revision at record-revisions/{vrid}/{rev} in the org', () => {
+      expect(getArtifactSetFolder('org1', 'vr-1')).to.equal('org1/PipesHub/record-revisions/vr-1')
+      expect(getArtifactSetRoot('org1', 'vr-1', '0123abcd')).to.equal('org1/PipesHub/record-revisions/vr-1/0123abcd')
+    })
+
+    it('keeps revisions out of every records/ path, where a flat record move would reach them', () => {
+      const root = getArtifactSetRoot('org1', 'vr-1', '0123abcd')
+      for (const recordPath of ['records', 'records/vr-1', 'records/vr-1/0123abcd']) {
+        expect(root.startsWith(`${getFullDocumentPath('org1', recordPath)}/`), recordPath).to.be.false
+        expect(root, recordPath).to.not.equal(getFullDocumentPath('org1', recordPath))
       }
     })
   })
