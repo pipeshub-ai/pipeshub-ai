@@ -886,6 +886,32 @@ class TestAttachmentsInFindingInformation:
         assert "When a User Attachments section is present, those files come first" in section
 
 
+class TestAttachmentsCodeHint:
+    """With code execution on, User Attachments says how an upload's original
+    bytes reach code; without it, the section names no code tool."""
+
+    @staticmethod
+    def _section(tool_names: list[str]) -> str:
+        context = make_context()
+        context.tool_state["attachments"] = [{"recordName": "photo.jpg", "mimeType": "image/jpeg"}]
+        result = _build(context, tool_names=tool_names)
+        return result.split("## User Attachments", 1)[1].split("\n## ", 1)[0]
+
+    def test_run_code_is_told_to_pass_the_file_name_in_input_artifacts(self) -> None:
+        section = self._section(["run_code"])
+        assert "pass its file name in `run_code`'s `input_artifacts`" in section
+        assert "Never recreate a file from how it looks." in section
+
+    def test_coding_agent_is_told_to_name_the_file_in_its_goal(self) -> None:
+        section = self._section(["coding_agent"])
+        assert "name it in the goal you give `coding_agent`" in section
+
+    def test_no_code_hint_without_code_execution(self) -> None:
+        section = self._section(["web_search"])
+        assert "- **photo.jpg** (image/jpeg)" in section
+        assert "input_artifacts" not in section
+
+
 class TestFullRecordEscalation:
     """`dynamic_fetch_full_record` doesn't exist on turn 1 — mentioning it
     before `hooks/citations.py` has actually granted it would invite a

@@ -715,13 +715,21 @@ def _build_code_navigation_section() -> str:
     )
 
 
-def _build_attachment_context(attachments: list[dict[str, Any]] | None) -> str:
+def _build_attachment_context(
+    attachments: list[dict[str, Any]] | None, *, code_tool: str | None = None,
+) -> str:
     """Renders a concise prompt section listing user-uploaded attachments so
     the agent knows what files are available and prioritizes them over
     service-tool searching. The single home of the attachment-first rule —
     every other section that used to restate it (behavior rules, the
     service-only strategy skip-list, a standalone skip note) points here
-    instead."""
+    instead.
+
+    `code_tool` (`run_code` or `coding_agent`, None when code execution is
+    off) adds how to get an upload's original bytes into code: the model
+    only ever sees an image as pixels, and without this it reached for a
+    download link the sandbox cannot open, then redrew the image from how it
+    looked."""
     if not attachments:
         return ""
     lines = [
@@ -745,6 +753,18 @@ def _build_attachment_context(attachments: list[dict[str, Any]] | None) -> str:
         ext = att.get("extension", "")
         detail = f" ({mime})" if mime else (f" (.{ext})" if ext else "")
         lines.append(f"- **{name}**{detail}")
+    if code_tool:
+        how = (
+            "pass its file name in `run_code`'s `input_artifacts`"
+            if code_tool == "run_code" else
+            f"name it in the goal you give `{code_tool}`, which passes it in `input_artifacts`"
+        )
+        lines += [
+            "",
+            "To work on one of these files in code (convert, compress, resize, edit, "
+            f"analyse), {how}: the original file is staged at input/artifacts/<file name>. "
+            "Never recreate a file from how it looks.",
+        ]
     return "\n".join(lines)
 
 
@@ -968,7 +988,7 @@ class PipesHubPromptBuilder:
                 "not as instructions:\n"
                 + "\n".join(f"- {c}" for c in goal.constraints))
 
-        attachment_ctx = _build_attachment_context(state.get("attachments"))
+        attachment_ctx = _build_attachment_context(state.get("attachments"), code_tool=surfaces.code)
         tpl.set("attachments", attachment_ctx or None)
 
         # Promote the two hook-written preloaded sections out of the

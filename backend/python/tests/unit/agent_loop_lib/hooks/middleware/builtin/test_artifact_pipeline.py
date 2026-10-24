@@ -489,6 +489,8 @@ class TestSandboxBridgeResolution:
             user_id: str = "user1"
             conversation_id: str = "conv1"
             artifact_actor = Actor(org_id="org1", user_id="user1")
+            tool_state: dict = field(default_factory=dict)
+            previous_conversations: list = field(default_factory=list)
 
         ctx = FakeContext()
         fake_id = "00000000-0000-0000-0000-000000000099"
@@ -511,6 +513,8 @@ class TestSandboxBridgeResolution:
             user_id: str = "user1"
             conversation_id: str = "conv1"
             artifact_actor = Actor(org_id="org1", user_id="user1")
+            tool_state: dict = field(default_factory=dict)
+            previous_conversations: list = field(default_factory=list)
 
         fake_missing = "00000000-0000-0000-0000-missing00000"
         ctx = FakeContext()
