@@ -7,11 +7,11 @@ the entity the connector should have written. That direction matters: the test t
 validates source → graph, not graph → graph.
 
 Where the connector delegates to a shared platform mapper (``map_priority``,
-``map_type``) this reuses the same mapper, exactly as ``JiraExpected`` reuses
-``ValueMapper``. Where the mapping is a GitHub-specific decision — open/closed plus
-``state_reason`` → Status, ``merged_at`` → DONE — it is re-derived here rather than
-imported, so a change to the connector's own rule shows up as a test failure instead
-of silently agreeing with itself.
+``map_type``, ``detect_language``, ``classify_file_role``) this reuses the same
+mapper, exactly as ``JiraExpected`` reuses ``ValueMapper``. Where the mapping is a
+GitHub-specific decision — open/closed plus ``state_reason`` → Status, ``merged_at``
+→ DONE — it is re-derived here rather than imported, so a change to the connector's
+own rule shows up as a test failure instead of silently agreeing with itself.
 
 Fields the connector never sets are left at their model defaults, so they compare
 equal against whatever the processor wrote (the same convention ``jira_expected``
@@ -44,6 +44,8 @@ from app.models.entities import (
     Status,
     TicketRecord,
 )
+from app.modules.parsers.code_parser.file_role import classify_file_role
+from app.modules.parsers.code_parser.lang_config import detect_language
 from app.utils.time_conversion import datetime_to_epoch_ms
 
 # The connector never sets these; the processor stamps them with wall-clock values at
@@ -312,13 +314,20 @@ class GitHubExpected:
         repo: dict[str, Any],
         path: str,
         sha: str,
+        size: Optional[int],
+        commit_sha: str,
         connector_id: str,
     ) -> CodeFileRecord:
-        """``CodeFileRecord`` for a blob at ``path``.
+        """``CodeFileRecord`` for a blob at ``path`` as a full sync writes it.
 
         External ids for code carry a LEADING slash (``/{repo_id}/blob/{path}``) while
         issues and PRs do not. Both are anchored on the numeric repo id so they survive
         a repo rename.
+
+        ``size`` is the blob's size from the Git tree listing and ``commit_sha`` the
+        default branch's head commit the sync read the tree at. The link is pinned
+        to that commit, not the branch, so a citation keeps pointing at the lines it
+        quoted after the branch moves on.
         """
         name = path.rsplit("/", 1)[-1]
         raw_ext = name.rsplit(".", 1)[-1] if "." in name else ""
@@ -346,13 +355,17 @@ class GitHubExpected:
             connector_name=Connectors.GITHUB_TEAMS,
             connector_id=connector_id,
             mime_type=mime_type,
-            weburl=f"{repo['html_url']}/blob/{repo['default_branch']}/{path}",
+            weburl=f"{repo['html_url']}/blob/{commit_sha}/{path}",
+            commit_sha=commit_sha,
             inherit_permissions=True,
             preview_renderable=preview_renderable,
             # None, not "", for extensionless names like LICENSE or Dockerfile.
             extension=raw_ext.lower() or None,
             file_path=path,
             file_hash=str(sha),
+            size_in_bytes=size,
+            language=detect_language(name),
+            file_role=classify_file_role(path, name).value,
         )
 
     @staticmethod

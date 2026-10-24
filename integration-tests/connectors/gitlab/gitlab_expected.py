@@ -248,8 +248,8 @@ class GitLabExpected:
         ``webPath``'s directory segment from ``/-/blob/`` to ``/-/tree/`` — and that
         rewrite is the thing worth pinning.
 
-        ``language`` and ``file_role`` are populated by this connector; the GitHub
-        one leaves both null.
+        ``language`` and ``file_role`` are populated by this connector. A full sync
+        lists files at ``HEAD``, so ``commit_sha`` stays null until a file changes.
         """
         file_name = path.rsplit("/", 1)[-1]
         extension = blob_extension(file_name)

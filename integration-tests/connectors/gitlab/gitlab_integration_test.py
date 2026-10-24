@@ -985,9 +985,8 @@ class TestGitLabCodeFiles:
     ) -> None:
         """TC-GL-CODE-001: CodeFileRecord fields, including the extension-less case.
 
-        ``language`` and ``file_role`` are populated here — GitHub leaves both null —
-        so a regression that drops them is invisible in record counts and only shows up
-        as code search quietly losing its language filter.
+        A regression that drops ``language`` or ``file_role`` is invisible in record
+        counts and only shows up as code search quietly losing its language filter.
         """
         connector_id = gitlab_connector["connector_id"]
         primary = gitlab_connector["primary"]
