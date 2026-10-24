@@ -418,6 +418,22 @@ docker_cli_path() {
   fi
 }
 
+# Leave .env (database passwords, signing secrets) readable by its owner only.
+# Git Bash's chmod does not change an NTFS ACL, so a file that inherits a
+# shared folder's ACL stays readable by other users; replace the ACL instead.
+restrict_env_file() { # args: path -> non-zero when access could not be limited
+  if ${IS_WINDOWS:-false}; then
+    command -v icacls >/dev/null 2>&1 || return 1
+    local win_path="$1"
+    command -v cygpath >/dev/null 2>&1 && win_path="$(cygpath -w "$1")"
+    # MSYS would rewrite /inheritance:r and /grant:r as paths.
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+      icacls "$win_path" /inheritance:r /grant:r "${USERNAME:-$(whoami)}:F" >/dev/null 2>&1
+  else
+    chmod 600 "$1" 2>/dev/null
+  fi
+}
+
 apply_windows_docker_cli_compat() {
   ${IS_WINDOWS:-false} || return 0
   # Without cygpath the host paths below would reach docker.exe as /c/...,
@@ -1494,12 +1510,11 @@ fi  # end wizard
 
 # Reused .env files from older installs may still be 644. Always lock them
 # before we print secrets in the summary or start containers.
-if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE" 2>/dev/null; then
+if [[ -f "$ENV_FILE" ]] && ! restrict_env_file "$ENV_FILE"; then
   if $IS_WINDOWS; then
-    warn "Could not restrict permissions on $ENV_FILE (common on Git Bash/NTFS). It contains secrets — keep it private."
-  else
-    die "Could not restrict permissions on $ENV_FILE"
+    die "Could not restrict permissions on $ENV_FILE. It holds secrets: in its Properties > Security > Advanced, disable inheritance, leave only your account, and re-run."
   fi
+  die "Could not restrict permissions on $ENV_FILE"
 fi
 
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.

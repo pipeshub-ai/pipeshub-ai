@@ -217,9 +217,13 @@ check "lost graph password guidance" "$inner" "cannot be recovered"
 check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
-check ".env chmod is guarded" "$inner" '&& ! chmod 600 "$ENV_FILE" 2>/dev/null; then'
+check ".env restriction is guarded" "$inner" '&& ! restrict_env_file "$ENV_FILE"; then'
 check ".env chmod failure calls die" "$inner" 'die "Could not restrict permissions on $ENV_FILE"'
-check ".env chmod failure is non-fatal on Git Bash" "$inner" "common on Git Bash/NTFS"
+if grep -Fq "common on Git Bash/NTFS" "$INNER_INSTALLER"; then
+  fail ".env restriction failure is fatal on Git Bash too"
+else
+  pass ".env restriction failure is fatal on Git Bash too"
+fi
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
 check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
 # Compose progress and the health spinner share one _is_tty. The mapping
@@ -586,6 +590,10 @@ IS_WINDOWS=false
 check "non-Windows docker_cli_path is identity" "$(docker_cli_path /tmp/pipeshub_hc.json)" "/tmp/pipeshub_hc.json"
 eval "$(extract_fn apply_windows_docker_cli_compat "$INNER_INSTALLER")"
 warn() { :; }
+# A caller's own MSYS settings must not decide these scenarios.
+_saved_msys_no_pathconv="${MSYS_NO_PATHCONV-__unset__}"
+_saved_msys2_arg_conv_excl="${MSYS2_ARG_CONV_EXCL-__unset__}"
+unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
 _saved_path="$PATH"
 _empty_dir="$(mktemp -d)"
 PATH="$_empty_dir"
@@ -611,6 +619,32 @@ check "Git Bash converts the env file path" "$ENV_FILE" "C:/win/c/pipeshub/.env"
 check "Git Bash converts every -f in COMPOSE_FILES" "${COMPOSE_FILES[*]}" "-f C:/win/c/pipeshub/docker-compose.yml -f C:/win/c/pipeshub/override.yml"
 PATH="$_saved_path"; rm -rf "$_shim_dir"
 unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
+[[ "$_saved_msys_no_pathconv" == __unset__ ]] || export MSYS_NO_PATHCONV="$_saved_msys_no_pathconv"
+[[ "$_saved_msys2_arg_conv_excl" == __unset__ ]] || export MSYS2_ARG_CONV_EXCL="$_saved_msys2_arg_conv_excl"
+
+echo "== In-tree installer: .env is limited to its owner =="
+eval "$(extract_fn restrict_env_file "$INNER_INSTALLER")"
+_env_dir="$(mktemp -d)"
+IS_WINDOWS=false
+printf 'SECRET=x\n' > "$_env_dir/.env"; chmod 644 "$_env_dir/.env"
+restrict_env_file "$_env_dir/.env"
+check "non-Windows .env is chmod 600" "$(ls -l "$_env_dir/.env" | cut -c1-10)" "-rw-------"
+_saved_path="$PATH"
+_shim_dir="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nprintf "%%s|" "$@" > "%s/icacls.args"\nprintf "%%s" "${MSYS_NO_PATHCONV:-}" > "%s/icacls.msys"\nexit "${ICACLS_EXIT:-0}"\n' "$_shim_dir" "$_shim_dir" > "$_shim_dir/icacls"
+chmod +x "$_shim_dir/icacls"
+PATH="$_shim_dir:$PATH"
+IS_WINDOWS=true
+USERNAME=alice
+if restrict_env_file "C:/pipeshub/.env"; then pass "Git Bash .env ACL replaced"; else fail "Git Bash .env ACL replaced"; fi
+check "Git Bash drops inherited ACEs and grants only the user" "$(cat "$_shim_dir/icacls.args")" "C:/pipeshub/.env|/inheritance:r|/grant:r|alice:F|"
+check "icacls switches are not path-converted" "$(cat "$_shim_dir/icacls.msys")" "1"
+if ICACLS_EXIT=5 restrict_env_file "C:/pipeshub/.env"; then fail "failed icacls is reported"; else pass "failed icacls is reported"; fi
+_empty_dir="$(mktemp -d)"
+PATH="$_empty_dir"
+if restrict_env_file "C:/pipeshub/.env"; then fail "missing icacls is reported"; else pass "missing icacls is reported"; fi
+PATH="$_saved_path"; rm -rf "$_shim_dir" "$_empty_dir" "$_env_dir"
+unset USERNAME
 IS_WINDOWS=false
 if [[ "$(grep -Fc '_is_tty=false; [[ -t 1 ]] && _is_tty=true' "$INNER_INSTALLER")" -eq 1 ]]; then
   pass "TTY flag assigned once"
