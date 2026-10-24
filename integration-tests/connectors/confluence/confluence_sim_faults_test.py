@@ -42,6 +42,7 @@ from connectors.confluence.confluence_v1_test_utils import (
 from connectors.confluence.constants import connector_base_url
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.second_user import create_second_user, delete_second_user
+from helper.second_user import log_in as log_in_user
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 logger = logging.getLogger("confluence-sim-faults")
@@ -143,7 +144,9 @@ async def test_failed_space_list_notifies_creator_and_admins_and_removes_nothing
     try:
         resp = pipeshub_client.request("PUT", f"/api/v1/users/{admin.user_id}", json={"role": "admin"})
         assert resp.status_code < 300, f"could not make the second user an admin: {resp.status_code} {resp.text[:200]}"
-        admin_inbox = sim.Inbox(pipeshub_client.base_url, name, token=admin.token)
+        # A role change ends the user's sessions, so the new admin logs in again.
+        admin_token = log_in_user(pipeshub_client.base_url, admin.email, pipeshub_client.timeout_seconds)
+        admin_inbox = sim.Inbox(pipeshub_client.base_url, name, token=admin_token)
         member_inbox = sim.Inbox(pipeshub_client.base_url, name, token=member.token)
 
         no_spaces = {"match": {"method": "GET", "path_regex": "^/wiki/api/v2/spaces$"},
@@ -225,14 +228,21 @@ def _download(att: dict[str, Any]) -> bytes:
     return resp.content
 
 
-async def _embedded_image(snapshot: SpaceContentSnapshot, graph_provider: Any, cid: str) -> tuple[str, dict] | None:
-    """A page image inlined into its page's body, so it has no attachment record of its own."""
+async def _embedded_image(
+    snapshot: SpaceContentSnapshot, graph_provider: Any, cid: str,
+) -> tuple[str, dict, bytes] | None:
+    """A page image inlined into its page's body, so it has no attachment record of its own, with its
+    bytes to put back. Images the simulator cannot serve are passed over: they could not be restored."""
     for item in snapshot.pages:
         for att in sim.attachments(item.id):
             media_type = (att.get("extensions") or {}).get("mediaType", "")
-            if media_type.startswith("image/") and await sim.find_record(
-                    graph_provider, cid, sim.attachment_external_ids(att["id"])) is None:
-                return item.id, att
+            if not media_type.startswith("image/") or await sim.find_record(
+                    graph_provider, cid, sim.attachment_external_ids(att["id"])) is not None:
+                continue
+            try:
+                return item.id, att, _download(att)
+            except AssertionError as e:
+                logger.info("passing over image %s: %s", att["id"], e)
     return None
 
 
@@ -247,9 +257,8 @@ async def test_oversized_embedded_image_is_kept_as_an_attachment(
     found = await _embedded_image(confluence_connector["content_snapshot"], graph_provider, cid)
     if found is None:
         pytest.skip(f"no page of space {confluence_connector['space_key']} embeds an image")
-    page_id, att = found
+    page_id, att, original = found
     media_type = att["extensions"]["mediaType"]
-    original = _download(att)
     try:
         big = b"\x89PNG\r\n\x1a\n" + bytes(11 * 1024 * 1024)
         sim.upload(page_id, att["title"], big, media_type, new_version=True)
