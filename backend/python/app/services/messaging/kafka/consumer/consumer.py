@@ -12,9 +12,9 @@ from app.services.messaging.error_classifier import MessageErrorClassifier, Mess
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.utils.request_context import (
+    bind_context,
     context_from_envelope,
     reset_context,
-    set_context,
 )
 
 if TYPE_CHECKING:
@@ -226,8 +226,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             if self.message_handler and parsed_message:
                 envelope = parsed_message if isinstance(parsed_message, dict) else {}
-                ctx = context_from_envelope(envelope)
-                token = set_context(ctx.root_id)
+                token = bind_context(context_from_envelope(envelope))
                 try:
                     stream_message = StreamMessage(**parsed_message)
                     result = await self.message_handler(stream_message)

@@ -18,6 +18,7 @@ import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import { setContextOrgId } from '../context/request-context';
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -84,6 +85,8 @@ export class AuthMiddleware {
   ): Promise<void> {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
+    // Context middleware runs before auth, so this is the first point the org is known.
+    setContextOrgId(decoded.orgId);
 
     const refusal = await findSessionRefusal(decoded, this.logger);
     if (refusal) {
@@ -272,6 +275,7 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+    setContextOrgId(orgId);
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
     if (
@@ -308,6 +312,7 @@ export class AuthMiddleware {
 
         const userId = decoded?.userId;
         const orgId = decoded?.orgId;
+        setContextOrgId(orgId);
 
         this.logger.debug(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
 

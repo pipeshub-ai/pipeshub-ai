@@ -26,6 +26,7 @@ from app.api.middlewares.token_policy import (
 )
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.utils.request_context import set_context_org
 
 # Marks the dependency that states which token classes a route accepts; the route
 # inventory test requires one on every route so no route admits service tokens by omission.
@@ -294,6 +295,8 @@ async def authMiddleware(request: Request) -> Request:
 
         # Attach the authenticated user information to the request state
         request.state.user = payload
+        # Context middleware runs before auth, so this is the first point the org is known.
+        set_context_org(payload.get("orgId") or payload.get("org_id"))
 
         logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 

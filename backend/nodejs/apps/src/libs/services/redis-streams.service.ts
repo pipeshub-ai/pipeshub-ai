@@ -18,11 +18,9 @@ import {
 import { REQUIRED_TOPICS } from './kafka-admin.service';
 import { laneCount } from '../utils/lane.utils';
 import {
+  contextFromEnvelope,
   injectEnvelope,
   runWithRequestContext,
-  ENVELOPE_REQUEST_ID,
-  newAnonRoot,
-  sanitizeRootId,
 } from '../context/request-context';
 import {
   MESSAGING_HEALTH_MESSAGE_KEY,
@@ -44,16 +42,6 @@ function serializeValueWithTrace(value: unknown): string {
     return JSON.stringify(injectEnvelope({ ...(value as Record<string, unknown>) }));
   }
   return JSON.stringify(value);
-}
-
-/** Rebuild trace context from a consumed message value (fresh root if absent). */
-function contextFromValue(value: unknown): { rootId: string } {
-  const env = (value ?? {}) as Record<string, unknown>;
-  return {
-    rootId:
-      sanitizeRootId(env[ENVELOPE_REQUEST_ID] as string | undefined) ??
-      newAnonRoot(),
-  };
 }
 
 function isRedisXReadGroupResult(
@@ -529,7 +517,7 @@ export abstract class BaseRedisStreamsConsumerConnection
               }
 
               await runWithRequestContext(
-                contextFromValue(parsedMessage.value),
+                contextFromEnvelope(parsedMessage.value),
                 () => handler(parsedMessage),
               );
               await this.ackRedis.xack(topic, this.groupId, entryId);
@@ -702,7 +690,7 @@ export abstract class BaseRedisStreamsConsumerConnection
               }
 
               await runWithRequestContext(
-                contextFromValue(parsedMessage.value),
+                contextFromEnvelope(parsedMessage.value),
                 () => handler(parsedMessage),
               );
 

@@ -18,9 +18,8 @@ import { BadRequestError } from '../errors/http.errors';
 import {
   injectEnvelope,
   runWithRequestContext,
-  ENVELOPE_REQUEST_ID,
+  contextFromEnvelope,
   newSystemRoot,
-  sanitizeRootId,
 } from '../context/request-context';
 
 @injectable()
@@ -272,13 +271,8 @@ export abstract class BaseKafkaConsumerConnection
               value: parsedValue,
             };
 
-            // Carry the producer's trace id into consumer-side logs.
-            const envelope = (parsedValue ?? {}) as Record<string, unknown>;
-            const rootId =
-              sanitizeRootId(envelope[ENVELOPE_REQUEST_ID] as string | undefined) ??
-              newSystemRoot();
-
-            await runWithRequestContext({ rootId }, () =>
+            // Carry the producer's trace id and org into consumer-side logs.
+            await runWithRequestContext(contextFromEnvelope(parsedValue, newSystemRoot), () =>
               handler(parsedMessage),
             );
           } catch (error) {

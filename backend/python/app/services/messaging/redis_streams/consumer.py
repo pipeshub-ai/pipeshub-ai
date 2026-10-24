@@ -16,9 +16,9 @@ from app.services.distributed.interface import IRetryTracker
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import (
+    bind_context,
     context_from_envelope,
     reset_context,
-    set_context,
 )
 
 if TYPE_CHECKING:
@@ -628,8 +628,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
             # Carry the producer's trace id into consumer-side logs.
             envelope = raw if isinstance(raw, dict) else {}
-            ctx = context_from_envelope(envelope)
-            token = set_context(ctx.root_id)
+            token = bind_context(context_from_envelope(envelope))
             try:
                 result = await self.message_handler(parsed_message)
                 return result, False

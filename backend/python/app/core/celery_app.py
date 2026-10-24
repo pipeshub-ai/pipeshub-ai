@@ -12,6 +12,7 @@ from app.config.constants.service import (
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import (
+    bind_context,
     context_from_envelope,
     new_system_root,
     reset_context,
@@ -34,8 +35,7 @@ def _celery_set_trace_context(
     """Seed a trace id for the task: honor an enqueuer-supplied id, else fresh."""
     kw = kwargs if isinstance(kwargs, dict) else {}
     if kw.get("requestId"):
-        ctx = context_from_envelope(kw)
-        token = set_context(ctx.root_id)
+        token = bind_context(context_from_envelope(kw))
     else:
         token = set_context(new_system_root())
     if task_id:

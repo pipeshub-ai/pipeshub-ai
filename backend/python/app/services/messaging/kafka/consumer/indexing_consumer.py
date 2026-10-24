@@ -73,9 +73,9 @@ from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
+    bind_context,
     context_from_envelope,
     reset_context,
-    set_context,
 )
 
 if TYPE_CHECKING:
@@ -2691,8 +2691,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             if self.message_handler:
                 # Carry the producer's trace id into indexing logs.
-                ctx = context_from_envelope({"requestId": parsed_message.requestId})
-                token = set_context(ctx.root_id)
+                token = bind_context(
+                    context_from_envelope(
+                        {
+                            "requestId": parsed_message.requestId,
+                            "orgId": parsed_message.orgId,
+                        }
+                    )
+                )
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
