@@ -858,5 +858,7 @@ class TestB1SharedUnlink:
         graph.unlink_nodes_missed_by_full_sync = AsyncMock(return_value=(3, True))
         seen = FullSyncSeen()
         seen.add(CollectionNames.RECORDS.value, "some-record")
-        assert await _unlink_what_full_sync_missed(conn, CONNECTOR_ID, graph, conn.logger, seen) is True
+        # Nothing is unlinked; the first such run owes one retry full sync (False).
+        with patch("app.connectors.core.sync.sync_runner._INCOMPLETE_FULL_SYNC_RETRYING", set()):
+            assert await _unlink_what_full_sync_missed(conn, CONNECTOR_ID, graph, conn.logger, seen) is False
         graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
