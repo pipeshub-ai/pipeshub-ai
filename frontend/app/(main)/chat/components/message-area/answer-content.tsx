@@ -24,6 +24,7 @@ import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
 import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -583,6 +584,7 @@ function CodeHeaderButton({
   onClick: () => void;
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile();
   const color = active ? 'var(--accent-11)' : 'var(--slate-11)';
 
   return (
@@ -594,6 +596,7 @@ function CodeHeaderButton({
       style={{
         display: 'inline-flex',
         alignItems: 'center',
+        justifyContent: 'center',
         gap: '4px',
         background: isHovered ? 'var(--slate-4)' : 'transparent',
         border: 'none',
@@ -603,6 +606,7 @@ function CodeHeaderButton({
         fontFamily: 'inherit',
         color,
         transition: 'background 0.15s ease, color 0.15s ease',
+        ...touchTarget(isMobile),
       }}
     >
       <MaterialIcon name={icon} size={13} color={color} />
