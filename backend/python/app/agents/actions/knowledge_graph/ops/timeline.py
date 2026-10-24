@@ -478,7 +478,7 @@ async def _collect(
     """Run the whole-span and per-period searches and file what they found.
 
     Without a start, the span is the ``DEFAULT_LOOKBACK_DAYS`` before the end,
-    reaching further back to the earliest record the whole-span search found.
+    reaching further back to the earliest dated record the whole-span search found.
     It is never narrowed to where the best matches are: they bunch around one
     moment, which is what a timeline has to get past. With no end either, that
     search has no date filter, so a match whose record has no source date is
@@ -487,27 +487,31 @@ async def _collect(
     search returned (or raised).
     """
     after_key, before_key = _DATE_FIELDS[date_field][2:4]
-    # A record with no date of its own belongs to no period, and the span search
-    # without a start reads the dates it finds to place the span. With a start,
-    # the whole-span search still finds such a record and lists it apart.
+    # A record with no date of its own belongs to no period; the whole-span search
+    # still finds it and lists it apart.
     dated = {DATED_ONLY_TIME_RANGE_KEY: 1}
 
     def period_searches(periods: list[Period]) -> list[Any]:
         return [search({after_key: p.start_ms, before_key: p.end_ms, **dated}, period_limit) for p in periods]
 
     if start_ms is None:
-        whole: Any
-        try:
-            whole = await search({before_key: end_ms, **dated} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
-        except Exception as exc:
-            # Like a failed search in the gather below: the periods still run.
-            whole = exc
+        bounds = {before_key: end_ms} if end_ms is not None else None
+        searches = [search(bounds, SPAN_SEARCH_LIMIT)]
+        # With content dates on, every upload dated only by its upload matches an
+        # end alone and could crowd out the dated hits that place the span, so a
+        # dated-only search beside it places the span instead.
+        if bounds is not None and upload_times_undated():
+            searches.append(search({**bounds, **dated}, SPAN_SEARCH_LIMIT))
+        # A failed search is a result here, as in the gather below: the periods still run.
+        whole, *dated_whole = await asyncio.gather(*searches, return_exceptions=True)
         whole_failed = _failed(whole, log)
         if on_whole_span is not None:
             on_whole_span(whole)
         end_ms = end_ms if end_ms is not None else _now_ms()
         start_ms = end_ms - DEFAULT_LOOKBACK_DAYS * _DAY_MS
-        span = None if whole_failed else span_of(whole.get("virtual_to_record_map") or {}, date_field)
+        placing = dated_whole[0] if dated_whole else whole
+        placing_failed = _failed(placing, log) if dated_whole else whole_failed
+        span = None if placing_failed else span_of(placing.get("virtual_to_record_map") or {}, date_field)
         if span is not None:
             start_ms = min(start_ms, span[0])
         periods = plan_periods(start_ms, end_ms)

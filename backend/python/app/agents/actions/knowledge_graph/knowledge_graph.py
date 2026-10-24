@@ -1446,8 +1446,9 @@ class KnowledgeGraph:
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
                     "places it by its last update, for tickets or pages that changed over the span. "
                     "A knowledge-base upload is placed by a date its content states when one was "
-                    "found; otherwise it has only what the upload gave it for both: its file's "
-                    "last-modified time, or else its upload time."
+                    "found, otherwise by its file's last-modified time or its upload time; the "
+                    "result's header says when an upload dated only by its upload time is instead "
+                    "listed with no source date."
                 ),
                 required=False,
                 default="created",

@@ -228,4 +228,23 @@ class TestTimelineSearches:
 
         assert not isinstance(collected, str)
         assert collected.start_ms == self.OLD_MEMO["sourceCreatedAtTimestamp"]
-        assert calls[0] == {"source_created_before_ms": _day(2025, 5, 31), DATED_ONLY_TIME_RANGE_KEY: 1}
+        end = {"source_created_before_ms": _day(2025, 5, 31)}
+        assert sorted(calls[:2], key=len) == [end, {**end, DATED_ONLY_TIME_RANGE_KEY: 1}]
+        # The search without the flag still finds the uploads, listed apart.
+        undated = collected.hits[-1]
+        assert undated.period is None
+        assert {hit["virtual_record_id"] for hit in undated.results} <= set(self.UPLOADS)
+        assert undated.results
+
+    @pytest.mark.usefixtures("content_dates_on")
+    @pytest.mark.asyncio
+    async def test_without_a_start_uploads_dated_only_by_their_upload_are_still_listed(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.timeline import _collect
+
+        search = self._search(dict(self.UPLOADS), [])
+        collected = await _collect(search, None, _day(2025, 5, 31), "created", logging.getLogger("t"))
+
+        assert not isinstance(collected, str)
+        *periods, undated = collected.hits
+        assert all(not period.results for period in periods)
+        assert undated.period is None and len(undated.results) == len(self.UPLOADS)

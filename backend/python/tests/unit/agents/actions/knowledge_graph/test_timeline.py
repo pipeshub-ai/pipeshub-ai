@@ -458,9 +458,7 @@ class TestTheSpan:
         with patch.object(timeline, "_now_ms", return_value=_TODAY):
             await _run(corpus, end="2026-04-30")
 
-        assert corpus.calls[0]["time_range"] == {
-            "source_created_before_ms": _end_of("2026-04-30"), DATED_ONLY_TIME_RANGE_KEY: 1,
-        }
+        assert corpus.calls[0]["time_range"] == {"source_created_before_ms": _end_of("2026-04-30")}
         start = _end_of("2026-04-30") - DEFAULT_LOOKBACK_DAYS * 86_400_000
         assert corpus.calls[1]["time_range"]["source_created_after_ms"] == start
         assert corpus.calls[-1]["time_range"]["source_created_before_ms"] == _end_of("2026-04-30")
