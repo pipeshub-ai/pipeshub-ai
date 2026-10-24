@@ -121,7 +121,7 @@ def _has_restriction(content_id: str) -> bool:
                for r in sim.ok("GET", f"/wiki/rest/api/content/{content_id}/restriction")["results"])
 
 
-def _pick_pack(space_id: str) -> tuple[dict[str, str], dict[str, str]]:
+def _pick_pack(space_id: str, space_key: str) -> tuple[dict[str, str], dict[str, str]]:
     """Old pack pages and folders without any restriction, on them or above them, one per role;
     and where each picked page sits, to move it back to."""
     pages: list[dict[str, Any]] = []
@@ -133,7 +133,7 @@ def _pick_pack(space_id: str) -> tuple[dict[str, str], dict[str, str]]:
     pages.sort(key=lambda p: int(p["id"]))
     parent = {str(p["id"]): str(p.get("parentId") or "") for p in pages}
     folders = sorted(str(f["id"]) for f in sim.ok(
-        "GET", f"/wiki/rest/api/content/search?cql=space.id%3D{space_id}%20and%20type%3Dfolder&limit=50")["results"])
+        "GET", f"/wiki/rest/api/content/search?cql=space%3D{space_key}%20and%20type%3Dfolder&limit=50")["results"])
     restricted = {i for i in [*parent, *folders] if _has_restriction(i)}
 
     def free(i: str) -> bool:
@@ -190,7 +190,7 @@ async def world(pipeshub_client: PipeshubClient, graph_provider: GraphProviderPr
         for which, key in keys.items():
             spaces[which] = sim.create_space(key, f"PipesHub IT sim {which} {tag}")
         ids = _seed(spaces["a"], tag)
-        pack_ids, pack_parents = _pick_pack(str(spaces["pack"]["id"]))
+        pack_ids, pack_parents = _pick_pack(str(spaces["pack"]["id"]), pack_key)
         ids.update(pack_ids)
         me = sim.current_account_id()
         team_group = next(g["id"] for g in sim.ok("GET", "/wiki/rest/api/group?limit=200")["results"]

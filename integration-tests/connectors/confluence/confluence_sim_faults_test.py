@@ -232,8 +232,12 @@ async def _embedded_image(
     snapshot: SpaceContentSnapshot, graph_provider: Any, cid: str,
 ) -> tuple[str, dict, bytes] | None:
     """A page image inlined into its page's body, so it has no attachment record of its own, with its
-    bytes to put back. Images the simulator cannot serve are passed over: they could not be restored."""
+    bytes to put back. Pages with a restriction (the sync account may not edit them) and images the
+    simulator cannot serve are passed over: they could not be replaced and restored."""
     for item in snapshot.pages:
+        if any(r["restrictions"]["user"]["size"] or r["restrictions"]["group"]["size"]
+               for r in sim.ok("GET", f"/wiki/rest/api/content/{item.id}/restriction")["results"]):
+            continue
         for att in sim.attachments(item.id):
             media_type = (att.get("extensions") or {}).get("mediaType", "")
             if not media_type.startswith("image/") or await sim.find_record(
