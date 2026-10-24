@@ -1474,30 +1474,25 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         At least one bucket the sync uses must be readable. An unreadable selected bucket
         next to readable ones only warns: this test also runs when the connector is rebuilt,
-        and one bucket losing access must not stop the sync of the others.
+        and one bucket losing access must not stop the sync of the others. The same holds for
+        the folders chosen in a bucket: a policy often grants s3:GetObject per folder.
         """
         selected = [self.bucket_name] if self.bucket_name else included_names(self.sync_filters, "buckets")
         # Listed as the sync lists: a policy may allow s3:ListBucket only under an s3:prefix condition.
-        prefix = FolderScope.from_filters(self.sync_filters).list_prefixes[0]
+        prefixes = FolderScope.from_filters(self.sync_filters).list_prefixes
         if selected:
             semaphore = asyncio.Semaphore(self.bucket_concurrency)
 
-            async def probe(bucket_name: str) -> str | None:
+            async def probe(bucket_name: str) -> tuple[str | None, list[str]]:
                 async with semaphore:
-                    return await self._bucket_access_problem(bucket_name, prefix)
+                    return await self._bucket_folders_problem(bucket_name, prefixes)
 
             # A key scoped to named buckets may lack s3:ListAllMyBuckets; sync does not need it then.
-            problems = [p for p in await asyncio.gather(*(probe(b) for b in selected)) if p]
+            results = await asyncio.gather(*(probe(b) for b in selected))
+            problems = [problem for problem, _ in results if problem]
             if len(problems) == len(selected):
                 return " ".join(problems)
-            if problems:
-                self.logger.warning(f"{self.connector_name} cannot read some selected buckets: {' '.join(problems)}")
-                await self.notify(
-                    type=NotificationType.CONNECTOR_AUTH_ERROR,
-                    severity=NotificationSeverity.WARNING,
-                    title=self._notification_title("Some buckets cannot be read"),
-                    message=" ".join(problems),
-                )
+            await self._warn_unreadable(problems, [p for _, partial in results for p in partial])
             return None
         response = await self._list_all_buckets()
         if not response.success:
@@ -1511,16 +1506,38 @@ class S3CompatibleBaseConnector(BaseConnector):
             name = bucket.get("Name")
             if not name or not name_passes_filter(self.sync_filters, "buckets", name):
                 continue
-            problem = await self._bucket_access_problem(name, prefix)
+            problem, partial = await self._bucket_folders_problem(name, prefixes)
             if problem is None:
+                await self._warn_unreadable([], partial)
                 return None
             problems.append(problem)
         if not problems:
             return None
         return f"{problems[0]} None of the {len(problems)} listed bucket(s) could be read."
 
+    async def _warn_unreadable(self, buckets: list[str], folders: list[str]) -> None:
+        """One warning for the buckets and chosen folders the key cannot read, next to readable ones."""
+        if not buckets and not folders:
+            return
+        what = "buckets" if buckets else "folders"
+        self.logger.warning(f"{self.connector_name} cannot read some selected {what}: {' '.join(buckets + folders)}")
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title(f"Some {what} cannot be read"),
+            message=" ".join(buckets + folders),
+        )
+
+    async def _bucket_folders_problem(self, bucket_name: str, prefixes: list[str]) -> tuple[str | None, list[str]]:
+        """Why the key can read none of the chosen folders of the bucket (or None), and the ones it cannot read."""
+        problems = [p for p in [await self._bucket_access_problem(bucket_name, prefix) for prefix in prefixes] if p]
+        if len(problems) == len(prefixes):
+            return " ".join(problems), []
+        return None, problems
+
     async def _bucket_access_problem(self, bucket_name: str, prefix: str = "") -> str | None:
         """Why the key cannot list or read objects under ``prefix`` in the bucket, or None."""
+        where = f"folder '{prefix}' of bucket '{bucket_name}'" if prefix else f"bucket '{bucket_name}'"
         async with self._paced():
             listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
         if not listing.success:
@@ -1528,18 +1545,19 @@ class S3CompatibleBaseConnector(BaseConnector):
                 f" The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."
                 if getattr(listing, "status_code", None) == HttpStatusCode.FORBIDDEN.value else ""
             )
-            return f"Could not list objects in bucket '{bucket_name}': {listing.error}.{hint}"
+            return f"Could not list objects in {where}: {listing.error}.{hint}"
         contents = (listing.data or {}).get("Contents") or []
         if not contents:
             return None
         async with self._paced():
             head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
         if not head.success:
-            hint = (
-                f" The key needs s3:GetObject on arn:aws:s3:::{bucket_name}/*."
-                if getattr(head, "status_code", None) == HttpStatusCode.FORBIDDEN.value else ""
-            )
-            return f"Could not read objects in bucket '{bucket_name}': {head.error}.{hint}"
+            hint = ""
+            if getattr(head, "status_code", None) == HttpStatusCode.FORBIDDEN.value:
+                hint = f" The key needs s3:GetObject on arn:aws:s3:::{bucket_name}/{prefix}*."
+                if not prefix:
+                    hint += " If it may read only some folders, choose those in the Folders filter."
+            return f"Could not read objects in {where}: {head.error}.{hint}"
         return None
 
     async def get_signed_url(self, record: Record) -> str | None:
