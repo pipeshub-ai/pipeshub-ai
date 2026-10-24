@@ -80,8 +80,8 @@ suites must never share its shard.
    `SHAREPOINT_SIM_IMAGE` names another.
 2. Make the TLS material: `deployment/docker-compose/sharepoint-sim/make-certs.sh /some/dir` and export
    `SHAREPOINT_SIM_TLS_DIR=/some/dir`.
-3. Start the stack with the override, from `deployment/docker-compose`:
-   `cd deployment/docker-compose && docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.sharepoint-sim.yml up -d`
+3. Start the stack with the override. From the repository root, in a subshell so you stay there:
+   `(cd deployment/docker-compose && docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.sharepoint-sim.yml up -d)`
    (or the ArangoDB file), create the org and admin as CI does.
 4. Load `integration-tests/connectors/sharepoint_sim.env` into the environment, with the usual
    integration-test variables (base URL, admin login, graph database, Mongo, Redis, AI models).
