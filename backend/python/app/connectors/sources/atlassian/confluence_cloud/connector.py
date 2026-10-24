@@ -15,7 +15,7 @@ import json
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import (
@@ -915,6 +915,7 @@ class ConfluenceConnector(BaseConnector):
         self._run_started_at = time.time()
         self._sync_running = True
         self._sync_finished = False
+        self._now_blocks = {}
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -1327,9 +1328,11 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
             try:
-                await self._link_platform_users_via_jira(
-                    seen_account_ids if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP else None
-                )
+                if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP:
+                    await self._link_platform_users_via_jira(seen_account_ids)
+                else:
+                    # A Jira account can only be trusted as a Confluence user when Confluence's list confirms it.
+                    self.logger.warning("Not matching users who hide their email through Jira: Confluence's user list is incomplete")
             except Exception as link_err:
                 self.logger.error(
                     f"Jira user linking fallback failed (user sync still complete): {link_err}",
@@ -2406,77 +2409,79 @@ class ConfluenceConnector(BaseConnector):
                                             if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                 embedded_image_ids.add(attachment_id)
 
-                                try:
-                                    if content_type == "page":
-                                        footer_comments_response = await datasource.get_page_footer_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
-                                    else:
-                                        footer_comments_response = await datasource.get_blog_post_footer_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
+                                # Comments are streamed into the page only when indexed; otherwise their images stay files.
+                                if await self._comments_indexed(record_type):
+                                    try:
+                                        if content_type == "page":
+                                            footer_comments_response = await datasource.get_page_footer_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
+                                        else:
+                                            footer_comments_response = await datasource.get_blog_post_footer_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
 
-                                    if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
-                                        footer_comments_data = footer_comments_response.json()
-                                        footer_comments = footer_comments_data.get("results", [])
+                                        if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                            footer_comments_data = footer_comments_response.json()
+                                            footer_comments = footer_comments_data.get("results", [])
 
-                                        for comment in footer_comments:
-                                            comment_body = comment.get("body", {})
-                                            comment_adf = comment_body.get("atlas_doc_format", {})
-                                            comment_adf_value = comment_adf.get("value")
+                                            for comment in footer_comments:
+                                                comment_body = comment.get("body", {})
+                                                comment_adf = comment_body.get("atlas_doc_format", {})
+                                                comment_adf_value = comment_adf.get("value")
 
-                                            if comment_adf_value:
-                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
-                                                comment_media_nodes = extract_media_from_adf(comment_content)
+                                                if comment_adf_value:
+                                                    comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                    comment_media_nodes = extract_media_from_adf(comment_content)
 
-                                                for media_info in comment_media_nodes:
-                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
-                                                    if attachment_id:
-                                                        mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
-                                                            embedded_image_ids.add(attachment_id)
-                                except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
+                                                    for media_info in comment_media_nodes:
+                                                        attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                        if attachment_id:
+                                                            mime_type = attachment_mime_types.get(attachment_id, "")
+                                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
+                                                                embedded_image_ids.add(attachment_id)
+                                    except Exception as comment_error:
+                                        self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
 
-                                try:
-                                    if content_type == "page":
-                                        inline_comments_response = await datasource.get_page_inline_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
-                                    else:
-                                        inline_comments_response = await datasource.get_blog_post_inline_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
+                                    try:
+                                        if content_type == "page":
+                                            inline_comments_response = await datasource.get_page_inline_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
+                                        else:
+                                            inline_comments_response = await datasource.get_blog_post_inline_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
 
-                                    if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
-                                        inline_comments_data = inline_comments_response.json()
-                                        inline_comments = inline_comments_data.get("results", [])
+                                        if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                            inline_comments_data = inline_comments_response.json()
+                                            inline_comments = inline_comments_data.get("results", [])
 
-                                        for comment in inline_comments:
-                                            comment_body = comment.get("body", {})
-                                            comment_adf = comment_body.get("atlas_doc_format", {})
-                                            comment_adf_value = comment_adf.get("value")
+                                            for comment in inline_comments:
+                                                comment_body = comment.get("body", {})
+                                                comment_adf = comment_body.get("atlas_doc_format", {})
+                                                comment_adf_value = comment_adf.get("value")
 
-                                            if comment_adf_value:
-                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
-                                                comment_media_nodes = extract_media_from_adf(comment_content)
+                                                if comment_adf_value:
+                                                    comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                    comment_media_nodes = extract_media_from_adf(comment_content)
 
-                                                for media_info in comment_media_nodes:
-                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
-                                                    if attachment_id:
-                                                        mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
-                                                            embedded_image_ids.add(attachment_id)
-                                except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
+                                                    for media_info in comment_media_nodes:
+                                                        attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                        if attachment_id:
+                                                            mime_type = attachment_mime_types.get(attachment_id, "")
+                                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
+                                                                embedded_image_ids.add(attachment_id)
+                                    except Exception as comment_error:
+                                        self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
 
                             except Exception as adf_error:
                                 self.logger.warning(f"Failed to detect embedded images for {content_type} {item_id}, all attachments will be created as FileRecords: {adf_error}")
@@ -2538,7 +2543,7 @@ class ConfluenceConnector(BaseConnector):
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
-                    await self._drop_legacy_comment_records()
+                    await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
                 if not within_ids:
                     await self._save_batch_checkpoint(
                         sync_point_key, items_data, listing_complete,
@@ -2633,6 +2638,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"Re-indexing {len(records)} pages and blog posts in space {space_key} whose comments changed")
             await self._fix_legacy_mime_types(records)
             await self.data_entities_processor.reindex_existing_records(records)
+            await self._drop_legacy_comment_records(self._saved_as_blocks(records, every_page=True))
         await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
 
     async def _containers_changed_since(
@@ -2795,12 +2801,11 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
                 listing = await self._sync_content(space_key, record_type, defer_checkpoint=True)
                 settled = await self._remove_content_gone_from_source(space, record_type, listing)
-                if not listing.checkpoint_time:
-                    continue
                 if settled:
-                    await self.pages_sync_point.update_sync_point(
-                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
-                    )
+                    if listing.checkpoint_time:
+                        await self.pages_sync_point.update_sync_point(
+                            listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
+                        )
                 else:
                     self.logger.warning(
                         f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
@@ -2904,7 +2909,8 @@ class ConfluenceConnector(BaseConnector):
         if record_type == RecordType.CONFLUENCE_PAGE:
             gone = {r.external_record_id for r in doomed}
             settled = await self._resync_moved_pages(
-                space, [r for r in stored if r.external_record_id not in gone], parents, just_listed=listing.full,
+                space, [r for r in stored if r.external_record_id not in gone], parents,
+                just_listed=listing.full and not listing.resumed,
             ) and settled
         return settled
 
@@ -3127,6 +3133,7 @@ class ConfluenceConnector(BaseConnector):
         for start in range(0, len(ids), ID_SEARCH_CHUNK):
             chunk = ids[start:start + ID_SEARCH_CHUNK]
             token: str | None = None
+            followed: set[str] = set()
             while True:
                 offset, cursor = self._split_pagination_token(token)
                 try:
@@ -3147,9 +3154,10 @@ class ConfluenceConnector(BaseConnector):
                 if not next_url:
                     break
                 next_token = self._extract_cursor_from_next_link(next_url)
-                if not results or not next_token or next_token == token:
+                if not results or not next_token or next_token in followed:
                     self.logger.warning(f"Can't follow the search of space {space_key}; nothing removed")
                     return None
+                followed.add(next_token)
                 token = next_token
         return found
 
@@ -3245,14 +3253,26 @@ class ConfluenceConnector(BaseConnector):
                 f"Space {space_key}: couldn't remove some deleted attachments; the next sync tries again", unread=False
             )
 
-    async def _drop_legacy_comment_records(self) -> None:
-        """Delete the comment records older versions stored under pages now stored as blocks.
+    def _saved_as_blocks(self, records: Iterable[Record], *, every_page: bool = False) -> dict[str, RecordType]:
+        """The saved ``records`` just stored as blocks (or, with ``every_page``, all their pages and blog posts)."""
+        pages: dict[str, RecordType] = {}
+        for record in records:
+            record_type = self._now_blocks.pop(record.external_record_id, None)
+            if record_type is None and every_page and record.record_type in (
+                RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST
+            ) and record.mime_type == MimeTypes.BLOCKS.value:
+                record_type = record.record_type
+            if record_type is not None:
+                pages[record.external_record_id] = record_type
+        return pages
+
+    async def _drop_legacy_comment_records(self, pages: dict[str, RecordType]) -> None:
+        """Delete the comment records older versions stored under these pages, now stored as blocks.
 
         The blocks carry the page's comments, so the separate records would answer twice.
         An HTML page keeps them until it is converted (when it next changes or is re-indexed).
         With comment indexing off the blocks carry no comments, so the records stay.
         """
-        pages, self._now_blocks = self._now_blocks, {}
         comment_types = (RecordType.COMMENT, RecordType.INLINE_COMMENT)
         indexed: dict[RecordType, bool] = {}
         for page_id, record_type in sorted(pages.items()):
@@ -3411,6 +3431,13 @@ class ConfluenceConnector(BaseConnector):
                 await self.pages_sync_point.update_sync_point(
                     checkpoint_key, {"last_sync_time": "", "full_resume_after": ""}
                 )
+            for kind in ("confluence_comments", "confluence_attachments"):
+                await self.pages_sync_point.update_sync_point(
+                    generate_record_sync_point_key(RecordType.WEBPAGE.value, kind, group.short_name), {"checked_at": ""}
+                )
+            await self.pages_sync_point.update_sync_point(
+                generate_record_sync_point_key(RecordType.WEBPAGE.value, "parents", group.short_name), {"differs": ""}
+            )
         if group is not None and not await self.data_entities_processor.on_record_group_deleted(
             space_id, self.connector_id
         ):
@@ -3898,6 +3925,7 @@ class ConfluenceConnector(BaseConnector):
                     if records_with_permissions:
                         await self.data_entities_processor.on_new_records(records_with_permissions)
                         self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
+                        await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
                         # Their stored files and comments would otherwise keep the page's old access.
                         for webpage_record, permissions in records_with_permissions:
                             await apply_page_access_to_dependents(
@@ -4335,8 +4363,9 @@ class ConfluenceConnector(BaseConnector):
             return self._group_name_to_external_id
 
         name_map: dict[str, str] = {}
+        # Raised, not read as no groups: every access-class grant would map to nothing for the whole sync.
         groups = await self.data_entities_processor.get_all_user_groups(
-            connector_id=self.connector_id,
+            connector_id=self.connector_id, raise_on_error=True,
         )
         for group in groups:
             if group.name and group.source_user_group_id:
@@ -7154,7 +7183,10 @@ class ConfluenceConnector(BaseConnector):
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
                     self.logger.info(f"Published reindex events for {len(all_reindex_records)} non-updated records")
-            await self._drop_legacy_comment_records()
+            # Every re-indexed page: comment indexing may have just been turned on for pages already stored as blocks.
+            await self._drop_legacy_comment_records(
+                self._saved_as_blocks([r for r, _ in updated_records] + non_updated_records, every_page=True)
+            )
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise
