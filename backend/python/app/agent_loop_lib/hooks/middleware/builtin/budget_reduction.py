@@ -34,34 +34,67 @@ def _marker(dropped: int) -> str:
     return f"{_MARKER} {dropped} chars by budget_reduction]\n"
 
 
-def _cap_parts(msg, max_result_chars: int, truncate):
+def _cut(length: int, limit: int) -> tuple[int, int, str]:
+    """What a both-ends cut of ``length`` characters keeps within ``limit``,
+    marker included: the head length, the tail length and the marker.
+
+    A tool result carries its instructions last -- the citation rule, the
+    continuation hint, which ids were unavailable -- so a tail cut removes
+    precisely what the model needs to act on.
+    """
+    if limit <= 0:
+        return 0, 0, ""
+    # Budgeted against the widest the dropped count can print, so the real
+    # marker always fits and the result never exceeds `limit`.
+    keep = limit - len(_marker(length))
+    if keep <= 0:
+        # No room for both; a fragment of the marker would say nothing.
+        return limit, 0, ""
+    keep_head = int(keep * 0.75)
+    return keep_head, keep - keep_head, _marker(length - keep)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """``text`` cut at both ends to ``limit`` characters (`_cut`)."""
+    head, tail, marker = _cut(len(text), limit)
+    # Not `text[-tail:]`: at tail == 0 that returns the whole string rather
+    # than nothing.
+    return text[:head] + marker + text[len(text) - tail:]
+
+
+def _cap_parts(msg, max_result_chars: int):
     """Cap the text parts of a multipart tool message, leaving images alone.
 
     Images are bounded by their own admission path; what runs away here is the
-    text a large record renders to.
+    text a large record renders to. The cut is the string cut applied to the
+    parts' text as one: capping part by part spent the whole allowance on an
+    oversized first part and emptied the last one, where the closing
+    instructions are.
     """
-    total = sum(
-        len(p.text) for p in msg.content
-        if getattr(p, "type", None) == "text" and isinstance(getattr(p, "text", None), str)
-    )
+    def is_text(part) -> bool:
+        return getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str)
+
+    total = sum(len(p.text) for p in msg.content if is_text(p))
     if total <= max_result_chars:
         return msg
 
+    head, tail, marker = _cut(total, max_result_chars)
+    tail_from = total - tail
     capped = []
-    remaining = max_result_chars
+    offset = 0
     for part in msg.content:
-        if getattr(part, "type", None) != "text" or not isinstance(getattr(part, "text", None), str):
+        if not is_text(part):
             capped.append(part)
             continue
-        if len(part.text) <= remaining:
-            remaining -= len(part.text)
-            capped.append(part)
-            continue
-        # `remaining`, not the whole allowance: parts kept in full above have
-        # already spent part of it, and truncating this one to the full budget
-        # is what let a multipart result reach twice the cap.
-        capped.append(part.model_copy(update={"text": truncate(part.text, remaining)}))
-        remaining = 0
+        start, end = offset, offset + len(part.text)
+        offset = end
+        kept = part.text[: max(0, min(end, head) - start)]
+        # The marker sits where the head stops, in the part the cut starts in.
+        if start <= head < end:
+            kept += marker
+            marker = ""
+        kept += part.text[max(0, tail_from - start):] if end > tail_from else ""
+        capped.append(part.model_copy(update={"text": kept}))
     return msg.model_copy(update={"content": capped, "compacted_by": LAYER})
 
 
@@ -133,31 +166,6 @@ def shape_budget_reduction(
     own merits. Direct replacement for `BudgetReductionHook`.
     """
 
-    def _truncate(text: str, limit: int = max_result_chars) -> str:
-        """Keep both ends, within `limit` characters *including* the marker.
-
-        A tool result carries its instructions last -- the citation rule, the
-        continuation hint, which ids were unavailable -- so a tail cut removes
-        precisely what the model needs to act on.
-        """
-        if limit <= 0:
-            return ""
-        # Budgeted against the widest the dropped count can print, so the real
-        # marker always fits and the result never exceeds `limit`.
-        keep = limit - len(_marker(len(text)))
-        if keep <= 0:
-            # No room for both; a fragment of the marker would say nothing.
-            return text[:limit]
-        keep_head = int(keep * 0.75)
-        keep_tail = keep - keep_head
-        # Not `text[-keep_tail:]`: at keep_tail == 0 that returns the whole
-        # string rather than nothing.
-        return (
-            text[:keep_head]
-            + _marker(len(text) - keep)
-            + text[len(text) - keep_tail:]
-        )
-
     def _calls_by_id(messages) -> dict[str, object]:
         return {
             call.id: call
@@ -182,7 +190,7 @@ def shape_budget_reduction(
             # Multipart content (a tool that returned images) used to skip this
             # cap entirely -- the one result shape most likely to be oversized.
             if isinstance(msg.content, list):
-                shaped.append(_cap_parts(msg, limit, _truncate))
+                shaped.append(_cap_parts(msg, limit))
                 continue
             if not isinstance(msg.content, str):
                 shaped.append(msg)
