@@ -2803,7 +2803,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
         "classification": "Klassifizierung",
         "enrichment": {
-          "title": "KI-Anreicherung",
+          "title": "Datenextraktion mit KI",
           "description": "Läuft im Hintergrund, sobald ein Datensatz durchsuchbar ist. Die Suche wartet nicht darauf.",
           "classificationHint": "Fügt Zusammenfassung, Themen und Kategorien hinzu",
           "entities": "Entitätenextraktion",

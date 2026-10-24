@@ -45,8 +45,8 @@ function stats(indexingStatus: Record<string, number>, total?: number): Connecto
 
 const toastTitles = () => toasts().map((t) => t.title);
 
-// Retries live inside the AI enrichment section, which starts collapsed.
-const openEnrichment = () => fireEvent.click(screen.getByRole('button', { name: /AI enrichment/ }));
+// Retries live inside the Data extraction with AI section, which starts collapsed.
+const openEnrichment = () => fireEvent.click(screen.getByRole('button', { name: /Data extraction with AI/ }));
 
 beforeEach(() => {
   installDomShims();

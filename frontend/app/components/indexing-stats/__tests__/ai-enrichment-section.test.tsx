@@ -40,7 +40,7 @@ function Harness(props: Partial<AiEnrichmentSectionProps> & { initiallyOpen?: bo
   );
 }
 
-const toggle = () => screen.getByRole('button', { name: /AI enrichment/ });
+const toggle = () => screen.getByRole('button', { name: /Data extraction with AI/ });
 const meter = (name: string) => screen.getByRole('progressbar', { name });
 
 afterEach(() => {
@@ -192,7 +192,7 @@ function statsWith(extractionStatus?: ExtractionStatusCounts): ConnectorStatsRes
   };
 }
 
-describe('IndexingStatsPanel: AI enrichment', () => {
+describe('IndexingStatsPanel: Data extraction with AI', () => {
   it('is absent when the backend sends no classification counts', () => {
     render(
       <Theme>
@@ -200,7 +200,7 @@ describe('IndexingStatsPanel: AI enrichment', () => {
       </Theme>
     );
 
-    expect(screen.queryByRole('button', { name: /AI enrichment/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Data extraction with AI/ })).toBeNull();
   });
 
   it('stays open across a refresh', () => {
@@ -217,7 +217,7 @@ describe('IndexingStatsPanel: AI enrichment', () => {
         <IndexingStatsPanel stats={stats} isRefreshBusy />
       </Theme>
     );
-    expect(screen.queryByRole('button', { name: /AI enrichment/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Data extraction with AI/ })).toBeNull();
 
     rerender(
       <Theme>

@@ -52,9 +52,9 @@ function openWith(data: ConnectorStatsResponse['data']) {
   renderInTheme(<CollectionStatsPanel />);
 }
 
-// Retries live inside the AI enrichment section, which starts collapsed.
+// Retries live inside the Data extraction with AI section, which starts collapsed.
 const openEnrichment = async () =>
-  fireEvent.click(await screen.findByRole('button', { name: /AI enrichment/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /Data extraction with AI/ }));
 
 const disabled = (name: RegExp) => (screen.getByRole('button', { name }) as HTMLButtonElement).disabled;
 

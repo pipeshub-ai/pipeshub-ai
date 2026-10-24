@@ -2940,7 +2940,7 @@
         "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
         "classification": "분류",
         "enrichment": {
-          "title": "AI 보강",
+          "title": "AI 데이터 추출",
           "description": "레코드를 검색할 수 있게 된 후 백그라운드에서 실행됩니다. 검색은 이 작업을 기다리지 않습니다.",
           "classificationHint": "요약, 주제, 카테고리를 추가합니다",
           "entities": "엔터티 추출",

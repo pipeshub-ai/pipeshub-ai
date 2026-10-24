@@ -3039,7 +3039,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} čeká · {{failed}} selhalo",
         "classification": "Klasifikace",
         "enrichment": {
-          "title": "Obohacení pomocí AI",
+          "title": "Extrakce dat pomocí AI",
           "description": "Běží na pozadí, jakmile je záznam prohledávatelný. Vyhledávání na něj nečeká.",
           "classificationHint": "Přidává shrnutí, témata a kategorie",
           "entities": "Extrakce entit",

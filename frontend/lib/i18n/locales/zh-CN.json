@@ -2940,7 +2940,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
         "classification": "分类",
         "enrichment": {
-          "title": "AI 增强",
+          "title": "AI 数据提取",
           "description": "记录可搜索后在后台运行，搜索无需等待。",
           "classificationHint": "添加摘要、主题和类别",
           "entities": "实体提取",

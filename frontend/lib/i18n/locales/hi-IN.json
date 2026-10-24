@@ -2798,7 +2798,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
         "classification": "वर्गीकरण",
         "enrichment": {
-          "title": "AI संवर्धन",
+          "title": "AI से डेटा निष्कर्षण",
           "description": "रिकॉर्ड खोजने योग्य होने के बाद यह बैकग्राउंड में चलता है। खोज इसका इंतज़ार नहीं करती।",
           "classificationHint": "सारांश, विषय और श्रेणियाँ जोड़ता है",
           "entities": "एंटिटी निष्कर्षण",

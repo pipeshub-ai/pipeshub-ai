@@ -2829,7 +2829,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
         "classification": "Clasificación",
         "enrichment": {
-          "title": "Enriquecimiento con IA",
+          "title": "Extracción de datos con IA",
           "description": "Se ejecuta en segundo plano cuando un registro ya se puede buscar. La búsqueda no lo espera.",
           "classificationHint": "Añade un resumen, temas y categorías",
           "entities": "Extracción de entidades",

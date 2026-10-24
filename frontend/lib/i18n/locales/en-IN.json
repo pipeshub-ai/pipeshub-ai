@@ -2794,7 +2794,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
         "classification": "Classification",
         "enrichment": {
-          "title": "AI enrichment",
+          "title": "Data extraction with AI",
           "description": "Runs in the background once a record is searchable. Search doesn't wait for it.",
           "classificationHint": "Adds a summary, topics and categories",
           "entities": "Entity extraction",

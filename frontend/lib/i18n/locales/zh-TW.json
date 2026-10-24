@@ -2940,7 +2940,7 @@
         "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
         "classification": "分類",
         "enrichment": {
-          "title": "AI 增強",
+          "title": "AI 資料擷取",
           "description": "記錄可搜尋後在背景執行，搜尋不必等待。",
           "classificationHint": "加入摘要、主題和類別",
           "entities": "實體擷取",
