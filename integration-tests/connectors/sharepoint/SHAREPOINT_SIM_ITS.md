@@ -64,6 +64,16 @@ catches a stack where Microsoft's names do not lead to the simulator.
 - `sharepoint_sim_sync_test.py`, `sharepoint_sim_access_test.py`, `sharepoint_sim_deletion_test.py`,
   `sharepoint_sim_failure_test.py`: the tests.
 
+## In CI
+
+`.github/workflows/integration-tests.yml` runs the suite on shard `connectors-3` (and on a dispatch of
+`sharepoint_sim`). The SharePoint simulator has its own pin, `CONNSIM_SHAREPOINT_REF`, and image,
+`SHAREPOINT_SIM_IMAGE`, until it is on the simulators' main with the others. The "Use the SharePoint
+simulator" step builds that image, makes the TLS material, loads `sharepoint_sim.env`, and sets
+`SHAREPOINT_SIM_COMPOSE`, which adds the override to every compose call of that job. The override sends all of
+that stack's Microsoft traffic to the simulator, so the live `sharepoint` (shard 1) and `outlook` (shard 2)
+suites must never share its shard.
+
 ## Running it locally
 
 1. Build the simulator image from connectors-simulator (`docker build -t pipeshub/connectors-simulator:it .`).
