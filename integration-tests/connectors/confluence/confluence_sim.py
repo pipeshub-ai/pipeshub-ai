@@ -295,17 +295,27 @@ class Inbox:
     def _new(self) -> list[dict[str, Any]]:
         return [n for n in self.all() if str(n["_id"]) not in self.seen]
 
-    async def expect(self, count: int, context: str) -> list[dict[str, Any]]:
-        """Exactly ``count`` notices arrived since the last call; returns them and marks them seen."""
+    async def arrived(self, count: int) -> list[dict[str, Any]]:
+        """The notices that arrived since the last call, waiting for ``count`` of them; marks them seen."""
         if count:
             deadline = time.time() + NOTICE_WAIT_SEC
             while len(self._new()) < count and time.time() < deadline:
                 await asyncio.sleep(3)
         await asyncio.sleep(NO_NOTICE_GRACE_SEC)
         new = self._new()
-        assert len(new) == count, (
-            f"{context}: expected {count} notification(s) from the connector, got {len(new)}: "
-            + "; ".join(f"{n.get('title')!r}: {str(n.get('message'))[:300]!r}" for n in new)
-        )
         self.seen |= {str(n["_id"]) for n in new}
+        return new
+
+    @staticmethod
+    def mismatch(new: list[dict[str, Any]], count: int, context: str) -> str | None:
+        if len(new) == count:
+            return None
+        return (f"{context}: expected {count} notification(s) from the connector, got {len(new)}: "
+                + "; ".join(f"{n.get('title')!r}: {str(n.get('message'))[:400]!r}" for n in new))
+
+    async def expect(self, count: int, context: str) -> list[dict[str, Any]]:
+        """Exactly ``count`` notices arrived since the last call; returns them."""
+        new = await self.arrived(count)
+        problem = self.mismatch(new, count, context)
+        assert problem is None, problem
         return new

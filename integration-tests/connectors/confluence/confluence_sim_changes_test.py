@@ -54,6 +54,9 @@ class World:
     team_group: str
     spaces: dict[str, dict[str, Any]]
     ids: dict[str, str] = field(default_factory=dict)
+    # Notification mismatches of the running test, checked when it ends so a wrong notice does
+    # not hide what the scenario's own checks find.
+    notice_problems: list[str] = field(default_factory=list)
 
     async def record(self, key_or_id: str) -> Any:
         return await self.graph.get_record_by_external_id(self.connector_id, self.ids.get(key_or_id, key_or_id))
@@ -64,7 +67,11 @@ class World:
     async def sync(self, context: str, *, notices: int = 0, full: bool = False) -> list[dict[str, Any]]:
         """One sync, waited out; returns the notifications it sent, which must number ``notices``."""
         await sim.run_sync(self.client, self.graph, self.connector_id, full=full)
-        return await self.inbox.expect(notices, context)
+        new = await self.inbox.arrived(notices)
+        problem = sim.Inbox.mismatch(new, notices, context)
+        if problem:
+            self.notice_problems.append(problem)
+        return new
 
 
 def _seed(space_a: dict[str, Any], tag: str) -> dict[str, str]:
@@ -180,6 +187,14 @@ async def world(pipeshub_client: PipeshubClient, graph_provider: GraphProviderPr
 pytestmark = [pytest.mark.integration, pytest.mark.confluence, pytest.mark.asyncio(loop_scope="session")]
 
 
+@pytest.fixture(autouse=True)
+def _each_sync_sent_the_expected_notices(world: World):
+    """9: a clean sync notifies nobody, and a sync with a problem sends exactly one notice."""
+    world.notice_problems.clear()
+    yield
+    assert not world.notice_problems, "\n".join(world.notice_problems)
+
+
 # ---- 1, 13: restrictions ---------------------------------------------------------------------------------
 
 async def _assert_restricted(w: World, key: str, restricted: bool, context: str) -> None:
@@ -226,7 +241,7 @@ async def test_restrictions_applied_while_the_audit_log_is_refused(world: World)
             for key in ("audit_folder", "audit_page"):
                 sim.restrict(w.ids[key], users=[w.me], groups=[w.team_group])
             notices = await w.sync("restrictions with the audit log refused", notices=1)
-            assert "audit log (HTTP 403)" in notices[0]["message"], notices[0]["message"]
+            assert any("audit log (HTTP 403)" in n["message"] for n in notices), "the refused audit log was not reported"
             assert any(f["effect"] == "status" for f in sim.faults_fired()), "the audit log was never asked for"
             for key in ("audit_folder", "audit_page"):
                 await _assert_restricted(w, key, True, f"{key} with the audit log refused")
@@ -252,7 +267,7 @@ async def test_unreadable_restriction_keeps_the_page_and_is_read_next_sync(world
         with sim.faults(unreadable):
             notices = await w.sync("a page whose restriction cannot be read", notices=1)
         assert await w.record("unreadable_page") is not None, "the page was dropped instead of kept"
-        assert "restriction" in notices[0]["message"].lower(), notices[0]["message"]
+        assert any("restriction" in n["message"].lower() for n in notices), "the unreadable restriction was not reported"
         await w.sync("the restriction is readable again")
         await _assert_restricted(w, "unreadable_page", True, "after the restriction became readable")
     finally:
