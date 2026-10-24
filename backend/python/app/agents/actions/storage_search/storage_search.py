@@ -2113,11 +2113,11 @@ class StoragePatternMatch:
         trailing ``head``); output that reaches it counts as truncated.
 
         *readable_only* greps a view holding only the records the caller may
-        read (unless the connector is readable whole), so the output limits can
+        read, so the output limits can
         only be reached by readable files and say nothing about the others.
         Where no view can be made (more than ``_MAX_VIEW_FILES`` files, or the
         access check is down) nothing is run and the answer is always "cut".
-        Elsewhere (not readable whole, *readable_only* off) the output limits
+        Elsewhere (*readable_only* off) the output limits
         are not reported, only a constant hint that results may be incomplete.
         """
         org_id = self.state.get("org_id", "")
@@ -2162,8 +2162,7 @@ class StoragePatternMatch:
         # Execute the command
         run_dir = connector_dir
         view_dir: str | None = None
-        whole = await self._can_read_whole_connector(connector_id)
-        if readable_only and not whole:
+        if readable_only:
             view_dir, view_err = await self._build_accessible_view(connector_dir)
             if view_dir is None:
                 # Grepping the whole connector instead would answer "does any
@@ -2174,7 +2173,7 @@ class StoragePatternMatch:
             run_dir = view_dir
         # Where the run covers only readable records the output limits say
         # something true; elsewhere they depend on records the caller cannot read.
-        raw_cut_is_safe = whole or view_dir is not None
+        raw_cut_is_safe = view_dir is not None
         try:
             success, output = await _run_subprocess(
                 command, cwd=run_dir, max_stdout_bytes=max_stdout_bytes,
@@ -2344,5 +2343,5 @@ class StoragePatternMatch:
             return True, json_mod.dumps(result, indent=2)
         finally:
             if view_dir:
-                await asyncio.to_thread(shutil.rmtree, view_dir, True)
+                await asyncio.to_thread(_remove_view, view_dir)
 

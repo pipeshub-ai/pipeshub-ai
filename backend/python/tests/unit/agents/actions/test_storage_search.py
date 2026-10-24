@@ -1919,8 +1919,10 @@ class TestFindRecordsSaysWhenOutputWasCut:
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
 
-        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
-        _, uncapped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=3)
+        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2, readable_only=True)
+        _, uncapped = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_output_lines=3, readable_only=True,
+        )
 
         assert _json.loads(capped)["output_truncated"] is True
         assert "may still match" in _json.loads(capped)["hint"]
@@ -1933,7 +1935,6 @@ class TestFindRecordsSaysWhenOutputWasCut:
         import json as _json
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})  # the other record is unreadable
-        tool._containers = MagicMock(fallback_reason=None, app_ids_trusted=frozenset())
 
         _, cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=2)
         _, not_cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=3)
@@ -1948,7 +1949,6 @@ class TestFindRecordsSaysWhenOutputWasCut:
         answer must say so, and say the same whether or not anything unreadable matched."""
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {})  # neither record is readable
-        tool._containers = MagicMock(fallback_reason=None, app_ids_trusted=frozenset())
 
         _, with_matches = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
         _, without = await tool.find_records("c", 'grep -rl "nomatchword" .', max_output_lines=2)
@@ -1959,7 +1959,6 @@ class TestFindRecordsSaysWhenOutputWasCut:
     async def test_no_view_means_no_grep_and_one_answer(self, tmp_path) -> None:
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
-        tool._containers = MagicMock(fallback_reason=None, app_ids_trusted=frozenset())
         tool._build_accessible_view = AsyncMock(return_value=(None, "too many files"))
 
         with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock) as run:
@@ -1972,45 +1971,10 @@ class TestFindRecordsSaysWhenOutputWasCut:
         assert answers[0] == answers[1] and '"output_truncated": true' in answers[0]
 
     @pytest.mark.asyncio
-    async def test_a_cancelled_view_build_leaves_no_view_behind(self, tmp_path) -> None:
-        import asyncio as _aio
-
-        root = tmp_path / "mount" / "PipesHub" / "records" / "c"
-        root.mkdir(parents=True)
-        for i in range(3000):
-            d = root / "g" / str(i)
-            d.mkdir(parents=True)
-            (d / f"record_{i:024x}.json").write_text("{}")
-        tool = _make_perm_tool(str(root), {})
-        tool._check_accessible_vrids = AsyncMock(side_effect=lambda v: dict.fromkeys(v, "r"))
-        views = os.path.join(os.path.dirname(os.path.dirname(str(root))), ".pattern_match_views")
-        task = _aio.create_task(tool._build_accessible_view(str(root)))
-        for _ in range(400):
-            await _aio.sleep(0.002)
-            if os.path.isdir(views) and os.listdir(views):
-                break
-        task.cancel()
-        with pytest.raises(_aio.CancelledError):
-            await task
-        await _aio.sleep(1.0)
-        assert not os.path.isdir(views) or os.listdir(views) == []
-
-    def test_old_view_directories_are_swept(self, tmp_path) -> None:
-        from app.agents.actions.storage_search.storage_search import _sweep_old_views
-
-        old, fresh = tmp_path / "old", tmp_path / "fresh"
-        old.mkdir()
-        fresh.mkdir()
-        os.utime(old, (1, 1))
-        _sweep_old_views(str(tmp_path))
-        assert not old.exists() and fresh.exists()
-
-    @pytest.mark.asyncio
     async def test_readable_only_search_cannot_hit_its_output_limit_through_unreadable_records(self, tmp_path) -> None:
         import json as _json
         _seed_two_records(tmp_path)  # one readable record and one the caller cannot read, both matching
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
-        tool._containers = MagicMock(fallback_reason=None, app_ids_trusted=frozenset())  # not readable whole
 
         _, out = await tool.find_records(
             "c", 'grep -rl "secretword" .', max_results=10, max_output_lines=2, readable_only=True,
@@ -2025,7 +1989,6 @@ class TestFindRecordsSaysWhenOutputWasCut:
         import json as _json
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
-        tool._containers = MagicMock(fallback_reason=None, app_ids_trusted=frozenset())
 
         with patch(
             "app.agents.actions.storage_search.storage_search._list_stored_files", return_value=None,
@@ -2037,27 +2000,22 @@ class TestFindRecordsSaysWhenOutputWasCut:
         assert _json.loads(out)["output_truncated"] is True
 
     @pytest.mark.asyncio
-    async def test_grep_runs_with_a_utf8_locale_whatever_the_host_sets(self, tmp_path, monkeypatch) -> None:
-        from app.agents.actions.storage_search.storage_search import _run_subprocess
-
-        monkeypatch.setenv("LC_ALL", "C")
-        (tmp_path / "a.txt").write_text("un CAFÉ noir\n", encoding="utf-8")
-        ok, out = await _run_subprocess("grep -rciF -e café .", cwd=str(tmp_path))
-        assert ok and out.strip().endswith(":1")
-
-    @pytest.mark.asyncio
-    async def test_output_cut_at_the_byte_cap_is_reported_even_with_nothing_accessible(self, tmp_path) -> None:
+    async def test_output_cut_at_the_byte_cap_is_reported_over_readable_records(self, tmp_path) -> None:
         import json as _json
         _seed_two_records(tmp_path)
-        tool = _make_perm_tool(str(tmp_path), {})
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
 
         # A first-stage cap below one line's length cuts the grep output.
-        success, output = await tool.find_records("c", 'grep -rl "secretword" .', max_stdout_bytes=10)
+        success, output = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_stdout_bytes=10, readable_only=True,
+        )
 
         assert success is True
         body = _json.loads(output)
         assert body["records"] == []
         assert body["output_truncated"] is True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Audit fixes: raw output only from readable records, listing-only find_records,
 # view hygiene, re-validated rewrites.

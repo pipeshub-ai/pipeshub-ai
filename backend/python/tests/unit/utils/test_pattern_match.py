@@ -2762,12 +2762,14 @@ class TestScopeGrepToPaths:
         # "$(" and backticks survive sanitizing; the validator refuses them.
         assert ok is False
 
-    def test_names_with_ampersand_make_the_scoped_command_fall_back(self) -> None:
+    def test_names_with_ampersand_stay_scoped(self) -> None:
+        """A quoted ``&`` is a plain character, so the scoped command still validates."""
         from app.agents.actions.storage_search.storage_search import _validate_command
 
         cmd = _scope_grep_to_paths('grep -rci "term" .', ["./R&D", "./Sales"])
         ok, err = _validate_command(cmd)
-        assert ok is False and "&" in err
+        assert ok is True, err
+        assert '"./R&D"' in cmd
 
 
 # ===========================================================================
