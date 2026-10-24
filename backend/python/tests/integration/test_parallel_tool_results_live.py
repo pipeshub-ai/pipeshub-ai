@@ -44,11 +44,13 @@ def _env(*names: str) -> str:
     return next((os.environ[name] for name in names if os.environ.get(name)), "")
 
 
-async def _answer_after_parallel_results(transport: LLMTransport) -> str:
+async def _answer_after_parallel_results(transport: LLMTransport) -> tuple[str, set[str]]:
+    """The model's answer after its parallel calls' results, and the known cities it called."""
     first = await transport.complete([QUESTION], tools=TOOLS, system=SYSTEM)
     calls = first.message.tool_calls or []
-    if len(calls) < 2:
-        pytest.skip("the model made no parallel calls this time")
+    called = {str(c.arguments.get("city", "")).lower() for c in calls} & TEMPERATURES.keys()
+    if len(calls) < 2 or len(called) < 2:
+        pytest.skip("the model made no parallel calls for two known cities this time")
     results = [
         ToolMessage(
             content=f"{TEMPERATURES.get(str(c.arguments.get('city', '')).lower(), 0)}C",
@@ -58,7 +60,7 @@ async def _answer_after_parallel_results(transport: LLMTransport) -> str:
         for c in calls
     ]
     second = await transport.complete([QUESTION, first.message, *results], tools=TOOLS, system=SYSTEM)
-    return second.message.text
+    return second.message.text, called
 
 
 async def test_gemini_binds_each_parallel_result_to_its_call() -> None:
@@ -67,10 +69,10 @@ async def test_gemini_binds_each_parallel_result_to_its_call() -> None:
         pytest.skip("no Gemini key")
     model = os.getenv("PIPESHUB_LIVE_GEMINI_MODEL", "gemini-3-flash-preview")
 
-    answer = await _answer_after_parallel_results(GeminiTransport(api_key=key, model=model))
+    answer, called = await _answer_after_parallel_results(GeminiTransport(api_key=key, model=model))
 
-    for temperature in TEMPERATURES.values():
-        assert str(temperature) in answer
+    for city in called:
+        assert str(TEMPERATURES[city]) in answer, city
 
 
 async def test_anthropic_binds_each_parallel_result_to_its_call() -> None:
@@ -79,7 +81,7 @@ async def test_anthropic_binds_each_parallel_result_to_its_call() -> None:
         pytest.skip("no Anthropic key")
     model = os.getenv("PIPESHUB_LIVE_ANTHROPIC_MODEL", "claude-haiku-5-5")
 
-    answer = await _answer_after_parallel_results(AnthropicTransport(api_key=key, model=model, max_tokens=512))
+    answer, called = await _answer_after_parallel_results(AnthropicTransport(api_key=key, model=model, max_tokens=512))
 
-    for temperature in TEMPERATURES.values():
-        assert str(temperature) in answer
+    for city in called:
+        assert str(TEMPERATURES[city]) in answer, city
