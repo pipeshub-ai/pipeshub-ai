@@ -526,6 +526,72 @@ async def test_prefix_is_stable_unless_a_layer_compacts_anew(earlier_turns, call
         previous = wire
 
 
+# --- Batched compaction with a low-water mark (context/watermark.py) ----------
+
+
+def _common_prefix(earlier: list[str], later: list[str]) -> int:
+    n = 0
+    while n < min(len(earlier), len(later)) and earlier[n] == later[n]:
+        n += 1
+    return n
+
+
+async def _prefix_reuse(window: int, prompt: int, result_chars: int, tool: str) -> tuple[int, float]:
+    """Thirty consecutive calls of one run, one tool result each: how many
+    calls did not resend the previous call's list as their prefix, and the
+    mean share of each call's tokens that prefix covered (what a provider's
+    prompt cache can reuse)."""
+    hooks = _chain()
+    budget = _budget(window, prompt)
+    run = _run_scope()
+    stored = [*_history(1), UserMessage(content=CURRENT)]
+    previous: list[str] | None = None
+    breaks = 0
+    shares: list[float] = []
+    for turn in range(30):
+        _search_round(stored, turn, result_chars, tool=tool)
+        sent = await _send_in_run(hooks, stored, budget, turn, run)
+        _assert_current_question_sent(sent)
+        assert count_tokens(sent) <= budget.effective_max_tokens
+        wire = _wire(sent)
+        if previous is not None:
+            shared = _common_prefix(previous, wire)
+            breaks += shared < len(previous)
+            shares.append(count_tokens(sent[:shared]) / count_tokens(sent))
+        previous = wire
+    return breaks, sum(shares) / len(shares)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("window", "prompt", "result_chars", "tool", "max_breaks", "min_share"),
+    [
+        # Before: 28/29 calls broke the prefix, mean cached share 0.33.
+        pytest.param(8_000, 1_600, 2_000, "knowledgegraph__search", 10, 0.6, id="8K"),
+        # Before: 29/29, 0.31. A result is a quarter of this budget and the
+        # summarised tail half of it, so every other call must compact.
+        pytest.param(8_000, 2_000, 4_000, "knowledgegraph__search", 16, 0.35, id="8K-large-results"),
+        # Before: 27/29, 0.27.
+        pytest.param(32_000, 6_400, 8_000, "knowledgegraph__search", 10, 0.55, id="32K"),
+        # Before: 21/29, 0.22: the window evicted one protected fetch per call.
+        pytest.param(200_000, 20_000, 60_000, FETCH, 6, 0.65, id="200K-protected-fetch"),
+    ],
+)
+async def test_compaction_comes_in_batches_so_most_calls_only_append(
+    window: int, prompt: int, result_chars: int, tool: str, max_breaks: int, min_share: float,
+) -> None:
+    """A layer that has to compact goes down to its low-water mark in one
+    pass, and a pass too small to be worth a batch waits; the calls between
+    batches resend the previous call unchanged and append to it. Before,
+    the turns each layer keeps already sat over its trigger, so every call
+    compacted the one result that had just aged out (or the window evicted
+    one more fetch) and rewrote the request near its end."""
+    breaks, share = await _prefix_reuse(window, prompt, result_chars, tool)
+
+    assert breaks <= max_breaks, f"{breaks}/29 calls broke the sent prefix"
+    assert share >= min_share, f"mean cached-prefix share {share:.3f}"
+
+
 class _Records(logging.Handler):
     def __init__(self) -> None:
         super().__init__(logging.INFO)

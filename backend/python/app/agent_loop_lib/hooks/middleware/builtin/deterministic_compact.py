@@ -18,9 +18,10 @@ Rules:
   ``preview_chars`` characters.
 
 A message compacted on an earlier call of the run is compacted again on
-every later call (``context/compaction_memo.py``); newly aged messages are
-compacted only while the context is still over the trigger, so the sent
-prefix does not change on every call as the recent tail moves.
+every later call (``context/compaction_memo.py``). Newly aged messages are
+compacted, oldest first, only while the context is over the trigger, and then
+down to the low-water mark in one pass (``context/watermark.py``), so the
+sent prefix does not change on every call as the recent tail moves.
 """
 
 from __future__ import annotations
@@ -29,17 +30,23 @@ import json
 import logging
 
 from app.agent_loop_lib.context.compaction_memo import (
-    CompactionMemo,
+    compacted_before,
+    held_elsewhere,
     reapply_replacements,
 )
 from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     TextPart,
     ToolMessage,
     UserMessage,
 )
-from app.agent_loop_lib.core.tokens import count_tokens, extract_text
+from app.agent_loop_lib.core.tokens import (
+    count_message_tokens,
+    count_tokens,
+    extract_text,
+)
 from app.agent_loop_lib.core.types import Message
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     safe_tail_boundary,
@@ -137,16 +144,26 @@ def shape_deterministic_compact(
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         total = count_tokens(ctx.messages)
         trigger = ctx.budget.trigger_tokens(trigger_ratio)
-        if total <= trigger:
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
         protected = protected_indices(ctx.messages, protected_tools=protected_tools)
         memo = ctx.compaction_memo
+        marks = watermarks(ctx.budget, trigger)
         messages, reused = reapply_replacements(memo, LAYER, ctx.messages, keep=protected)
+        replaced_total = count_tokens(messages)
         compacted = 0
-        if count_tokens(messages) > trigger:
-            messages, compacted = _compact_older(messages, protected, keep_last_n_messages, preview_chars, memo)
+        if replaced_total > trigger:
+            held = protected | held_elsewhere(memo, LAYER, messages)
+            candidates = _older_replacements(messages, held, keep_last_n_messages, preview_chars)
+            saving = sum(count_message_tokens(messages[i]) - count_message_tokens(new) for i, new in candidates)
+            if marks.worth_compacting(replaced_total, saving):
+                for i, replacement in candidates:
+                    if memo is not None:
+                        memo.remember(LAYER, [messages[i]], [replacement])
+                    messages[i] = replacement
+                    compacted += 1
 
         if memo is not None:
             memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
@@ -156,24 +173,23 @@ def shape_deterministic_compact(
         ctx.messages = messages
         logger.info(
             "deterministic_compact: compacted %d messages (%d again from earlier calls, %d protected), "
-            "%d→%d tokens (run=%s, turn=%d, budget=%d)",
+            "%d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
             compacted, reused, len(protected), total, count_tokens(messages),
-            ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
+            marks.low_water, ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 
     return _middleware
 
 
-def _compact_older(
+def _older_replacements(
     messages: list[Message],
     protected: frozenset[int],
     keep_last_n_messages: int,
     preview_chars: int,
-    memo: CompactionMemo | None,
-) -> tuple[list[Message], int]:
-    """Compact every unprotected message before the recent tail that no
-    layer has compacted yet; returns the list and how many were compacted."""
+) -> list[tuple[int, Message]]:
+    """Oldest first, the extractive form of every unprotected message before
+    the recent tail that no layer has compacted yet."""
     raw_tail_start = len(messages) - keep_last_n_messages if keep_last_n_messages > 0 else len(messages)
     tail_start = safe_tail_boundary(messages, raw_tail_start, 0)
 
@@ -185,8 +201,7 @@ def _compact_older(
                 call_id_to_name[tc.id] = tc.name
                 call_id_to_args[tc.id] = getattr(tc, "arguments", {}) or {}
 
-    shaped = list(messages)
-    compacted = 0
+    replacements: list[tuple[int, Message]] = []
     for i in range(tail_start):
         msg = messages[i]
         if i in protected or getattr(msg, "compacted_by", None) == LAYER:
@@ -200,10 +215,6 @@ def _compact_older(
             replacement = _compact_tool(msg, preview_chars, call_id_to_name, call_id_to_args)
         else:
             replacement = msg
-        if replacement is msg:
-            continue
-        shaped[i] = replacement
-        compacted += 1
-        if memo is not None:
-            memo.remember(LAYER, [msg], [replacement])
-    return shaped, compacted
+        if replacement is not msg:
+            replacements.append((i, replacement))
+    return replacements

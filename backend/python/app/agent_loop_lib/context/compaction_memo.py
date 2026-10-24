@@ -9,9 +9,10 @@ just aged past a layer's window was rewritten on every call. Each of those
 changed the sent prefix and defeated the provider's prompt cache.
 
 The memo maps a content hash of what a layer compacted (one message, or a run
-of messages) to what the layer sent instead. Before acting, a layer reapplies
-the replacements it already made; it compacts anything new only when the
-context is still over its trigger. The sent prefix then changes only when
+of messages) to what the layer sent instead. On every call a layer reapplies
+the replacements it already made, whether or not the context is over its
+trigger; it compacts anything new only when the context is over its trigger
+(then in one batch, ``watermark.py``). The sent prefix then changes only when
 budget pressure makes a layer act again, and the summariser runs once per new
 run of messages.
 
@@ -58,6 +59,8 @@ class CompactionMemo:
     # Run lengths each layer has memoized, longest first, so a prefix lookup
     # tries only lengths that can match.
     _lengths: dict[str, list[int]] = field(default_factory=dict)
+    # Message digest -> the layers that compacted (or evicted) that exact message.
+    _holders: dict[str, set[str]] = field(default_factory=dict)
     hits: int = 0
     misses: int = 0
 
@@ -65,18 +68,42 @@ class CompactionMemo:
     def entries(self) -> int:
         return len(self._replacements)
 
+    def has_compacted(self, layer: str) -> bool:
+        """Whether ``layer`` compacted anything earlier in the run, which it
+        must then replay on every later call, over its trigger or not."""
+        return bool(self._lengths.get(layer))
+
     def remember(self, layer: str, run: Sequence[Message], replacement: Sequence[Message]) -> None:
-        self._replacements[_run_key(layer, [message_digest(m) for m in run])] = tuple(replacement)
+        digests = [message_digest(m) for m in run]
+        self._replacements[_run_key(layer, digests)] = tuple(replacement)
+        for digest in digests:
+            self._holders.setdefault(digest, set()).add(layer)
         lengths = self._lengths.setdefault(layer, [])
         if len(run) not in lengths:
             lengths.append(len(run))
             lengths.sort(reverse=True)
 
+    def held_by_others(self, layer: str, messages: Sequence[Message]) -> frozenset[int]:
+        """Indices of ``messages`` a layer other than ``layer`` already
+        compacted (or evicted) exactly as they are now."""
+        if not self._holders:
+            return frozenset()
+        return frozenset(
+            i for i, msg in enumerate(messages)
+            if self._holders.get(message_digest(msg), set()) - {layer}
+        )
+
     def recall_message(self, layer: str, message: Message) -> Message | None:
         """The single message ``layer`` sent in place of ``message`` before."""
+        found = self.recall(layer, message)
+        return found[0] if found else None
+
+    def recall(self, layer: str, message: Message) -> tuple[Message, ...] | None:
+        """What ``layer`` sent in place of ``message`` before: one message,
+        none when it dropped it, or None when it never replaced it."""
         found = self._replacements.get(_run_key(layer, [message_digest(message)]))
         self._count(found is not None)
-        return found[0] if found else None
+        return found
 
     def recall_prefix(self, layer: str, digests: Sequence[str], start: int, stop: int) -> MemoHit | None:
         """The longest memoized run of ``layer`` that starts at ``start`` and
@@ -102,6 +129,21 @@ class CompactionMemo:
             "compaction_memo: %s hits=%d misses=%d entries=%d (run=%s, turn=%d)",
             layer, self.hits, self.misses, self.entries, run_id, turn,
         )
+
+
+def compacted_before(memo: CompactionMemo | None, layer: str) -> bool:
+    """Whether ``layer`` compacted anything earlier in this run."""
+    return memo is not None and memo.has_compacted(layer)
+
+
+def held_elsewhere(
+    memo: CompactionMemo | None, layer: str, messages: Sequence[Message],
+) -> frozenset[int]:
+    """Indices of messages another layer already compacted in exactly their
+    present form. ``layer`` must leave them as they are: a deferred batch
+    that rewrote one later would change what that layer keyed its own
+    compaction on, and its replay would no longer match."""
+    return memo.held_by_others(layer, messages) if memo is not None else frozenset()
 
 
 def reapply_replacements(
@@ -202,6 +244,8 @@ __all__ = [
     "MemoHit",
     "RunPlan",
     "assemble",
+    "compacted_before",
+    "held_elsewhere",
     "message_digest",
     "plan_runs",
     "reapply_replacements",

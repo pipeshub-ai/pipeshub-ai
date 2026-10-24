@@ -46,7 +46,7 @@ Stored run history (`ContextManager`) is never changed by shaping. Each model ca
 | L4 `loop_compaction` | above trigger(.6) | each run of unprotected messages becomes one deterministic summary |
 | L6 `deterministic_compact` | above trigger(.85) | extractive shortening of unprotected messages |
 | L7 `auto_compact` (chat: two tail ratios) | above trigger(.85) | LLM summary per run of unprotected messages |
-| L5 `sliding_window` | above budget | evict unprotected groups oldest-first; protected tool groups last (WARNING) |
+| L5 `sliding_window` | above budget | evict unprotected groups oldest-first down to the low-water mark; protected tool groups last (WARNING) |
 | L8 `synthesis_guard` | above budget | last-resort clearing; past the window raises `ContextBudgetExceeded` |
 | L9 `context_invariants` | always | pairing repair, current-request check, window check |
 
@@ -55,9 +55,22 @@ How the budget and triggers are computed:
 - `trigger(r) = max(B·r, B − (1−r)·120K)`: the ratio up to the tuned 120K budget, then the same headroom (`ContextBudget.trigger_tokens`).
 - `hard_limit_tokens = B + reply reserve`. Between `B` and the hard limit the request is sent with a warning; past it the call stops.
 
-Two things keep the context stable from call to call:
-- **The run's memo** (`context/compaction_memo.py`). It lives in `RunScope`, is never written to history and is not inherited by sub-agents. Each layer replays its earlier compactions from it, so a prefix that was sent is sent the same way again. The LLM summariser runs at most once per new run of messages.
+Three things keep the context stable from call to call:
+- **The run's memo** (`context/compaction_memo.py`). It lives in `RunScope`, is never written to history and is not inherited by sub-agents. Each layer replays its earlier compactions from it on every call, over its trigger or not, so a prefix that was sent is sent the same way again. The sliding window records its evictions there too, so an evicted group stays evicted. A layer never rewrites a message another layer already compacted in that exact form, or that layer's replay would stop matching. The LLM summariser runs at most once per new run of messages.
+- **Batches with a low-water mark** (`context/watermark.py`). Each layer has a low-water mark `LOW_WATER_FRACTION = 0.3` of the budget below its trigger. Over the trigger, a layer compacts only when that frees at least the band between the two; a smaller pass waits until enough has aged past its floor (keep-last-N, the tail, protected messages). A pass that runs compacts everything its floor allows, which reaches the mark whenever the floor permits. The sliding window evicts down to `B − 0.3·B` in one pass. Without this, at 8K–32K windows the turns a layer keeps already sat over its trigger, so every call compacted the one result that had just aged out and rewrote the request near its end.
 - **Compaction markers.** Layers mark what they wrote with `compacted_by`, not with text sentinels.
+
+Effect on 30 consecutive calls of one run on the production chain (`tests/unit/agents/agent_loop/test_context_pipeline_scenarios.py::test_compaction_comes_in_batches_so_most_calls_only_append`):
+
+| Scenario | Prefix breaks before → after | Mean cached-prefix share before → after |
+|---|---|---|
+| 8K, 2K-char search results | 28 → 9 of 29 | 0.33 → 0.65 |
+| 8K, 4K-char search results (a result is a quarter of the budget) | 29 → 15 | 0.31 → 0.38 |
+| 32K, 8K-char search results | 27 → 9 | 0.27 → 0.59 |
+| 200K, 60K-char `fetch_record` (protected; the window evicts) | 21 → 5 | 0.22 → 0.71 |
+| 200K, 40K-char search results | 3 → 3 | 0.75 → 0.75 |
+
+At 8K with 4K-char results the summariser ran 26 times before and 16 after.
 
 ## 3. The contract
 
@@ -67,11 +80,11 @@ Two things keep the context stable from call to call:
 | I2 | Earlier turns are history. Text the loop adds (summaries, nudges, plans, relocated images) is `UserMessage(injected=True)`. Every transport sends it wrapped as `<context_note source="agent">…</context_note>`, and the system prompt says those notes come from the runtime. |
 | I3 | Every tool result follows the call that asked for it. |
 | I4 | Shapers and injectors never modify stored messages (copy-on-write). |
-| I5 | Shaping is deterministic, and a sent prefix stays stable unless budget pressure forces a change. |
+| I5 | Shaping is deterministic, and a sent prefix stays stable unless budget pressure forces a change; that change comes in batches (§2). |
 | I6 | A request fits the window, or the call stops with `ContextBudgetExceeded`. `Agent.step` ends the run without a model call, and the user sees `request_too_large` ("This conversation is too long…"). |
 | I7 | Protected content is never summarised or shortened. That covers the current request, `pinned` messages, system messages, and tool groups of the profile's `protected_tools` (`fetch_record`, web search/fetch, plans). Citations resolve only to content shown in the current request. |
 | I8 | Replayed history is bounded and faithful: failed and stopped turns are marked, and attachments are budgeted. |
-| I9 | Every layer that acts logs one INFO line: layer, action, tokens before→after, run_id, turn, budget. Repairs log at ERROR (`context_invariant_repaired`). Logs never carry content. |
+| I9 | Every layer that acts logs one INFO line: layer, action, tokens before→after, low-water mark, run_id, turn, budget. Repairs log at ERROR (`context_invariant_repaired`). Logs never carry content. |
 
 **Protection** (`context/protection.py`) goes by role, not position.
 - The current request is the last user message the loop did not inject.
@@ -104,7 +117,7 @@ Two things keep the context stable from call to call:
 
 | Log | Level | Meaning |
 |---|---|---|
-| `<layer>: …, a→b tokens (turn=, budget=, run=)` | INFO | a layer acted |
+| `<layer>: …, a→b tokens (low_water=, run=, turn=, budget=)` | INFO | a layer acted (or replayed earlier compactions) |
 | `history_seeded …` | INFO | turns whole/reduced/omitted, placeholders, attachment chars |
 | `attachment_truncated …` | WARNING | an attachment was cut to its budget |
 | protected group evicted | WARNING | protected content alone exceeded the window |

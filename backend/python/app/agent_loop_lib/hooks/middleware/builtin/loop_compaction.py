@@ -9,9 +9,10 @@ Key design choices for long conversations:
 * **Stable summaries** — a run summarised on an earlier call of the run is
   sent as the same summary on every later call
   (``context/compaction_memo.py``); messages that age out after it get a
-  summary of their own only while the context is still over the trigger.
-  The sent prefix therefore stays the same from call to call, and a summary
-  is never re-summarised.
+  summary of their own only while the context is over the trigger, and only
+  once there are enough of them to be worth one batch
+  (``context/watermark.py``). The sent prefix therefore stays the same from
+  call to call, and a summary is never re-summarised.
 
 * **Tiered extraction** — tool results with ``artifact_meta`` keep
   their artifact ID (always recoverable); tool results without it
@@ -29,14 +30,25 @@ from __future__ import annotations
 import logging
 import re
 
-from app.agent_loop_lib.context.compaction_memo import assemble, plan_runs
+from app.agent_loop_lib.context.compaction_memo import (
+    RunPlan,
+    assemble,
+    compacted_before,
+    held_elsewhere,
+    plan_runs,
+)
 from app.agent_loop_lib.context.protection import compactable_runs, protected_indices
+from app.agent_loop_lib.context.watermark import Watermarks, watermarks
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ToolMessage,
     UserMessage,
 )
-from app.agent_loop_lib.core.tokens import count_tokens, extract_text
+from app.agent_loop_lib.core.tokens import (
+    count_message_tokens,
+    count_tokens,
+    extract_text,
+)
 from app.agent_loop_lib.core.types import Message, MessageRole
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     safe_tail_boundary,
@@ -118,6 +130,27 @@ def _summary_message(
     return UserMessage(content="\n".join(parts), injected=True, compacted_by=LAYER)
 
 
+def _batch(
+    messages: list[Message],
+    plans: list[RunPlan],
+    turn_index: int,
+    max_summary_lines: int,
+    marks: Watermarks,
+    total: int,
+) -> dict[int, UserMessage]:
+    """The summary of each run's unsummarised rest, keyed by where the rest
+    starts; empty when summarising every rest would not be worth a batch."""
+    batch: dict[int, UserMessage] = {}
+    saving = 0
+    for plan in plans:
+        rest = list(messages[plan.rest.start:plan.rest.stop])
+        summary = _summary_message(rest, turn_index, max_summary_lines) if rest else None
+        if summary is not None:
+            batch[plan.rest.start] = summary
+            saving += count_tokens(rest) - count_message_tokens(summary)
+    return batch if marks.worth_compacting(total, saving) else {}
+
+
 def shape_loop_compaction(
     keep_recent: int = 6,
     trigger_ratio: float = 0.6,
@@ -132,7 +165,7 @@ def shape_loop_compaction(
     messages, protected tool groups, see ``context/protection.py``) stay
     verbatim between them. Runs summarised on an earlier call of the run are
     sent as the same summary again; the rest is summarised only while the
-    context is still over the trigger.
+    context is over the trigger, in batches (``context/watermark.py``).
 
     Parameters
     ----------
@@ -150,31 +183,34 @@ def shape_loop_compaction(
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         total = count_tokens(ctx.messages)
         trigger = ctx.budget.trigger_tokens(trigger_ratio)
-        if total <= trigger:
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
         messages = ctx.messages
         raw_tail_start = len(messages) - keep_recent if keep_recent > 0 else len(messages)
         tail_start = safe_tail_boundary(messages, raw_tail_start, 0)
-        runs = compactable_runs(protected_indices(messages, protected_tools=protected_tools), 0, tail_start)
         memo = ctx.compaction_memo
+        held = protected_indices(messages, protected_tools=protected_tools) | held_elsewhere(memo, LAYER, messages)
+        runs = compactable_runs(held, 0, tail_start)
         plans = plan_runs(memo, LAYER, messages, runs)
         reused = sum(len(plan.hits) for plan in plans)
         shaped = assemble(messages, plans)
 
+        marks = watermarks(ctx.budget, trigger)
         new_summaries: dict[int, list[Message]] = {}
         compressed = 0
-        if count_tokens(shaped) > trigger:
+        replayed_total = count_tokens(shaped)
+        if replayed_total > trigger:
+            batch = _batch(messages, plans, ctx.turn_index, max_summary_lines, marks, replayed_total)
             for plan in plans:
-                rest = list(messages[plan.rest.start:plan.rest.stop])
-                summary = _summary_message(rest, ctx.turn_index, max_summary_lines) if rest else None
+                summary = batch.get(plan.rest.start)
                 if summary is None:
                     continue
                 new_summaries[plan.rest.start] = [summary]
-                compressed += len(rest)
+                compressed += len(plan.rest)
                 if memo is not None:
-                    memo.remember(LAYER, rest, [summary])
+                    memo.remember(LAYER, messages[plan.rest.start:plan.rest.stop], [summary])
             shaped = assemble(messages, plans, new_summaries)
 
         if memo is not None:
@@ -185,9 +221,9 @@ def shape_loop_compaction(
         ctx.messages = shaped
         logger.info(
             "loop_compaction: compressed %d messages into %d new summaries (%d reused from earlier calls), "
-            "%d→%d tokens (run=%s, turn=%d, budget=%d)",
+            "%d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
             compressed, len(new_summaries), reused, total, count_tokens(shaped),
-            ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
+            marks.low_water, ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 

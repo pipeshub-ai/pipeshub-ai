@@ -23,8 +23,13 @@ from __future__ import annotations
 import json
 import logging
 
-from app.agent_loop_lib.context.compaction_memo import reapply_replacements
+from app.agent_loop_lib.context.compaction_memo import (
+    compacted_before,
+    held_elsewhere,
+    reapply_replacements,
+)
 from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -79,8 +84,9 @@ def shape_artifact_compaction(
     Runs as Layer 2, right after ``budget_reduction``. A result compacted on
     an earlier call of the run is compacted again on every later call
     (``context/compaction_memo.py``), so the sent prefix does not change as
-    each result ages past the window; new results are compacted only while
-    the context is still over the trigger.
+    each result ages past the window; old-turn results are compacted only
+    while the context is over the trigger, and in batches
+    (``context/watermark.py``).
 
     Parameters
     ----------
@@ -104,7 +110,7 @@ def shape_artifact_compaction(
         initial_total = count_tokens(ctx.messages)
         # Recent artifacts are compacted only past the budget, which is never
         # below the trigger, so nothing here acts at or under the trigger.
-        if initial_total <= trigger:
+        if initial_total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
@@ -112,6 +118,7 @@ def shape_artifact_compaction(
         protected = protected_indices(ctx.messages, protected_tools=protected_tools)
         messages, reused = reapply_replacements(memo, LAYER, ctx.messages, keep=protected)
         total = count_tokens(messages)
+        held = held_elsewhere(memo, LAYER, messages)
         prev_cutoff = ctx.turn_index - keep_last_n_turns
 
         prev_indices: list[int] = []
@@ -120,7 +127,7 @@ def shape_artifact_compaction(
         for i, msg in enumerate(messages):
             if (
                 not isinstance(msg, ToolMessage) or msg.artifact_meta is None
-                or msg.compacted_by == LAYER or i in protected
+                or msg.compacted_by == LAYER or i in protected or i in held
             ):
                 continue
             if msg.artifact_meta.turn_index < prev_cutoff:
@@ -138,7 +145,10 @@ def shape_artifact_compaction(
             return running_total - count_message_tokens(original) + count_message_tokens(messages[i])
 
         compacted_count = 0
-        if total > trigger:
+        marks = watermarks(ctx.budget, trigger)
+        prev_saving = sum(count_message_tokens(messages[i]) - count_message_tokens(_compact(messages[i]))
+                          for i in prev_indices)
+        if marks.worth_compacting(total, prev_saving):
             for i in prev_indices:
                 total = swap(i, total)
                 compacted_count += 1
@@ -157,10 +167,10 @@ def shape_artifact_compaction(
         if compacted_count or reused:
             logger.info(
                 "artifact_compaction: compacted %d %s (%d again from earlier calls), %d→%d tokens "
-                "(run=%s, turn=%d, budget=%d)",
+                "(low_water=%d, run=%s, turn=%d, budget=%d)",
                 compacted_count,
                 "artifact(s) total (incl. recent-turn overflow)" if overflow else "prev-turn artifact(s)",
-                reused, initial_total, total, ctx.run_id, ctx.turn_index, budget,
+                reused, initial_total, total, marks.low_water, ctx.run_id, ctx.turn_index, budget,
             )
         if memo is not None:
             memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)

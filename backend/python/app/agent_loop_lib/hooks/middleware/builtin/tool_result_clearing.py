@@ -5,11 +5,14 @@ import logging
 from typing import Any
 
 from app.agent_loop_lib.context.compaction_memo import (
-    CompactionMemo,
+    compacted_before,
+    held_elsewhere,
     reapply_replacements,
 )
 from app.agent_loop_lib.context.protection import protected_indices
-from app.agent_loop_lib.core.types import MessageRole
+from app.agent_loop_lib.context.watermark import watermarks
+from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
+from app.agent_loop_lib.core.types import Message, MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 logger = logging.getLogger(__name__)
@@ -73,11 +76,13 @@ def shape_tool_result_clearing(
     (tool name, args, summary, hint) so the model retains enough context
     to decide whether to re-call.
 
-    **Sticky** — a result cleared on an earlier call of the run is cleared
-    again on every later call (``context/compaction_memo.py``), and new
-    results are cleared only while the context is still over the trigger,
-    so the sent prefix does not change on every call as one more turn ages
-    out.
+    **Sticky and batched** — a result cleared on an earlier call of the run
+    is cleared again on every later call (``context/compaction_memo.py``).
+    New results are cleared, whole turns oldest first, only while the
+    context is over the trigger, and then down to the low-water mark in one
+    pass (``context/watermark.py``); a pass too small to be worth a batch
+    waits. The next calls then only append, instead of each rewriting the
+    one turn that just aged out.
 
     Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     Results ``context/protection.py`` protects (tool groups that called one
@@ -85,27 +90,34 @@ def shape_tool_result_clearing(
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        from app.agent_loop_lib.core.tokens import count_tokens
-
         initial_total = count_tokens(ctx.messages)
-        trigger = ctx.budget.trigger_tokens(trigger_ratio)
-        if initial_total <= trigger:
+        marks = watermarks(ctx.budget, ctx.budget.trigger_tokens(trigger_ratio))
+        if initial_total <= marks.trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
         protected = protected_indices(ctx.messages, protected_tools=protected_tools)
         memo = ctx.compaction_memo
         messages, reused = reapply_replacements(memo, LAYER, ctx.messages, keep=protected)
+        total = count_tokens(messages)
         cleared = 0
-        if count_tokens(messages) > trigger:
-            messages, cleared = _clear_stale_turns(messages, keep_last_n_turns, protected, memo)
+        if total > marks.trigger:
+            held = protected | held_elsewhere(memo, LAYER, messages)
+            turns = _stale_turn_references(messages, keep_last_n_turns, held)
+            if marks.worth_compacting(total, sum(_saving(messages, turn) for turn in turns)):
+                for turn in turns:
+                    for i, replacement in turn.items():
+                        if memo is not None:
+                            memo.remember(LAYER, [messages[i]], [replacement])
+                        messages[i] = replacement
+                        cleared += 1
 
         if cleared or reused:
             logger.info(
                 "tool_result_clearing: cleared %d tool result(s) older than the last %d turn(s) "
-                "(%d again from earlier calls), %d→%d tokens (run=%s, turn=%d, budget=%d)",
+                "(%d again from earlier calls), %d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
                 cleared, keep_last_n_turns, reused, initial_total, count_tokens(messages),
-                ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
+                marks.low_water, ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
             )
         if memo is not None:
             memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
@@ -115,15 +127,20 @@ def shape_tool_result_clearing(
     return _middleware
 
 
-def _clear_stale_turns(
-    messages: list,
+def _saving(messages: list[Message], replacements: dict[int, Message]) -> int:
+    return sum(
+        count_message_tokens(messages[i]) - count_message_tokens(new) for i, new in replacements.items()
+    )
+
+
+def _stale_turn_references(
+    messages: list[Message],
     keep_last_n_turns: int,
     protected: frozenset[int],
-    memo: CompactionMemo | None,
-) -> tuple[list, int]:
-    """Replace every unprotected result older than the last
-    ``keep_last_n_turns`` tool turns with a reference; returns the list and
-    how many results were replaced."""
+) -> list[dict[int, Message]]:
+    """For each tool turn older than the last ``keep_last_n_turns``, oldest
+    first, the reference each of its unprotected, not yet cleared results
+    would be replaced with. Turns with nothing to clear are left out."""
     call_id_to_turn: dict[str, int] = {}
     call_id_to_name: dict[str, str] = {}
     call_id_to_args: dict[str, dict[str, Any]] = {}
@@ -150,39 +167,36 @@ def _clear_stale_turns(
     turns = [t for t in turns if t]
     turns.sort(key=lambda indices: min(indices))
     if len(turns) <= keep_last_n_turns:
-        return messages, 0
-
-    clearable = {
-        i for turn_indices in turns[: len(turns) - keep_last_n_turns] for i in turn_indices
-        if i not in protected and getattr(messages[i], "compacted_by", None) not in _REFERENCE_LAYERS
-    }
-    if not clearable:
-        return messages, 0
+        return []
 
     from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
         _compact_reference,
     )
 
-    shaped = list(messages)
-    for i in sorted(clearable):
-        msg = messages[i]
-        if getattr(msg, "artifact_meta", None) is not None:
-            content = _compact_reference(msg)
-        else:
-            tc_id = getattr(msg, "tool_call_id", None)
-            # Any images the tool returned belong to the current turn's
-            # context; once a result ages past `keep_last_n_turns` its
-            # images are as expendable as its text (same rule L4/L5/L7
-            # already apply) — the reference is plain text so the model
-            # can re-call the tool if it needs the image again.
-            content = _build_tool_ref(
-                tool_name=call_id_to_name.get(tc_id, "") if tc_id else "",
-                tool_args=call_id_to_args.get(tc_id, {}) if tc_id else {},
-                tool_call_id=tc_id or "",
-                content=msg.text,
-                is_error=getattr(msg, "is_error", False),
-            )
-        shaped[i] = msg.model_copy(update={"content": content, "compacted_by": LAYER})
-        if memo is not None:
-            memo.remember(LAYER, [msg], [shaped[i]])
-    return shaped, len(clearable)
+    stale: list[dict[int, Message]] = []
+    for turn_indices in turns[: len(turns) - keep_last_n_turns]:
+        references: dict[int, Message] = {}
+        for i in sorted(turn_indices):
+            msg = messages[i]
+            if i in protected or getattr(msg, "compacted_by", None) in _REFERENCE_LAYERS:
+                continue
+            if getattr(msg, "artifact_meta", None) is not None:
+                content = _compact_reference(msg)
+            else:
+                tc_id = getattr(msg, "tool_call_id", None)
+                # Any images the tool returned belong to the current turn's
+                # context; once a result ages past `keep_last_n_turns` its
+                # images are as expendable as its text (same rule L4/L5/L7
+                # already apply) — the reference is plain text so the model
+                # can re-call the tool if it needs the image again.
+                content = _build_tool_ref(
+                    tool_name=call_id_to_name.get(tc_id, "") if tc_id else "",
+                    tool_args=call_id_to_args.get(tc_id, {}) if tc_id else {},
+                    tool_call_id=tc_id or "",
+                    content=msg.text,
+                    is_error=getattr(msg, "is_error", False),
+                )
+            references[i] = msg.model_copy(update={"content": content, "compacted_by": LAYER})
+        if references:
+            stale.append(references)
+    return stale

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
+if TYPE_CHECKING:
+    from app.agent_loop_lib.context.compaction_memo import CompactionMemo
+    from app.agent_loop_lib.core.types import Message
+
 logger = logging.getLogger(__name__)
+
+LAYER = "sliding_window"
 
 
 def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
@@ -26,6 +34,12 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
     `protected_tools` are evicted only when nothing unprotected is left and
     the call still does not fit, oldest first, so the budget stays reachable.
 
+    Once it has to evict, it evicts down to the low-water mark below the
+    budget in one pass (``context/watermark.py``), and every message it
+    evicted stays evicted on the later calls of the run
+    (``context/compaction_memo.py``), so those calls only append instead of
+    each dropping one more message from the front.
+
     Evicts tool-call groups atomically: an ``AssistantMessage`` with
     ``tool_calls`` is always evicted together with its matching
     ``ToolMessage``s to keep the pairing that LLM providers require.
@@ -38,31 +52,80 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
             return
 
         budget = ctx.budget.effective_max_tokens
-        working = list(messages)
-        index_map = list(range(len(messages)))
-        before = total = count_tokens(working)
-        total = _evict_until(working, index_map, total, budget,
-                             protected_indices(messages, protected_tools=protected_tools))
-        evicted_unprotected = len(messages) - len(working)
-        if total > budget and protected_tools:
-            total = _evict_until(working, index_map, total, budget, protected_indices(messages))
-            evicted_protected = len(messages) - len(working) - evicted_unprotected
-            if evicted_protected:
-                logger.warning(
-                    "sliding_window: evicted %d protected tool message(s) after every unprotected one "
-                    "to fit the budget, %d tokens (run=%s, turn=%d, budget=%d)",
-                    evicted_protected, total, ctx.run_id, ctx.turn_index, budget,
-                )
+        memo = ctx.compaction_memo
+        never = protected_indices(messages)
+        working, index_map = _replay_evictions(memo, messages, never)
+        replayed = len(messages) - len(working)
+        before = count_tokens(messages)
+        total = count_tokens(working)
+        low_water = watermarks(ctx.budget, budget).low_water
+        if total > budget:
+            total = _evict_until(working, index_map, total, low_water,
+                                 protected_indices(messages, protected_tools=protected_tools))
+            evicted_unprotected = len(messages) - len(working) - replayed
+            if total > budget and protected_tools:
+                total = _evict_until(working, index_map, total, low_water, never)
+                evicted_protected = len(messages) - len(working) - replayed - evicted_unprotected
+                if evicted_protected:
+                    logger.warning(
+                        "sliding_window: evicted %d protected tool message(s) after every unprotected one "
+                        "to fit the budget, %d tokens (run=%s, turn=%d, budget=%d)",
+                        evicted_protected, total, ctx.run_id, ctx.turn_index, budget,
+                    )
+            if memo is not None:
+                kept = set(index_map)
+                for i, msg in enumerate(messages):
+                    if i not in kept and memo.recall(LAYER, msg) is None:
+                        memo.remember(LAYER, [msg], [])
 
         if len(working) < len(messages):
             logger.info(
-                "sliding_window: evicted %d oldest message(s), %d→%d tokens (run=%s, turn=%d, budget=%d)",
-                len(messages) - len(working), before, total, ctx.run_id, ctx.turn_index, budget,
+                "sliding_window: evicted %d oldest message(s) (%d again from earlier calls), %d→%d tokens "
+                "(low_water=%d, run=%s, turn=%d, budget=%d)",
+                len(messages) - len(working), replayed, before, total, low_water,
+                ctx.run_id, ctx.turn_index, budget,
             )
         ctx.messages = working
         await next_fn()
 
     return _middleware
+
+
+def _replay_evictions(
+    memo: CompactionMemo | None, messages: list[Message], never: frozenset[int],
+) -> tuple[list[Message], list[int]]:
+    """``messages`` without those an earlier call of the run evicted, and the
+    original index of each message kept. An evicted message stays evicted,
+    so the calls after a batch eviction only append.
+
+    Replayed by group: an evicted tool call takes its results with it, and a
+    result is dropped on its own only when its call is gone, so a result a
+    layer above rewrote since never loses its call."""
+    working = list(messages)
+    index_map = list(range(len(messages)))
+    if memo is None or not memo.has_compacted(LAYER):
+        return working, index_map
+    i = 0
+    while i < len(working):
+        msg = working[i]
+        if index_map[i] in never or memo.recall(LAYER, msg) != ():
+            i += 1
+            continue
+        if msg.role == MessageRole.TOOL and _has_call(working, i):
+            i += 1
+            continue
+        _evict_group(working, index_map, i)
+    return working, index_map
+
+
+def _has_call(working: list[Message], index: int) -> bool:
+    """Whether the tool result at ``index`` follows the call that asked for it."""
+    call_id = getattr(working[index], "tool_call_id", None)
+    j = index - 1
+    while j >= 0 and working[j].role == MessageRole.TOOL:
+        j -= 1
+    calls = getattr(working[j], "tool_calls", None) if j >= 0 else None
+    return bool(calls) and any(call.id == call_id for call in calls)
 
 
 def _evict_until(

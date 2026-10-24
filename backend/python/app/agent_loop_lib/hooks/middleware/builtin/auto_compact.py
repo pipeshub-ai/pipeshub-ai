@@ -3,8 +3,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
-from app.agent_loop_lib.context.compaction_memo import assemble, plan_runs
+from app.agent_loop_lib.context.compaction_memo import (
+    RunPlan,
+    assemble,
+    compacted_before,
+    held_elsewhere,
+    plan_runs,
+)
 from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import Watermarks, watermarks
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
 from app.agent_loop_lib.core.usage_source import llm_usage_source
@@ -251,8 +258,9 @@ def shape_auto_compact(
 
     A run summarised on an earlier call of the run is sent as the same
     summary on every later call (``context/compaction_memo.py``); the
-    summariser is called only for messages no earlier call summarised, and
-    only while the context is still over the trigger. Two instances (a
+    summariser is called only for messages no earlier call summarised, only
+    while the context is over the trigger, and only once there are enough
+    of them to be worth one batch (``context/watermark.py``). Two instances (a
     gentle and an aggressive tail) share the memo and never summarise each
     other's summaries, so no run is summarised twice.
 
@@ -274,7 +282,7 @@ def shape_auto_compact(
         budget = ctx.budget.effective_max_tokens
         total = count_tokens(messages)
         trigger = ctx.budget.trigger_tokens(trigger_ratio)
-        if total <= trigger:
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
@@ -284,34 +292,34 @@ def shape_auto_compact(
             return
 
         tail_start_group = _find_tail_start(messages, groups, budget, max_tail_ratio)
-        protected = protected_indices(messages, protected_tools=protected_tools)
-        runs = _summarisable_runs(messages, groups[:tail_start_group], protected)
+        memo = ctx.compaction_memo
+        held = protected_indices(messages, protected_tools=protected_tools) | held_elsewhere(memo, LAYER, messages)
+        runs = _summarisable_runs(messages, groups[:tail_start_group], held)
         if not runs:
             await next_fn()
             return
 
-        memo = ctx.compaction_memo
         plans = plan_runs(memo, LAYER, messages, runs)
         reused = sum(len(plan.hits) for plan in plans)
         shaped = assemble(messages, plans)
 
+        marks = watermarks(ctx.budget, trigger)
         new_summaries: dict[int, list[Message]] = {}
         summarised = 0
-        if count_tokens(shaped) > trigger:
-            for plan in plans:
-                if not plan.rest:
-                    continue
-                rest = list(messages[plan.rest.start:plan.rest.stop])
-                summary_text = await summarizer(rest) if summarizer is not None else _naive_summary(rest)
+        replayed_total = count_tokens(shaped)
+        if replayed_total > trigger:
+            for plan in _batch(messages, plans, marks, replayed_total):
+                piece = list(messages[plan.rest.start:plan.rest.stop])
+                summary_text = await summarizer(piece) if summarizer is not None else _naive_summary(piece)
                 summary = UserMessage(
-                    content=f"[Auto-compacted summary of {len(rest)} earlier message(s)]\n{summary_text}",
+                    content=f"[Auto-compacted summary of {len(piece)} earlier message(s)]\n{summary_text}",
                     injected=True,
                     compacted_by=LAYER,
                 )
                 new_summaries[plan.rest.start] = [summary]
-                summarised += len(rest)
+                summarised += len(piece)
                 if memo is not None:
-                    memo.remember(LAYER, rest, [summary])
+                    memo.remember(LAYER, piece, [summary])
             shaped = assemble(messages, plans, new_summaries)
 
         if memo is not None:
@@ -322,13 +330,23 @@ def shape_auto_compact(
         ctx.messages = shaped
         logger.info(
             "auto_compact: summarized %d messages into %d new summaries (%d reused from earlier calls, "
-            "tail=%d groups), %d→%d tokens (run=%s, turn=%d, budget=%d)",
+            "tail=%d groups), %d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
             summarised, len(new_summaries), reused, len(groups) - tail_start_group,
-            total, count_tokens(shaped), ctx.run_id, ctx.turn_index, budget,
+            total, count_tokens(shaped), marks.low_water, ctx.run_id, ctx.turn_index, budget,
         )
         await next_fn()
 
     return _middleware
+
+
+def _batch(messages: list[Message], plans: list[RunPlan], marks: Watermarks, total: int) -> list[RunPlan]:
+    """The runs whose unsummarised rest to summarise on this call: all of
+    them, or none when that would not be worth a batch. A summary's size is
+    not known before the summariser runs, so the estimate counts what it
+    replaces as freed."""
+    rests = [plan for plan in plans if plan.rest]
+    saving = sum(count_tokens(messages[plan.rest.start:plan.rest.stop]) for plan in rests)
+    return rests if marks.worth_compacting(total, saving) else []
 
 
 def _summarisable_runs(

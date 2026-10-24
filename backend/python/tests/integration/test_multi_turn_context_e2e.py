@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from pydantic import Field
 
 from app.agents.chat_modes.attachments import ResolvedAttachments
@@ -54,6 +54,8 @@ _SUMMARY_REQUEST = "Summarize the conversation history below"
 # Loop-written summaries reach the provider as user turns, wrapped as context notes (CE-05, P1).
 _CONTEXT_NOTE = '<context_note source="agent">\n'
 _LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Auto-compacted summary")
+# What artifact compaction sends in place of a fetched page.
+_ARTIFACT_REFERENCE = "[artifact:"
 _IMAGE_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -256,9 +258,15 @@ class TestFollowUpQuestionUnderCompaction:
         assert finished["result"]["answer"] == _ANSWER
         assert len(events["TOOL_CALL_RESULT"]) == _FETCHES
         assert len(model.calls) == _FETCHES + 1
-        # Without compaction this test proves nothing.
+        # Without compaction this test proves nothing. Loop summaries come in
+        # batches (context/watermark.py), so compacted fetches count too, and
+        # protected fetches are never summarised, only evicted whole: a call
+        # that carries fewer results than were fetched before it was shaped.
         assert model.summary_calls or any(
-            _is_loop_note(_text(m)) for call in model.calls for m in _humans(call)
+            _is_loop_note(_text(m)) or _text(m).startswith(_ARTIFACT_REFERENCE)
+            for call in model.calls for m in call
+        ) or any(
+            sum(isinstance(m, ToolMessage) for m in call) < n for n, call in enumerate(model.calls)
         ), "nothing was compacted; raise the fetched page size or lower the window"
         for n, call in enumerate(model.calls):
             _assert_sends_current_request(n, call)
