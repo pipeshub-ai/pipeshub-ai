@@ -1,6 +1,7 @@
 """Tests for app.connectors.sources.microsoft.sharepoint_online.connector."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -416,7 +417,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector_cov()
         async def ok():
             return "result"
-        result = await c._safe_api_call(ok())
+        result = await c._safe_api_call(ok)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -424,7 +425,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector_cov()
         async def fail():
             raise Exception("403 forbidden")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -432,8 +433,53 @@ class TestSharePointSafeApiCall:
         c = _make_connector_cov()
         async def fail():
             raise Exception("404 notfound")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
+
+
+class TestSharePointSafeApiCallRetry:
+    """Each retry must issue a fresh request: a coroutine can only be awaited once."""
+
+    @staticmethod
+    def _factory(errors: list[str], final: str = "ok") -> tuple[Callable[[], Awaitable[str]], list[int]]:
+        calls: list[int] = []
+
+        async def _coro() -> str:
+            calls.append(1)
+            if len(calls) <= len(errors):
+                raise Exception(errors[len(calls) - 1])
+            return final
+
+        return (lambda: _coro()), calls
+
+    @pytest.mark.asyncio
+    async def test_throttled_twice_then_succeeds(self) -> None:
+        c = _make_connector_cov()
+        factory, calls = self._factory(["429 TooManyRequests", "503 serviceNotAvailable"])
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            result = await c._safe_api_call(factory)
+        assert result == "ok"
+        assert len(calls) == 3
+        assert sleep.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_exhausted_returns_none(self) -> None:
+        c = _make_connector_cov()
+        factory, calls = self._factory(["503 unavailable"] * 10)
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await c._safe_api_call(factory, max_retries=2)
+        assert result is None
+        assert len(calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_forbidden_not_retried(self) -> None:
+        c = _make_connector_cov()
+        factory, calls = self._factory(["403 accessDenied"])
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            result = await c._safe_api_call(factory)
+        assert result is None
+        assert len(calls) == 1
+        sleep.assert_not_awaited()
 
 
 class TestSharePointInitCertificate:
@@ -2221,7 +2267,7 @@ class TestSafeApiCall:
         async def api():
             return "result"
 
-        result = await connector._safe_api_call(api())
+        result = await connector._safe_api_call(api)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -2234,7 +2280,7 @@ class TestSafeApiCall:
             call_count += 1
             raise Exception("403 forbidden accessdenied")
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
         assert result is None
         assert call_count == 1
 
@@ -2245,7 +2291,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("404 notfound")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
@@ -2255,17 +2301,12 @@ class TestSafeApiCall:
         async def api():
             raise Exception("400 badrequest invalid")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_throttle_retries(self):
         connector = _make_connector()
-        # _safe_api_call receives a single coroutine object which can only be
-        # awaited once.  After the first await raises, subsequent retry
-        # iterations will encounter a RuntimeError ("cannot reuse already
-        # awaited coroutine") which eventually exhausts retries and returns
-        # None.
         call_count = 0
 
         async def api():
@@ -2275,8 +2316,10 @@ class TestSafeApiCall:
                 raise Exception("429 throttle")
             return "ok"
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
-        assert result is None
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
+        assert result == "ok"
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_generic_error_retries_then_fails(self):
@@ -2285,7 +2328,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("unknown error")
 
-        result = await connector._safe_api_call(api(), max_retries=1, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=1, retry_delay=0.001)
         assert result is None
 
 
