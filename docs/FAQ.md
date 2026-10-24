@@ -12,7 +12,7 @@ Yes. The PipesHub web app uses the same API you can call yourself, so anything y
 
 - **REST API:** an [OpenAPI spec](../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 470 endpoints. Browse it at `/api/v1/docs` on your instance.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** for Claude Code, Cursor, Codex and other MCP clients.
+- **MCP:** for Claude Code, Cursor, Codex and other MCP clients. It covers a subset: search, chat (also with an existing agent), reading, downloading and navigating records, people and source lookups, and code-graph tools. Connecting sources, managing users and building agents need the REST API or an SDK.
 
 Choose how your code signs in:
 - **Personal access token or OAuth:** acts as one person and sees only what that person can see.
@@ -33,7 +33,7 @@ PipesHub has 40+ connectors across 30+ systems, with real-time and scheduled ind
 
 PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
-Whatever the format, PipesHub stores the text, so agents can search and `grep` a PDF or a slide deck just like a text file.
+For every format it indexes, PipesHub stores the extracted text, so agents can search a PDF or a slide deck just like a text file, and `grep` it when blob storage is local and the record is under 20 MB (see [current limitations](context-layer.md#current-limitations)).
 
 ## How do I deploy PipesHub?
 

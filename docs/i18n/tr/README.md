@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Her belge düz metin olarak saklanır; bu yüzden ajanlar bir PDF, Word dosyası veya sunum üzerinde de bir metin dosyasındaki gibi `grep` çalıştırabilir. Blocks iki şekilde düzenlenir: her kaynak sistemin **klasör yapısına** göre ve kişilerden, projelerden ve müşterilerden oluşan bir **bilgi grafında**. Ajanlar ikisini de **ayrıntıyı adım adım gösteren araçlarla** keşfeder: bir arama önce her kaydın adını, özetini ve eşleşen bölümlerini gösterir; ajan yalnızca gerektiğinde daha derine iner (grep, klasörlerde gezinme, varlıkları izleme, kaydın tamamını okuma). **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
+Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Dizine eklenen her belge düz metin olarak saklanır; bu yüzden blob depolama yerel olduğunda ajanlar bir PDF, Word dosyası veya sunum üzerinde de bir metin dosyasındaki gibi `grep` çalıştırabilir (20 MB'tan büyük kayıtlar atlanır; bkz. [mevcut sınırlamalar](../../context-layer.md#current-limitations)). Blocks iki şekilde düzenlenir: her kaynak sistemin **klasör yapısına** göre ve kişilerden, projelerden ve müşterilerden oluşan bir **bilgi grafında**. Ajanlar ikisini de **ayrıntıyı adım adım gösteren araçlarla** keşfeder: bir arama önce her kaydın adını, özetini ve eşleşen bölümlerini gösterir; ajan yalnızca gerektiğinde daha derine iner (grep, klasörlerde gezinme, varlıkları izleme, kaydın tamamını okuma). **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
 
 **[Bağlam katmanının nasıl çalıştığını okuyun →](../../context-layer.md)** Block biçimini, hiyerarşiyi ve grafı, her ajan aracını ve bulunduğu kodu, izin denetimini, ajan döngüsünü ve mevcut sınırlamaları anlatır.
 
@@ -160,7 +160,7 @@ Aynı getirmeyi kendi kodunuzda ya da ekibiniz için bir arama kutusunun arkası
 
 **Ajanlar için bağlam**
 
-- 🗂️ **Yalnızca aranabilir değil, keşfedilebilir:** hibrit arama, her belge üzerinde `grep` (PDF ve Office dosyaları dahil), klasör gezintisi ve bilgi grafı sorguları; hepsi ajan aracı olarak.
+- 🗂️ **Yalnızca aranabilir değil, keşfedilebilir:** hibrit arama, dizine eklenen her belge üzerinde `grep`, PDF ve Office dosyaları dahil (yalnızca yerel blob depolamayla, 20 MB'tan küçük kayıtlar; [sınırlamalar](../../context-layer.md#current-limitations)), klasör gezintisi ve bilgi grafı sorguları; hepsi ajan aracı olarak.
 - 🔒 **Her adımda izinlere duyarlı:** her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.
 - 📝 **Blok düzeyinde kaynak gösterme:** yanıtlar geldikleri sayfayı, tablo hücresini, satırı, slaytı veya kod satırını gösterir.
 - 🧱 **Yapılandırılmış, yarı yapılandırılmış ve yapılandırılmamış veri tek katmanda:** belgeler, elektronik tablolar, talepler, sohbet dizileri, kod ve SQL tabloları Blocks'a dönüşür.
@@ -232,8 +232,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Yerel imajları kaynaktan derlemek için bu klonlanmış depo yolu gerekir (`./install.sh --build`);
-yukarıdaki tek komutluk kurulum aracı her zaman önceden derlenmiş imajları kullanır.
+Klonlanmış depoda `./install.sh`, önceden derlenmiş imajları mı çekeceğini yoksa kaynaktan mı derleyeceğini sorar;
+`./install.sh --build` sormadan kaynaktan derler. Yukarıdaki tek komutluk kurulum aracı her zaman önceden derlenmiş imajları kullanır.
 
 > **Gelişmiş seçenekler:** kurulum aracı bayrakları (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI ortam değişkenleri, slim ve full kurulum türleri, Compose profillerinin elle kullanımı ve kaynaktan yerel derlemeler [Gelişmiş kurulum seçenekleri](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md) belgesinde anlatılır.
 
@@ -319,7 +319,7 @@ Evet. PipesHub web uygulaması, sizin de çağırabileceğiniz aynı API'yi kull
 
 - **REST API:** yaklaşık 470 uç noktalı bir [OpenAPI belirtimi](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). Kendi örneğinizde `/api/v1/docs` adresinden inceleyebilirsiniz.
 - **SDK'lar:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) ve [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** Claude Code, Cursor, Codex ve diğer MCP istemcileri için.
+- **MCP:** Claude Code, Cursor, Codex ve diğer MCP istemcileri için. Yalnızca bir kısmını kapsar: arama, sohbet (mevcut bir ajanla da), kayıtları okuma, indirme ve gezinme, kişi ve kaynak sorguları ve kod grafı araçları. Kaynak bağlamak, kullanıcı yönetmek ve ajan oluşturmak için REST API veya bir SDK gerekir.
 
 Kodunuzun nasıl oturum açacağını seçin:
 - **Personal Access Token veya OAuth:** tek bir kişi olarak çalışır ve yalnızca o kişinin görebildiğini görür.

@@ -41,6 +41,8 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 | `--uninstall` | Stop the stack and remove all data volumes (irreversible) |
 | `-h` / `--help` | Print the options and the environment overrides |
 
+`install.sh` refuses `--rotate-signing-secrets` together with `--stop` or `--uninstall` and exits with an error. `--stop` and `--uninstall` act on the existing stack and exit without installing, so install and upgrade flags passed with them have no effect (`--yes` still skips the uninstall confirmation). Given both, `--stop` runs and `--uninstall` does not.
+
 ---
 
 ## Standalone one-command install

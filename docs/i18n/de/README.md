@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Jedes Dokument wird als reiner Text gespeichert, daher können Agenten ein PDF, eine Word-Datei oder eine Präsentation mit `grep` durchsuchen wie eine Textdatei. Die Blocks sind auf zwei Arten geordnet: nach der **Ordnerstruktur** jedes Quellsystems und in einem **Knowledge Graph** aus Personen, Projekten und Kunden. Agenten erkunden beides mit **Tools, die Details Schritt für Schritt zeigen**: Eine Suche zeigt zuerst Name, Zusammenfassung und passende Stellen jedes Datensatzes, und der Agent geht nur tiefer (grep, Ordner durchsuchen, Entitäten folgen, den ganzen Datensatz lesen), wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
+Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Jedes indexierte Dokument wird als reiner Text gespeichert, daher können Agenten bei lokalem Blob-Speicher ein PDF, eine Word-Datei oder eine Präsentation mit `grep` durchsuchen wie eine Textdatei (Datensätze über 20 MB werden übersprungen; siehe [aktuelle Einschränkungen](../../context-layer.md#current-limitations)). Die Blocks sind auf zwei Arten geordnet: nach der **Ordnerstruktur** jedes Quellsystems und in einem **Knowledge Graph** aus Personen, Projekten und Kunden. Agenten erkunden beides mit **Tools, die Details Schritt für Schritt zeigen**: Eine Suche zeigt zuerst Name, Zusammenfassung und passende Stellen jedes Datensatzes, und der Agent geht nur tiefer (grep, Ordner durchsuchen, Entitäten folgen, den ganzen Datensatz lesen), wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
 
 **[Lesen Sie, wie die Kontextschicht funktioniert →](../../context-layer.md)** Dort finden Sie das Block-Format, die Hierarchie und den Graphen, jedes Agent-Tool und den Code dazu, die Durchsetzung von Berechtigungen, die Agent-Schleife und aktuelle Einschränkungen.
 
@@ -160,7 +160,7 @@ Sie möchten dasselbe Retrieval in Ihrem eigenen Code oder hinter einem Suchfeld
 
 **Kontext für Agenten**
 
-- 🗂️ **Erkundbar, nicht nur durchsuchbar:** Hybride Suche, `grep` über jedes Dokument (auch PDFs und Office-Dateien), Ordnernavigation und Knowledge-Graph-Abfragen, alles als Agent-Tools.
+- 🗂️ **Erkundbar, nicht nur durchsuchbar:** Hybride Suche, `grep` über jedes indexierte Dokument, auch PDFs und Office-Dateien (nur mit lokalem Blob-Speicher, Datensätze unter 20 MB; [Einschränkungen](../../context-layer.md#current-limitations)), Ordnernavigation und Knowledge-Graph-Abfragen, alles als Agent-Tools.
 - 🔒 **Berechtigungsbewusst bei jedem Schritt:** Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft, für die Person, in deren Namen der Agent handelt.
 - 📝 **Zitate auf Block-Ebene:** Antworten zitieren die Seite, Tabellenzelle, Zeile, Folie oder Codezeile, aus der sie stammen.
 - 🧱 **Strukturiert, semistrukturiert und unstrukturiert in einer Schicht:** Dokumente, Tabellenkalkulationen, Tickets, Chat-Threads, Code und SQL-Tabellen werden alle zu Blocks.
@@ -232,8 +232,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Lokale Images aus dem Quellcode lassen sich nur über das geklonte Repository bauen (`./install.sh --build`);
-der Ein-Befehl-Installer oben verwendet immer vorgefertigte Images.
+Im geklonten Repository fragt `./install.sh`, ob vorgefertigte Images geladen oder aus dem Quellcode gebaut werden sollen;
+`./install.sh --build` baut ohne Rückfrage aus dem Quellcode. Der Ein-Befehl-Installer oben verwendet immer vorgefertigte Images.
 
 > **Erweiterte Optionen:** Installer-Flags (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI-Umgebungsvariablen, die Bereitstellungstypen slim und full, die manuelle Nutzung von Compose-Profilen und lokale Builds aus dem Quellcode werden unter [Erweiterte Bereitstellungsoptionen](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md) beschrieben.
 
@@ -319,7 +319,7 @@ Ja. Die PipesHub-Web-App nutzt dieselbe API, die Sie auch selbst aufrufen könne
 
 - **REST API:** eine [OpenAPI-Spezifikation](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) mit rund 470 Endpunkten. Sie finden sie unter `/api/v1/docs` auf Ihrer Instanz.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) und [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** für Claude Code, Cursor, Codex und andere MCP-Clients.
+- **MCP:** für Claude Code, Cursor, Codex und andere MCP-Clients. Es deckt einen Teil ab: Suche, Chat (auch mit einem vorhandenen Agenten), Lesen, Herunterladen und Navigieren von Datensätzen, Abfragen von Personen und Quellen sowie Code-Graph-Tools. Quellen verbinden, Benutzer verwalten und Agenten erstellen geht über die REST-API oder ein SDK.
 
 Wählen Sie, wie sich Ihr Code anmeldet:
 - **Personal Access Token oder OAuth:** handelt als eine Person und sieht nur, was diese Person sehen darf.

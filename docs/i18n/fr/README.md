@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Chaque document est stocké en texte brut, donc les agents peuvent faire un `grep` sur un PDF, un fichier Word ou une présentation comme sur un fichier texte. Les Blocks sont organisés de deux façons : selon la **structure de dossiers** de chaque système source, et dans un **graphe de connaissances** des personnes, des projets et des clients. Les agents explorent les deux avec des **outils qui révèlent le détail étape par étape** : une recherche affiche d'abord le nom, le résumé et les passages correspondants de chaque enregistrement, et l'agent ne creuse davantage (grep, parcours des dossiers, suivi des entités, lecture de l'enregistrement complet) que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
+Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Chaque document indexé est stocké en texte brut, donc, avec un stockage blob local, les agents peuvent faire un `grep` sur un PDF, un fichier Word ou une présentation comme sur un fichier texte (les enregistrements de plus de 20 Mo sont ignorés ; voir les [limites actuelles](../../context-layer.md#current-limitations)). Les Blocks sont organisés de deux façons : selon la **structure de dossiers** de chaque système source, et dans un **graphe de connaissances** des personnes, des projets et des clients. Les agents explorent les deux avec des **outils qui révèlent le détail étape par étape** : une recherche affiche d'abord le nom, le résumé et les passages correspondants de chaque enregistrement, et l'agent ne creuse davantage (grep, parcours des dossiers, suivi des entités, lecture de l'enregistrement complet) que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
 
 **[Découvrez comment fonctionne la couche de contexte →](../../context-layer.md)** Ce document couvre le format des Blocks, la hiérarchie et le graphe, chaque outil d'agent et le code qui l'implémente, l'application des permissions, la boucle d'agent et les limites actuelles.
 
@@ -160,7 +160,7 @@ Vous voulez la même récupération dans votre propre code, ou derrière une bar
 
 **Du contexte pour les agents**
 
-- 🗂️ **Explorable, pas seulement interrogeable :** recherche hybride, `grep` sur chaque document (PDF et fichiers Office compris), navigation dans les dossiers et requêtes dans le graphe de connaissances, le tout sous forme d'outils d'agent.
+- 🗂️ **Explorable, pas seulement interrogeable :** recherche hybride, `grep` sur chaque document indexé, PDF et fichiers Office compris (stockage blob local uniquement, enregistrements de moins de 20 Mo ; [limites](../../context-layer.md#current-limitations)), navigation dans les dossiers et requêtes dans le graphe de connaissances, le tout sous forme d'outils d'agent.
 - 🔒 **Respect des permissions à chaque étape :** chaque appel d'outil est vérifié par rapport aux permissions du système source pour la personne au nom de laquelle l'agent agit.
 - 📝 **Citations au niveau du bloc :** les réponses citent la page, la cellule de tableau, la ligne, la diapositive ou la ligne de code dont elles proviennent.
 - 🧱 **Structuré, semi-structuré et non structuré dans une seule couche :** documents, tableurs, tickets, fils de discussion, code et tables SQL deviennent tous des Blocks.
@@ -232,8 +232,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-La compilation d'images locales depuis les sources nécessite ce dépôt cloné (`./install.sh --build`) ;
-l'installateur en une commande ci-dessus utilise toujours des images précompilées.
+Depuis un clone, `./install.sh` demande s'il faut télécharger les images précompilées ou les compiler depuis les sources ;
+`./install.sh --build` compile depuis les sources sans poser la question. L'installateur en une commande ci-dessus utilise toujours des images précompilées.
 
 > **Options avancées :** les flags de l'installateur (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), les variables d'environnement de CI, les types de déploiement slim et full, l'utilisation manuelle des profils Compose et la compilation locale depuis les sources sont décrits dans [Options de déploiement avancées](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
@@ -319,7 +319,7 @@ Oui. L'application web de PipesHub utilise la même API que vous pouvez appeler 
 
 - **API REST :** une [spécification OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) d'environ 470 endpoints. Consultez-la à l'adresse `/api/v1/docs` sur votre instance.
 - **SDK :** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) et [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP :** pour Claude Code, Cursor, Codex et les autres clients MCP.
+- **MCP :** pour Claude Code, Cursor, Codex et les autres clients MCP. Il couvre une partie : recherche, chat (y compris avec un agent existant), lecture, téléchargement et navigation dans les enregistrements, recherche de personnes et de sources, et outils du graphe de code. Connecter des sources, gérer les utilisateurs et créer des agents passe par l'API REST ou un SDK.
 
 Choisissez comment votre code se connecte :
 - **Personal Access Token ou OAuth :** agit au nom d'une personne et ne voit que ce qu'elle a le droit de voir.

@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-每个数据源都会转换为 **Blocks**（块）。这是一种统一的表示形式，能完整保留表格、讨论串和代码，并记住每个块来自哪个页面、单元格或代码行。每个文档都以纯文本形式存储，因此智能体可以像对文本文件一样，对 PDF、Word 文件或幻灯片执行 `grep`。Blocks 以两种方式组织：按每个源系统的**文件夹结构**，以及按由人员、项目和客户构成的**知识图谱**。智能体通过**逐步展示细节的工具**来探索这两者：搜索先显示每条记录的名称、摘要和匹配的段落，智能体只在需要时才进一步深入（grep、浏览文件夹、追踪实体、读取完整记录）。**每次工具调用都会按源系统的权限进行校验**，校验对象是智能体所代表的那个人。
+每个数据源都会转换为 **Blocks**（块）。这是一种统一的表示形式，能完整保留表格、讨论串和代码，并记住每个块来自哪个页面、单元格或代码行。每个已索引的文档都以纯文本形式存储，因此在使用本地 Blob 存储时，智能体可以像对文本文件一样，对 PDF、Word 文件或幻灯片执行 `grep`（超过 20 MB 的记录会被跳过；参见[当前限制](../../context-layer.md#current-limitations)）。Blocks 以两种方式组织：按每个源系统的**文件夹结构**，以及按由人员、项目和客户构成的**知识图谱**。智能体通过**逐步展示细节的工具**来探索这两者：搜索先显示每条记录的名称、摘要和匹配的段落，智能体只在需要时才进一步深入（grep、浏览文件夹、追踪实体、读取完整记录）。**每次工具调用都会按源系统的权限进行校验**，校验对象是智能体所代表的那个人。
 
 **[了解上下文层的工作原理 →](../../context-layer.md)** 内容涵盖 Block 格式、层级结构与图谱、每个智能体工具及其代码位置、权限执行、智能体循环，以及当前的局限。
 
@@ -160,7 +160,7 @@ flowchart LR
 
 **为智能体提供上下文**
 
-- 🗂️ **可探索，而不只是可搜索：** 混合搜索、对每个文档（包括 PDF 和 Office 文件）执行 `grep`、文件夹导航和知识图谱查询，全部作为智能体工具提供。
+- 🗂️ **可探索，而不只是可搜索：** 混合搜索、对每个已索引的文档（包括 PDF 和 Office 文件）执行 `grep`（仅限本地 Blob 存储，记录小于 20 MB；[限制](../../context-layer.md#current-limitations)）、文件夹导航和知识图谱查询，全部作为智能体工具提供。
 - 🔒 **每一步都感知权限：** 每次工具调用都会按源系统的权限进行校验，校验对象是智能体所代表的那个人。
 - 📝 **块级引用：** 回答会引用其来源的页面、表格单元格、行、幻灯片或代码行。
 - 🧱 **结构化、半结构化和非结构化数据统一在一层：** 文档、电子表格、工单、聊天讨论串、代码和 SQL 表都会转换为 Blocks。
@@ -231,8 +231,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-从源码构建本地镜像必须使用这种克隆仓库的方式（`./install.sh --build`）；
-上面的一键安装程序始终使用预构建镜像。
+在克隆的仓库中，`./install.sh` 会询问是拉取预构建镜像还是从源码构建；
+`./install.sh --build` 会直接从源码构建，不再询问。上面的一键安装程序始终使用预构建镜像。
 
 > **高级选项：** 安装程序参数（`--yes`、`--version`、`--reconfigure`、`--print-env-only`）、CI 环境变量、slim 与 full 部署类型的区别、手动使用 Compose profile，以及本地源码构建，详见[高级部署选项](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md)。
 
@@ -318,7 +318,7 @@ PipesHub 是开源的 AI 智能体上下文层。它把分散在公司各个业�
 
 - **REST API：** 一份包含约 470 个端点的 [OpenAPI 规范](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml)。可在你的实例上访问 `/api/v1/docs` 浏览。
 - **SDK：** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python)、[TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) 和 [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go)。
-- **MCP：** 适用于 Claude Code、Cursor、Codex 和其他 MCP 客户端。
+- **MCP：** 适用于 Claude Code、Cursor、Codex 和其他 MCP 客户端。它只覆盖部分功能：搜索、对话（包括与已有智能体对话）、读取、下载和浏览记录、查询人员和数据源，以及代码图谱工具。连接数据源、管理用户和创建智能体需要使用 REST API 或 SDK。
 
 选择你的代码如何登录：
 - **个人访问令牌（Personal Access Token）或 OAuth：** 以某一个人的身份行事，只能看到此人有权查看的内容。

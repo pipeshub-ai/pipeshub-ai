@@ -105,7 +105,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Every document is stored as plain text, so agents can `grep` a PDF, Word file or slide deck just like a text file. The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
+Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Every indexed document is stored as plain text, so when blob storage is local, agents can `grep` a PDF, Word file or slide deck just like a text file (records over 20 MB are skipped; see [current limitations](docs/context-layer.md#current-limitations)). The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
 
 **[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
 
@@ -162,7 +162,7 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 **Context for agents**
 
-- 🗂️ **Explorable, not just searchable:** Hybrid search, `grep` over every document (PDFs and Office files included; [limits](docs/context-layer.md#current-limitations)), folder navigation and knowledge-graph lookups, all as agent tools.
+- 🗂️ **Explorable, not just searchable:** Hybrid search, `grep` over every indexed document, PDFs and Office files included (local blob storage only, records under 20 MB; [limits](docs/context-layer.md#current-limitations)), folder navigation and knowledge-graph lookups, all as agent tools.
 - 🔒 **Permission-aware at every step:** Every tool call is checked against the source system's permissions for the person the agent acts for.
 - 📝 **Block-level citations:** Answers cite the page, table cell, row, slide or line they came from.
 - 🧱 **Structured, semi-structured and unstructured in one layer:** Documents, spreadsheets, tickets, chat threads, code and SQL tables all become Blocks.
@@ -234,8 +234,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Building local images from source requires this cloned-repo path (`./install.sh --build`);
-the one-command installer above always uses prebuilt images.
+From a clone, `./install.sh` asks whether to pull prebuilt images or build them from source;
+`./install.sh --build` builds from source without asking. The one-command installer above always uses prebuilt images.
 
 > **Advanced options:** installer flags (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
@@ -321,7 +321,7 @@ Yes. The PipesHub web app uses the same API you can call yourself, so anything y
 
 - **REST API:** an [OpenAPI spec](backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 470 endpoints. Browse it at `/api/v1/docs` on your instance.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** for Claude Code, Cursor, Codex and other MCP clients.
+- **MCP:** for Claude Code, Cursor, Codex and other MCP clients. It covers a subset: search, chat (also with an existing agent), reading, downloading and navigating records, people and source lookups, and code-graph tools. Connecting sources, managing users and building agents need the REST API or an SDK.
 
 Choose how your code signs in:
 - **Personal access token or OAuth:** acts as one person and sees only what that person can see.

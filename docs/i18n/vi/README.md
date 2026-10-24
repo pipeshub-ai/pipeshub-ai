@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Mọi nguồn đều trở thành **Blocks** (các khối dữ liệu), một dạng biểu diễn duy nhất giữ nguyên bảng, luồng hội thoại và mã, đồng thời ghi nhớ chính xác trang, ô hoặc dòng mà mỗi block đến từ đó. Mọi tài liệu đều được lưu dưới dạng văn bản thuần, nên tác nhân có thể `grep` một tệp PDF, tệp Word hay bộ slide giống như một tệp văn bản. Blocks được sắp xếp theo hai cách: theo **cấu trúc thư mục** của từng hệ thống nguồn, và trong một **đồ thị tri thức** về con người, dự án và khách hàng. Tác nhân khám phá cả hai bằng **các công cụ hé lộ chi tiết từng bước**: một lần tìm kiếm trước tiên hiển thị tên, tóm tắt và các đoạn khớp của từng bản ghi, và tác nhân chỉ đào sâu hơn (grep, duyệt thư mục, đi theo thực thể, đọc toàn bộ bản ghi) khi cần. **Mọi lần gọi công cụ đều được kiểm tra theo quyền của hệ thống nguồn** cho người mà tác nhân đang hành động thay mặt.
+Mọi nguồn đều trở thành **Blocks** (các khối dữ liệu), một dạng biểu diễn duy nhất giữ nguyên bảng, luồng hội thoại và mã, đồng thời ghi nhớ chính xác trang, ô hoặc dòng mà mỗi block đến từ đó. Mọi tài liệu đã được lập chỉ mục đều được lưu dưới dạng văn bản thuần, nên khi blob storage là cục bộ, tác nhân có thể `grep` một tệp PDF, tệp Word hay bộ slide giống như một tệp văn bản (các bản ghi trên 20 MB bị bỏ qua; xem [các giới hạn hiện tại](../../context-layer.md#current-limitations)). Blocks được sắp xếp theo hai cách: theo **cấu trúc thư mục** của từng hệ thống nguồn, và trong một **đồ thị tri thức** về con người, dự án và khách hàng. Tác nhân khám phá cả hai bằng **các công cụ hé lộ chi tiết từng bước**: một lần tìm kiếm trước tiên hiển thị tên, tóm tắt và các đoạn khớp của từng bản ghi, và tác nhân chỉ đào sâu hơn (grep, duyệt thư mục, đi theo thực thể, đọc toàn bộ bản ghi) khi cần. **Mọi lần gọi công cụ đều được kiểm tra theo quyền của hệ thống nguồn** cho người mà tác nhân đang hành động thay mặt.
 
 **[Đọc cách lớp ngữ cảnh hoạt động →](../../context-layer.md)** Tài liệu này bao gồm định dạng Block, cấu trúc phân cấp và đồ thị, từng công cụ của tác nhân và mã nguồn của nó, cơ chế thực thi quyền truy cập, vòng lặp tác nhân và các giới hạn hiện tại.
 
@@ -160,7 +160,7 @@ Muốn có cùng khả năng truy xuất trong mã của riêng bạn, hoặc sa
 
 **Ngữ cảnh cho tác nhân**
 
-- 🗂️ **Có thể khám phá, không chỉ tìm kiếm:** Tìm kiếm lai, `grep` trên mọi tài liệu (kể cả PDF và tệp Office), điều hướng thư mục và tra cứu đồ thị tri thức, tất cả đều là công cụ cho tác nhân.
+- 🗂️ **Có thể khám phá, không chỉ tìm kiếm:** Tìm kiếm lai, `grep` trên mọi tài liệu đã được lập chỉ mục, kể cả PDF và tệp Office (chỉ với blob storage cục bộ, bản ghi dưới 20 MB; [giới hạn](../../context-layer.md#current-limitations)), điều hướng thư mục và tra cứu đồ thị tri thức, tất cả đều là công cụ cho tác nhân.
 - 🔒 **Tôn trọng quyền truy cập ở mọi bước:** Mọi lần gọi công cụ đều được kiểm tra theo quyền của hệ thống nguồn cho người mà tác nhân đang hành động thay mặt.
 - 📝 **Trích dẫn ở cấp block:** Câu trả lời trích dẫn trang, ô bảng, hàng, slide hoặc dòng mà chúng đến từ đó.
 - 🧱 **Dữ liệu có cấu trúc, bán cấu trúc và phi cấu trúc trong một lớp:** Tài liệu, bảng tính, ticket, luồng chat, mã và bảng SQL đều trở thành Blocks.
@@ -232,8 +232,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Build image cục bộ từ mã nguồn chỉ có thể thực hiện từ kho mã đã clone (`./install.sh --build`);
-trình cài đặt một lệnh ở trên luôn dùng image dựng sẵn.
+Trong kho mã đã clone, `./install.sh` sẽ hỏi bạn muốn tải image dựng sẵn hay build từ mã nguồn;
+`./install.sh --build` build từ mã nguồn mà không hỏi. Trình cài đặt một lệnh ở trên luôn dùng image dựng sẵn.
 
 > **Tùy chọn nâng cao:** các cờ của trình cài đặt (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), biến môi trường CI, các kiểu triển khai slim và full, cách dùng Compose profile thủ công và build cục bộ từ mã nguồn được trình bày trong [Tùy chọn triển khai nâng cao](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
@@ -319,7 +319,7 @@ Có. Ứng dụng web của PipesHub dùng chính API mà bạn có thể tự g
 
 - **REST API:** một [đặc tả OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) với khoảng 470 endpoint. Xem tại `/api/v1/docs` trên instance của bạn.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) và [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** cho Claude Code, Cursor, Codex và các MCP client khác.
+- **MCP:** cho Claude Code, Cursor, Codex và các MCP client khác. MCP chỉ bao gồm một phần: tìm kiếm, chat (kể cả với một tác nhân có sẵn), đọc, tải xuống và điều hướng bản ghi, tra cứu người dùng và nguồn, và các công cụ đồ thị mã. Kết nối nguồn, quản lý người dùng và tạo tác nhân cần dùng REST API hoặc SDK.
 
 Chọn cách mã của bạn đăng nhập:
 - **Personal Access Token hoặc OAuth:** hoạt động với tư cách một người và chỉ thấy những gì người đó được xem.

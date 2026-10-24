@@ -109,7 +109,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Každý zdroj se stane **Bloky**: jednou reprezentací, která zachová tabulky, vlákna a kód a pamatuje si přesnou stránku, buňku nebo řádek, odkud každý blok pochází. Každý dokument se ukládá jako prostý text, takže agenti mohou použít `grep` na PDF, soubor Word nebo prezentaci stejně jako na textový soubor. Bloky jsou uspořádány dvojím způsobem: podle **struktury složek** každého zdrojového systému a ve **znalostním grafu** lidí, projektů a zákazníků. Agenti obojí prozkoumávají pomocí **nástrojů, které odhalují detaily postupně**: vyhledávání nejprve ukáže název, shrnutí a odpovídající pasáže každého záznamu a agent jde hlouběji (grep, procházení složek, sledování entit, čtení celého záznamu) jen tehdy, když to potřebuje. **Každé volání nástroje se kontroluje vůči oprávněním zdrojového systému** pro osobu, za kterou agent jedná.
+Každý zdroj se stane **Bloky**: jednou reprezentací, která zachová tabulky, vlákna a kód a pamatuje si přesnou stránku, buňku nebo řádek, odkud každý blok pochází. Každý indexovaný dokument se ukládá jako prostý text, takže při lokálním úložišti blobů mohou agenti použít `grep` na PDF, soubor Word nebo prezentaci stejně jako na textový soubor (záznamy nad 20 MB se přeskakují; viz [současná omezení](../../context-layer.md#current-limitations)). Bloky jsou uspořádány dvojím způsobem: podle **struktury složek** každého zdrojového systému a ve **znalostním grafu** lidí, projektů a zákazníků. Agenti obojí prozkoumávají pomocí **nástrojů, které odhalují detaily postupně**: vyhledávání nejprve ukáže název, shrnutí a odpovídající pasáže každého záznamu a agent jde hlouběji (grep, procházení složek, sledování entit, čtení celého záznamu) jen tehdy, když to potřebuje. **Každé volání nástroje se kontroluje vůči oprávněním zdrojového systému** pro osobu, za kterou agent jedná.
 
 **[Přečtěte si, jak kontextová vrstva funguje →](../../context-layer.md)** Popisuje formát Bloků, hierarchii a graf, všechny nástroje agenta a kód, ve kterém jsou, vynucování oprávnění, smyčku agenta a současná omezení.
 
@@ -166,7 +166,7 @@ Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pr
 
 **Kontext pro agenty**
 
-- 🗂️ **Prozkoumatelné, nejen prohledávatelné:** Hybridní vyhledávání, `grep` nad každým dokumentem (včetně PDF a souborů Office; [omezení](../../context-layer.md#current-limitations)), procházení složek a dotazy do znalostního grafu, vše jako nástroje agenta.
+- 🗂️ **Prozkoumatelné, nejen prohledávatelné:** Hybridní vyhledávání, `grep` nad každým indexovaným dokumentem včetně PDF a souborů Office (jen s lokálním úložištěm blobů, záznamy do 20 MB; [omezení](../../context-layer.md#current-limitations)), procházení složek a dotazy do znalostního grafu, vše jako nástroje agenta.
 - 🔒 **Oprávnění v každém kroku:** Každé volání nástroje se kontroluje vůči oprávněním zdrojového systému pro osobu, za kterou agent jedná.
 - 📝 **Citace na úrovni bloků:** Odpovědi citují stránku, buňku tabulky, řádek, snímek nebo řádek, odkud pocházejí.
 - 🧱 **Strukturovaná, polostrukturovaná i nestrukturovaná data v jedné vrstvě:** Dokumenty, tabulky, tikety, vlákna v chatu, kód i SQL tabulky se stanou Bloky.
@@ -237,8 +237,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Lokální image ze zdrojového kódu lze sestavit jen z naklonovaného repozitáře (`./install.sh --build`);
-jednopříkazový instalátor výše vždy používá předem sestavené image.
+V naklonovaném repozitáři se `./install.sh` zeptá, zda stáhnout předem sestavené image, nebo je sestavit ze zdrojového kódu;
+`./install.sh --build` sestaví ze zdrojového kódu bez ptaní. Jednopříkazový instalátor výše vždy používá předem sestavené image.
 
 > **Pokročilé možnosti:** přepínače instalátoru (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), proměnné prostředí pro CI, typy nasazení slim a full, ruční použití profilů Compose a lokální sestavení ze zdrojového kódu popisují [Pokročilé možnosti nasazení](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
@@ -324,7 +324,7 @@ Ano. Webová aplikace PipesHub používá stejné API, které můžete volat sam
 
 - **REST API:** [specifikace OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) s přibližně 470 endpointy. Procházet ji můžete na adrese `/api/v1/docs` vaší instance.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) a [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** pro Claude Code, Cursor, Codex a další MCP klienty.
+- **MCP:** pro Claude Code, Cursor, Codex a další MCP klienty. Pokrývá jen část: vyhledávání, chat (i s existujícím agentem), čtení, stahování a procházení záznamů, dotazy na lidi a zdroje a nástroje grafu kódu. Připojení zdrojů, správa uživatelů a vytváření agentů vyžadují REST API nebo SDK.
 
 Zvolte, jak se váš kód přihlásí:
 - **Osobní přístupový token nebo OAuth:** jedná jako jedna osoba a vidí jen to, co tato osoba smí vidět.

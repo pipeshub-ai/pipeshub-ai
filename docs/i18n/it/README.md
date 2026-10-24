@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Ogni fonte diventa **Blocks** (blocchi): un'unica rappresentazione che mantiene intatti tabelle, thread e codice e ricorda la pagina, la cella o la riga esatta da cui viene ogni blocco. Ogni documento è salvato come testo semplice, quindi gli agenti possono fare `grep` su un PDF, un file Word o una presentazione come su un file di testo. I Blocks sono organizzati in due modi: secondo la **struttura delle cartelle** di ogni sistema di origine e in un **knowledge graph** di persone, progetti e clienti. Gli agenti esplorano entrambi con **tool che mostrano i dettagli passo dopo passo**: una ricerca mostra prima il nome, il riepilogo e i passaggi corrispondenti di ogni record, e l'agente va più a fondo (grep, navigazione tra le cartelle, entità collegate, lettura del record completo) solo quando serve. **Ogni chiamata di tool viene verificata sui permessi del sistema di origine** per la persona per cui l'agente agisce.
+Ogni fonte diventa **Blocks** (blocchi): un'unica rappresentazione che mantiene intatti tabelle, thread e codice e ricorda la pagina, la cella o la riga esatta da cui viene ogni blocco. Ogni documento indicizzato è salvato come testo semplice, quindi, con lo storage blob locale, gli agenti possono fare `grep` su un PDF, un file Word o una presentazione come su un file di testo (i record oltre 20 MB vengono saltati; vedete i [limiti attuali](../../context-layer.md#current-limitations)). I Blocks sono organizzati in due modi: secondo la **struttura delle cartelle** di ogni sistema di origine e in un **knowledge graph** di persone, progetti e clienti. Gli agenti esplorano entrambi con **tool che mostrano i dettagli passo dopo passo**: una ricerca mostra prima il nome, il riepilogo e i passaggi corrispondenti di ogni record, e l'agente va più a fondo (grep, navigazione tra le cartelle, entità collegate, lettura del record completo) solo quando serve. **Ogni chiamata di tool viene verificata sui permessi del sistema di origine** per la persona per cui l'agente agisce.
 
 **[Scopri come funziona il livello di contesto →](../../context-layer.md)** Copre il formato Block, la gerarchia e il grafo, ogni tool dell'agente e il codice in cui vive, l'applicazione dei permessi, il ciclo dell'agente e i limiti attuali.
 
@@ -160,7 +160,7 @@ Volete lo stesso recupero dentro il vostro codice, o dietro una casella di ricer
 
 **Contesto per gli agenti**
 
-- 🗂️ **Esplorabile, non solo ricercabile:** ricerca ibrida, `grep` su ogni documento (PDF e file Office inclusi), navigazione tra cartelle e lookup nel knowledge graph, tutti come tool dell'agente.
+- 🗂️ **Esplorabile, non solo ricercabile:** ricerca ibrida, `grep` su ogni documento indicizzato, PDF e file Office inclusi (solo con storage blob locale, record sotto i 20 MB; [limiti](../../context-layer.md#current-limitations)), navigazione tra cartelle e lookup nel knowledge graph, tutti come tool dell'agente.
 - 🔒 **Rispetta i permessi a ogni passo:** ogni chiamata di tool viene verificata sui permessi del sistema di origine per la persona per cui l'agente agisce.
 - 📝 **Citazioni a livello di blocco:** le risposte citano la pagina, la cella di tabella, la riga, la slide o la riga di codice da cui provengono.
 - 🧱 **Dati strutturati, semi-strutturati e non strutturati in un solo livello:** documenti, fogli di calcolo, ticket, thread di chat, codice e tabelle SQL diventano tutti Blocks.
@@ -232,8 +232,8 @@ cd pipeshub-ai
 ./install.sh
 ```
 
-Per compilare immagini locali dai sorgenti serve questo percorso con il repository clonato (`./install.sh --build`);
-l'installer a comando singolo qui sopra usa sempre immagini precompilate.
+Da un clone, `./install.sh` chiede se scaricare le immagini precompilate o compilarle dai sorgenti;
+`./install.sh --build` compila dai sorgenti senza chiedere. L'installer a comando singolo qui sopra usa sempre immagini precompilate.
 
 > **Opzioni avanzate:** i flag dell'installer (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), le variabili d'ambiente per la CI, i tipi di deployment slim e full, l'uso manuale dei profili di Compose e le build locali dai sorgenti sono descritti in [Opzioni di deployment avanzate](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
@@ -319,7 +319,7 @@ Sì. L'app web di PipesHub usa la stessa API che potete chiamare voi stessi, qui
 
 - **API REST:** una [specifica OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) con circa 470 endpoint. Consultatela su `/api/v1/docs` nella vostra istanza.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) e [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
-- **MCP:** per Claude Code, Cursor, Codex e altri client MCP.
+- **MCP:** per Claude Code, Cursor, Codex e altri client MCP. Copre una parte: ricerca, chat (anche con un agente esistente), lettura, download e navigazione dei record, ricerca di persone e fonti e tool del grafo del codice. Collegare fonti, gestire utenti e creare agenti richiede l'API REST o un SDK.
 
 Scegliete come accede il vostro codice:
 - **Personal Access Token o OAuth:** agisce come una persona e vede solo ciò che quella persona può vedere.
