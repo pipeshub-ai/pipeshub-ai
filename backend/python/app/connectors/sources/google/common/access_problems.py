@@ -1,8 +1,9 @@
 """What a Google failure says about the connector's setup, as opposed to a passing outage.
 
 Only failures someone has to fix are named here: a service account that domain-wide delegation does not
-cover, a key Google no longer accepts, an admin account that cannot read the directory, an API turned off
-for the Cloud project, a token without the scopes it needs, or a personal sign-in Google no longer accepts.
+cover, a key Google no longer accepts, a saved key that is not a key file, an admin account that cannot read
+the directory, an API turned off for the Cloud project, a token without the scopes it needs, or a personal
+sign-in Google no longer accepts.
 Anything else (rate limits, 5xx, timeouts, one file refused) returns None: a later run may succeed on its own.
 """
 
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 from googleapiclient.errors import HttpError
 
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    ServiceAccountKeyError,
     is_missing_scope_error,
 )
 
@@ -21,6 +23,8 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 class AccessProblem(Enum):
     DELEGATION = "delegation"
     SERVICE_ACCOUNT_KEY = "service_account_key"
+    # The saved key is not a key file at all, so nothing ever reached Google.
+    UNREADABLE_KEY = "unreadable_key"
     ADMIN_ACCOUNT = "admin_account"
     API_DISABLED = "api_disabled"
     MISSING_SCOPE = "missing_scope"
@@ -75,6 +79,8 @@ def classify_access_problem(
     Google cannot impersonate is told apart from an admin account that is not usable.
     """
     for link in _chain(error):
+        if isinstance(link, ServiceAccountKeyError) and not personal:
+            return AccessProblem.UNREADABLE_KEY
         refresh = _refresh_error(link)
         if refresh is not None:
             code, description = refresh

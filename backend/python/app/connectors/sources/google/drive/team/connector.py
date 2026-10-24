@@ -490,6 +490,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Admin client: {e}",
                     exc_info=True
                 )
+                self._raise_setup_problem(e, admin_email)
                 raise ValueError(f"Failed to initialize Google Admin client: {e}") from e
 
             # Initialize Google Drive Client using build_from_services
@@ -517,6 +518,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Drive client: {e}",
                     exc_info=True
                 )
+                self._raise_setup_problem(e, admin_email)
                 raise ValueError(f"Failed to initialize Google Drive client: {e}") from e
 
             self.logger.info("✅ Google Drive enterprise connector initialized successfully")
@@ -525,6 +527,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Drive enterprise connector: {ex}", exc_info=True)
             raise
+
+    @staticmethod
+    def _raise_setup_problem(error: Exception, admin_email: str | None) -> None:
+        """Raise what an admin must fix (such as a key that is not a key file) in words they can act on."""
+        message = message_for_connection_failure(error, personal=False, admin_email=admin_email)
+        if message:
+            raise ConnectorInitError(message) from error
 
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose

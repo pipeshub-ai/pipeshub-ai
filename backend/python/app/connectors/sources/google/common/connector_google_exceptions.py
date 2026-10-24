@@ -137,6 +137,15 @@ class AdminDelegationError(AdminServiceError):
     pass
 
 
+class ServiceAccountKeyError(AdminAuthError, AdminDelegationError):
+    """The saved service account key cannot be loaded: not JSON, or not a usable key.
+
+    Both bases are kept because these failures were raised as one or the other before.
+    """
+
+    pass
+
+
 class AdminQuotaError(AdminServiceError):
     """Raised when hitting API quotas"""
 

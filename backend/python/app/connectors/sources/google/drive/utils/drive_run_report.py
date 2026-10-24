@@ -78,6 +78,11 @@ def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | Non
                            "Google rejected this connector's service account key. It may have been deleted or "
                            "disabled in Google Cloud. Create a new key for the service account and upload it in the "
                            "connector's settings.")
+    if problem is AccessProblem.UNREADABLE_KEY:
+        return DriveNotice(auth, error, "the service account key is not valid",
+                           "The service account key in this connector's settings is not a valid JSON key file. In "
+                           "Google Cloud Console, open IAM & Admin > Service accounts, create a JSON key for the "
+                           "service account, and upload that file in the connector's settings.")
     if problem is AccessProblem.ADMIN_ACCOUNT:
         who = f" ({admin_email})" if admin_email else ""
         return DriveNotice(auth, error, "the admin account cannot read the directory",

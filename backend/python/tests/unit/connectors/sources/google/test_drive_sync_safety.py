@@ -17,6 +17,9 @@ from app.connectors.sources.google.common.access_problems import (
     AccessProblem,
     classify_access_problem,
 )
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    ServiceAccountKeyError,
+)
 from app.connectors.sources.google.drive.team.user_status import UserStatusTracker
 from app.connectors.sources.google.drive.utils.checkpoint_hold import (
     HELD_RUNS_FIELD,
@@ -105,6 +108,51 @@ class TestAccessProblems:
                 raise ValueError("Failed to initialize Google Admin client") from inner
         except ValueError as outer:
             assert classify_access_problem(outer, personal=False) is AccessProblem.DELEGATION
+
+
+    def test_a_key_that_is_not_a_key_file_is_named(self) -> None:
+        try:
+            try:
+                raise ServiceAccountKeyError("Invalid service account JSON")
+            except ServiceAccountKeyError as inner:
+                raise ValueError("Failed to initialize Google Admin client") from inner
+        except ValueError as outer:
+            assert classify_access_problem(outer, personal=False) is AccessProblem.UNREADABLE_KEY
+            assert classify_access_problem(outer, personal=True) is None
+
+
+_CORRUPT_KEY = json.dumps({
+    "type": "service_account", "project_id": "p", "private_key_id": "k", "client_id": "1",
+    "client_email": "sa@p.iam.gserviceaccount.com", "token_uri": "https://oauth2.googleapis.com/token",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nbm90IGEga2V5\n-----END PRIVATE KEY-----\n",
+})
+
+
+class TestUnreadableServiceAccountKey:
+    """Turning on a connector whose saved key is not a usable key file says so, instead of 'try again'."""
+
+    @pytest.mark.parametrize("saved_key", ["this is not a key file", _CORRUPT_KEY], ids=["not-json", "corrupt-key"])
+    async def test_init_names_the_key_as_the_problem(self, saved_key: str) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.logger = LOGGER
+        conn.connector_id = "drive-1"
+        conn._thread_lease = MagicMock()
+        conn.config_service = AsyncMock()
+        conn.config_service.get_config = AsyncMock(return_value={
+            "auth": {"adminEmail": "admin@acme.example", "serviceAccountJson": saved_key},
+        })
+        with pytest.raises(ConnectorInitError) as raised:
+            await conn.init()
+        message = str(raised.value)
+        assert "not a valid JSON key file" in message and "upload" in message
+        for internal in ("PEM", "JSON decode", "Expecting value", "delegated credentials", "Traceback"):
+            assert internal not in message
 
 
 class TestNotices:

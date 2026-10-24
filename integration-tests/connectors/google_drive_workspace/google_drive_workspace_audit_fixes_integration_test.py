@@ -7,16 +7,21 @@ simulator could only follow the documentation:
 
 - a file moved from one Shared Drive to another is kept and filed under its new drive (Drive reports it
   `removed` in the old drive's feed, which used to delete it);
-- renaming or sharing a Google Doc does not re-index it (Drive moves `version` on both).
+- renaming or sharing a Google Doc does not re-index it (Drive moves `version` on both);
+- turning on a connector whose saved service account key is not a usable key file says what to fix, instead
+  of a generic "try again".
 
-One connector scoped to two fresh Shared Drives (``drive_workspace_audit_connector``).
+One connector scoped to two fresh Shared Drives (``drive_workspace_audit_connector``); the key checks make
+their own connectors and never reach Google.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -33,14 +38,16 @@ from app.sources.external.google.drive.drive import (  # type: ignore[import-not
     GoogleDriveDataSource,
 )
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # noqa: E402
+    ENV_ADMIN_EMAIL,
     _create_permission,
+    connector_filters,
     move_drive_item,
     rename_drive_item,
     sync_until,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.indexing_wait import wait_until_record_indexing_completed  # noqa: E402
-from pipeshub_client import PipeshubClient  # noqa: E402
+from pipeshub_client import PipeshubClient, PipeshubClientError  # noqa: E402
 
 logger = logging.getLogger("drive-workspace-audit-fixes-test")
 
@@ -131,3 +138,42 @@ class TestDriveWorkspaceAuditFixes:
             f"the Doc was queued for re-indexing by a rename (indexing status {after.indexing_status})"
         )
         assert after.virtual_record_id == before.virtual_record_id, "the Doc's indexed content was replaced"
+
+
+_CORRUPT_KEY = json.dumps({
+    "type": "service_account", "project_id": "p", "private_key_id": "k", "client_id": "1",
+    "client_email": "sa@p.iam.gserviceaccount.com", "token_uri": "https://oauth2.googleapis.com/token",
+    "private_key": "-----BEGIN PRIVATE KEY-----\\nbm90IGEga2V5\\n-----END PRIVATE KEY-----\\n",
+})
+
+
+class TestDriveWorkspaceUnreadableKey:
+    @pytest.mark.parametrize("saved_key", ["this is not a key file", _CORRUPT_KEY], ids=["not-json", "corrupt-key"])
+    async def test_tc_drv_aud_003_a_key_that_is_not_a_key_file_is_named_when_turned_on(
+        self,
+        saved_key: str,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        """TC-DRV-AUD-003: turning on a connector with an unusable key is refused with what to fix."""
+        admin_email = os.getenv(ENV_ADMIN_EMAIL, "").strip() or "admin@example.com"
+        instance = pipeshub_client.create_connector(
+            connector_type="Drive Workspace",
+            instance_name=f"drive-ws-bad-key-{uuid.uuid4().hex[:8]}",
+            scope="team",
+            config={"auth": {"adminEmail": admin_email, "serviceAccountJson": saved_key},
+                    "filters": connector_filters()},
+            auth_type="CUSTOM",
+        )
+        connector_id = instance.connector_id
+        try:
+            with pytest.raises(PipeshubClientError) as refused:
+                pipeshub_client.toggle_sync(connector_id, enable=True)
+            message = str(refused.value)
+            assert "HTTP 400" in message, f"turning on a connector with a bad key was not refused as such: {message}"
+            assert "not a valid JSON key file" in message, f"the refusal does not say the key is the problem: {message}"
+            for internal in ("PEM", "Expecting value", "delegated credentials", "Something went wrong"):
+                assert internal not in message, f"the refusal shows {internal!r}: {message}"
+            connector = pipeshub_client.get_connector(connector_id)
+            assert not connector.get("isActive"), "a connector with a bad key was left on"
+        finally:
+            pipeshub_client.delete_connector(connector_id)

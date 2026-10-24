@@ -8,9 +8,9 @@ from app.config.configuration_service import ConfigurationService
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
-    AdminDelegationError,
     AdminServiceError,
     GoogleAuthError,
+    ServiceAccountKeyError,
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
@@ -259,7 +259,8 @@ class GoogleClient(IClient):
                         )
                     )
             except Exception as e:
-                raise AdminDelegationError(
+                # Building credentials makes no request: what fails here is the key itself.
+                raise ServiceAccountKeyError(
                     "Failed to create delegated credentials: " + str(e),
                     details={
                         "service_name": service_name,
@@ -385,7 +386,7 @@ class GoogleClient(IClient):
                 logger.error(
                     f"Invalid serviceAccountJson for connector {connector_instance_id}: {e}"
                 )
-                raise AdminAuthError(
+                raise ServiceAccountKeyError(
                     "Invalid service account JSON",
                     details={
                         "service_name": service_name,
