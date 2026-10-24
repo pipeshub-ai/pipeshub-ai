@@ -2483,7 +2483,10 @@ class TestHardening:
 
 
 def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
-    from app.agents.actions.storage_search.storage_search import _VIEWS_DIR_NAME, sweep_orphan_views
+    from app.agents.actions.storage_search.storage_search import (
+        _VIEWS_DIR_NAME,
+        sweep_orphan_views,
+    )
 
     (tmp_path / "a-file").write_text("x")  # not an org directory
     for org in ("org-1", "org-2"):
@@ -2491,7 +2494,7 @@ def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
         os.utime(tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old", (1, 1))
     real = os.scandir
 
-    def flaky(path):
+    def flaky(path: str) -> object:
         if "org-1" in str(path):
             raise PermissionError(path)
         return real(path)
