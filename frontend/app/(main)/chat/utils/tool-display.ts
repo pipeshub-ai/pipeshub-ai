@@ -121,3 +121,48 @@ export function toolStatusLabel(toolName: string, displayName?: string): string 
   if (displayName) return displayName;
   return SKILL_TOOL_LABELS[toolName]?.present ?? `Using ${humanizeToolName(toolName)}`;
 }
+
+/** The SQL tool's name in the agent loop (`sql__execute_sql_query`, see
+ * `tool_summarizer.py`) and in chat modes (`execute_sql_query`). */
+const SQL_QUERY_TOOL_NAMES = new Set(['sql__execute_sql_query', 'execute_sql_query']);
+
+/** A SQL tool call's query. `cutOff`: `text` is only the start of the statement (a
+ * prefix such as `... WHERE active = true`), shortened by the server or cut with the args. */
+export interface SqlQuery {
+  text: string;
+  cutOff: boolean;
+}
+
+/** What `serialize_tool_args` (`transcript_collector.py`) appends to a value it shortens. */
+const SERVER_CUT_NOTE = /… \[truncated, \d+ of \d+ chars\]$/;
+
+/** Reads a JSON string field out of JSON that may be cut off: args streamed by a
+ * server that sends no `argsPreview`, or saved before the server shortened values
+ * in place. `cutOff` is set when the cut reached the value. */
+function extractTruncatedJsonStringField(text: string, key: string): SqlQuery | undefined {
+  const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(")?`).exec(text);
+  if (!match) return undefined;
+  // Drop a `\uXX` escape that the cap cut in half, unless its backslash is itself escaped.
+  const raw = match[1].replace(/(^|[^\\])((?:\\\\)*)\\u[0-9a-fA-F]{0,3}$/, '$1$2');
+  try {
+    const value = JSON.parse(`"${raw}"`) as string;
+    return value.trim() ? { text: value, cutOff: match[2] === undefined } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The query of a SQL tool call's raw `args` JSON, shown in the tool card's Query
+ * section. Undefined for any other tool, or when no query is left. */
+export function extractSqlQuery(toolName: string | undefined, args: string | undefined): SqlQuery | undefined {
+  if (!toolName || !SQL_QUERY_TOOL_NAMES.has(toolName) || !args) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(args);
+    const query = (parsed as { query?: unknown } | null)?.query;
+    if (typeof query !== 'string' || !query.trim()) return undefined;
+    const note = SERVER_CUT_NOTE.exec(query);
+    return note ? { text: query.slice(0, note.index), cutOff: true } : { text: query, cutOff: false };
+  } catch {
+    return extractTruncatedJsonStringField(args, 'query');
+  }
+}

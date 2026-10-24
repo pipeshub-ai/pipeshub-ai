@@ -1014,6 +1014,8 @@
     "stoppedMarker": "已停止",
     "toolCard": {
       "arguments": "引數",
+      "query": "查詢",
+      "queryCutOff": "此查詢僅儲存了開頭部分，因此無法複製。",
       "result": "結果",
       "error": "錯誤",
       "blocked": "已封鎖",

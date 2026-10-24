@@ -887,6 +887,8 @@
     "stoppedMarker": "Gestoppt",
     "toolCard": {
       "arguments": "Argumente",
+      "query": "Abfrage",
+      "queryCutOff": "Nur der Anfang dieser Abfrage wurde gespeichert, daher kann sie nicht kopiert werden.",
       "result": "Ergebnis",
       "error": "Fehler",
       "blocked": "Blockiert",

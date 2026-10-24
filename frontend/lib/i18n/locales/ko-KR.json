@@ -1014,6 +1014,8 @@
     "stoppedMarker": "중지됨",
     "toolCard": {
       "arguments": "인수",
+      "query": "쿼리",
+      "queryCutOff": "이 쿼리는 앞부분만 저장되어 복사할 수 없습니다.",
       "result": "결과",
       "error": "오류",
       "blocked": "차단됨",

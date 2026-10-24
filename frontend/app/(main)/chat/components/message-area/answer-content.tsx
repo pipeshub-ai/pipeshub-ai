@@ -25,6 +25,7 @@ import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
 import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -584,6 +585,7 @@ function CodeHeaderButton({
   onClick: () => void;
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile();
   const color = active ? 'var(--accent-11)' : 'var(--slate-11)';
 
   return (
@@ -595,6 +597,7 @@ function CodeHeaderButton({
       style={{
         display: 'inline-flex',
         alignItems: 'center',
+        justifyContent: 'center',
         gap: '4px',
         background: isHovered ? 'var(--slate-4)' : 'transparent',
         border: 'none',
@@ -604,6 +607,7 @@ function CodeHeaderButton({
         fontFamily: 'inherit',
         color,
         transition: 'background 0.15s ease, color 0.15s ease',
+        ...touchTarget(isMobile),
       }}
     >
       <MaterialIcon name={icon} size={13} color={color} />
@@ -618,7 +622,20 @@ function CodeHeaderButton({
  * Fenced code block with a header bar (language label + download and copy buttons)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
-function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
+export function CodeBlock({
+  language,
+  codeText,
+  maxHeight = '480px',
+  style,
+  actions = true,
+}: {
+  language: string;
+  codeText: string;
+  maxHeight?: string;
+  style?: React.CSSProperties;
+  /** Show the download and copy buttons. */
+  actions?: boolean;
+}) {
   const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
@@ -637,6 +654,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         borderRadius: 'var(--radius-2)',
         overflow: 'hidden',
         border: `1px solid ${headerBorder}`,
+        ...style,
       }}
     >
       {/* Header bar */}
@@ -661,19 +679,21 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         >
           {language || 'text'}
         </Text>
-        <Flex align="center" gap="1">
-          <CodeHeaderButton
-            icon="download"
-            label={t('action.download')}
-            onClick={() => downloadCode(codeText, language)}
-          />
-          <CodeHeaderButton
-            icon={copied ? 'check' : 'content_copy'}
-            label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-            active={copied}
-            onClick={() => void copy(codeText)}
-          />
-        </Flex>
+        {actions && (
+          <Flex align="center" gap="1">
+            <CodeHeaderButton
+              icon="download"
+              label={t('action.download')}
+              onClick={() => downloadCode(codeText, language)}
+            />
+            <CodeHeaderButton
+              icon={copied ? 'check' : 'content_copy'}
+              label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+              active={copied}
+              onClick={() => void copy(codeText)}
+            />
+          </Flex>
+        )}
       </Flex>
 
       {/* Syntax-highlighted code body */}
@@ -683,7 +703,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
           backgroundColor: bodyBg,
           overflowX: 'auto',
           overflowY: 'auto',
-          maxHeight: '480px',
+          maxHeight,
         }}
       >
         <SyntaxHighlighter

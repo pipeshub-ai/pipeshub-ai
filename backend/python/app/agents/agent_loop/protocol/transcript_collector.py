@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 
-__all__ = ["MessagePart", "TranscriptCollector"]
+__all__ = ["MessagePart", "TranscriptCollector", "serialize_tool_args"]
 
 # Tool args are already bounded by whatever the model produced this turn;
 # this is a defensive cap, not the primary truncation mechanism (that's
@@ -68,11 +68,11 @@ _MAX_TOOL_ARGS_CHARS = 2000
 _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 
 # Longest single argument value kept verbatim. Anything longer is shortened
-# in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
+# in place, leaving the surrounding JSON intact — see `serialize_tool_args`.
 _MAX_ARG_VALUE_CHARS = 1200
 
 
-def _serialize_tool_args(args: object) -> str:
+def serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
 
@@ -90,6 +90,9 @@ def _serialize_tool_args(args: object) -> str:
     other way this goes wrong. The full source of a `run_code` call is
     durable anyway as its CODE artifact — this transcript only has to stay
     honest about being a summary.
+
+    `AGUIEventEmitter` sends this same string as the live `TOOL_CALL_ARGS`
+    frame's `argsPreview`, so the open session shows what a reload shows.
     """
     if not isinstance(args, dict):
         args = {"value": args}
@@ -294,7 +297,7 @@ class TranscriptCollector(EventEmitter):
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
                 "toolName": payload.get("tool", "tool"),
-                "args": _serialize_tool_args(payload.get("args", {})),
+                "args": serialize_tool_args(payload.get("args", {})),
                 "status": "running",
                 "runId": run_id,
             }

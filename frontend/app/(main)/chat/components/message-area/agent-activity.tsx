@@ -24,9 +24,10 @@ import type { MessagePart, StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
-import { createMarkdownComponents } from './answer-content';
+import { CodeBlock, createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
+  extractSqlQuery,
   extractToolsetLabel,
   isMcpTool,
   isWebTool,
@@ -946,6 +947,7 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
     () => (status === 'completed' && isWebTool(part.toolName) ? toolResultView(part.resultView) : null),
     [status, part.toolName, part.resultView],
   );
+  const sqlQuery = extractSqlQuery(part.toolName, part.args);
   return (
     <>
       {(part.argsSummary || part.args) && (
@@ -954,6 +956,26 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
             {t('chat.toolCard.arguments')}
           </Text>
           {part.argsSummary ? <ToolSummaryText content={part.argsSummary} /> : <Box style={TOOL_TEXT_STYLE}>{part.args}</Box>}
+        </Box>
+      )}
+      {sqlQuery && (
+        <Box>
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.toolCard.query')}
+          </Text>
+          {/* No copy or download for a cut-off query: it can still run, e.g. when the cut falls in a `--` comment. */}
+          <CodeBlock
+            language="sql"
+            codeText={sqlQuery.text}
+            actions={!sqlQuery.cutOff}
+            maxHeight="260px"
+            style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
+          />
+          {sqlQuery.cutOff && (
+            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+              {t('chat.toolCard.queryCutOff')}
+            </Text>
+          )}
         </Box>
       )}
       {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content

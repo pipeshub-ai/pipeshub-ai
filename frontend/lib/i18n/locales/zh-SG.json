@@ -1014,6 +1014,8 @@
     "stoppedMarker": "已停止",
     "toolCard": {
       "arguments": "参数",
+      "query": "查询",
+      "queryCutOff": "此查询仅保存了开头部分，因此无法复制。",
       "result": "结果",
       "error": "错误",
       "blocked": "已阻止",
