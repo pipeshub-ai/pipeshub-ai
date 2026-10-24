@@ -1429,9 +1429,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "이 에이전트에 구성되지 않음",
       "internalSearch": "내부 검색",
-      "webSearch": "웹 검색",
-      "deepResearch": "심층 리서치",
-      "deepResearchNeedsWebSearch": "심층 리서치를 사용하려면 웹 검색을 켜세요"
+      "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
     "toolApproval": {

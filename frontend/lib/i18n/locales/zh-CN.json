@@ -1429,9 +1429,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此智能体未配置",
       "internalSearch": "内部搜索",
-      "webSearch": "网络搜索",
-      "deepResearch": "深度研究",
-      "deepResearchNeedsWebSearch": "开启网页搜索后才能使用深度研究"
+      "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
     "toolApproval": {

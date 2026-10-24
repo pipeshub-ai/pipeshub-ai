@@ -1343,9 +1343,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Not configured on this agent",
       "internalSearch": "Internal search",
-      "webSearch": "Web search",
-      "deepResearch": "Deep research",
-      "deepResearchNeedsWebSearch": "Turn on web search to use deep research"
+      "webSearch": "Web search"
     },
     "resizePanels": "Resize chat and preview panels",
     "toolApproval": {

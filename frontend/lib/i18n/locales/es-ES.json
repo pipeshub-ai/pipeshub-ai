@@ -1363,9 +1363,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "No configurado en este agente",
       "internalSearch": "Búsqueda interna",
-      "webSearch": "Búsqueda web",
-      "deepResearch": "Investigación a fondo",
-      "deepResearchNeedsWebSearch": "Activa la búsqueda web para usar la investigación a fondo"
+      "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
     "toolApproval": {

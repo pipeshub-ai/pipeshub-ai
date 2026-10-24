@@ -42,10 +42,10 @@ function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
     const raw = localStorage.getItem(key);
     if (!raw) return { ...DEFAULT_AGENT_CAPABILITIES };
     const parsed = JSON.parse(raw) as Partial<AgentCapabilities>;
+    // Only the known keys: a deep research choice saved before its toggle was removed must not be sent.
     return {
       internalSearch: typeof parsed.internalSearch === 'boolean' ? parsed.internalSearch : true,
       webSearch: typeof parsed.webSearch === 'boolean' ? parsed.webSearch : true,
-      deepSearch: typeof parsed.deepSearch === 'boolean' ? parsed.deepSearch : false,
     };
   } catch {
     return { ...DEFAULT_AGENT_CAPABILITIES };

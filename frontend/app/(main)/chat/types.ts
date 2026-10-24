@@ -364,8 +364,6 @@ export interface ChatCollectionAttachment {
  * - `internalSearch` gates knowledge tools (retrieval, knowledgegraph, knowledgehub),
  *   and disables the Connectors + Collections tabs in the UI when false.
  * - `webSearch` gates web_search + fetch_url tools.
- * - `deepSearch` turns on deep research: the agent researches thoroughly on the
- *   web before answering (more steps and a larger web budget). Needs `webSearch`.
  *
  * When absent from a stream request, the backend defaults both to `true`
  * (preserving today's behavior for existing clients).
@@ -373,14 +371,12 @@ export interface ChatCollectionAttachment {
 export interface AgentCapabilities {
   internalSearch: boolean;
   webSearch: boolean;
-  deepSearch?: boolean;
 }
 
-/** Default capabilities — both search modes enabled, deep search off. */
+/** Default capabilities — both search modes enabled. */
 export const DEFAULT_AGENT_CAPABILITIES: AgentCapabilities = {
   internalSearch: true,
   webSearch: true,
-  deepSearch: false,
 };
 
 export interface ChatSettings {

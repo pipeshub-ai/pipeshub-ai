@@ -1490,9 +1490,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "U tohoto agenta není nakonfigurováno",
       "internalSearch": "Interní vyhledávání",
-      "webSearch": "Vyhledávání na webu",
-      "deepResearch": "Hloubkový průzkum",
-      "deepResearchNeedsWebSearch": "Pro hloubkový průzkum zapněte vyhledávání na webu"
+      "webSearch": "Vyhledávání na webu"
     },
     "resizePanels": "Změnit velikost panelů chatu a náhledu",
     "sendMessage": "Odeslat zprávu",

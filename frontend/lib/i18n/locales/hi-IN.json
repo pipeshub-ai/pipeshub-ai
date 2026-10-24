@@ -1343,9 +1343,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "इस एजेंट पर कॉन्फ़िगर नहीं है",
       "internalSearch": "आंतरिक खोज",
-      "webSearch": "वेब खोज",
-      "deepResearch": "गहन शोध",
-      "deepResearchNeedsWebSearch": "गहन शोध के लिए वेब खोज चालू करें"
+      "webSearch": "वेब खोज"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
     "toolApproval": {

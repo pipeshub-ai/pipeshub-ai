@@ -1300,9 +1300,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche",
-      "deepResearch": "Tiefenrecherche",
-      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
+      "webSearch": "Websuche"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "demoBanner": "Sie sehen Acme Corp, ein kleines fiktives Unternehmen mit geladenen Demodaten. Probieren Sie eine dieser Fragen aus oder",
