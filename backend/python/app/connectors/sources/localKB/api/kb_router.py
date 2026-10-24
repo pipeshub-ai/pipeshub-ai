@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.api.connection_limit import (
     hide_record_parents_outside_connection,
+    hide_record_parents_unchecked,
     hide_source_paths,
     ids_outside_connection,
     ids_outside_connection_on_restore,
@@ -1381,7 +1382,7 @@ async def update_record(
             kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
                 logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
-                return {
+                fallback = {
                     **result,
                     "fileUpdated": body.get("fileMetadata") is not None,
                     "timestamp": get_epoch_timestamp_in_ms(),
@@ -1389,6 +1390,8 @@ async def update_record(
                     "kb": {},
                     "userPermission": "NONE",
                 }
+                hide_record_parents_unchecked(request, fallback)
+                return fallback
 
             # Get user permission
             user_key = user_id
@@ -1444,8 +1447,10 @@ async def update_record(
             raise
         except Exception as e:
             logger.error(f"❌ Failed to enrich update record response: {str(e)}")
-            # Return with required fields even if enrichment fails
-            return {
+            # Return with required fields even if enrichment fails. For a
+            # connected app with a limit, the enrichment's own limit check may be
+            # what failed: nothing above the record is named then.
+            fallback = {
                 **result,
                 "fileUpdated": body.get("fileMetadata") is not None,
                 "timestamp": get_epoch_timestamp_in_ms(),
@@ -1453,6 +1458,8 @@ async def update_record(
                 "kb": {},
                 "userPermission": "NONE",
             }
+            hide_record_parents_unchecked(request, fallback)
+            return fallback
 
     except HTTPException as he:
         raise he

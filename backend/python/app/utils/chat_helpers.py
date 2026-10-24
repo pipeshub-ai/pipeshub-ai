@@ -2481,37 +2481,51 @@ async def keep_record_text_inside_connection(
     if connection_sources is None:
         return
     whole_apps = set(connection_sources.get("apps") or ())
-    named = [
-        rec for rec in records
-        if isinstance(rec, dict) and (rec.get("connector_id") or rec.get("connectorId")) not in whole_apps
-    ]
-    if not named:
-        return
+    recs = [rec for rec in records if isinstance(rec, dict)]
+
+    def app_of(rec: dict[str, Any]) -> str | None:
+        return rec.get("connector_id") or rec.get("connectorId")
+
+    def judged_by_parent(rec: dict[str, Any]) -> bool:
+        return bool(rec.get("parent_external_record_id") or _says_external_parent(rec.get("context_metadata")))
+
     parent_of: dict[str, str] = {}
+    app_from_graph: dict[str, str] = {}
     inside: set[str] = set()
     try:
         if graph_provider is not None:
+            # A record read without its app (a navigate or lookup block) is
+            # looked up, so a whole-app limit leaves it as it is too.
             asked = [
-                str(rec["id"]) for rec in named
-                if rec.get("id") and (rec.get("parent_external_record_id") or _says_external_parent(rec.get("context_metadata")))
+                str(rec["id"]) for rec in recs
+                if rec.get("id") and (
+                    (app_of(rec) is None and whole_apps)
+                    or (app_of(rec) not in whole_apps and judged_by_parent(rec))
+                )
             ]
             docs = (await graph_provider.get_records_by_record_ids(list(dict.fromkeys(asked)), org_id) or []) if asked else []
-            parent_of = {
-                str(doc.get("id") or doc.get("_key")): doc["parentNodeId"]
-                for doc in docs if isinstance(doc, dict) and doc.get("parentNodeId")
-            }
-            mentioned = {
-                i for rec in named if isinstance(rec.get("context_metadata"), str)
-                for i in _named_record_ids(rec["context_metadata"])
-            }
-            ids = set(parent_of.values()) | mentioned
-            if ids:
-                from app.modules.retrieval.selection_scope import outside_connection
+            for doc in docs:
+                if not isinstance(doc, dict):
+                    continue
+                key = str(doc.get("id") or doc.get("_key"))
+                if doc.get("connectorId"):
+                    app_from_graph[key] = doc["connectorId"]
+                if doc.get("parentNodeId"):
+                    parent_of[key] = doc["parentNodeId"]
+        named = [rec for rec in recs if (app_of(rec) or app_from_graph.get(str(rec.get("id")))) not in whole_apps]
+        mentioned = {
+            i for rec in named if isinstance(rec.get("context_metadata"), str)
+            for i in _named_record_ids(rec["context_metadata"])
+        }
+        ids = {parent_of[str(rec.get("id"))] for rec in named if str(rec.get("id")) in parent_of} | mentioned
+        if ids and graph_provider is not None:
+            from app.modules.retrieval.selection_scope import outside_connection
 
-                inside = ids - await outside_connection(graph_provider, user_id, org_id, ids, connection_sources)
+            inside = ids - await outside_connection(graph_provider, user_id, org_id, ids, connection_sources)
     except Exception as exc:
         # Lose the names, never show them unchecked.
         logger.warning("Record text limit check skipped: %s", exc)
+        named = [rec for rec in recs if app_of(rec) not in whole_apps]
         inside = set()
     for rec in named:
         keep_parent = parent_of.get(str(rec.get("id"))) in inside
@@ -2522,6 +2536,33 @@ async def keep_record_text_inside_connection(
         text = rec.get("context_metadata")
         if isinstance(text, str):
             rec["context_metadata"] = _text_inside(text, inside, keep_parent=keep_parent)
+
+
+_SUMMARY_JOIN = ", "
+
+
+async def keep_row_summaries_inside_connection(
+    rows: Iterable[Any],
+    graph_provider: IGraphDBProvider | None,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """``keep_record_text_inside_connection`` for navigation rows: each row's
+    ``context_summary`` is its record's ``* `` lines joined by ``", "``, and
+    names what those lines name (a link's ``Linked Record ID``, a deal's
+    orgs and products)."""
+    if connection_sources is None:
+        return
+    held = [row for row in rows if getattr(row, "context_summary", None)]
+    records = [
+        {"id": row.id, "context_metadata": "\n".join(f"* {part}" for part in row.context_summary.split(_SUMMARY_JOIN))}
+        for row in held
+    ]
+    await keep_record_text_inside_connection(records, graph_provider, user_id, org_id, connection_sources)
+    for row, record in zip(held, records, strict=True):
+        parts = [line[2:] for line in record["context_metadata"].split("\n") if line.startswith("* ")]
+        row.context_summary = _SUMMARY_JOIN.join(parts) or None
 
 
 async def keep_graph_docs_inside_connection(

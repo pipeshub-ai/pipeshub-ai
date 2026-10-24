@@ -209,6 +209,20 @@ async def hide_record_parents_outside_connection(
             doc["externalParentId"] = None
 
 
+def hide_record_parents_unchecked(request: Request, payload: object) -> None:
+    """For a limited caller when the limit check cannot run: clear every
+    parent and source path under ``payload``, inside the limit or not. Names
+    are lost, never shown unchecked. Nothing changes without a limit."""
+    if connection_limit(request.state.user) is None:
+        return
+    for doc in _record_docs(payload):
+        for key, source_keys in _RECORD_PARENT_FIELDS.items():
+            for field in (key, *source_keys):
+                if field in doc:
+                    doc[field] = None
+    _clear_source_paths(payload)
+
+
 #: A file's path in its source system, which names every folder above it.
 SOURCE_PATH_FIELDS = ("path", "filePath", "localFsRelativePath")
 

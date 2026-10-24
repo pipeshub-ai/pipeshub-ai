@@ -21,6 +21,7 @@ from app.utils.chat_helpers import (
     enrich_virtual_record_id_to_result_with_fk_children,
     keep_graph_docs_inside_connection,
     keep_record_text_inside_connection,
+    keep_row_summaries_inside_connection,
 )
 from app.utils.fetch_full_record import (
     _apply_live_ticket_context_metadata,
@@ -286,3 +287,25 @@ class TestLiveJiraFields:
         text = await self._upgrade(limit)
 
         assert "Secret plans" in text and "Moonshot" in text
+
+
+class TestRowSummaries:
+    @pytest.mark.asyncio
+    async def test_a_row_names_no_linked_record_or_deal_party_outside_the_limit(self) -> None:
+        row = MagicMock(id="hit", context_summary="Stage: won, [1] from records/org-out; stage: won, "
+                                                  "Linked Record ID: linked-in, Amount: 1,250")
+        graph = AsyncMock()
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "hit", "connectorId": "app-1"}])
+
+        with patch(OUTSIDE, _outside("org-out")):
+            await keep_row_summaries_inside_connection([row], graph, "u", "o", FILE_LIMIT)
+
+        assert row.context_summary == "Stage: won, Linked Record ID: linked-in, Amount: 1,250"
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_a_row_is_untouched(self) -> None:
+        row = MagicMock(id="hit", context_summary="Linked Record ID: anywhere")
+
+        await keep_row_summaries_inside_connection([row], AsyncMock(), "u", "o", None)
+
+        assert row.context_summary == "Linked Record ID: anywhere"

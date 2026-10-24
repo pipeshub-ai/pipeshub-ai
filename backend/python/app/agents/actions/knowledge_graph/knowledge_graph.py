@@ -34,7 +34,11 @@ from app.modules.agents.qna.chat_state import (
 )
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.modules.retrieval.selection_scope import connection_sources_of
-from app.utils.chat_helpers import keep_context_blocks_inside_connection, resolve_frontend_url
+from app.utils.chat_helpers import (
+    keep_context_blocks_inside_connection,
+    keep_row_summaries_inside_connection,
+    resolve_frontend_url,
+)
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
@@ -549,9 +553,13 @@ class KnowledgeGraph:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            limit_sources = connection_sources_of(state.get("filters"))
             await keep_context_blocks_inside_connection(
                 [(view.current.id if view.current else None, view)], graph_provider,
-                state.get("user_id", ""), org_id, connection_sources_of(state.get("filters")),
+                state.get("user_id", ""), org_id, limit_sources,
+            )
+            await keep_row_summaries_inside_connection(
+                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)

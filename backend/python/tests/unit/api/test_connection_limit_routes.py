@@ -922,3 +922,81 @@ class TestACollectionUpdateResponse:
         assert len(response["kb"]["folders"]) == 2 and response["updatedRecord"] == {
             **_file_doc(), "fileRecord": {"path": SOURCE_PATH},
         }
+
+
+class TestReviewFindingsOnTheRelatedStack:
+    """Rows under an opened node, a whole-app limit's blocks, and an update
+    whose limit check fails."""
+
+    @staticmethod
+    def _row(summary: str) -> NodeRow:
+        return NodeRow(id="rec-in", name="link", node_type="record", sub_type="LINK", is_record=True,
+                       has_children=False, detail=None, context_summary=summary)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("limit", "shown"), [(FOLDER_LIMIT, False), (None, True)])
+    async def test_a_row_summary_names_no_linked_record_outside_the_limit(self, limit, shown) -> None:
+        graph = _graph_under(FOLDER_LIMIT)
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "connectorId": "app-in"}])
+        view = NavigationView(
+            current=NodeRef(id="folder-in", name="Q3", node_type="folder", sub_type=None, is_record=True),
+            breadcrumbs=[], related=[], pagination=None, web_url=None, indexing_status=None, connector=None,
+            rows=[self._row("URL: https://x, Linked Record ID: rec-out")],
+        )
+        result = await TestBrowsing._navigate(_request(limit), graph, node_id="folder-in", view=view)
+
+        (row,) = result["rows"]
+        assert ("rec-out" in row["context_summary"]) is shown and ("rec-out" in result["text"]) is shown
+        assert "URL: https://x" in row["context_summary"]
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_limit_keeps_a_blocks_path_and_source_parent(self) -> None:
+        graph = _graph()
+        graph.get_records_by_record_ids = AsyncMock(return_value=[{"id": "rec-in", "connectorId": "app-in"}])
+        block = "Record ID: rec-in\nName: a.py\nExternal Parent ID: ext-dir\nPath: src/billing/a.py"
+        view = NavigationView(
+            current=NodeRef(id="rec-in", name="a.py", node_type="record", sub_type=None, is_record=True),
+            breadcrumbs=[], rows=[], related=[], pagination=None, web_url=None, indexing_status=None,
+            connector=None, context_block=block,
+        )
+        result = await TestBrowsing._navigate(_request(LIMIT), graph, node_id="rec-in", view=view)
+
+        assert result["context_block"] == block
+
+    @staticmethod
+    async def _update(limit: dict | None, graph: AsyncMock) -> dict:
+        from app.connectors.sources.localKB.api.kb_router import update_record
+
+        request = _request(limit, graph=graph)
+        request.json = AsyncMock(return_value={"updates": {"recordName": "budget.xlsx"}})
+        request.app.container.logger.return_value = MagicMock()
+        service = MagicMock()
+        service.update_record = AsyncMock(return_value={"success": True, "updatedRecord": _file_doc()})
+        return await update_record("rec-in", request, kb_service=service, kafka_service=MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_an_update_whose_limit_check_fails_names_nothing_above_the_record(self) -> None:
+        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+
+        graph = _graph_under(FILE_LIMIT)
+        graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "app-in", "kb_name": "Finance"})
+        graph.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        graph.get_knowledge_base = AsyncMock(return_value={"id": "app-in", "name": "Finance", "folders": []})
+        graph.get_knowledge_hub_parent_node = AsyncMock(return_value=None)
+        graph.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("graph down"))
+
+        response = await self._update(FILE_LIMIT, graph)
+
+        record = response["updatedRecord"]
+        assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
+        for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
+            assert record[field] is None, field
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:
+        graph = _graph()
+        graph._get_kb_context_for_record = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        response = await self._update(None, graph)
+
+        assert response["updatedRecord"] == _file_doc()
