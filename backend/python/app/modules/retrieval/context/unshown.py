@@ -16,7 +16,7 @@ A high-accuracy feature: ``UNSHOWN_MATCHES_LIST`` decides when set, otherwise
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.modules.retrieval.context.targeted import FETCH_TOOL
 from app.utils.env_utils import accuracy_feature_enabled
@@ -58,9 +58,10 @@ def unshown_matches(
     for vrid in dict.fromkeys(matched_record_ids):
         if len(found) >= limit:
             break
-        record = permitted_records.get(vrid)
-        if vrid in exclude or not isinstance(record, dict):
+        found_record = permitted_records.get(vrid)
+        if vrid in exclude or not isinstance(found_record, dict):
             continue
+        record = cast("dict[str, Any]", found_record)
         record_id = record.get("_key") or record.get("id")
         if record_id and str(record_id) not in known_record_ids:
             name = " ".join(str(record.get("recordName") or record.get("record_name") or "").split())
