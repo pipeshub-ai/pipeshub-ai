@@ -96,9 +96,10 @@ class TestCodeRepoCheckpoints:
             return_value={"last_commit_sha": "abc123"}
         )
 
-        sha = await repos._get_code_repo_checkpoint(_PROJECT_ID)
+        sha, path = await repos._get_code_repo_checkpoint(_PROJECT_ID)
 
         assert sha == "abc123"
+        assert path is None  # written before the project path was kept
 
     async def test_read_checkpoint_returns_none_when_missing(self) -> None:
         c = make_mock_connector()
@@ -106,7 +107,7 @@ class TestCodeRepoCheckpoints:
 
         c.record_sync_point.read_sync_point = AsyncMock(return_value=None)
 
-        sha = await repos._get_code_repo_checkpoint(_PROJECT_ID)
+        sha, _ = await repos._get_code_repo_checkpoint(_PROJECT_ID)
 
         assert sha is None
 
@@ -116,7 +117,7 @@ class TestCodeRepoCheckpoints:
 
         c.record_sync_point.read_sync_point = AsyncMock(side_effect=Exception("DB error"))
 
-        sha = await repos._get_code_repo_checkpoint(_PROJECT_ID)
+        sha, _ = await repos._get_code_repo_checkpoint(_PROJECT_ID)
 
         assert sha is None
 
@@ -124,7 +125,7 @@ class TestCodeRepoCheckpoints:
         c = make_mock_connector()
         repos = ReposSync(c)
 
-        await repos._update_code_repo_checkpoint(_PROJECT_ID, "new-sha")
+        await repos._update_code_repo_checkpoint(_PROJECT_ID, "new-sha", "acme/project")
 
         c.record_sync_point.update_sync_point.assert_called_once()
         call_kwargs = c.record_sync_point.update_sync_point.call_args
@@ -481,7 +482,7 @@ class TestFullSyncFailureNoCheckpoint:
         c = make_mock_connector()
         c.data_source = MagicMock()
         repos = ReposSync(c)
-        repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=(None, None))
         repos._sync_repo_full = AsyncMock(return_value=False)
         repos._update_code_repo_checkpoint = AsyncMock()
 
