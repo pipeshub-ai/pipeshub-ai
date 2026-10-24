@@ -1,4 +1,6 @@
 import { expect } from 'chai'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import {
   validateScopes,
   getScopesGroupedByCategoryForRole,
@@ -46,6 +48,18 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(AgentMcpScopes).to.not.include('kb:delete')
     expect(DefaultMcpScopes).to.include.members([...AgentMcpScopes])
     expect(getAllowedScopeNamesForRole(false)).to.include.members(['kb:write', 'kb:upload'])
+  })
+
+  // The first-run script mints the agent token with its own copy of the
+  // preset; when the preset grew, that copy was missed twice.
+  it('the first-run bootstrap mints exactly the agent preset', () => {
+    const script = readFileSync(
+      resolve(process.cwd(), '../../../deployment/docker-compose/bootstrap-first-run.sh'),
+      'utf8',
+    )
+    const line = script.split('\n').find((l) => l.startsWith('AGENT_SCOPES=')) ?? ''
+    const minted = JSON.parse(line.slice(line.indexOf("'") + 1, line.lastIndexOf("'")))
+    expect([...minted].sort()).to.deep.equal([...AgentMcpScopes].sort())
   })
 
   it('getScopesGroupedByCategoryForRole filters admin-only scopes for non-admin', () => {

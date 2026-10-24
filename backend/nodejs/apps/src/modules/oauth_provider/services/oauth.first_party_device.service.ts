@@ -47,6 +47,7 @@ export class FirstPartyDeviceAppService {
       clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
     })
     if (existing) {
+      await this.addNewPresetScopes(existing)
       return existing.clientId
     }
 
@@ -106,6 +107,36 @@ export class FirstPartyDeviceAppService {
       isDynamic: false,
       status: OAuthAppStatus.ACTIVE,
     })
+  }
+
+  /**
+   * The app is created once, so a scope added to the agent preset later never
+   * reaches it on its own and device logins keep minting tokens without it.
+   * Add what the preset grants now; never remove a scope, and leave tokens
+   * already issued alone (the next consent picks the new scopes up).
+   */
+  private async addNewPresetScopes(app: IOAuthApp): Promise<void> {
+    const held = new Set(app.allowedScopes ?? [])
+    const missing = this.resolveScopes().filter((scope) => !held.has(scope))
+    if (missing.length === 0) {
+      return
+    }
+    try {
+      await OAuthApp.updateOne(
+        { _id: app._id },
+        { $addToSet: { allowedScopes: { $each: missing } } },
+      )
+      this.logger.info('First-party device app gained new preset scopes', {
+        clientId: app.clientId,
+        scopes: missing,
+      })
+    } catch (error) {
+      // Discovery must keep working; the next call retries the update.
+      this.logger.warn('First-party device app scope update failed', {
+        clientId: app.clientId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   private resolveScopes(): string[] {
