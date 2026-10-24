@@ -195,6 +195,44 @@ class TestWhenItWrites:
             # Recorded before the pointer moves, so a served set is always the stored revision.
             assert graph.mapping["currentRev"] == REV
 
+    @pytest.mark.parametrize("mapping_write_fails", [False, True])
+    async def test_the_vectors_move_only_after_the_stored_revision_is_recorded(
+        self, mapping_write_fails: bool,
+    ) -> None:
+        """Between the stored record's upload and its mapping write the mapping still says the old
+        revision for both ``storedRev`` and ``currentRev``, so the old set is served. That is the
+        revision the vectors hold until then: they are written after the blob write, and not at all
+        when the mapping write fails. Clearing ``storedRev`` first would serve the new stored
+        record against the old vectors instead."""
+        old = {"id": "vr-1", "record_doc_id": "doc-1", "currentRev": OLD_REV, "storedRev": OLD_REV,
+               "manifestDocId": "doc-old"}
+        graph = _graph(dict(old))
+        orch = _orchestrator(graph)
+        seen_between: list[tuple[dict[str, Any], bool]] = []
+
+        async def blob_write(ctx: TransformContext) -> None:
+            # The new revision is uploaded; the mapping write comes next.
+            seen_between.append((dict(graph.mapping or {}), orch.vector_store.apply.await_count > 0))
+            if mapping_write_fails:
+                raise RuntimeError("Failed to store virtual record mapping")
+            graph.mapping = {**(graph.mapping or {}), "storedRev": ctx.settings[STORED_REV]}
+
+        orch.blob_storage.apply = AsyncMock(side_effect=blob_write)
+
+        if mapping_write_fails:
+            with pytest.raises(RuntimeError):
+                await _index(orch, TransformContext(record=_record()))
+        else:
+            await _index(orch, TransformContext(record=_record()))
+
+        assert seen_between == [(old, False)]
+        if mapping_write_fails:
+            orch.vector_store.apply.assert_not_awaited()
+            assert graph.mapping == old
+        else:
+            orch.vector_store.apply.assert_awaited_once()
+            assert (graph.mapping["storedRev"], graph.mapping["currentRev"]) == (REV, REV)
+
     async def test_a_re_embed_tells_no_revision(self) -> None:
         orch = _orchestrator(_graph())
         ctx = TransformContext(record=_record(), settings={"skip_blob": True})
