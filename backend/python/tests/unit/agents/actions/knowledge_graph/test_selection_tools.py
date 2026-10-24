@@ -362,6 +362,31 @@ class TestReachingARecordByNameOrId:
         assert await ids_within_scope(state, graph, "u", "o", ["upload-1", "b1"]) == {"upload-1"}
 
     @pytest.mark.asyncio
+    async def test_a_file_attached_in_an_earlier_turn_is_always_readable(self) -> None:
+        """A later turn carries the upload in its history, not in `attachments`;
+        it is still part of the conversation, so the scope must not refuse it."""
+        upload = {"id": "upload-1", "orgId": "o", "origin": "UPLOAD", "connectorId": "attachments_o"}
+        graph = _graph(readable={"upload-1"}, inside=set(), nodes={"records": [upload]})
+        state = {
+            "filters": {"apps": [], "kb": [], "records": ["folder-a"]},
+            "previous_conversations": [
+                {"role": "user_query", "attachments": [{"recordId": "upload-1", "virtualRecordId": "v-up"}]},
+                {"role": "bot_response"},
+            ],
+        }
+        assert await ids_within_scope(state, graph, "u", "o", ["upload-1", "b1"]) == {"upload-1"}
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_attachment_naming_a_record_outside_the_bound_is_refused(self) -> None:
+        other = {"id": "secret", "orgId": "o", "origin": "CONNECTOR", "connectorId": "drive-1"}
+        graph = _graph(readable={"secret"}, inside=set(), nodes={"records": [other]})
+        state = {
+            "filters": BOUNDED,
+            "previous_conversations": [{"role": "user_query", "attachments": [{"recordId": "secret"}]}],
+        }
+        assert await ids_within_scope(state, graph, "u", "o", ["secret"]) == set()
+
+    @pytest.mark.asyncio
     async def test_an_attachment_naming_a_record_outside_the_bound_is_refused(self) -> None:
         """The client names an attachment's recordId; a connector record it
         names is not an attachment and stays outside an agent's folder bound."""
