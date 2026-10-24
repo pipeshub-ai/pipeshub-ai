@@ -22,6 +22,8 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.containers.indexing import initialize_container
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
@@ -1997,7 +1999,7 @@ async def start_kafka_consumers(
             setattr(
                 app_container,
                 "stage_startup_task",
-                asyncio.create_task(
+                spawn_detached(
                     _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
                 ),
             )
@@ -2067,6 +2069,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container
     logger = app.container.logger()
     logger.info("🚀 Starting application")
+
+    await configure_envelope(app_container.config_service())
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -2170,19 +2174,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             worker_loop,
         )
     else:
-        app.state.recovery_task = asyncio.create_task(
+        app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
         )
-        app.state.backfill_task = asyncio.create_task(
+        app.state.backfill_task = spawn_detached(
             run_vector_membership_backfill_loop(app_container, graph_provider)
         )
-        app.state.entity_index_task = asyncio.create_task(
+        app.state.entity_index_task = spawn_detached(
             run_entity_index_rebuild_loop(app_container, graph_provider)
         )
-        app.state.label_repair_task = asyncio.create_task(
+        app.state.label_repair_task = spawn_detached(
             run_record_label_repair_loop(app_container, graph_provider)
         )
-        app.state.named_entity_sweep_task = asyncio.create_task(
+        app.state.named_entity_sweep_task = spawn_detached(
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
 
@@ -2195,7 +2199,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             completion_loop,
         )
     else:
-        app.state.named_entity_completion_task = asyncio.create_task(
+        app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
         )
 

@@ -149,7 +149,7 @@ class TestStartStop:
         svc = _make_service()
         svc._refresh_all_tokens = AsyncMock()
         created_tasks = []
-        with patch("asyncio.create_task", side_effect=lambda c: created_tasks.append(c)):
+        with patch("app.connectors.core.base.token_service.toolset_token_refresh_service.spawn_detached", side_effect=lambda c: created_tasks.append(c)):
             await svc.start()
         # Should have created 2 tasks: periodic_refresh_check and cleanup_old_locks
         assert len(created_tasks) == 2

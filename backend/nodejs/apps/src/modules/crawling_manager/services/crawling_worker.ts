@@ -10,6 +10,12 @@ import {
   runWithRequestContext,
   newSystemRoot,
 } from '../../../libs/context/request-context';
+import { Org } from '../../user_management/schema/org.schema';
+import {
+  ambientOrg,
+  forOrg,
+  spawnDetached,
+} from '../../../libs/context/orgContext';
 
 @injectable()
 export class CrawlingWorkerService {
@@ -18,27 +24,32 @@ export class CrawlingWorkerService {
 
   constructor(
     @inject('RedisConfig') redisConfig: RedisConfig,
-    @inject(ConnectorsCrawlingService) private taskService: ICrawlingTaskService,
-  ) { 
+    @inject(ConnectorsCrawlingService)
+    private taskService: ICrawlingTaskService,
+  ) {
     this.logger = Logger.getInstance({ service: 'CrawlingWorkerService' });
 
-    const provider = crawlingRedisProvider(redisConfig);
+    // A lazily resolved service may be constructed inside a request; its
+    // sockets and timers must not keep that request's org context.
+    this.worker = spawnDetached(() => {
+      const provider = crawlingRedisProvider(redisConfig);
 
-    const workerOptions: WorkerOptions = {
-      // Dedicated blocking-capable connection; BullMQ workers block on it
-      // for job availability and must not share the provider's pooled client.
-      connection: provider.createClient({ blocking: true }),
-      prefix: crawlingQueuePrefix(provider),
-      concurrency: 5, // Process up to 5 jobs concurrently
-      maxStalledCount: 3,
-      stalledInterval: 30000, // 30 seconds
-    };
+      const workerOptions: WorkerOptions = {
+        // Dedicated blocking-capable connection; BullMQ workers block on it
+        // for job availability and must not share the provider's pooled client.
+        connection: provider.createClient({ blocking: true }),
+        prefix: crawlingQueuePrefix(provider),
+        concurrency: 5, // Process up to 5 jobs concurrently
+        maxStalledCount: 3,
+        stalledInterval: 30000, // 30 seconds
+      };
 
-    this.worker = new Worker(
-      'crawling-scheduler', // Same queue name as in scheduler service
-      this.processJob.bind(this),
-      workerOptions,
-    );
+      return new Worker(
+        'crawling-scheduler', // Same queue name as in scheduler service
+        this.processJob.bind(this),
+        workerOptions,
+      );
+    });
 
     this.setupWorkerListeners();
     this.logger.info('CrawlingWorkerService initialized');
@@ -46,14 +57,42 @@ export class CrawlingWorkerService {
 
   private async processJob(job: Job<CrawlingJobData>): Promise<void> {
     // Scheduled crawl tick — seed a fresh trace root.
-    return runWithRequestContext(
-      { rootId: newSystemRoot() },
-      () => this.processJobInContext(job),
+    return runWithRequestContext({ rootId: newSystemRoot() }, () =>
+      this.processJobForOrg(job),
     );
   }
 
+  /** Bind the job's org only if it still exists and is active; a gone org's job is dropped. */
+  private async processJobForOrg(job: Job<CrawlingJobData>): Promise<void> {
+    const { orgId } = job.data;
+    if (!orgId) return this.processJobInContext(job);
+    if (!/^[0-9a-f]{24}$/i.test(orgId)) {
+      // Not an ObjectId (for example the "system" bootstrap id): drop, a retry cannot fix it.
+      this.logger.warn('Skipping crawling job: org id is not valid', {
+        jobId: job.id,
+        orgId,
+      });
+      return;
+    }
+    const org = await Org.findOne({ _id: orgId, isDeleted: { $ne: true } })
+      .select('_id')
+      .lean()
+      .exec();
+    if (!org) {
+      this.logger.warn(
+        'Skipping crawling job: org does not exist or is not active',
+        {
+          jobId: job.id,
+          orgId,
+        },
+      );
+      return;
+    }
+    return forOrg(orgId, 'crawl', () => this.processJobInContext(job));
+  }
+
   private async processJobInContext(job: Job<CrawlingJobData>): Promise<void> {
-    const {  orgId, userId, scheduleConfig, connector, connectorId } = job.data;
+    const { orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
     this.logger.info('Processing crawling job', {
       jobId: job.id,
@@ -71,9 +110,9 @@ export class CrawlingWorkerService {
 
       // Execute the crawling task with connector information
       const result = await this.taskService.crawl(
-        orgId, 
-        userId, 
-        scheduleConfig, 
+        ambientOrg(orgId, 'CrawlingWorker.crawl') ?? orgId,
+        userId,
+        scheduleConfig,
         connector,
         connectorId,
       );

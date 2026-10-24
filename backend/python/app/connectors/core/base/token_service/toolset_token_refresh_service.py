@@ -18,6 +18,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
+from app.core.org_context import spawn_detached
 from app.utils.oauth_config import get_oauth_config
 from app.utils.request_context import (
     new_system_root,
@@ -98,13 +99,13 @@ class ToolsetTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
         # Start periodic lock cleanup
-        asyncio.create_task(self._cleanup_old_locks())
+        spawn_detached(self._cleanup_old_locks())
 
     async def stop(self) -> None:
         """Stop the toolset token refresh service"""

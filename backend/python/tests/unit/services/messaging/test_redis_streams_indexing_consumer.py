@@ -2379,6 +2379,31 @@ class TestRetryDelayBeforeSemaphore:
         assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
 
     @pytest.mark.asyncio
+    async def test_requeue_is_signed_afresh_under_the_message_org(self, consumer, monkeypatch) -> None:
+        from app.core import envelope, org_context
+
+        key = envelope.derive_key("requeue-secret")
+        envelope.configure(None, None, key)
+        monkeypatch.setenv("ENVELOPE_SIGN", "true")
+        sent = []
+
+        async def send_event(topic, event_type, payload) -> None:
+            sent.append(envelope.sign_message(topic, {"eventType": event_type, "payload": payload}))
+
+        consumer.producer = AsyncMock()
+        consumer.producer.send_event.side_effect = send_event
+        ctx = org_context.OrgContext("org_a", None, "service", "envelope", "r")
+        message = StreamMessage(eventType="newRecord", payload={"orgId": "org_a", "recordId": "r1"}, org_ctx=ctx)
+        try:
+            assert org_context._ctx.get() is None  # the handler's bind is gone by the time a retry is queued
+            await consumer._requeue_message("stream-a", message, "stable-id", retry_count=1)
+            # signed with a fresh issuedAt, so it is inside the accepted window however old the original was
+            opened = await envelope.open_envelope("stream-a", sent[0], keys=(key,), required=True)
+            assert opened.ctx.org_id == "org_a" and opened.message["payload"]["_retry_tracking_id"] == "stable-id"
+        finally:
+            envelope.configure(None)
+
+    @pytest.mark.asyncio
     async def test_requeue_requires_producer(self, consumer):
         consumer.producer = None
         message = StreamMessage(

@@ -9,6 +9,8 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
+from app.core.org_context import bind_optional, spawn_detached
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
@@ -146,7 +148,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
             if not self.redis:
                 await self.initialize()
 
-            self.consume_task = asyncio.create_task(self._consume_loop())
+            self.consume_task = spawn_detached(self._consume_loop())
             self.logger.info("Started Redis Streams consumer task")
         except Exception as e:
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
@@ -624,14 +626,22 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 )
                 return False, True
 
-            parsed_message = StreamMessage(**raw)
-
+            if not isinstance(raw, dict):
+                StreamMessage(**raw)  # TypeError: not an envelope
             # Carry the producer's trace id into consumer-side logs.
             envelope = raw if isinstance(raw, dict) else {}
             ctx = context_from_envelope(envelope)
             token = set_context(ctx.root_id)
             try:
-                result = await self.message_handler(parsed_message)
+                try:
+                    opened = await open_configured(stream_name, envelope)
+                except DuplicateEnvelope:
+                    return True, False
+                except EnvelopeRejected as e:
+                    self.logger.error("Envelope rejected for %s: %s", message_id, e.reason)
+                    return False, True
+                with bind_optional(opened.ctx):
+                    result = await self.message_handler(StreamMessage(**opened.message))
                 return result, False
             except Exception as e:
                 self.logger.error(

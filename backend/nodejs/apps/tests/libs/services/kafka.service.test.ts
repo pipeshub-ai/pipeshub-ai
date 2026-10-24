@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { configureEnvelope, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { currentOrgContext, makeOrgContext, orgContextStorage, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { KafkaError } from '../../../src/libs/errors/kafka.errors';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { KafkaConfig, KafkaMessage } from '../../../src/libs/types/kafka.types';
@@ -555,6 +557,53 @@ describe('Kafka Service', () => {
         const parsedMsg = handler.firstCall.args[0];
         expect(parsedMsg.key).to.equal('msg-key');
         expect(parsedMsg.value).to.deep.equal({ data: 'hello' });
+      });
+
+      describe('org context', () => {
+        const KEY = deriveKey('kafka-test');
+        afterEach(() => configureEnvelope(null));
+        const deliver = async (value: unknown, handler: sinon.SinonStub) => {
+          mockCons.run.callsFake(async ({ eachMessage }: any) => {
+            await eachMessage({
+              topic: 'test-topic', partition: 0,
+              message: { key: null, value: Buffer.from(JSON.stringify(value)), headers: {} },
+            });
+          });
+          await consumer.consume(handler);
+        };
+
+        it('binds the signed org for the handler and unwraps the payload', async () => {
+          configureEnvelope(async () => [KEY]);
+          let org: string | undefined;
+          const handler = sinon.stub().callsFake(async () => { org = currentOrgContext().orgId as string; });
+          const ctx = makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' });
+          await deliver(sign(KEY, 'test-topic', { orgId: 'org_a', n: 1 }, ctx), handler);
+          expect(org).to.equal('org_a');
+          expect(handler.firstCall.args[0].value.payload).to.deep.equal({ orgId: 'org_a', n: 1 });
+        });
+
+        it('ctx org differing from payload org is dead-lettered and never reaches the handler', async () => {
+          configureEnvelope(async () => [KEY]);
+          const handler = sinon.stub().resolves();
+          const ctx = makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' });
+          await deliver(sign(KEY, 'test-topic', { orgId: 'org_b' }, ctx), handler);
+          expect(handler.called).to.be.false;
+        });
+
+        it('falls back to payload.orgId for an unsigned message before the cutover flag', async () => {
+          let org: string | undefined;
+          const handler = sinon.stub().callsFake(async () => { org = currentOrgContext().orgId as string; });
+          await deliver({ payload: { orgId: 'org_z' } }, handler);
+          expect(org).to.equal('org_z');
+        });
+
+        it('the consumer runner does not keep the caller org context', async () => {
+          let ambient: unknown = 'unset';
+          mockCons.run.callsFake(async () => { ambient = orgContextStorage.getStore(); });
+          await runWithOrgContext(makeOrgContext({ orgId: 'org_a', userId: null, kind: 'user', source: 'jwt' }), () =>
+            consumer.consume(sinon.stub().resolves()));
+          expect(ambient).to.equal(undefined);
+        });
       });
 
       it('should use empty string for key when message key is null', async () => {
