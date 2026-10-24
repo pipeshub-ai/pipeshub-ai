@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ import pytest
 from app.utils.image_admission import (
     MAX_IMAGES_IN_CONVERSATION,
     DegradeReason,
+    content_hash,
     ImageAdmission,
     ImageBudget,
     ImageCandidate,
@@ -268,6 +270,43 @@ class TestPrefilter:
         crowd = [_candidate(i, width=1200, height=900) for i in range(1, 6)]
         result = _admission(max_images=3).admit([*crowd, attachment])
         assert attachment.ref in {c.ref for c in result.admitted}
+
+
+class TestContentHash:
+    """`content_hash` gives an image its identity, so the same bytes arriving
+    from two sources are recognized as one image.
+
+    It is a pure function of the URI, which is what makes the dedup and
+    normalization caches safe to share across requests.
+    """
+
+    def test_a_known_vector(self) -> None:
+        assert content_hash("abc") == "ba7816bf8f01cfea"
+
+    def test_the_empty_string(self) -> None:
+        assert content_hash("") == "e3b0c44298fc1c14"
+
+    def test_a_character_that_cannot_be_encoded_is_ignored(self) -> None:
+        # A lone surrogate cannot be encoded as UTF-8. The hash is over the
+        # bytes that will actually be sent, so a character that cannot be
+        # encoded must not change the identity of the image.
+        assert content_hash("\ud800abc") == content_hash("abc")
+
+    def test_two_formats_are_two_images(self) -> None:
+        png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        jpeg = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ=="
+        assert content_hash(png) != content_hash(jpeg)
+
+    def test_the_result_is_sixteen_lowercase_hex_characters(self) -> None:
+        for uri in (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
+            "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ==",
+        ):
+            assert re.fullmatch(r"[0-9a-f]{16}", content_hash(uri))
+
+    def test_the_same_input_hashes_the_same_way_twice(self) -> None:
+        uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        assert content_hash(uri) == content_hash(uri)
 
 
 class TestDeduplication:
