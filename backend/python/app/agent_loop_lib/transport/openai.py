@@ -63,6 +63,7 @@ from app.agent_loop_lib.transport.prompt_cache import (
     OPENAI_BREAKPOINT,
     OPENAI_BREAKPOINT_PARAM,
     OpenAICachePlan,
+    split_system_prompt,
 )
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
@@ -460,9 +461,9 @@ class OpenAITransport(LLMTransport):
         it ends in a cache breakpoint. With one, the stable block is a message
         of its own: on Chat Completions a change later in the same message
         misses the cache even past an explicit breakpoint."""
-        if self._cache_plan.breakpoint and system_blocks and system_blocks[0]:
-            volatile = "\n\n".join(block for block in system_blocks[1:] if block)
-            return [(system_blocks[0], True), *([(volatile, False)] if volatile else [])]
+        stable, volatile = split_system_prompt(system, system_blocks)
+        if self._cache_plan.breakpoint and stable:
+            return [(stable, True), *([(volatile, False)] if volatile else [])]
         text = system or "\n\n".join(block for block in system_blocks or [] if block)
         return [(text, False)] if text else []
 

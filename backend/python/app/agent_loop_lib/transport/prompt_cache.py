@@ -144,6 +144,15 @@ class OpenAICachePlan:
         return OpenAICachePlan(kwargs, self.breakpoint and marked, self.last_message and marked)
 
 
+def split_system_prompt(system: str | None, system_blocks: list[str] | None) -> tuple[str, str]:
+    """``(stable, volatile)``: the agent's blocks when given (the first is the
+    stable one), else the whole ``system`` as one stable block. The LangChain
+    and direct OpenAI transports both split here, so they mark the same text."""
+    if system_blocks:
+        return system_blocks[0] or "", "\n\n".join(block for block in system_blocks[1:] if block)
+    return system or "", ""
+
+
 def anthropic_breakpoint(ttl: str = "5m") -> dict[str, str]:
     """The ``cache_control`` value for every Anthropic marker of a request; one
     TTL throughout, so markers can never be out of TTL order."""
