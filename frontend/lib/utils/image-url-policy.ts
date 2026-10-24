@@ -72,8 +72,11 @@ export const markdownUrlTransform: UrlTransform = (url, key, node) => {
   return defaultUrlTransform(url);
 };
 
-// A backslash counts too: CSS escapes (`\75 rl(`) would otherwise hide `url(`.
-const CSS_FETCH_PATTERN = /url\s*\(|image-set\s*\(|@import|\\/i;
+// Matched on bare words, not `url(`: a comment (`url/**/(`, `u/**/rl(`) or a CSS
+// escape (`\75 rl(`) splits the token so a call-shaped pattern misses it, and
+// `image()`, `image-set()` and `cross-fade()` fetch too. Any comment or
+// backslash drops the style, since both can hide a fetch.
+const CSS_FETCH_PATTERN = /url|image|cross-fade|element\s*\(|@import|\/\*|\\/i;
 
 /**
  * Inline `style` is allowed on some raw-HTML elements in answers, and
