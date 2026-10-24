@@ -263,4 +263,8 @@ class TestRejectedCacheParams:
         REJECTED_CACHE_PARAMS.record("gpt-5.4", AZURE, {"Prompt_Cache_Breakpoint"})
         assert REJECTED_CACHE_PARAMS.refused("gpt-5.4", AZURE) == {"prompt_cache_retention", "prompt_cache_breakpoint"}
         assert not REJECTED_CACHE_PARAMS.rejected("gpt-5.4", AZURE)
+
+    def test_an_empty_set_refuses_nothing(self) -> None:
+        REJECTED_CACHE_PARAMS.record("gpt-5.4", AZURE, frozenset())
+        assert REJECTED_CACHE_PARAMS.refused("gpt-5.4", AZURE) == frozenset()
         assert REJECTED_CACHE_PARAMS.refused("gpt-5.4", None) == frozenset()

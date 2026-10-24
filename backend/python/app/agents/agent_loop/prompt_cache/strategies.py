@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, SystemMessage
 
 from app.agent_loop_lib.transport.prompt_cache import (
+    ALL_CACHE_PARAMS,
     OPENAI_BREAKPOINT,
     OPENAI_BREAKPOINT_PARAM,
 )
@@ -164,29 +165,36 @@ class OpenAICacheStrategy(CacheStrategy):
         return NoCacheStrategy() if plan.empty else OpenAICacheStrategy(plan)
 
 
-def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """``messages`` with every cache marker a strategy put on them removed: the
-    ``cache_control`` and ``prompt_cache_breakpoint`` on a block and the
-    Converse ``cachePoint`` blocks. What a request sends once its provider has
-    refused a marker."""
+def without_cache_markers(
+    messages: list[BaseMessage], params: frozenset[str] = ALL_CACHE_PARAMS,
+) -> list[BaseMessage]:
+    """``messages`` without the markers of the cache parameters in ``params``
+    (``"*"``: all of them): the ``cache_control`` or ``prompt_cache_breakpoint``
+    on a block, and the Converse ``cachePoint`` blocks. What a request sends
+    once its provider has refused those parameters."""
+    every = "*" in params
+    keys = tuple(key for key in _BLOCK_MARKERS if every or key in params)
+    cache_points = every or BEDROCK_PARAM in params
     stripped: list[BaseMessage] = []
     for message in messages:
         content = message.content
-        if isinstance(content, str) or not any(_is_marked(block) for block in content):
+        if isinstance(content, str) or not any(
+            _is_marked(block, keys, cache_points=cache_points) for block in content
+        ):
             stripped.append(message)
             continue
         blocks = [
-            {key: value for key, value in block.items() if key not in _BLOCK_MARKERS} if isinstance(block, dict)
+            {key: value for key, value in block.items() if key not in keys} if isinstance(block, dict)
             else block
             for block in content
-            if not (isinstance(block, dict) and "cachePoint" in block)
+            if not (cache_points and isinstance(block, dict) and "cachePoint" in block)
         ]
         stripped.append(message.model_copy(update={"content": blocks}))
     return stripped
 
 
-def _is_marked(block: object) -> bool:
-    return isinstance(block, dict) and (any(marker in block for marker in _BLOCK_MARKERS) or "cachePoint" in block)
+def _is_marked(block: object, keys: tuple[str, ...], *, cache_points: bool) -> bool:
+    return isinstance(block, dict) and (any(key in block for key in keys) or (cache_points and "cachePoint" in block))
 
 
 def _after(blocks: list[dict[str, Any]], text: str) -> str:

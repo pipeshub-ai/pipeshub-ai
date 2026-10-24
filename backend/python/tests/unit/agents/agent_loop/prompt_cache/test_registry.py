@@ -133,14 +133,14 @@ class TestOpenAI:
         assert "prompt_cache_breakpoint" in strategy.sent_params
 
     def test_a_refused_parameter_is_left_out_of_the_next_strategy(self) -> None:
-        forget_cache_params(_openai(), "gpt-5.4", frozenset({"prompt_cache_retention"}))
+        forget_cache_params(_openai(), "gpt-5.4", params={"prompt_cache_retention"})
         assert _strategy(_openai()).finalize([])[1] == {"prompt_cache_key": KEY}
         REJECTED_CACHE_PARAMS.record("gpt-6.1-sol", "https://acme.openai.azure.com", {"prompt_cache_breakpoint"})
         strategy = _strategy(_azure(deployment="gpt-6.1-sol"), model_name="gpt-6.1-sol")
         assert strategy.sent_params == {"prompt_cache_key"}
 
     def test_everything_refused_means_no_caching(self) -> None:
-        forget_cache_params(_openai(), "gpt-5.4")
+        forget_cache_params(_openai(), "gpt-5.4", params={"prompt_cache_key", "prompt_cache_retention"})
         assert isinstance(_strategy(_openai()), NoCacheStrategy)
 
     def test_xai_is_named_by_its_own_endpoint_and_gets_the_key_only(self) -> None:
@@ -229,7 +229,7 @@ class TestPromptFamily:
         )
 
         llm = _openai()
-        forget_cache_params(llm)
+        forget_cache_params(llm, params={"prompt_cache_key", "prompt_cache_retention"})
         assert isinstance(
             family_cache_strategy(llm, family="named-entities", org_id="org-1", shard_key="r1"), NoCacheStrategy,
         )
