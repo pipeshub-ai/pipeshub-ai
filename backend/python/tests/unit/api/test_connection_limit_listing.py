@@ -374,6 +374,19 @@ class TestWholeAppsAndNoLimit:
             await _nodes(graph, larger, q="budget", limit=2, cursor=smaller.pagination.nextCursor)
         assert exc.value.status_code == 400
 
+    async def test_a_one_shot_iterable_of_apps_still_ties_the_cursor_to_its_limit(self) -> None:
+        graph = _graph()
+        service = _service(graph)
+        query = {"user_id": "user-1", "org_id": "org-1", "q": "budget", "limit": 2,
+                 "sort_by": "name", "sort_order": "asc"}
+        smaller = await service.get_nodes(**query, within_app_ids=iter(["kb-big"]))
+
+        larger = await service.get_nodes(
+            **{**query, "cursor": smaller.pagination.nextCursor}, within_app_ids=iter(["kb-big", "kb-other"]),
+        )
+
+        assert smaller.success and not larger.success and larger.errorCode == 400
+
     async def test_a_cursor_filtered_to_one_app_resumes_under_its_own_limit(self) -> None:
         """The same limit's cursor still resumes when a connector filter narrowed it."""
         graph = _graph()

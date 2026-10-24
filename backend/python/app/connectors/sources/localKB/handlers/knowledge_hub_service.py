@@ -754,8 +754,12 @@ class KnowledgeHubService:
                 excluded,
             )
             within: frozenset[str] | None = None
+            limit_apps: list[str] | None = None
             if parent_id is None and within_app_ids is not None:
-                within = frozenset(within_app_ids)
+                # Read once: it may be a one-shot iterable.
+                limit_set = frozenset(within_app_ids)
+                limit_apps = sorted(limit_set)
+                within = limit_set
                 if connector_ids:
                     within &= frozenset(connector_ids)
                 # Carried in the cursor too, so a later page keeps to the same Apps,
@@ -795,7 +799,7 @@ class KnowledgeHubService:
                     want_counts=bool(include and 'counts' in include),
                     max_depth=max(1, depth) if depth else 50,
                     within=within,
-                    limit_apps=sorted(frozenset(within_app_ids)) if within is not None else None,
+                    limit_apps=limit_apps,
                 )
             except KnowledgeHubListingTooLarge as too_large:
                 # 422: the request is fine, the view is too wide; the message says to open a folder.

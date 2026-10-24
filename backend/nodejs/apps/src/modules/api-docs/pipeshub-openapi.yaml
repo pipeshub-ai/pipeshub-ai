@@ -30778,6 +30778,8 @@ paths:
           description: |
             Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
             Prefer `cursor`: a page number is reached by reading the pages before it.
+            A search by a connected app whose limit names folders or files takes a page
+            number of at most 5; for later pages, send `nextCursor`.
           schema:
             type: integer
             minimum: 1
