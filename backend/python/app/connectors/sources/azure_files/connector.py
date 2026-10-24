@@ -707,8 +707,9 @@ class AzureFilesConnector(BaseConnector):
             # Sync each share. Deletes are decided per share, so a share that
             # cannot be read holds back only its own.
             failed_shares: list[str] = []
-            # Applied after the loop: a later share refusing the credentials must leave every record.
-            read_in_full: list[tuple[str, set[str]]] = []
+            # Deleted after the loop: a later share refusing the credentials must leave every record.
+            # Only the stale ids wait, so memory holds one share's seen ids at a time.
+            stale: list[str] = []
             for share_name in dict.fromkeys(n for n in shares_to_sync if n):
                 try:
                     self.logger.info(f"Syncing share: {share_name}")
@@ -722,11 +723,12 @@ class AzureFilesConnector(BaseConnector):
                         f"Error syncing share {share_name}: {e}", exc_info=True
                     )
                 if share_complete:
-                    read_in_full.append((share_name, share_seen))
+                    stale.extend(await self._records_not_seen(share_name, share_seen))
                 else:
                     failed_shares.append(share_name)
-            for share_name, share_seen in read_in_full:
-                await self._remove_records_not_seen(share_name, share_seen)
+                del share_seen
+            if stale:
+                await self._delete_records(stale)
 
             removed = await self._remove_unsynced_shares(target_names - self._gone_shares)
             for share_name in sorted(removed & self._gone_shares):
@@ -790,8 +792,8 @@ class AzureFilesConnector(BaseConnector):
                 self.logger.warning(f"Could not read the properties of share {share_name}: {props.error}")
         return timestamps, gone
 
-    async def _remove_records_not_seen(self, share_name: str, seen: set[str]) -> None:
-        """Delete the records of a share's files and directories this sync did not find.
+    async def _records_not_seen(self, share_name: str, seen: set[str]) -> list[str]:
+        """Ids of the records of a share's files and directories this sync did not find.
 
         Covers deletions, items now excluded by the sync filters, and a file edited
         and then renamed between two syncs, which is found at its new path under a
@@ -806,16 +808,15 @@ class AzureFilesConnector(BaseConnector):
             )
         except Exception as e:
             self.logger.warning(f"Not removing deleted files of {share_name}: its records could not be read: {e}")
-            return
+            return []
         stale = [
             node.get("_key") or node.get("id")
             for node in stored
             if node.get("externalRecordId") not in seen and (node.get("_key") or node.get("id"))
         ]
-        if not stale:
-            return
-        self.logger.info(f"Removing {len(stale)} records of items no longer in share {share_name}")
-        await self._delete_records(stale)
+        if stale:
+            self.logger.info(f"Removing {len(stale)} records of items no longer in share {share_name}")
+        return stale
 
     async def _delete_records(self, record_ids: list[str]) -> None:
         for start in range(0, len(record_ids), DELETE_BATCH_SIZE):

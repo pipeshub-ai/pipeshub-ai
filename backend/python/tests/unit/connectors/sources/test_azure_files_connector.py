@@ -2657,21 +2657,18 @@ class TestRemovingItemsThatAreGone:
         assert "share1/old.txt" in seen
 
     @pytest.mark.asyncio
-    async def test_records_not_seen_are_deleted(self, conn, proc):
+    async def test_records_not_seen_are_found(self, conn, proc):
         proc.get_nodes_by_filters = AsyncMock(return_value=[
             {"_key": "keep", "externalRecordId": "share1/a.txt"},
             {"_key": "gone", "externalRecordId": "share1/deleted.txt"},
         ])
-        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
 
-        await conn._remove_records_not_seen("share1", {"share1", "share1/a.txt"})
+        stale = await conn._records_not_seen("share1", {"share1", "share1/a.txt"})
 
         assert proc.get_nodes_by_filters.await_args.args[1] == {
             "connectorId": conn.connector_id, "externalGroupId": "share1",
         }
-        proc.on_records_deleted_cascade.assert_awaited_once_with(
-            ["gone"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
-        )
+        assert stale == ["gone"]
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
@@ -2685,21 +2682,25 @@ class TestRemovingItemsThatAreGone:
         conn.data_source.get_share_properties = AsyncMock(return_value=_make_response(True, {}))
         conn.data_source.list_shares = AsyncMock(return_value=_make_response(True, data=[]))
         conn._create_record_groups_for_shares = AsyncMock()
-        conn._remove_records_not_seen = AsyncMock()
-
+        conn._records_not_seen = AsyncMock(side_effect=lambda share, seen: [f"{share}-stale"])
+        conn._delete_records = AsyncMock()
         conn._remove_unsynced_shares = AsyncMock()
 
         conn._sync_share = AsyncMock(side_effect=[({"s1", "s1/a"}, True), ({"s2"}, True)])
         await conn.run_sync()
-        assert [c.args for c in conn._remove_records_not_seen.await_args_list] == [
+        assert [c.args for c in conn._records_not_seen.await_args_list] == [
             ("s1", {"s1", "s1/a"}), ("s2", {"s2"}),
         ]
+        # One delete after the last share, of every share's stale ids.
+        conn._delete_records.assert_awaited_once_with(["s1-stale", "s2-stale"])
 
         # Per share: an incomplete s2 holds back only its own removals.
-        conn._remove_records_not_seen.reset_mock()
+        conn._records_not_seen.reset_mock()
+        conn._delete_records.reset_mock()
         conn._sync_share = AsyncMock(side_effect=[({"s1"}, True), ({"s2"}, False)])
         await conn.run_sync()
-        conn._remove_records_not_seen.assert_awaited_once_with("s1", {"s1"})
+        conn._records_not_seen.assert_awaited_once_with("s1", {"s1"})
+        conn._delete_records.assert_awaited_once_with(["s1-stale"])
         assert conn.full_sync_coverage().complete is False
 
 
