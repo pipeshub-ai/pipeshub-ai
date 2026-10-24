@@ -1114,6 +1114,12 @@ class SharePointConnector(BaseConnector):
         hostname = urllib.parse.urlparse(getattr(site, 'web_url', None) or '').hostname
         return bool(hostname and re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname))
 
+    @staticmethod
+    def _is_embedded_container(site: Site) -> bool:
+        """A SharePoint Embedded container (the storage of Loop and similar apps), which Graph's site search
+        lists. Sites.* application permissions can't read it: a live tenant answered 403 for its subsites."""
+        return '/contentstorage/' in (getattr(site, 'web_url', None) or '')
+
     async def _discover_sites(self) -> tuple[list[Site], bool]:
         """Every site of the tenant but OneDrive sites, subsites at any depth included, and whether the
         listing is complete. Graph's site list leaves subsites out, so each site's subsites are walked."""
@@ -1133,6 +1139,8 @@ class SharePointConnector(BaseConnector):
             while response is not None:
                 for site in response.value or []:
                     if self.filters.get('exclude_onedrive_sites') and self._is_personal_site(site):
+                        continue
+                    if self._is_embedded_container(site):
                         continue
                     if site.id not in sites:
                         sites[site.id] = site
@@ -2628,13 +2636,21 @@ class SharePointConnector(BaseConnector):
         """The enabled user accounts of an Entra group (through nested groups), or of its owners.
 
         Raises when any page can't be read: a partial list saved as the group's members would take
-        access away from everyone on the pages that failed.
+        access away from everyone on the pages that failed. A group Graph answers 404 for has been deleted
+        and has nobody in it; SharePoint keeps the claims of deleted Microsoft 365 groups in its site groups
+        and role assignments.
         """
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
-        async with self.rate_limiter:
-            response = await builder.get()
+        try:
+            async with self.rate_limiter:
+                response = await builder.get()
+        except Exception as e:
+            if getattr(e, 'response_status_code', None) != HTTPStatus.NOT_FOUND:
+                raise
+            self.logger.warning(f"⚠️ Entra group {group_id} no longer exists; it grants nobody")
+            return []
         while response:
             for item in response.value or []:
                 user = self._graph_member_user(item)

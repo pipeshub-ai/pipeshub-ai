@@ -174,6 +174,18 @@ class TestSiteDiscovery:
         assert sorted(s.id for s in sites) == sorted([SITE_ID, other])
         assert connector.site_cache[other].site_url == f"https://{SP_HOST}/sites/ops"
 
+    async def test_sharepoint_embedded_containers_are_left_out(self, connector, api) -> None:
+        """Graph's site search lists them, and the app can't read them (403 on a live tenant)."""
+        container = f"{SP_HOST},{'7' * 32},{'8' * 32}"
+        api.on("GET", "/v1.0/sites", page([site_payload(container, f"https://{SP_HOST}/contentstorage/x8FNO-xtsk", "loop")]))
+        api.on("GET", f"/v1.0/sites/{container}/sites", graph_error(403, "accessDenied"))
+        api.on("GET", f"/v1.0/sites/{SITE_ID}/sites", page([]))
+
+        sites = await connector._get_all_sites()
+
+        assert [s.id for s in sites] == [SITE_ID]
+        assert connector._health.complete, "a container is not a part of SharePoint the run failed to read"
+
 
 class TestDriveDelta:
     async def test_first_sync_reads_every_delta_page_and_saves_the_delta_link(self, connector, api, db, checkpoints) -> None:
@@ -700,6 +712,25 @@ class TestSiteGroups:
         await connector._sync_user_groups()
 
         assert db.user_groups[f"{SITE_ID}-31"] == ["raj@contoso.com"]
+
+    async def test_a_deleted_m365_group_left_in_a_site_group_grants_nobody(self, connector, api, db) -> None:
+        """SharePoint keeps the claim of a Microsoft 365 group after the group is deleted; Graph answers 404 for it."""
+        gone = "c227ac08-bd29-4e04-a43d-b406d8cc916d"
+        serve_site(api)
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users({"Id": 14, "Title": "IT editors"}))
+        api.on("GET", f"{SITE_REST}/sitegroups/GetById(14)/users", rest_users(
+            {"Id": 9, "Title": "Devs Members", "PrincipalType": 4,
+             "LoginName": f"c:0o.c|federateddirectoryclaimprovider|{gone}"},
+            {"Id": 11, "Title": "Ana", "Email": "ana@contoso.com", "PrincipalType": 1, "LoginName": "i:0#.f|membership|ana"}))
+        api.on("GET", f"/v1.0/groups/{gone}/transitiveMembers", graph_error(404, "Request_ResourceNotFound"))
+
+        await connector._sync_user_groups()
+
+        assert db.user_groups[f"{SITE_ID}-14"] == ["ana@contoso.com"]
+        assert connector._health.complete
+        assert connector._site_group_permissions(SITE_ID, "14", PermissionType.WRITE)
 
     async def test_a_failed_site_group_member_read_keeps_the_stored_members(self, connector, api, db) -> None:
         serve_site(api)
