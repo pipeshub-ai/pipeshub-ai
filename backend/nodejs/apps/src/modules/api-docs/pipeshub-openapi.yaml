@@ -40339,7 +40339,9 @@ paths:
 
         **Scope:** everything the caller can read, across both connectors and
         Knowledge Base collections. No connector-level filter is applied — the
-        listing is bounded by per-node permissions alone.
+        listing is bounded by per-node permissions, and for a connected app
+        with a limit by that limit too: no row, breadcrumb or related node
+        outside it is returned.
 
         **A connected app with a limit:** with no `nodeId`, the root depends
         on what the limit names.
