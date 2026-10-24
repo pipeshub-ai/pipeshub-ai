@@ -162,7 +162,8 @@ async def _artifact_sets(records: dict[str, dict[str, Any]], cases: dict[str, di
             classification = {k: v for k, v in record["semantic_metadata"].items() if k != NAMED_ENTITIES_SECTION}
             await store.put(plan.files[path], canonical_json(classification), "application/json")
         mappings[vrid] = {
-            "record_doc_id": f"doc-{vrid}", "currentRev": REV, "manifestDocId": written.manifest_ref.document_id,
+            "record_doc_id": f"doc-{vrid}", "currentRev": REV, "storedRev": REV,
+            "manifestDocId": written.manifest_ref.document_id,
         }
     return storage, mappings
 

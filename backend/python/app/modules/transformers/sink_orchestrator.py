@@ -17,7 +17,11 @@ from app.models.entities import Record, RecordGroupType
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
-from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, BlobStorage
+from app.modules.transformers.blob_storage import (
+    STORED_RECORD_FIELDS,
+    STORED_REV,
+    BlobStorage,
+)
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.image_description import (
@@ -186,12 +190,6 @@ class SinkOrchestrator(Transformer):
             ctx.settings.get("sink_only")
         )
 
-        if not skip_blob:
-            with stage("images.describe"):
-                await self._describe_images(ctx)
-            with stage("blob.write"):
-                await self.write_blob(ctx)
-
         record_id = record.id
         with stage("graph.read"):
             record_doc = await self.graph_provider.get_document(
@@ -200,6 +198,13 @@ class SinkOrchestrator(Transformer):
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
+
+        if not skip_blob:
+            ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
+            with stage("images.describe"):
+                await self._describe_images(ctx)
+            with stage("blob.write"):
+                await self.write_blob(ctx)
 
         written: WrittenRevision | None = None
         if not skip_blob and not skip_vector_store:

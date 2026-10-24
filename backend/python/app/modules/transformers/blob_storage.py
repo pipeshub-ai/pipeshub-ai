@@ -302,6 +302,16 @@ SHARED_CONTENT_FIELDS = (
 #: ``SHARED_CONTENT_FIELDS``, as ``apply`` wrote them. They are the owner's when
 #: another record stored the shared content first.
 STORED_RECORD_FIELDS = "stored_record_fields"
+#: ``TransformContext.settings`` key: the ``contentRev`` the record being stored
+#: is of (None when it has none). ``apply`` records it on the vrid's mapping as
+#: ``storedRev`` in the same write, so the artifact reader serves a set only when
+#: it is the revision the stored record holds. Without the key the mapping's
+#: ``storedRev`` is left as it is.
+STORED_REV = "stored_rev"
+
+# Leaves the mapping's ``storedRev`` as it is: a rewrite of the same revision
+# (classification) does not know the revision, and must not clear it.
+_KEEP_STORED_REV: Any = object()
 
 
 class StorageLookupUnavailableError(Exception):
@@ -1389,6 +1399,7 @@ class BlobStorage(Transformer):
             connector_id=getattr(record, "connector_id", None),
             record_group_id=getattr(record, "record_group_id", None),
             written=written,
+            stored_rev=ctx.settings.get(STORED_REV) if STORED_REV in ctx.settings else _KEEP_STORED_REV,
         )
 
         ctx.settings["storage_path"] = actual_storage_path
@@ -1412,6 +1423,7 @@ class BlobStorage(Transformer):
         connector_id: str | None = None,
         record_group_id: str | None = None,
         written: dict[str, Any] | None = None,
+        stored_rev: str | None = _KEEP_STORED_REV,
     ) -> str:
         """Upload a record as the next version of its stored document, or as a new one.
 
@@ -1421,6 +1433,7 @@ class BlobStorage(Transformer):
         record already stored, which has no Record entity to build a path from), a new
         upload goes where the current document is, else to ``records/<vrid>``; the
         connector and record group default to the ones in *record_dict*.
+        *stored_rev* is written on the mapping as ``storedRev`` unless left out.
         """
         if storage_path is None:
             storage_path = (
@@ -1552,7 +1565,10 @@ class BlobStorage(Transformer):
             )
 
         if document_id and self.graph_provider:
-            mapped = await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            revision = {} if stored_rev is _KEEP_STORED_REV else {"stored_rev": stored_rev}
+            mapped = await self.store_virtual_record_mapping(
+                org_id, virtual_record_id, document_id, file_size_bytes, **revision,
+            )
             if mapped and replaced_doc_id and replaced_doc_id != document_id:
                 await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
@@ -2264,7 +2280,7 @@ class BlobStorage(Transformer):
         if record_metadata_doc_id:
             result["record_metadata_doc_id"] = record_metadata_doc_id
         # The artifact set of the current content revision, for the artifact reader.
-        for key in ("currentRev", "manifestDocId"):
+        for key in ("currentRev", "manifestDocId", "storedRev"):
             if doc.get(key):
                 result[key] = doc[key]
         return result
@@ -2607,7 +2623,15 @@ class BlobStorage(Transformer):
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
-    async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
+    async def store_virtual_record_mapping(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        document_id: str,
+        file_size_bytes: int | None = None,
+        *,
+        stored_rev: str | None = _KEEP_STORED_REV,
+    ) -> bool:
         """
         Stores the mapping between virtual_record_id and document_id in graph database.
         Args:
@@ -2615,6 +2639,8 @@ class BlobStorage(Transformer):
             virtual_record_id: The virtual record ID
             document_id: The document ID
             file_size_bytes: Optional file size in bytes
+            stored_rev: The content revision the stored document now holds, as
+                ``storedRev``; None clears it, leaving it out keeps it
         Returns:
             bool: True if successful, False otherwise.
         """
@@ -2635,6 +2661,8 @@ class BlobStorage(Transformer):
 
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
+            if stored_rev is not _KEEP_STORED_REV:
+                mapping_document["storedRev"] = stored_rev
 
             success = await self.graph_provider.batch_upsert_nodes(
                 [mapping_document],
