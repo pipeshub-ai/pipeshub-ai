@@ -370,7 +370,11 @@ export class InMemoryChatStore {
       new FakeQuery(() => store.findMessages(filter).length)) as never)
     sinon.stub(ChatSessionMessage, 'findOne').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
-      return withSession(new FakeQuery((state) => one(store.findMessages(filter)[0], state)), options)
+      // `findOne(...).sort(...)` returns the first row in that order, as MongoDB does.
+      return withSession(
+        new FakeQuery((state) => shape(store.findMessages(filter), { ...state, limit: 1 })[0] ?? null),
+        options,
+      )
     }) as never)
     sinon.stub(ChatSessionMessage, 'findOneAndReplace').callsFake(((filter: Filter, replacement: Doc, options?: SessionOption) => {
       assertSessionUsable(options)

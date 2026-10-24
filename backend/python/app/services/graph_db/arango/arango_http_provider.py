@@ -19227,7 +19227,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
         elif flatten:
             matches = None
-            if (filters or {}).get("search_query"):
+            # The name-restricted walks find a match's ancestors at most 50 hops up, so a
+            # deeper flatten lists by the full walks instead (the name stays a filter).
+            if (filters or {}).get("search_query") and max_depth <= 50:
                 search = filters["search_query"]
                 # Shared: a global search runs one page per connector at once, and
                 # the names are matched across the org.
