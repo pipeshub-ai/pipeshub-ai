@@ -142,7 +142,10 @@ import {
   loadProjectForSession,
   resolveProjectLink,
 } from '../utils/project-context';
-import { buildAiRequestLogMetadata } from '../utils/ai-request-log';
+import {
+  buildAiRequestLogMetadata,
+  buildFilterLogMetadata,
+} from '../utils/ai-request-log';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -1472,7 +1475,7 @@ export const addMessageStream =
         requestId,
         conversationId,
         userId,
-        ...buildAiRequestLogMetadata(req.body),
+        ...buildAiRequestLogMetadata(req.body as Record<string, unknown>),
         timestamp: new Date().toISOString(),
       });
 
@@ -5604,7 +5607,7 @@ export const search =
         requestId,
         queryLength: typeof query === 'string' ? query.length : 0,
         limit,
-        filters,
+        ...buildFilterLogMetadata(filters),
         timestamp: new Date().toISOString(),
       });
 
@@ -7461,7 +7464,7 @@ export const addMessageStreamToAgentConversation =
         conversationId,
         userId,
         agentKey,
-        ...buildAiRequestLogMetadata(req.body),
+        ...buildAiRequestLogMetadata(req.body as Record<string, unknown>),
         timestamp: new Date().toISOString(),
       });
 
