@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any
 
+from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
@@ -12,6 +13,11 @@ logger = logging.getLogger(__name__)
 _TOOL_REF_PREFIX = "tool: "
 
 _LEGACY_CLEARED_PREFIX = "[cleared"
+
+# Kept, not recomputed: the shapers before this one rewrite older results per
+# call (artifact compaction shrinks an artifact once it ages), so a later call's
+# input does not show what an earlier call saw.
+_CUT: StateSlot[int] = StateSlot(key="tool_result_clearing.cut", default_factory=lambda: 0)
 
 
 def _is_already_compact(content: str) -> bool:
@@ -72,16 +78,28 @@ def shape_tool_result_clearing(
     (tool name, args, summary, hint) so the model retains enough context
     to decide whether to re-call.
 
-    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
+    **Cleared in steps** — once the context exceeds
+    ``budget.trigger_tokens(trigger_ratio)``, every turn but the last
+    ``keep_last_n_turns`` is cleared. The run keeps that cut, so later calls
+    clear the same turns, and it moves only when the context *as cleared*
+    exceeds the trigger again (see ``_next_cut``). Each request in between
+    extends the one before, so the provider's prompt cache keeps the whole
+    history instead of falling back to the system prompt on every call.
+    Without a run scope there is no earlier cut, so each call clears from
+    scratch.
+
     ``protected_tool_names`` prevents clearing regardless of age.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        from app.agent_loop_lib.core.tokens import count_tokens
+        from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 
+        run = ctx.scope.run if ctx.scope is not None else None
+        cut = run.get(_CUT) if run is not None else 0
         messages = ctx.messages
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
         total = count_tokens(messages)
-        if total <= ctx.budget.trigger_tokens(trigger_ratio):
+        if not cut and total <= trigger:
             await next_fn()
             return
 
@@ -115,43 +133,24 @@ def shape_tool_result_clearing(
             await next_fn()
             return
 
-        clearable: set[int] = set()
-        for turn_indices in turns[: len(turns) - keep_last_n_turns]:
-            clearable.update(turn_indices)
-
-        if protected_tool_names and clearable:
-            protected_indices = set()
-            for i in clearable:
-                tc_id = getattr(messages[i], "tool_call_id", None)
-                if tc_id and call_id_to_name.get(tc_id) in protected_tool_names:
-                    protected_indices.add(i)
-            clearable -= protected_indices
-
-        if not clearable:
-            await next_fn()
-            return
-
         from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
             _compact_reference,
         )
 
-        shaped = []
-        cleared = 0
-        for i, msg in enumerate(messages):
-            if i not in clearable:
-                shaped.append(msg)
-                continue
-            text_content = msg.text
-            if isinstance(msg.content, str) and _is_already_compact(text_content):
-                shaped.append(msg)
-                continue
-            cleared += 1
-            if getattr(msg, "artifact_meta", None) is not None:
-                shaped.append(msg.model_copy(update={"content": _compact_reference(msg)}))
-            else:
+        replacements: dict[int, Any] = {}
+        for turn_indices in turns:
+            for i in turn_indices:
+                msg = messages[i]
                 tc_id = getattr(msg, "tool_call_id", None)
                 tool_name = call_id_to_name.get(tc_id, "") if tc_id else ""
-                tool_args = call_id_to_args.get(tc_id, {}) if tc_id else {}
+                if protected_tool_names and tool_name in protected_tool_names:
+                    continue
+                text_content = msg.text
+                if isinstance(msg.content, str) and _is_already_compact(text_content):
+                    continue
+                if getattr(msg, "artifact_meta", None) is not None:
+                    replacements[i] = msg.model_copy(update={"content": _compact_reference(msg)})
+                    continue
                 # Any images the tool returned belong to the current turn's
                 # context; once a result ages past `keep_last_n_turns` its
                 # images are as expendable as its text (same rule L4/L5/L7
@@ -159,20 +158,70 @@ def shape_tool_result_clearing(
                 # can re-call the tool if it needs the image again.
                 ref = _build_tool_ref(
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args=call_id_to_args.get(tc_id, {}) if tc_id else {},
                     tool_call_id=tc_id or "",
                     content=text_content,
                     is_error=getattr(msg, "is_error", False),
                 )
-                shaped.append(msg.model_copy(update={"content": ref}))
-        if cleared:
-            logger.info(
-                "tool_result_clearing: cleared %d tool result(s) older than the last %d turn(s), "
-                "%d→%d tokens (turn=%d, budget=%d)",
-                cleared, keep_last_n_turns, total, count_tokens(shaped),
-                ctx.turn_index, ctx.budget.effective_max_tokens,
-            )
+                replacements[i] = msg.model_copy(update={"content": ref})
+
+        gains = {
+            i: count_message_tokens(messages[i]) - count_message_tokens(replacement)
+            for i, replacement in replacements.items()
+        }
+        cut = _next_cut(
+            turns, gains,
+            total=total,
+            trigger=trigger,
+            # Waiting for a worthwhile step may use half the room the trigger
+            # leaves below the budget; the rest stays free for the next results.
+            ceiling=(trigger + ctx.budget.effective_max_tokens) // 2,
+            keep=keep_last_n_turns,
+            cut=min(cut, len(turns) - keep_last_n_turns),
+        )
+        if run is not None:
+            run.set(_CUT, cut)
+        clearable = {i for turn_indices in turns[:cut] for i in turn_indices if i in replacements}
+        if not clearable:
+            await next_fn()
+            return
+
+        shaped = [replacements[i] if i in clearable else msg for i, msg in enumerate(messages)]
+        logger.info(
+            "tool_result_clearing: cleared %d tool result(s) in the oldest %d of %d turn(s), "
+            "%d→%d tokens (turn=%d, budget=%d)",
+            len(clearable), cut, len(turns), total, count_tokens(shaped),
+            ctx.turn_index, ctx.budget.effective_max_tokens,
+        )
         ctx.messages = shaped
         await next_fn()
 
     return _middleware
+
+
+def _next_cut(
+    turns: list[set[int]], gains: dict[int, int], *,
+    total: int, trigger: int, ceiling: int, keep: int, cut: int,
+) -> int:
+    """How many of the oldest turns to clear, given the ``cut`` the run's
+    previous call cleared.
+
+    The cut moves to "all but the last ``keep`` turns" once the context,
+    cleared up to ``cut``, is over ``trigger``. Tokens no step removes
+    (protected results, the kept turns) can hold it over the trigger by
+    themselves, and a cut that moved on every call would rewrite the history
+    on every call. So after the first step the cut also waits until the step
+    would save at least as much as clearing the kept turns would, unless the
+    context is past ``ceiling``.
+    """
+    target = len(turns) - keep
+
+    def saved(start: int, stop: int) -> int:
+        return sum(gains.get(i, 0) for turn_indices in turns[start:stop] for i in turn_indices)
+
+    cleared_total = total - saved(0, cut)
+    if target <= cut or cleared_total <= trigger:
+        return cut
+    if cut > 0 and cleared_total <= ceiling and saved(cut, target) < saved(target, len(turns)):
+        return cut
+    return target
