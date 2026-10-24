@@ -757,6 +757,22 @@ class TestSearchHonoursLimit:
         out = await self._run(SearchQuery(query="gravelpont9014", limit=3), response)
         assert {h["metadata"]["recordId"] for h in out["searchResults"]} == {"a"}
 
+    @pytest.mark.asyncio
+    async def test_a_typed_neighbour_does_not_push_out_its_match(self) -> None:
+        # One expanded section (shared score); only a neighbour holds the code.
+        section = [
+            {"content": "neighbour with gravelpont9014", "score": 0.5, "distanceFromMatch": 1,
+             "metadata": {"recordId": "s"}},
+            {"content": "the matched passage", "score": 0.5, "distanceFromMatch": 0,
+             "metadata": {"recordId": "s"}},
+        ]
+        generic = [{"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}}]
+        response = {"searchResults": section + generic, "records": [{"_key": "s"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage", "neighbour with gravelpont9014"]
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=1), {**response, "searchResults": section + generic})
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage"]
+
 
 class TestSearchSurvivesQueryTransformationFailure:
     """A failed rewrite or expansion falls back to the query the user typed."""

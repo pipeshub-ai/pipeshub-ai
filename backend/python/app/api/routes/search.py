@@ -252,7 +252,23 @@ def _apply_result_limit(results: dict[str, Any], limit: int, typed: str = "") ->
             content = (h or {}).get("content")
             return isinstance(content, str) and pattern.search(content) is not None
 
-        chosen = sorted(hits, key=lambda h: not holds_typed(h))[:limit]
+        def section_of(h: dict | None) -> tuple:
+            return (((h or {}).get("metadata") or {}).get("recordId"), (h or {}).get("score"))
+
+        typed_hits = {id(h) for h in hits if holds_typed(h)}
+        # A neighbour holding the text brings its section's match with it, and
+        # the stable sort keeps that match ahead of the neighbour.
+        typed_sections = {
+            section_of(h) for h in hits
+            if id(h) in typed_hits and ((h or {}).get("distanceFromMatch") or 0) > 0
+        }
+
+        def promoted(h: dict | None) -> bool:
+            return id(h) in typed_hits or (
+                (h or {}).get("distanceFromMatch") == 0 and section_of(h) in typed_sections
+            )
+
+        chosen = sorted(hits, key=lambda h: not promoted(h))[:limit]
         chosen_ids = {id(h) for h in chosen}
         kept = [h for h in hits if id(h) in chosen_ids]
         dropped = [h for h in hits if id(h) not in chosen_ids]
