@@ -60,6 +60,7 @@ export interface UserAddedEvent {
   lastName?: string;
   email: string;
   designation?: string;
+  kind?: 'individual' | 'service';
   syncAction: SyncAction;
 }
 
@@ -77,6 +78,7 @@ export interface UserUpdatedEvent {
   lastName?: string;
   fullName?: string;
   designation?: string;
+  kind?: 'individual' | 'service';
   email: string;
 }
 

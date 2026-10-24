@@ -108,6 +108,9 @@ describe('ServiceAccountsService', () => {
       expect(events.publishEvent.firstCall.args[0].eventType).to.equal(
         'userAdded',
       );
+      expect(events.publishEvent.firstCall.args[0].payload.kind).to.equal(
+        'service',
+      );
     });
 
     it("will not restore another organisation's record that holds the address", async () => {
@@ -608,6 +611,9 @@ describe('ServiceAccountsService', () => {
       expect(renaming.events.publishEvent.calledOnce).to.equal(true);
       expect(renaming.events.publishEvent.firstCall.args[0].eventType).to.equal(
         'userUpdated',
+      );
+      expect(renaming.events.publishEvent.firstCall.args[0].payload.kind).to.equal(
+        'service',
       );
     });
   });

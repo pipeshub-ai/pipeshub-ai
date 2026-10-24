@@ -348,8 +348,57 @@ class TestUserAdded:
 
         # Should upsert user
         graph_provider.batch_upsert_nodes.assert_awaited()
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert user_data["kind"] == "individual"
         # Should create belongs_to edge
         graph_provider.batch_create_edges.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_service_account_kind_from_payload(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.batch_create_edges = AsyncMock()
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+
+        payload = {
+            "orgId": "org-1",
+            "userId": "sa-1",
+            "email": "sa-bot@service.pipeshub.internal",
+            "fullName": "Bot Account",
+            "kind": "service",
+            "syncAction": "none",
+        }
+        assert await svc.process_event("userAdded", payload) is True
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert user_data["kind"] == "service"
+
+    @pytest.mark.asyncio
+    async def test_service_account_kind_heuristic(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.batch_create_edges = AsyncMock()
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+
+        payload = {
+            "orgId": "org-1",
+            "userId": "sa-1",
+            "email": "mybot@service.pipeshub.internal",
+            "fullName": "Bot Account",
+            "syncAction": "none",
+        }
+        assert await svc.process_event("userAdded", payload) is True
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert user_data["kind"] == "service"
 
     @pytest.mark.asyncio
     async def test_existing_user_updated(self):

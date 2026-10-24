@@ -1034,6 +1034,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Web connector identity backfill failed: {e}", exc_info=True)
 
+    # Ensure all service account user nodes carry kind="service"
+    try:
+        from app.migrations.service_account_kind_migration import (
+            run_service_account_kind_migration,
+        )
+
+        await run_service_account_kind_migration(graph_provider, app_container.config_service(), logger)
+    except Exception as e:
+        logger.error(f"❌ Service account kind migration failed: {e}", exc_info=True)
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first

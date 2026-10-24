@@ -209,6 +209,7 @@ export class ServiceAccountsService {
       userId: idOf(serviceAccount),
       fullName: serviceAccount.fullName,
       email: serviceAccount.email,
+      kind: 'service',
       syncAction: SyncAction.Immediate,
     };
     await this.publish({
@@ -364,6 +365,7 @@ export class ServiceAccountsService {
       userId: idOf(finished),
       fullName: finished.fullName,
       email: finished.email,
+      kind: 'service',
       syncAction: SyncAction.Immediate,
     };
     await this.publish({
@@ -479,6 +481,7 @@ export class ServiceAccountsService {
         userId: idOf(account),
         fullName: account.fullName,
         email: account.email,
+        kind: 'service',
       };
       await this.publish({
         eventType: EventType.UpdateUserEvent,

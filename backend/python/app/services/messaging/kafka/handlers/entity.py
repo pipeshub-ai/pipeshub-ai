@@ -268,8 +268,18 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
+                if "kind" in payload:
+                    user_data["kind"] = payload["kind"]
+                elif str(payload.get("email", "")).endswith("@service.pipeshub.internal"):
+                    user_data["kind"] = "service"
             else:
                 user_key = str(uuid4())
+                kind = payload.get("kind")
+                if not kind:
+                    if str(payload.get("email", "")).endswith("@service.pipeshub.internal"):
+                        kind = "service"
+                    else:
+                        kind = "individual"
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
@@ -281,6 +291,7 @@ class EntityEventService(BaseEventService):
                     "lastName": payload.get("lastName", ""),
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
+                    "kind": kind,
                     "isActive": True,
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
@@ -432,6 +443,7 @@ class EntityEventService(BaseEventService):
                 "middleName",
                 "lastName",
                 "email",
+                "kind",
             ]
             user_data.update(
                 {
