@@ -9,7 +9,11 @@ Prepare a small, dedicated Zendesk test tenant with:
 
 - One non-deleted ticket in a group, with a requester, assignee, at least one
   public comment, and stable subject/tags/status. A private comment makes the
-  public-only stream assertion stronger, but is optional.
+  public-only stream assertion stronger, but is optional. Tag it
+  `pipeshub-seed`. If the ticket in `constants.py` stops qualifying (Zendesk's
+  AI agent escalating it clears the assignee and adds `escalated_by_ultimate`),
+  the suite uses the oldest other `pipeshub-seed` ticket that still does, so
+  keep a spare one and turn off automations that reassign seed tickets.
 - One published, unrestricted Help Center article with a non-empty body in a
   section. Avoid editing the ticket or article while the suite is running.
 - A **confidential** OAuth client (Admin Center > Apps and integrations > APIs >
