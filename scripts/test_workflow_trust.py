@@ -39,7 +39,9 @@ _SECRET = re.compile(
 # A workflow listed here may keep a privileged trigger; it must never check out
 # PR code. Add to it only with a security reviewer's sign-off. post-release-probe
 # runs on the release workflow (tag pushes only) and checks out the default branch.
-PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
+# dco.yml is a sign-off check, in a repository that carries one: it reads a pull
+# request's commits through the API and fetches or checks out nothing of it.
+PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
