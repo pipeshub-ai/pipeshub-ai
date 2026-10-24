@@ -613,6 +613,12 @@ def _begin_full_sync_run(
     return (processor, run) if isinstance(run, FullSyncSeen) else (None, None)
 
 
+# When each connector last owed a full sync because one skipped part of the source.
+# shortcut: in memory, so a restart may owe one more; persist it if that matters.
+_INCOMPLETE_FULL_SYNC_OWED_AT: dict[str, float] = {}
+_INCOMPLETE_FULL_SYNC_RETRY_SECONDS = 24 * 3600
+
+
 async def _unlink_what_full_sync_missed(
     connector: "BaseConnector",
     connector_id: str,
@@ -624,8 +630,8 @@ async def _unlink_what_full_sync_missed(
 
     This is the removal the full sync used to do before it started: stale links
     and revoked access go, but only once the sync has seen everything it is
-    going to see. Returns False when the removal failed, so another full sync
-    is owed.
+    going to see. Returns False when another full sync is owed: the removal
+    failed, or the sync skipped part of the source (at most once a day).
     """
     coverage = getattr(connector, "full_sync_coverage", None)
     coverage = coverage() if callable(coverage) else None
@@ -636,7 +642,14 @@ async def _unlink_what_full_sync_missed(
             f"Full sync of {connector_id} skipped part of the source after an error; "
             "nothing it did not see is unlinked this time"
         )
-        return True
+        # Owe another full sync, at most once a day: one that always hits a quota
+        # would otherwise run in full forever.
+        now = time.monotonic()
+        last = _INCOMPLETE_FULL_SYNC_OWED_AT.get(connector_id)
+        if last is not None and now - last < _INCOMPLETE_FULL_SYNC_RETRY_SECONDS:
+            return True
+        _INCOMPLETE_FULL_SYNC_OWED_AT[connector_id] = now
+        return False
     if seen.count() == 0:
         # A sync that wrote nothing at all most likely failed without saying so.
         logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")

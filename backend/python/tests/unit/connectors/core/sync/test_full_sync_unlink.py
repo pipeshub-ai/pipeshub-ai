@@ -23,6 +23,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
+from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.sync_runner import run_sync_task
 
 _LOG = logging.getLogger("test")
@@ -154,15 +155,24 @@ async def test_an_incremental_sync_unlinks_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing() -> None:
-    gp = _graph_provider()
-    connector = _connector(None, FullSyncCoverage(complete=False))
-    connector.run_sync = _writes_one_record(connector)
+async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_one_more_a_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_OWED_AT", {})
 
-    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+    async def full_sync() -> AsyncMock:
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=False))
+        connector.run_sync = _writes_one_record(connector)
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        return gp
 
-    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
-    assert not _owed(gp)
+    assert _owed(await full_sync())
+    # The owed one skips part again the same day: no more owed, or a quota would loop it.
+    assert not _owed(await full_sync())
+    sync_runner._INCOMPLETE_FULL_SYNC_OWED_AT["c1"] -= sync_runner._INCOMPLETE_FULL_SYNC_RETRY_SECONDS
+    assert _owed(await full_sync())
 
 
 @pytest.mark.asyncio
