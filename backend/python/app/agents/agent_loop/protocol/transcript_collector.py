@@ -36,13 +36,16 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
-from app.utils.citations import kept_citation_link_text, rewrite_request_refs, sub_in_order
+from app.utils.citations import (
+    kept_citation_link_text,
+    rewrite_request_refs,
+    sub_in_order,
+)
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -58,6 +61,8 @@ _NON_NUMBERED_CITATION_LINK_RE = re.compile(
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 

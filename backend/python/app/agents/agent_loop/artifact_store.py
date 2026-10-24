@@ -17,7 +17,6 @@ local cache is cold).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
@@ -27,6 +26,8 @@ from app.models.entities import ArtifactType
 from app.utils.citations import rewrite_request_refs
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from app.agents.agent_loop.context import AgentContext
     from app.services.artifact_registry.models import Actor
 
