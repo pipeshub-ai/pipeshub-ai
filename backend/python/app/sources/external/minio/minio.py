@@ -6,12 +6,15 @@ from datetime import datetime
 from io import IOBase
 from typing import Any, Dict, Optional, Union
 
+from aiobotocore.config import AioConfig
 from aiobotocore.session import AioSession
 from botocore.config import Config
 from botocore.exceptions import ClientError, SSLError
 
+from app.connectors.sources.web.address_guard import GuardedResolver
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.client.s3.s3 import S3Response
+from app.utils.url_fetcher import private_addresses_blocked
 
 # S3's wording for these names the signing algorithm, not what the admin has to change.
 _ACTIONABLE_ERRORS = {
@@ -78,7 +81,13 @@ class MinIODataSource:
         """
         return {
             'endpoint_url': self._endpoint_url,
-            'verify': self._verify_ssl
+            'verify': self._verify_ssl,
+            # Every connection goes to an address the guard checked when it looked the name up,
+            # so a name that later resolves elsewhere is refused. Merged with the session's
+            # default config (the retry budget).
+            'config': AioConfig(
+                connector_args={"resolver": GuardedResolver(allow_private=not private_addresses_blocked())}
+            ),
         }
 
     @asynccontextmanager

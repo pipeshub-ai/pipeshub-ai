@@ -10,7 +10,10 @@ from aiobotocore.session import AioSession
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.sources.web.address_guard import GuardedResolver
-from app.sources.client.http.address_guard import AddressNotAllowedError, check_url_allowed
+from app.sources.client.http.address_guard import (
+    AddressNotAllowedError,
+    check_url_allowed,
+)
 from app.sources.client.iclient import IClient
 from app.sources.client.s3.s3 import create_aio_session
 from app.utils.url_fetcher import private_addresses_blocked

@@ -13,6 +13,13 @@ from app.connectors.sources.s3.base_connector import parse_parent_external_id
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address rule has its own tests (test_connector_address_rule.py, test_minio_endpoint_and_links.py);
+    # these endpoints are made up.
+    monkeypatch.setattr("app.sources.client.minio.minio.check_url_allowed", lambda *_a, **_k: None)
+
+
 @pytest.fixture()
 def minio_connector():
     from app.models.entities import AppMetadata

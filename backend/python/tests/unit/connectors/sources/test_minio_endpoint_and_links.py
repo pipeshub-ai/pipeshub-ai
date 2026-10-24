@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, SSLError
 
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.web.address_guard import GuardedResolver
 from app.sources.client.minio.minio import (
     MinIOClient,
     check_endpoint_address,
@@ -85,6 +86,13 @@ class TestResolveEndpointUrl:
 
 class TestCheckEndpointAddress:
     @pytest.mark.asyncio
+    async def test_loopback_is_always_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The rule every connector's server follows: never this server itself.
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        with pytest.raises(ValueError, match="loopback"):
+            await check_endpoint_address("http://127.0.0.1:9000")
+
+    @pytest.mark.asyncio
     async def test_cloud_metadata_is_always_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
         with pytest.raises(ValueError, match="metadata"):
@@ -101,7 +109,7 @@ class TestCheckEndpointAddress:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        with pytest.raises(ValueError, match="private or internal"):
+        with pytest.raises(ValueError, match="public address"):
             await check_endpoint_address("http://10.0.0.5:9000")
 
 
@@ -239,6 +247,31 @@ def _client_error(code: str, message: str, status: int = 403) -> ClientError:
         {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": status}},
         "ListBuckets",
     )
+
+
+class TestDataSourceConnectionsAreGuarded:
+    """The data source opens its own clients; each must go through the guarded resolver.
+
+    Async: aiohttp builds its resolver on the running loop, as it does when a client is opened.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_client_resolves_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        client = MagicMock()
+        client.get_credentials.return_value = {"endpoint_url": "http://10.0.0.5:9000", "verify_ssl": True}
+        kwargs = MinIODataSource(client)._get_client_kwargs()
+        resolver = kwargs["config"].connector_args["resolver"]
+        assert isinstance(resolver, GuardedResolver)
+        assert resolver._allow_private is True
+
+    @pytest.mark.asyncio
+    async def test_private_addresses_stay_out_when_the_deployment_blocks_them(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        client = MagicMock()
+        client.get_credentials.return_value = {"endpoint_url": "http://10.0.0.5:9000", "verify_ssl": True}
+        resolver = MinIODataSource(client)._get_client_kwargs()["config"].connector_args["resolver"]
+        assert resolver._allow_private is False
 
 
 class TestStoreErrorsTheAdminCanActOn:
