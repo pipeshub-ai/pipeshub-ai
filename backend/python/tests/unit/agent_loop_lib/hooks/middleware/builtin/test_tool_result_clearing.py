@@ -545,3 +545,41 @@ class TestTheCutHoldsBetweenSteps:
         first_change = next(b for a, b in zip(earlier, later, strict=False) if a != b)
         assert isinstance(first_change, ToolMessage)
         assert first_change.tool_call_id == "c6"
+
+    @staticmethod
+    def _over_the_trigger_alone(result_tokens: int) -> list[Message]:
+        """A protected 52k result, over the 50k trigger by itself, then searches."""
+        history: list[Message] = [UserMessage(content="Compare every quarterly report.")]
+        history.append(_assistant_call("c0", "fetch", {"q": "annual report"}))
+        history.append(_tool_result("c0", "annual report: " + "row " * 52_000))
+        for turn in range(1, 20):
+            history.append(_assistant_call(f"c{turn}", "search", {"q": f"report {turn}"}))
+            history.append(_tool_result(f"c{turn}", f"report {turn}: " + "row " * result_tokens))
+        return history
+
+    @pytest.mark.asyncio
+    async def test_a_protected_result_over_the_trigger_does_not_move_the_cut_every_call(self) -> None:
+        history = self._over_the_trigger_alone(3_000)
+        protected = frozenset({"fetch"})
+
+        views = await self._views(history, protected_tool_names=protected)
+        recut = await self._views(history, scoped=False, protected_tool_names=protected)
+
+        first = next(k for k, view in enumerate(views) if self._cleared(view))
+        assert len(self._breaks(recut)) >= len(recut) - first - 1
+        assert len(self._breaks(views)) <= (len(views) - first) // 2
+        assert all("c0" not in self._cleared(view) for view in views)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result_tokens", [3_000, 6_000])
+    async def test_waiting_for_a_step_stops_at_the_ceiling(self, result_tokens: int) -> None:
+        budget = ContextBudget(max_tokens=100_000)
+        ceiling = (budget.trigger_tokens(0.5) + budget.effective_max_tokens) // 2
+        history = self._over_the_trigger_alone(result_tokens)
+        protected = frozenset({"fetch"})
+
+        views = await self._views(history, protected_tool_names=protected)
+        recut = await self._views(history, scoped=False, protected_tool_names=protected)
+
+        for view, recut_view in zip(views, recut, strict=True):
+            assert count_tokens(view) <= max(ceiling, count_tokens(recut_view))

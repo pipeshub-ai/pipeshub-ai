@@ -173,6 +173,9 @@ def shape_tool_result_clearing(
             turns, gains,
             total=total,
             trigger=trigger,
+            # Waiting for a worthwhile step may use half the room the trigger
+            # leaves below the budget; the rest stays free for the next results.
+            ceiling=(trigger + ctx.budget.effective_max_tokens) // 2,
             keep=keep_last_n_turns,
             cut=min(cut, len(turns) - keep_last_n_turns),
         )
@@ -198,11 +201,27 @@ def shape_tool_result_clearing(
 
 def _next_cut(
     turns: list[set[int]], gains: dict[int, int], *,
-    total: int, trigger: int, keep: int, cut: int,
+    total: int, trigger: int, ceiling: int, keep: int, cut: int,
 ) -> int:
     """How many of the oldest turns to clear, given the ``cut`` the run's
-    previous call cleared: it moves to "all but the last ``keep`` turns" only
-    when the context, cleared up to ``cut``, is over ``trigger``."""
+    previous call cleared.
+
+    The cut moves to "all but the last ``keep`` turns" once the context,
+    cleared up to ``cut``, is over ``trigger``. Tokens no step removes
+    (protected results, the kept turns) can hold it over the trigger by
+    themselves, and a cut that moved on every call would rewrite the history
+    on every call. So after the first step the cut also waits until the step
+    would save at least as much as clearing the kept turns would, unless the
+    context is past ``ceiling``.
+    """
     target = len(turns) - keep
-    cleared_total = total - sum(gains.get(i, 0) for turn_indices in turns[:cut] for i in turn_indices)
-    return target if target > cut and cleared_total > trigger else cut
+
+    def saved(start: int, stop: int) -> int:
+        return sum(gains.get(i, 0) for turn_indices in turns[start:stop] for i in turn_indices)
+
+    cleared_total = total - saved(0, cut)
+    if target <= cut or cleared_total <= trigger:
+        return cut
+    if cut > 0 and cleared_total <= ceiling and saved(cut, target) < saved(target, len(turns)):
+        return cut
+    return target
