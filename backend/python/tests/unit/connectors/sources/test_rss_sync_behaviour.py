@@ -805,3 +805,40 @@ class TestReviewFindings:
             await conn.stream_record(on_page_two)
         assert raised.value.status_code == 502
         assert "https://a.example.com/episode-2" not in [c.kwargs["url"] for c in fetch.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_streaming_follows_an_empty_first_page_to_the_entry(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page([], "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page([_entry("urn:p:2", "Post 2", FEED_A, "Text from page two.")])),
+        }
+        linkless = FileRecord(
+            record_name="Post 2", external_record_id="urn:p:2", external_record_group_id=FEED_A,
+            weburl=FEED_A, origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
+            record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+        )
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])):
+            response = await conn.stream_record(linkless)
+        assert b"".join([c async for c in response.body_iterator]) == b"Text from page two."
+
+    @pytest.mark.asyncio
+    async def test_streaming_serves_an_entry_read_before_a_later_page_failed(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(
+                [_entry("urn:p:2", "Post 2", "https://a.example.com/2", "Text from page two.")], "page3.xml",
+            )),
+            "https://a.example.com/page3.xml": _xml(b"", status=503),
+        }
+        on_page_two = FileRecord(
+            record_name="Post 2", external_record_id="urn:p:2", external_record_group_id=FEED_A,
+            weburl="https://a.example.com/2", origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
+            record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+        )
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+        with patch(FETCH, new=fetch):
+            response = await conn.stream_record(on_page_two)
+        assert b"".join([c async for c in response.body_iterator]) == b"Text from page two."
+        assert "https://a.example.com/2" not in [c.kwargs["url"] for c in fetch.await_args_list]

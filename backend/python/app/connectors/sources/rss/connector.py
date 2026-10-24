@@ -1021,14 +1021,16 @@ class RSSConnector(BaseConnector):
                             return candidate
                     return None
 
-                if feed and feed.entries:
+                if feed:
                     entry = entry_by_id()
                     if entry is None:
-                        if not await self._read_next_pages(feed, feed_url):
+                        # An empty first page can still link to the page sync took this entry from.
+                        pages_read = await self._read_next_pages(feed, feed_url)
+                        entry = entry_by_id()
+                        if entry is None and not pages_read:
                             # The entry may be on the page that failed, and a crawl of its link
                             # could serve other text under its revision; let indexing retry.
                             raise self._source_fetch_error(None)
-                        entry = entry_by_id()
                     if entry is not None:
                         entry_url = self._article_link(entry)
                         try:
