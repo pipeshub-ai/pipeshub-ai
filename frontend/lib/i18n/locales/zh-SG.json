@@ -1431,7 +1431,20 @@
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
     "answerFailedTitle": "此回答失败",
     "answerFailedRetry": "重试",
-    "cannotOpenSource": "无法打开此文档。它可能已被删除，或者您没有访问权限。"
+    "cannotOpenSource": "无法打开此文档。它可能已被删除，或者您没有访问权限。",
+    "queue": {
+      "title": "排队中 · {{count}}",
+      "hint": "每条消息会在前一个回答完成后发送。",
+      "clearAll": "全部清除",
+      "listLabel": "排队中的消息",
+      "edit": "编辑",
+      "editBusy": "请先发送或清除正在输入的消息，再编辑这条",
+      "remove": "从队列中移除",
+      "retry": "重试",
+      "files_one": "{{count}} 个文件",
+      "files_other": "{{count}} 个文件",
+      "full": "最多可排队 {{count}} 条消息。请等待一条发送完毕，或移除一条。"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",

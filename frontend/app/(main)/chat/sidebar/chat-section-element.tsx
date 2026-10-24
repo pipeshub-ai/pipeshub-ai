@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
+import { dropQueuedFor } from '@/chat/utils/queued-send';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ProjectApi } from '@/chat/project-api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
@@ -281,6 +282,8 @@ export function ChatSectionElement({
       } else {
         await ChatApi.deleteConversation(conversation.id);
       }
+      // What this tab queued there never goes out.
+      dropQueuedFor(conversation.id);
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setDeleteDialogOpen(false);
@@ -312,6 +315,7 @@ export function ChatSectionElement({
       } else {
         await ChatApi.archiveConversation(conversation.id);
       }
+      dropQueuedFor(conversation.id);
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setArchiveDialogOpen(false);

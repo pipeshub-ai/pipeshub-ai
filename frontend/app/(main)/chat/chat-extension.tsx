@@ -9,6 +9,7 @@ import React, { forwardRef } from 'react';
 import type { ComponentType, ForwardRefExoticComponent, ReactNode, RefAttributes, RefObject } from 'react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import type { ShareAdapter, SharedMember } from '@/app/components/share/types';
+import { StreamError } from '@/lib/api/stream-errors';
 import { useChatStore } from './store';
 import { createChatShareAdapter } from './share-adapter';
 import type {
@@ -18,6 +19,7 @@ import type {
   Conversation,
   ConversationMessage,
   PendingAskUserQuestion,
+  QueuedSend,
   ResponseTab,
   SSEConnectedEvent,
   StreamChatRequest,
@@ -27,6 +29,8 @@ import type { CitationMaps } from './components/message-area/response-tabs/citat
 import type { ComposerInputHandle, ComposerInputProps } from './components/composer/composer-input.types';
 import { ComposerField as TextareaComposerField } from './components/composer/composer-field';
 import type { MentionNode } from './utils/node-mentions';
+import type { QueuedMessage } from './utils/queued-send';
+import { useQueuedSends } from './hooks/use-send-when-free';
 
 /** Extra fields stored in a thread row's `metadata.custom`. */
 export type RowCustom = Record<string, unknown>;
@@ -83,6 +87,30 @@ export interface ChatSendContext {
   query: string;
   attachments?: AttachmentRef[];
   message: ThreadMessageLike;
+}
+
+/** The questions queue (`utils/queued-send.ts`): what waits, what goes with it, and when it may go. */
+export interface ChatQueueExtension {
+  /**
+   * A send to this slot waits in its queue instead of going out now; `queued`: questions already wait there. The
+   * default queues behind them, and while this tab's answer streams.
+   */
+  shouldQueue(slot: ChatSlot, queued: boolean): boolean;
+  /** The first queued question may not go yet, although nothing runs in the slot. */
+  isHeld(slot: ChatSlot): boolean;
+  /** A new slot for the chat takes back what this tab had queued in it before a reload. */
+  restoresKept(slot: ChatSlot): boolean;
+  /** Fields a queued question keeps from its send, besides its text and files. */
+  itemFields(message: QueuedMessage): Partial<QueuedSend>;
+  /** Request fields of a queued question as it goes out. */
+  requestFields(item: QueuedSend): Partial<StreamChatRequest>;
+  /** The slot whose queue is listed and capped with this slot's; `null` when there is none. */
+  pairedSlotId(slots: Readonly<Record<string, ChatSlot>>, slotId: string): string | null;
+  /**
+   * The reason a queued question the server refused waits with, first in its queue, until it is retried, edited or
+   * removed; `null` shows the error in the thread, as for any send.
+   */
+  refusedReason(error: unknown): string | null;
 }
 
 export interface ChatExtension {
@@ -174,6 +202,7 @@ export interface ChatExtension {
     /** Toast text for a failed answer to a question card; `null` for the default text. */
     resumeFailedMessage(error: unknown): string | null;
   };
+  queue: ChatQueueExtension;
   pairs: {
     /** A row that is not part of a question/answer pair and does not break one. */
     isStandalone(msg: PairMessage): boolean;
@@ -248,6 +277,17 @@ export const defaultChatExtension: ChatExtension = {
     onCompleted: () => {},
     resumeFailedMessage: () => null,
   },
+  // A chat shared with you is read-only (no box, `useOwnerAccess`): nothing is queued there, nor taken back.
+  queue: {
+    shouldQueue: (slot, queued) => (queued || (slot.isStreaming && !slot.stopping)) && slot.isOwner !== false,
+    isHeld: () => false,
+    restoresKept: (slot) => slot.isOwner !== false,
+    itemFields: () => NO_FIELDS,
+    requestFields: () => NO_FIELDS,
+    pairedSlotId: () => null,
+    // Refused before the answer began (the request came back with an HTTP error): nothing was answered, so it waits.
+    refusedReason: (error) => (error instanceof StreamError && error.status !== undefined ? error.message : null),
+  },
   pairs: {
     isStandalone: () => false,
     standalonePair: () => null,
@@ -313,6 +353,11 @@ export interface ComposerSendExtension {
   placeholder?: string;
   /** Sending stays open while the chat's answer streams (no Stop in its place); `intercept` must then take those sends. */
   sendDuringRun?: boolean;
+  /**
+   * A send made while the chat's answer streams, or behind questions already queued, joins the chat's queue. Defaults
+   * to true; `false` keeps the box closed while the answer streams (Stop in place of Send).
+   */
+  queueSends?: boolean;
   /** Rendered above the composer. */
   accessories: ReactNode;
   /**
@@ -459,6 +504,19 @@ export interface ChatRowExtension {
   interceptProjectChange(projectId: string | null): boolean;
 }
 
+/** How the queue list above the composer draws its rows. */
+export interface QueueListExtension {
+  /** Replaces the list's hint; `null` keeps it. */
+  hint: string | null;
+  /** A queued question as its row shows it. */
+  rowText(item: QueuedSend): string;
+  /**
+   * What the row shows after its text. `files` is the row's files tag (`null` without files); `paired`: the question
+   * waits in the paired slot's queue.
+   */
+  rowTags(item: QueuedSend, opts: { paired: boolean; files: ReactNode }): ReactNode;
+}
+
 export interface ChatSlots {
   useChatAccess(slotId: string | null): ChatAccess;
   usePageEffects(slotId: string | null): void;
@@ -466,8 +524,10 @@ export interface ChatSlots {
   useChatHeader(opts: ChatHeaderOptions): ChatHeaderExtension;
   /** Replaces the message list of a loaded, empty chat. */
   useEmptyState(opts: { slotId: string | null; onPick(text: string): void }): ReactNode | null;
+  /** Above the composer, for as long as the chat is open. It hosts the queue's sending (`useQueuedSends`). */
   ComposerBanners: ComponentType<{ slotId: string | null; hasMessages: boolean }>;
   useComposerSend(opts: ComposerSendOptions): ComposerSendExtension;
+  useQueueList(opts: { slotId: string | null; pairedSlotId: string | null }): QueueListExtension;
   useComposerInput(opts: ComposerInputOptions): ComposerInputExtension;
   ComposerField: ForwardRefExoticComponent<ComposerFieldProps & RefAttributes<ComposerInputHandle>>;
   /** The message list of a chat that has messages; `renderDefault` draws the default list. */
@@ -510,6 +570,17 @@ const NO_COMPOSER_SEND: ComposerSendExtension = {
   afterAppend: () => {},
 };
 
+const PLAIN_QUEUE_LIST: QueueListExtension = {
+  hint: null,
+  rowText: (item) => item.query,
+  rowTags: (_item, { files }) => files,
+};
+
+function QueueBanners({ slotId }: { slotId: string | null }) {
+  useQueuedSends(slotId);
+  return null;
+}
+
 const PLAIN_COMPOSER_INPUT: ComposerInputExtension = {
   rich: false,
   resolveSend: (message) => ({ text: message }),
@@ -540,8 +611,9 @@ export const defaultChatSlots: ChatSlots = {
   useConversationShareAdapter: useLegacyShareAdapter,
   useChatHeader: () => NO_HEADER,
   useEmptyState: () => null,
-  ComposerBanners: () => null,
+  ComposerBanners: QueueBanners,
   useComposerSend: () => NO_COMPOSER_SEND,
+  useQueueList: () => PLAIN_QUEUE_LIST,
   useComposerInput: () => PLAIN_COMPOSER_INPUT,
   ComposerField: PlainComposerField,
   MessageList: DefaultMessageList,

@@ -1348,7 +1348,20 @@
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
     "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
     "answerFailedRetry": "Erneut versuchen",
-    "cannotOpenSource": "Sie können dieses Dokument nicht öffnen. Es wurde möglicherweise entfernt, oder Sie haben keinen Zugriff darauf."
+    "cannotOpenSource": "Sie können dieses Dokument nicht öffnen. Es wurde möglicherweise entfernt, oder Sie haben keinen Zugriff darauf.",
+    "queue": {
+      "title": "In der Warteschlange · {{count}}",
+      "hint": "Jede wird gesendet, sobald die Antwort davor fertig ist.",
+      "clearAll": "Alle entfernen",
+      "listLabel": "Nachrichten in der Warteschlange",
+      "edit": "Bearbeiten",
+      "editBusy": "Senden oder löschen Sie die Nachricht, die Sie gerade schreiben, um diese zu bearbeiten",
+      "remove": "Aus der Warteschlange entfernen",
+      "retry": "Erneut versuchen",
+      "files_one": "{{count}} Datei",
+      "files_other": "{{count}} Dateien",
+      "full": "Sie können bis zu {{count}} Nachrichten in die Warteschlange stellen. Warten Sie, bis eine gesendet ist, oder entfernen Sie eine."
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

@@ -1435,7 +1435,20 @@
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "answerFailedTitle": "This answer failed",
     "answerFailedRetry": "Try again",
-    "cannotOpenSource": "You can't open this document. It may have been removed, or you may not have access to it."
+    "cannotOpenSource": "You can't open this document. It may have been removed, or you may not have access to it.",
+    "queue": {
+      "title": "Queued · {{count}}",
+      "hint": "Each one is sent when the answer before it is done.",
+      "clearAll": "Clear all",
+      "listLabel": "Queued messages",
+      "edit": "Edit",
+      "editBusy": "Send or clear the message you're typing to edit this one",
+      "remove": "Remove from queue",
+      "retry": "Retry",
+      "files_one": "{{count}} file",
+      "files_other": "{{count}} files",
+      "full": "You can queue up to {{count}} messages. Wait for one to be sent, or remove one."
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",

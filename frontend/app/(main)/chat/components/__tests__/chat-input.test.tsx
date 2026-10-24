@@ -326,6 +326,33 @@ describe('ChatInput — typing and sending', () => {
     expect(onSend).toHaveBeenLastCalledWith('And another', undefined, undefined);
   });
 
+  it('queues a follow-up while the answer streams: Stop while the box is empty, Send once it holds a question', () => {
+    const slotId = startStreamingSlot();
+    const { onSend } = renderInput({ queueDuringRun: true });
+
+    expect(screen.getByRole('button', { name: 'Stop generating' })).toBeTruthy();
+    type('A follow-up');
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('A follow-up', undefined, undefined);
+    expect(composer().value).toBe('');
+
+    // The box is empty again: Stop is back, and still stops the answer.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(streaming.cancelStreamForSlot).toHaveBeenCalledWith(slotId);
+  });
+
+  it('takes a queued question back into an empty box when it is edited', () => {
+    const slotId = startStreamingSlot();
+    renderInput({ queueDuringRun: true });
+
+    act(() => useChatStore.getState().updateSlot(slotId, { composerRestore: 'Edit me' }));
+
+    expect(composer().value).toBe('Edit me');
+    expect(useChatStore.getState().slots[slotId].composerRestore).toBeNull();
+    expect(useChatStore.getState().slots[slotId].composerHasText).toBe(true);
+  });
+
   it('lets a follow-up through once the stopped run is winding down', () => {
     startStreamingSlot({ stopping: true });
     const { onSend } = renderInput();

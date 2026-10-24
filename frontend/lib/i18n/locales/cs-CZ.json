@@ -1495,7 +1495,22 @@
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
     "answerFailedTitle": "Tato odpověď selhala",
     "answerFailedRetry": "Zkusit znovu",
-    "cannotOpenSource": "Tento dokument nelze otevřít. Mohl být odstraněn, nebo k němu nemáte přístup."
+    "cannotOpenSource": "Tento dokument nelze otevřít. Mohl být odstraněn, nebo k němu nemáte přístup.",
+    "queue": {
+      "title": "Ve frontě · {{count}}",
+      "hint": "Každá zpráva se odešle, až bude hotová odpověď před ní.",
+      "clearAll": "Vymazat vše",
+      "listLabel": "Zprávy ve frontě",
+      "edit": "Upravit",
+      "editBusy": "Chcete-li upravit tuto zprávu, odešlete nebo vymažte zprávu, kterou právě píšete",
+      "remove": "Odebrat z fronty",
+      "retry": "Zkusit znovu",
+      "files_one": "{{count}} soubor",
+      "files_few": "{{count}} soubory",
+      "files_many": "{{count}} souboru",
+      "files_other": "{{count}} souborů",
+      "full": "Do fronty můžete zařadit nejvýše {{count}} zpráv. Počkejte, až se jedna odešle, nebo jednu odeberte."
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",

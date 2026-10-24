@@ -1367,7 +1367,21 @@
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
     "answerFailedTitle": "Esta respuesta ha fallado",
     "answerFailedRetry": "Reintentar",
-    "cannotOpenSource": "No puedes abrir este documento. Es posible que se haya eliminado o que no tengas acceso a él."
+    "cannotOpenSource": "No puedes abrir este documento. Es posible que se haya eliminado o que no tengas acceso a él.",
+    "queue": {
+      "title": "En cola · {{count}}",
+      "hint": "Cada uno se envía cuando termina la respuesta anterior.",
+      "clearAll": "Borrar todo",
+      "listLabel": "Mensajes en cola",
+      "edit": "Editar",
+      "editBusy": "Envía o borra el mensaje que estás escribiendo para editar este",
+      "remove": "Quitar de la cola",
+      "retry": "Reintentar",
+      "files_one": "{{count}} archivo",
+      "files_many": "{{count}} archivos",
+      "files_other": "{{count}} archivos",
+      "full": "Puedes poner en cola hasta {{count}} mensajes. Espera a que se envíe uno o quita uno."
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",

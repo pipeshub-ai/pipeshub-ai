@@ -1431,7 +1431,20 @@
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "answerFailedTitle": "此回答失敗",
     "answerFailedRetry": "重試",
-    "cannotOpenSource": "無法開啟此文件。它可能已被刪除，或者您沒有存取權限。"
+    "cannotOpenSource": "無法開啟此文件。它可能已被刪除，或者您沒有存取權限。",
+    "queue": {
+      "title": "排隊中 · {{count}}",
+      "hint": "每則訊息會在前一個回答完成後送出。",
+      "clearAll": "全部清除",
+      "listLabel": "排隊中的訊息",
+      "edit": "編輯",
+      "editBusy": "請先送出或清除正在輸入的訊息，再編輯這則",
+      "remove": "從佇列中移除",
+      "retry": "重試",
+      "files_one": "{{count}} 個檔案",
+      "files_other": "{{count}} 個檔案",
+      "full": "最多可排隊 {{count}} 則訊息。請等待一則送出，或移除一則。"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",

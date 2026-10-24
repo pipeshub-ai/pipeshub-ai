@@ -1431,7 +1431,20 @@
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
     "answerFailedTitle": "이 답변을 생성하지 못했습니다",
     "answerFailedRetry": "다시 시도",
-    "cannotOpenSource": "이 문서를 열 수 없습니다. 삭제되었거나 액세스 권한이 없을 수 있습니다."
+    "cannotOpenSource": "이 문서를 열 수 없습니다. 삭제되었거나 액세스 권한이 없을 수 있습니다.",
+    "queue": {
+      "title": "대기 중 · {{count}}",
+      "hint": "각 메시지는 앞의 답변이 끝나면 전송됩니다.",
+      "clearAll": "모두 지우기",
+      "listLabel": "대기 중인 메시지",
+      "edit": "수정",
+      "editBusy": "이 메시지를 수정하려면 입력 중인 메시지를 보내거나 지우세요",
+      "remove": "대기열에서 제거",
+      "retry": "다시 시도",
+      "files_one": "파일 {{count}}개",
+      "files_other": "파일 {{count}}개",
+      "full": "메시지는 최대 {{count}}개까지 대기열에 넣을 수 있습니다. 하나가 전송될 때까지 기다리거나 하나를 제거하세요."
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",

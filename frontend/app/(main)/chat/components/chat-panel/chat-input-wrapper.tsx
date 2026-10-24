@@ -22,6 +22,8 @@ import {
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { chatSlots } from '@/config';
 import type { ComposerSendExtra } from '../../chat-extension';
+import { queueSend, shouldQueueSend } from '../../utils/queued-send';
+import { QueueList } from './queue-list';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -38,6 +40,8 @@ export function ChatInputWrapper() {
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
   const composerSend = chatSlots.useComposerSend({ isAgentChat, agentId: effectiveAgentId ?? null });
+  const queueSends = composerSend.queueSends !== false;
+  const openSlotId = useChatStore((s) => s.activeSlotId);
 
   useEffect(() => {
     if (effectiveAgentId) {
@@ -174,10 +178,15 @@ export function ChatInputWrapper() {
     store = useChatStore.getState();
 
     // ── Chat mode ──
+    // A question asked while the answer runs, or behind questions already
+    // waiting, joins the queue above the box; a full queue keeps it in the box.
+    const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
+    if (queueSends && store.activeSlotId && shouldQueueSend(active)) {
+      return queueSend(store.activeSlotId, { query: message, attachments }) ? undefined : false;
+    }
     // Block a second send while a run is in flight, but allow Enter after
     // Stop (`stopping`) so a follow-up can start with a new runId before
     // the old run's grace timer fires. `false` keeps the refused text in the composer.
-    const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (active?.isStreaming && !active.stopping) {
       return false;
     }
@@ -258,10 +267,12 @@ export function ChatInputWrapper() {
   return (
     <>
       {composerSend.accessories}
+      <QueueList slotId={openSlotId} />
       <ChatInput
         onSend={handleSend}
         placeholder={composerSend.placeholder}
         sendDuringRun={composerSend.sendDuringRun}
+        queueDuringRun={queueSends}
         onUploadFile={handleUploadFile}
         onDeleteFile={handleDeleteFile}
         isAgentChat={isAgentChat}

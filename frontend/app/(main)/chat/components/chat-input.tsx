@@ -72,6 +72,7 @@ import type {
 import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, buildAssistantApiFilters } from '@/chat/types';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import { MentionComposerField, type MentionParent } from '@/chat/components/mention-composer-field';
+import { useQueuedSendComposer } from '@/chat/hooks/use-queued-send-composer';
 import { useSelectionPlaces } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/knowledge-tree';
 import {
   mentionMeta,
@@ -167,6 +168,8 @@ interface ChatInputProps {
   persistDraft?: boolean;
   /** Send stays (no Stop in its place) and submits go through while the chat's answer streams. */
   sendDuringRun?: boolean;
+  /** While the chat's answer streams, a send joins the chat's queue: Send shows once the box holds something, Stop otherwise. */
+  queueDuringRun?: boolean;
 }
 
 type PasteIntent = { kind: 'files'; files: File[] } | { kind: 'text'; text: string };
@@ -268,6 +271,7 @@ export function ChatInput({
   persistDraft = false,
   mentionParent,
   sendDuringRun = false,
+  queueDuringRun = false,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -544,6 +548,7 @@ export function ChatInput({
     slotId: activeSlotId,
     attachmentCount: uploadedFiles.filter((f) => f.status !== 'error').length,
   });
+  useQueuedSendComposer(activeSlotId, message, setMessage);
 
   // Is the active slot currently streaming? The widget composer starts a new
   // chat, so a run left going on the chat page is not its run.
@@ -1011,7 +1016,9 @@ export function ChatInput({
 
     const sid = variant === 'widget' ? null : useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
-    if ((liveSlot?.isStreaming && !liveSlot.stopping && !sendDuringRun) || isUniversalAgentLoading) return;
+    // While the answer runs, a question can still join the queue; a regenerate or edit cannot.
+    const runHolds = Boolean(liveSlot?.isStreaming && !liveSlot.stopping);
+    if ((runHolds && !sendDuringRun && !(queueDuringRun && !activeMessageAction)) || isUniversalAgentLoading) return;
     if (liveSlot?.remoteRunInProgress) {
       showRemoteRunInProgressToast();
       return;
@@ -1652,6 +1659,8 @@ export function ChatInput({
     (hasContent || activeMessageAction !== null) &&
     !isUniversalAgentLoading &&
     !hasUploadingAttachments;
+  // Stop gives way to Send while there is a question to queue behind the running answer.
+  const showStop = runBusy && !(queueDuringRun && hasContent && activeMessageAction === null);
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -1837,7 +1846,7 @@ export function ChatInput({
           />
 
           {/* Send / Stop — same contract as full composer */}
-          {runBusy ? (
+          {showStop ? (
             <IconButton
               variant="solid"
               size="2"
@@ -1899,7 +1908,7 @@ export function ChatInput({
   }
 
   const composerActive =
-    !runBusy && (isInputFocused || message.trim() || isEditMode || isListening);
+    !showStop && (isInputFocused || message.trim() || isEditMode || isListening);
 
   return (
     <>
@@ -2870,7 +2879,7 @@ export function ChatInput({
           )}
 
           {/* Send / Stop button */}
-          {runBusy ? (
+          {showStop ? (
             <IconButton
               variant="solid"
               size="2"

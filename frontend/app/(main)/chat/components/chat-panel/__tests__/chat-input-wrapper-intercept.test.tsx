@@ -61,7 +61,10 @@ describe('ChatInputWrapper: a send the extension takes', () => {
 });
 
 describe('ChatInputWrapper: the chat as it is once the extension is done (F5)', () => {
-  /** A chat whose run state the extension's wait (a confirm dialog) changes from `before` to `after`. */
+  /**
+   * A chat whose run state the extension's wait (a confirm dialog) changes from `before` to `after`. The extension
+   * keeps the box closed while an answer runs (`queueSends: false`), so a send then is refused, not queued.
+   */
   function sendAcrossWait(before: boolean, after: boolean): (message: string) => unknown {
     const store = useChatStore.getState();
     const slotId = store.createSlot('conv-1');
@@ -69,6 +72,7 @@ describe('ChatInputWrapper: the chat as it is once the extension is done (F5)', 
     store.setActiveSlot(slotId);
     vi.spyOn(chatSlots, 'useComposerSend').mockReturnValue({
       accessories: null,
+      queueSends: false,
       intercept: () => {
         useChatStore.getState().updateSlot(slotId, { isStreaming: after });
         return Promise.resolve(false);

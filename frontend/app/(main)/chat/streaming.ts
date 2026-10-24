@@ -63,6 +63,7 @@ import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './st
 import { StreamError } from '@/lib/api/stream-errors';
 import { TOOLS_UNAVAILABLE_EVENT, toolsUnavailableNotice, type ToolsUnavailableNotice } from './unavailable-tools';
 import { chatExtension } from '@/config';
+import { refusedQueuedSend, requeueFirst } from './utils/queued-send';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -1481,6 +1482,28 @@ export async function streamMessageForSlot(
           session?.onRejected?.(slotId, error, { baseMessages: messagesWithPreviousCard, query, request })
         ) {
           debugLog.flush('stream-rejected', { slotId });
+          return;
+        }
+        // A queued question refused before its answer began goes back to the head of its queue with the reason, and
+        // leaves the thread as it was, so it is not shown twice.
+        const refused = !resumeAskUserQuestion && !reuseRowId && !isNewConversation ? refusedQueuedSend(request, error) : null;
+        if (refused) {
+          useChatStore.getState().updateSlot(slotId, {
+            isStreaming: false,
+            streamingContent: '',
+            streamingQuestion: '',
+            currentStatusMessage: null,
+            streamingCitationMaps: null,
+            streamingParts: [],
+            pendingCollections: [],
+            abortController: null,
+            runId: null,
+            stopping: false,
+            pendingAskUserQuestion: pendingAfterStreamFailure(useChatStore.getState().slots[slotId]?.pendingAskUserQuestion),
+            messages: messagesWithPreviousCard,
+          });
+          requeueFirst(slotId, refused.item, refused.reason);
+          debugLog.flush('stream-refused-queued', { slotId });
           return;
         }
         console.error('[streaming] Stream error for slot', slotId, error);

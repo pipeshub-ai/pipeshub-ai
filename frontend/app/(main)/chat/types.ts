@@ -1242,6 +1242,23 @@ export interface ChatSlot {
    * to restore model + mode in the input when the user returns to this tab.
    */
   conversationModelInfo?: ModelInfo;
+  /** Questions waiting their turn, first in first out (`utils/queued-send.ts`); absent or empty when nothing waits. */
+  queue?: QueuedSend[];
+  /** Text to give back to the composer (an edited queued question, a refused send); the composer takes it and clears it. */
+  composerRestore?: string | null;
+  /** The composer holds text: a queued question is edited only into an empty box. */
+  composerHasText?: boolean;
+}
+
+/** A question waiting its turn in a chat's queue while the chat is busy. */
+export interface QueuedSend {
+  query: string;
+  attachments?: AttachmentRef[];
+  /** The question's id in the queue; it goes out as the message's client id where the request has one. */
+  clientMessageId: string;
+  queuedAt: number;
+  /** The server refused it when its turn came: the queue waits here until it is retried, edited or removed. */
+  failed?: string;
 }
 
 // ── Search types ──────────────────────────────────────────────────────
