@@ -177,6 +177,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     advanced: true,
   },
   {
+    key: 'ENABLE_ARTIFACT_WRITE',
+    label: 'Store Content Revisions as Files',
+    description:
+      "While indexing, also store each new version of a record's processed content as a set of files (blocks, text, images, metadata) beside the stored record. Nothing reads these files yet, so search and chat are unchanged; it uses extra storage. Disable to stop writing them; files already written are kept until the record is deleted.",
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
     key: 'ENABLE_USER_CONTEXT',
     label: 'Send User & Organization Context to Agents',
     description:

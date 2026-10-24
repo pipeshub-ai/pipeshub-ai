@@ -367,6 +367,29 @@ def _request_body_not_delivered(error: BaseException) -> bool:
         "Can not write request body"
     )
 
+def _is_azure_sas_url(signed_url: str) -> bool:
+    """An Azure Blob SAS URL: its query carries the service version and signature."""
+    try:
+        query = URL(signed_url, encoded=True).query
+    except (TypeError, ValueError):
+        return False
+    return "sv" in query and "sig" in query
+
+
+def _signed_upload_headers(signed_url: str) -> dict[str, str]:
+    """Headers a PUT to a signed URL from the direct-upload route needs.
+
+    Azure's Put Blob refuses a request that does not name the blob type, and
+    the route returns only the URL.
+    """
+    return {"x-ms-blob-type": "BlockBlob"} if _is_azure_sas_url(signed_url) else {}
+
+
+def _upload_succeeded(status: int) -> bool:
+    # S3 and local storage answer a PUT with 200, Azure with 201.
+    return 200 <= status < 300
+
+
 _shared_sessions: "dict[asyncio.AbstractEventLoop, aiohttp.ClientSession]" = {}
 
 
@@ -1698,9 +1721,10 @@ class BlobStorage(Transformer):
             async with session.put(
                 URL(signed_url, encoded=True),
                 json=data,
+                headers=_signed_upload_headers(signed_url),
                 skip_auto_headers={'Content-Type'}
             ) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
+                if not _upload_succeeded(response.status):
                     try:
                         error_response = await response.json()
                         self.logger.error("❌ Failed to upload to signed URL. Status: %d, Error: %s",
@@ -1736,9 +1760,10 @@ class BlobStorage(Transformer):
             async with session.put(
                 URL(signed_url, encoded=True),
                 data=content,
+                headers=_signed_upload_headers(signed_url),
                 skip_auto_headers={"Content-Type"},
             ) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
+                if not _upload_succeeded(response.status):
                     response_text = (await response.text())[:200]
                     self.logger.error(
                         "❌ Failed to upload raw content. Status: %d, Response: %s",
@@ -2277,8 +2302,9 @@ class BlobStorage(Transformer):
             )
 
     async def delete_storage_docs_for_vrid(self, org_id: str, virtual_record_id: str) -> None:
-        """Delete the blob storage documents (record + metadata) and the graph
-        mapping node for an abandoned virtualRecordId.
+        """Delete every storage document of an abandoned virtualRecordId (its
+        record and metadata documents, wherever filed, and its content
+        revisions) and then its graph mapping node.
 
         Called when VRID reconciliation isolates a record with a new VRID and
         the old one is no longer needed.  Safe to call when the mapping or the
@@ -2320,58 +2346,23 @@ class BlobStorage(Transformer):
             )
             raise
 
+        # By virtual record id, not by the ids on the mapping: that also finds
+        # documents the mapping never pointed at, such as content revisions.
+        # A failure keeps the mapping node so a retry can find them.
+        try:
+            purged = await self.purge_virtual_record_documents(org_id, virtual_record_id)
+        except Exception as exc:
+            self.logger.error(
+                "Failed to delete storage docs for abandoned VRID %s: %s",
+                virtual_record_id, exc,
+            )
+            raise
+        self.logger.info(
+            "Deleted %d storage doc(s) for abandoned VRID %s", purged, virtual_record_id,
+        )
+
         if not mapping:
-            self.logger.info(
-                "No VRID mapping found for abandoned VRID %s — nothing to clean up",
-                virtual_record_id,
-            )
             return
-
-        doc_ids: list[str] = []
-        record_doc_id = mapping.get("record_doc_id") or mapping.get("documentId")
-        metadata_doc_id = mapping.get("record_metadata_doc_id")
-        if record_doc_id:
-            doc_ids.append(record_doc_id)
-        if metadata_doc_id:
-            doc_ids.append(metadata_doc_id)
-
-        all_deleted = True
-        if doc_ids:
-            try:
-                headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
-                session = get_shared_session()
-                for doc_id in doc_ids:
-                    delete_url = (
-                        f"{nodejs_endpoint}"
-                        f"{Routes.STORAGE_DOCUMENT.value.format(documentId=doc_id)}"
-                        "?hard=true"
-                    )
-                    async with session.delete(delete_url, headers=headers) as resp:
-                        if resp.status in (200, 204, 404):
-                            self.logger.info(
-                                "Deleted storage doc %s for abandoned VRID %s",
-                                doc_id, virtual_record_id,
-                            )
-                        else:
-                            all_deleted = False
-                            text = await resp.text()
-                            self.logger.warning(
-                                "Storage doc delete returned %d for %s (vrid %s): %s",
-                                resp.status, doc_id, virtual_record_id, text[:200],
-                            )
-            except Exception as exc:
-                self.logger.error(
-                    "Failed to delete storage docs for abandoned VRID %s: %s",
-                    virtual_record_id, exc,
-                )
-                raise
-
-        if not all_deleted:
-            raise Exception(
-                f"Some storage docs for VRID {virtual_record_id} could not be deleted; "
-                "keeping mapping node so a retry can find them"
-            )
-
         try:
             await self.graph_provider.remove_nodes_by_field(
                 collection_name, "_key", field_value=virtual_record_id,

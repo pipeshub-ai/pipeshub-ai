@@ -144,6 +144,17 @@ async def is_named_entity_extraction_enabled(config_service: ConfigurationServic
     return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
 
 
+async def is_artifact_write_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether indexing writes each content revision's artifact set beside the stored
+    record. Read once per indexed record, through the config cache; a save in Labs
+    invalidates it everywhere. Defaults to DISABLED."""
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_ARTIFACT_WRITE, config_service, default=False, use_cache=True,
+    )
+
+
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Whether a record delete moves the record to the trash instead of removing it.
 

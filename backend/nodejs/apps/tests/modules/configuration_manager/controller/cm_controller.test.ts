@@ -819,6 +819,21 @@ describe('ConfigurationManager Controller', () => {
       expect(flag.defaultEnabled).to.equal(false)
     })
 
+    it('should include ENABLE_ARTIFACT_WRITE as an advanced flag, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const flag = flags.find((f: any) => f.key === 'ENABLE_ARTIFACT_WRITE')
+      expect(flag).to.exist
+      expect(flag.defaultEnabled).to.equal(false)
+      expect(flag.advanced).to.equal(true)
+    })
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()

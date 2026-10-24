@@ -1353,6 +1353,7 @@ class TestUploadRawToSignedUrl:
         mock_session.put.assert_called_once_with(
             URL("https://s3/signed", encoded=True),
             data=b"file content",
+            headers={},
             skip_auto_headers={"Content-Type"},
         )
 

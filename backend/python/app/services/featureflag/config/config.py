@@ -39,3 +39,6 @@ class CONFIG:
     ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"
     # Typed named-entity extraction during indexing. Defaults to disabled.
     ENABLE_NAMED_ENTITY_EXTRACTION = "ENABLE_NAMED_ENTITY_EXTRACTION"
+    # Indexing also stores each content revision as a directory of artifact
+    # files beside the stored record. Nothing reads them yet. Defaults to disabled.
+    ENABLE_ARTIFACT_WRITE = "ENABLE_ARTIFACT_WRITE"

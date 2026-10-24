@@ -12,3 +12,16 @@ REJECTED_TOO_LARGE = METRICS_BACKEND.counter(
 
 def record_rejected_too_large(status: int) -> None:
     REJECTED_TOO_LARGE.inc(str(status))
+
+
+# outcome: written (manifest stored), failed (indexing went on without it),
+# unavailable (the storage service has no artifact routes).
+ARTIFACT_WRITES = METRICS_BACKEND.counter(
+    "pipeshub_record_artifact_writes_total",
+    "Content revisions indexing tried to store as artifact sets, by outcome",
+    ["outcome"],
+)
+
+
+def record_artifact_write(outcome: str) -> None:
+    ARTIFACT_WRITES.inc(outcome)
