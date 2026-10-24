@@ -281,7 +281,8 @@ class IssuesSync:
             created.update(
                 i.number for i in items
                 if "/pull/" not in (getattr(i, "html_url", "") or "")
-                and (since_dt is None or _before(since_dt, i.created_at))
+                # The checkpoint's own second counts: overcounting only costs a sweep.
+                and (since_dt is None or not _before(i.created_at, since_dt))
             )
 
             if len(items) < len(listed) or len(listed) < ISSUE_PAGE_SIZE:
@@ -297,9 +298,12 @@ class IssuesSync:
             await c.comments.settle_stored_attachments(group_id)
             await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
         new_checkpoint = dict(checkpoint)
+        # The count shortcut needs every issue created since the last total listed, so
+        # it holds only when the listing started at the checkpoint. A window start past
+        # it (a relative window moves on its own) hides some: check by number instead.
+        previous_total = checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value) if since_dt == checkpoint_dt else None
         ok, total = await self._reconcile_removed_issues(
-            repo, group_id, checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value), len(created),
-            datetime_to_epoch_ms(window_dt),
+            repo, group_id, previous_total, len(created), datetime_to_epoch_ms(window_dt),
         )
         # The watermark moves only with the total: the next count check adds the issues
         # created since the watermark to the stored total, so the two must stay paired.

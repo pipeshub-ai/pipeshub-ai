@@ -210,6 +210,25 @@ async def test_issue_count_that_could_not_be_read_holds_the_checkpoint_back(worl
     assert diff.clean(), diff
 
 
+async def test_window_that_moved_past_the_checkpoint_still_checks_removals(world, org) -> None:
+    """A relative window ("last 30 days") moves forward on its own, with no full sync.
+    Once it passes the checkpoint, issues created in between are neither listed nor
+    counted, so the issue-count shortcut cannot be trusted: one such issue and one
+    deletion would cancel out, and the deleted issue would stay in PipesHub."""
+    gh, repo = world.gh, org["repo"]
+    old = [gh.add_issue(repo, f"I{n}") for n in range(3)]
+    await world.sync()
+    gh.tick(60)
+    gh.add_issue(repo, "Quiet")  # created after the checkpoint, then never touched
+    gh.tick(86_400)
+    # What a relative window does by itself: its start passes the checkpoint.
+    world.config["filters"]["sync"]["values"]["modified"] = {
+        "operator": "is_after", "type": "datetime", "value": {"start": gh.clock.now() * 1000, "end": None}}
+    gh.delete_issue(old[0])
+    await world.sync()
+    assert "I0" not in await world.names("TICKET")
+
+
 async def test_repository_shifted_out_of_an_org_listing_is_not_removed(world, org) -> None:
     """A legacy configuration selects the whole organization. Its repository listing is
     paged by offset: a repository deleted while the listing is read shifts a live one
