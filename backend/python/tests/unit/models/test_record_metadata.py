@@ -79,6 +79,9 @@ class TestValues:
     @pytest.mark.parametrize(("name", "raw"), [
         ("title", 5), ("tags", "auth"), ("tags", ["a", 1]), ("points", 1.0), ("points", True),
         ("points", 2**63), ("score", "1"), ("score", float("nan")), ("score", float("inf")),
+        ("due", 2**63),
+        pytest.param("score", 10**400, id="score-int-past-float-max"),
+        pytest.param("score", -(10**400), id="score-int-past-float-min"),
         ("urgent", 1), ("state", "CLOSED"), ("state", 1),
     ])
     def test_a_value_of_the_wrong_type_names_its_property(self, name: str, raw: object) -> None:

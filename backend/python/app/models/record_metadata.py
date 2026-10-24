@@ -255,9 +255,13 @@ def coerce_value(prop: PropertyDefinition, value: object) -> MetadataScalar:
         case PropertyType.FLOAT:
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise MetadataValidationError(name, "expected a number")
-            if not math.isfinite(value):
+            try:
+                number = float(value)
+            except OverflowError:
+                raise MetadataValidationError(name, "number out of range") from None
+            if not math.isfinite(number):
                 raise MetadataValidationError(name, "expected a finite number")
-            return float(value)
+            return number
         case PropertyType.BOOL:
             if not isinstance(value, bool):
                 raise MetadataValidationError(name, "expected true or false")
