@@ -131,6 +131,39 @@ class TestReplayedPreview:
         assert _REF_TOKEN.search(part["resultPreview"]) is None
 
 
+    async def test_an_argument_cut_inside_a_ref_does_not_save_a_shorter_ref(self) -> None:
+        mapper = CitationRefMapper()
+        for i in range(12):
+            mapper.get_or_create_ref(f"https://app/record/R{i}/preview#blockIndex=0")
+        collector = TranscriptCollector(ref_to_url=lambda: mapper.ref_to_url)
+        # The per-value cap falls between "ref1" and "2".
+        query = "x" * 1195 + " ref12 and more words after it"
+        part = await _persist_tool_call(collector, "rows", {"query": query})
+
+        saved = json.loads(part["args"])["query"]
+        assert "R0/" not in saved
+        assert "/R1/" not in saved and not re.search(r"/R1\b", saved)
+        assert _REF_TOKEN.search(saved) is None
+
+    async def test_a_long_line_keeps_its_visible_start_when_no_url_is_cut(self) -> None:
+        collector = TranscriptCollector()
+        # Compact JSON: no space to fall back to, so a cut-to-the-last-space keeps only the header.
+        row = '{"id":1,"status":"open","owner":"user7"}' * 200
+        part = await _persist_tool_call(collector, "Top rows\n" + row, {})
+
+        preview = part["resultPreview"]
+        assert preview.startswith("Top rows\n" + row[:100])
+
+    async def test_a_preview_never_ends_inside_a_url(self) -> None:
+        collector = TranscriptCollector()
+        url = "https://app/record/R12/preview#blockIndex=12"
+        text = "rows\n" + "word " * 2000 + url + " tail"
+        part = await _persist_tool_call(collector, text, {})
+
+        preview = part["resultPreview"].rstrip("…")
+        assert not re.search(r"https?://\S*\Z", preview) or preview.endswith(url)
+
+
 class _BlobRegistry:
     """The two `ArtifactRegistryService` calls the store makes, over a dict:
     what `register` saves is what a later request's `get_content` returns."""

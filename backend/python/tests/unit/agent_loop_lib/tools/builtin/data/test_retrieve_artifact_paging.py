@@ -23,7 +23,9 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     shape_budget_reduction,
 )
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+    RETRIEVE_ARTIFACT_TOOL_NAME,
     RetrieveArtifactContentTool,
+    refit_artifact_page,
 )
 
 _ROWS = 6000
@@ -37,18 +39,19 @@ def _rows(n: int = _ROWS) -> str:
     return "\n".join(f"row {i:05d}: ticket PROJ-{i} status=open owner=user{i % 37}" for i in range(n))
 
 
-async def _after_l1(content: str) -> str:
-    """What the model receives once the per-result cap has run."""
-    msgs = [
-        AssistantMessage(content="", tool_calls=[ToolCall(id="r", name="retrieve_artifact_content", arguments={})]),
-        ToolMessage(tool_call_id="r", content=content),
-    ]
-    ctx = SimpleNamespace(messages=msgs, budget=ContextBudget(max_tokens=200_000), turn_index=1, max_turns=12, scope=None)
+async def _after_l1(content: str, *, max_tokens: int = 200_000, arguments: dict | None = None) -> str:
+    """What the model receives once the per-result cap has run, wired as `build_context_pipeline` does."""
+    call = ToolCall(id="r", name=RETRIEVE_ARTIFACT_TOOL_NAME, arguments=arguments or {})
+    msgs = [AssistantMessage(content="", tool_calls=[call]), ToolMessage(tool_call_id="r", content=content)]
+    ctx = SimpleNamespace(
+        messages=msgs, budget=ContextBudget(max_tokens=max_tokens), turn_index=1, max_turns=12, scope=None,
+        run_id="run-1",
+    )
 
     async def _next() -> None:
         return None
 
-    await shape_budget_reduction()(ctx, _next)
+    await shape_budget_reduction(refitters={RETRIEVE_ARTIFACT_TOOL_NAME: refit_artifact_page})(ctx, _next)
     return ctx.messages[1].content
 
 
@@ -155,6 +158,56 @@ class TestPaging:
 
         assert len(out.data) <= DEFAULT_MAX_RESULT_CHARS
         assert await _after_l1(out.data) == out.data
+
+    async def test_a_window_smaller_than_a_page_still_reaches_every_character(self) -> None:
+        # L1 caps a result at the whole message budget: 3,000 tokens is 12,000 characters, a
+        # fraction of a 63K page. Each page is read the way the model reads it, after L1.
+        store = InMemoryArtifactStore()
+        content = _rows()
+        aid = await store.store(content, tool_name="t")
+        tool = RetrieveArtifactContentTool(store=store)
+
+        shown, offset = [], 0
+        for _ in range(200):
+            out = await tool.execute(artifact_id=aid, offset=offset)
+            seen = await _after_l1(out.data, max_tokens=3_000, arguments={"artifact_id": aid, "offset": offset})
+            assert len(seen) <= 12_000
+            assert "truncated" not in seen
+            shown.append(_FOOTER.sub("", seen))
+            match = _FOOTER.search(seen)
+            assert match is not None
+            if match["next"] is None:
+                break
+            offset = int(match["next"])
+
+        assert "".join(shown) == content
+
+    async def test_a_whole_artifact_cut_by_the_window_gets_a_continuation(self) -> None:
+        store = InMemoryArtifactStore()
+        content = _rows(400)
+        aid = await store.store(content, tool_name="t")
+
+        out = await RetrieveArtifactContentTool(store=store).execute(artifact_id=aid)
+        seen = await _after_l1(out.data, max_tokens=1_000, arguments={"artifact_id": aid})
+
+        match = _FOOTER.search(seen)
+        assert out.data == content
+        assert match is not None and match["aid"] == aid
+        assert content.startswith(_FOOTER.sub("", seen))
+        assert int(match["next"]) == len(_FOOTER.sub("", seen))
+
+    def test_a_cap_too_small_for_a_page_and_its_footer_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_result_chars=100"):
+            RetrieveArtifactContentTool(store=InMemoryArtifactStore(), max_result_chars=100)
+
+    async def test_a_small_cap_holds_page_and_footer(self) -> None:
+        store = InMemoryArtifactStore()
+        aid = await store.store(_rows(), tool_name="t")
+
+        out = await RetrieveArtifactContentTool(store=store, max_result_chars=600).execute(artifact_id=aid)
+
+        assert len(out.data) <= 600
+        assert _FOOTER.search(out.data) is not None
 
     def test_offset_and_limit_are_declared(self) -> None:
         names = [p.name for p in RetrieveArtifactContentTool(store=InMemoryArtifactStore()).parameters]

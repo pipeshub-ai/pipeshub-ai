@@ -8,7 +8,11 @@ from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
+    from typing import Any
+
+    # (result text, cap, the call's arguments) -> the result refitted under the cap, or None.
+    Refitter = Callable[[str, int, Mapping[str, Any]], "str | None"]
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,7 @@ def _cap_parts(msg, max_result_chars: int, truncate):
 def shape_budget_reduction(
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
     tool_caps: Mapping[str, int] | None = None,
+    refitters: Mapping[str, Refitter] | None = None,
 ):
     """Layer 1 (cheapest) context shaper: caps every individual TOOL message's
     content at `max_result_chars`.
@@ -65,6 +70,10 @@ def shape_budget_reduction(
     `tool_caps` gives a named tool its own cap: a tool that sizes its output
     for the model's window (fetch_record) is capped at that size instead.
     Neither cap lets one result exceed the whole message budget.
+
+    `refitters` lets a tool whose result describes itself (a page with a
+    continuation offset) shorten that result in a way that keeps the
+    description true; the both-ends cut below would contradict it.
 
     Registered on `HookRegistry.on(HookEvent.PRE_MODEL)` — a pure reducer,
     runs unconditionally regardless of total context size, because a single
@@ -97,18 +106,15 @@ def shape_budget_reduction(
             + text[len(text) - keep_tail:]
         )
 
-    def _caps_by_call_id(messages) -> dict[str, int]:
-        caps: dict[str, int] = {}
-        for msg in messages:
-            if msg.role == MessageRole.ASSISTANT:
-                for call in getattr(msg, "tool_calls", None) or ():
-                    cap = tool_caps.get(getattr(call, "name", ""))
-                    if cap is not None:
-                        caps[call.id] = cap
-        return caps
+    def _calls_by_id(messages) -> dict[str, object]:
+        return {
+            call.id: call
+            for msg in messages if msg.role == MessageRole.ASSISTANT
+            for call in getattr(msg, "tool_calls", None) or ()
+        }
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        caps = _caps_by_call_id(ctx.messages) if tool_caps else {}
+        calls = _calls_by_id(ctx.messages) if tool_caps or refitters else {}
         # Later layers never shorten a protected result (context/protection.py),
         # so this is what keeps the newest one able to fit a small window.
         budget_cap = ctx.budget.effective_max_tokens * CHARS_PER_TOKEN
@@ -117,7 +123,9 @@ def shape_budget_reduction(
             if msg.role != MessageRole.TOOL or getattr(msg, "compacted_by", None) == LAYER:
                 shaped.append(msg)
                 continue
-            limit = min(caps.get(getattr(msg, "tool_call_id", None) or "", max_result_chars), budget_cap)
+            call = calls.get(getattr(msg, "tool_call_id", None) or "")
+            tool_name = getattr(call, "name", "")
+            limit = min((tool_caps or {}).get(tool_name, max_result_chars), budget_cap)
             # Multipart content (a tool that returned images) used to skip this
             # cap entirely -- the one result shape most likely to be oversized.
             if isinstance(msg.content, list):
@@ -134,7 +142,11 @@ def shape_budget_reduction(
             if len(msg.content) <= limit:
                 shaped.append(msg)
                 continue
-            shaped.append(msg.model_copy(update={"content": _truncate(msg.content, limit), "compacted_by": LAYER}))
+            refit = (refitters or {}).get(tool_name)
+            content = refit(msg.content, limit, getattr(call, "arguments", None) or {}) if refit else None
+            if content is None:
+                content = _truncate(msg.content, limit)
+            shaped.append(msg.model_copy(update={"content": content, "compacted_by": LAYER}))
         capped = sum(1 for old, new in zip(ctx.messages, shaped) if new is not old)
         if capped:
             logger.info(

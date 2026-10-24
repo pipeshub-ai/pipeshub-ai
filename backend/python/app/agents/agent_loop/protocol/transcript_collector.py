@@ -80,6 +80,20 @@ _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 # in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
 _MAX_ARG_VALUE_CHARS = 1200
 
+# A URL that runs to the end of a preview's head: cutting there would leave a shorter URL that can
+# name a different block ("blockIndex=1" of "=12").
+_URL_AT_END_RE = re.compile(r"https?://[^\s\"'<>()\[\]]*\Z")
+_URL_END_CHARS = frozenset(" \t\n\"'<>()[]")
+
+
+def _head_outside_url(text: str, size: int) -> str:
+    """The first `size` characters of `text`, shorter if they would end inside a URL."""
+    head = text[:size]
+    url = _URL_AT_END_RE.search(head)
+    if url is not None and size < len(text) and text[size] not in _URL_END_CHARS:
+        return head[: url.start()]
+    return head
+
 
 def _serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
@@ -107,7 +121,7 @@ def _serialize_tool_args(args: object) -> str:
     for key, value in args.items():
         if isinstance(value, str) and len(value) > _MAX_ARG_VALUE_CHARS:
             shortened[str(key)] = (
-                f"{value[:_MAX_ARG_VALUE_CHARS]}"
+                f"{_head_outside_url(value, _MAX_ARG_VALUE_CHARS)}"
                 f"… [truncated, {_MAX_ARG_VALUE_CHARS} of {len(value)} chars]"
             )
         else:
@@ -272,25 +286,46 @@ class TranscriptCollector(EventEmitter):
                 return raw
         return ""
 
-    def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
-        """`text` with this request's citation refs replaced by their URLs,
-        within `cap` characters and never ending inside a URL."""
-        text, expanded, unresolved = rewrite_request_refs(
-            text, self._ref_to_url() if self._ref_to_url is not None else None,
-        )
+    def _rewrite_refs(self, text: str) -> tuple[str, int, int]:
+        return rewrite_request_refs(text, self._ref_to_url() if self._ref_to_url is not None else None)
+
+    @staticmethod
+    def _log_rewrites(expanded: int, unresolved: int, tool_call_id: str) -> None:
         if expanded or unresolved:
             logger.info(
                 "transcript: stored %d citation ref(s) as URLs, %d made uncitable (tool_call_id=%s)",
                 expanded, unresolved, tool_call_id,
             )
+
+    def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
+        """`text` with this request's citation refs replaced by their URLs,
+        within `cap` characters and never ending inside a URL."""
+        text, expanded, unresolved = self._rewrite_refs(text)
+        self._log_rewrites(expanded, unresolved, tool_call_id)
         if cap is None or len(text) <= cap:
             return text
-        head = text[: cap - 1]
-        # A cut URL can name a different block ("blockIndex=1" of "=12").
-        word_start = max(head.rfind(" "), head.rfind("\n"))
-        if word_start > 0 and not text[cap - 1].isspace():
-            head = head[: word_start + 1]
-        return head + "…"
+        return _head_outside_url(text, cap - 1) + "…"
+
+    def _durable_args(self, args: object, tool_call_id: str) -> str:
+        """Tool arguments as saved: refs replaced in every string value before any value is cut,
+        so a cut ref ("ref1" of "ref12") is never resolved as a shorter one."""
+        counts = [0, 0]
+
+        def _walk(value: object) -> object:
+            if isinstance(value, str):
+                text, expanded, unresolved = self._rewrite_refs(value)
+                counts[0] += expanded
+                counts[1] += unresolved
+                return text
+            if isinstance(value, dict):
+                return {key: _walk(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [_walk(item) for item in value]
+            return value
+
+        rewritten = _walk(args)
+        self._log_rewrites(counts[0], counts[1], tool_call_id)
+        return _serialize_tool_args(rewritten)
 
     def _container_for(self, run_id: str) -> list[MessagePart]:
         return self._containers.setdefault(run_id, self.parts)
@@ -327,7 +362,7 @@ class TranscriptCollector(EventEmitter):
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
                 "toolName": payload.get("tool", "tool"),
-                "args": self._durable(_serialize_tool_args(payload.get("args", {})), tool_call_id),
+                "args": self._durable_args(payload.get("args", {}), tool_call_id),
                 "status": "running",
                 "runId": run_id,
             }
