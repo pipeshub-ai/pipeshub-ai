@@ -199,6 +199,38 @@ describe('OverviewTab: actions', () => {
     expect(fetchInstanceStats).toHaveBeenCalledWith('conn-1', { force: true });
   });
 
+  it('does not call a queued entity extraction retry failed when only the stats refresh fails', async () => {
+    fetchInstanceStats.mockRejectedValue(new Error('stats down'));
+    const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
+
+    await waitFor(() => expect(toastTitles()).toContain('Entity extraction retry queued'));
+    await waitFor(() => expect(fetchInstanceStats).toHaveBeenCalled());
+    expect(toastTitles()).not.toContain('Failed to retry entity extraction');
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it('does not call a queued classification retry failed when only the stats refresh fails', async () => {
+    fetchInstanceStats.mockRejectedValue(new Error('stats down'));
+    const withFailedClassification = stats({ COMPLETED: 5 });
+    withFailedClassification.stats.extractionStatus = {
+      FAILED: 2,
+    } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
+
+    await waitFor(() => expect(fetchInstanceStats).toHaveBeenCalled());
+    expect(toastTitles()).not.toContain('Failed to retry classification');
+  });
+
   it('reports a failed entity extraction retry', async () => {
     reindexConnector.mockRejectedValue(new Error('nope'));
     const withFailedEntities = stats({ COMPLETED: 5 });

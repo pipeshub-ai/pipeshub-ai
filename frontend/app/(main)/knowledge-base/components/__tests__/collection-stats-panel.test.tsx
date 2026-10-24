@@ -71,7 +71,7 @@ describe('CollectionStatsPanel: entity extraction retry', () => {
   it('hides the retry when no record failed entity extraction', async () => {
     openWith(stats(undefined, { COMPLETED: 5, FAILED: 0 }));
 
-    await waitFor(() => expect(screen.getByText('Records Status')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Records status')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /Retry failed entity extraction/ })).toBeNull();
   });
 
