@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.agent_loop_lib.context.protection import current_request_index, current_request_text
+from app.agent_loop_lib.context.protection import (
+    current_request_index,
+    current_request_text,
+)
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,

@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import DEFAULT_MAX_RESULT_CHARS
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
 from app.agent_loop_lib.tools.base import (
     ParameterType,
     Tool,
