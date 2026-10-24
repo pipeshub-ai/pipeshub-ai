@@ -1147,22 +1147,26 @@ class OpenAITransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        try:
-            return await self._complete_once(
-                messages=messages, tools=tools, system=system, model=model,
-                thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks, tool_choice=tool_choice,
-            )
-        except Exception as exc:
-            dropped = self._drop_cache_params(exc)
-            mode = None if dropped else self._shape_fallback(exc)
-            if not dropped and mode is None:
-                raise
-        result = await self._complete_once(
-            messages=messages, tools=tools, system=system, model=model,
-            thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks, tool_choice=tool_choice,
-        )
+        """Resent without each cache parameter the endpoint refuses (each
+        refusal shrinks the plan, so this ends), and once on a request-shape
+        conflict."""
+        mode: str | None = None
+        while True:
+            try:
+                result = await self._complete_once(
+                    messages=messages, tools=tools, system=system, model=model,
+                    thinking_budget=thinking_budget, effort=effort,
+                    system_blocks=system_blocks, tool_choice=tool_choice,
+                )
+                break
+            except Exception as exc:
+                if self._drop_cache_params(exc):
+                    continue
+                if mode is not None:
+                    raise
+                mode = self._shape_fallback(exc)
+                if mode is None:
+                    raise
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
         if mode is not None:
@@ -1181,36 +1185,35 @@ class OpenAITransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream, retrying once on a request-shape conflict.
+        """Stream, resending without each refused cache parameter, and once on
+        a request-shape conflict.
 
-        The retry only happens if it fires before anything was yielded --
+        A retry only happens if it fires before anything was yielded --
         re-opening a stream that already emitted deltas would replay them to the
         client.
         """
-        emitted = False
-        try:
-            async for event in self._stream_once(
-                messages=messages, tools=tools, system=system, model=model,
-                thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks, tool_choice=tool_choice,
-            ):
-                emitted = True
-                yield event
-            return
-        except Exception as exc:
-            # Retrying after deltas reached the client would replay them.
-            if emitted:
-                raise
-            dropped = self._drop_cache_params(exc)
-            mode = None if dropped else self._shape_fallback(exc)
-            if not dropped and mode is None:
-                raise
-
-        async for event in self._stream_once(
-            messages=messages, tools=tools, system=system, model=model,
-            thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks, tool_choice=tool_choice,
-        ):
-            yield event
+        mode: str | None = None
+        while True:
+            emitted = False
+            try:
+                async for event in self._stream_once(
+                    messages=messages, tools=tools, system=system, model=model,
+                    thinking_budget=thinking_budget, effort=effort,
+                    system_blocks=system_blocks, tool_choice=tool_choice,
+                ):
+                    emitted = True
+                    yield event
+                break
+            except Exception as exc:
+                # Retrying after deltas reached the client would replay them.
+                if emitted:
+                    raise
+                if self._drop_cache_params(exc):
+                    continue
+                if mode is not None:
+                    raise
+                mode = self._shape_fallback(exc)
+                if mode is None:
+                    raise
         if mode is not None:
             await self._record_api_mode(mode)
