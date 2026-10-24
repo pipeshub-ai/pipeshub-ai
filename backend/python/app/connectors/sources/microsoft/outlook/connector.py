@@ -2041,7 +2041,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     )
 
                 if not response.success:
-                    if page_num == 1 and is_no_mailbox_error(response.error):
+                    if page_num == 1 and await self._has_no_mailbox(user_id, response.error):
                         # An unlicensed user: an empty mailbox, not a failed one that keeps
                         # every run incomplete.
                         self.logger.info(f"User {user_id} has no Exchange Online mailbox; nothing to sync")
@@ -3055,6 +3055,24 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 f"❌ Error streaming record {record.id}: {e}", exc_info=True
             )
             raise graph_stream_error(e, self.display_name) from e
+
+    async def _has_no_mailbox(self, user_id: str, error: object) -> bool:
+        """Whether a failed folder listing means the user has no mailbox. A 404 whose text lacks
+        the Graph code (newer Kiota drops it) is asked again for Graph's own error body."""
+        if is_no_mailbox_error(error):
+            return True
+        if graph_error_status(error) != HttpStatusCode.NOT_FOUND.value:
+            return False
+        try:
+            response = await open_graph_stream(self.external_client, f"users/{quote(user_id, safe='')}/mailFolders?$top=1")
+            try:
+                body = await response.aread()
+            finally:
+                await response.aclose()
+        except Exception as e:
+            self.logger.warning(f"Could not confirm whether user {user_id} has a mailbox: {e}")
+            return False
+        return response.status_code == HttpStatusCode.NOT_FOUND.value and is_no_mailbox_error(body.decode(errors="replace"))
 
     async def _mailbox_owner_id(self, folder_id: str | None) -> str | None:
         """The Graph user id of the mailbox a folder belongs to, read from the stored folder tree

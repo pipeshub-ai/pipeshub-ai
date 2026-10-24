@@ -546,6 +546,16 @@ class TestMailDelta:
         assert "m1" in db.records
         assert db.deleted_record_groups == []
 
+    async def test_any_other_404_on_the_folder_listing_is_still_a_failed_mailbox(self, connector, api, db) -> None:
+        db.add_mailbox_user(BO, "pipeshub-bo")
+        api.on("GET", "/v1.0/users/u-bo/mailFolders", graph_error(404, "ErrorItemNotFound"))
+        serve_delta(api, {None: page([message("m1", "Plan")], delta_link=delta_url("D1"))})
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False
+        assert connector._skipped["mailboxes"] == 1
+
     async def test_a_run_where_every_mailbox_failed_fails(self, connector, api, db) -> None:
         api.on("GET", "/v1.0/users/u-ana/mailFolders", graph_error(403, "ErrorAccessDenied"))
 
@@ -2161,8 +2171,7 @@ class TestGraphErrorText:
             is_no_mailbox_error,
         )
 
-        assert is_no_mailbox_error(real_graph_error_text(404, "MailboxNotEnabledForRESTAPI", wrapped_as=wrapped_as))
-        assert not is_no_mailbox_error(real_graph_error_text(403, "ErrorAccessDenied", wrapped_as=wrapped_as))
+        assert not is_no_mailbox_error(real_graph_error_text(404, "ErrorItemNotFound", wrapped_as=wrapped_as))
         assert graph_error_status(real_graph_error_text(403, "ErrorAccessDenied", wrapped_as=wrapped_as)) == 403
         assert graph_error_status(real_graph_error_text(401, "InvalidAuthenticationToken", wrapped_as=wrapped_as)) == 401
         assert is_folder_not_found_error(real_graph_error_text(404, "itemNotFound", wrapped_as=wrapped_as))

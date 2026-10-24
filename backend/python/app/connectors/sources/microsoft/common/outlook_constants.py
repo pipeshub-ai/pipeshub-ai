@@ -89,9 +89,9 @@ _NO_MAILBOX = re.compile(r"MailboxNotEnabledForRESTAPI|ResourceNotFound")
 
 
 def is_no_mailbox_error(error: object) -> bool:
-    """True when reading a user's folder list failed because the user has no mailbox. Newer Kiota
-    releases leave the Graph code out of the error text, so a 404 on that list counts too."""
-    return graph_error_status(error) == 404 or bool(_NO_MAILBOX.search(str(error)))
+    """True when ``error`` (an error text or a Graph error body) names a missing mailbox; any
+    other 404 is not one. Newer Kiota releases leave the code out of the text they pass on."""
+    return bool(_NO_MAILBOX.search(str(error)))
 
 
 # Microsoft sign-in (AADSTS) codes of a failed token request, and what to fix.
