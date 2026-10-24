@@ -199,6 +199,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 FROM ${NODE_IMAGE} AS node-bins
 
 FROM runtime-apt AS runtime-base
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY --from=node-bins /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-bins /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \

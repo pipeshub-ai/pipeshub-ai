@@ -24,6 +24,7 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22@sha256:9874eb7afe5ca16c363fe80b294fe700
 FROM ${UV_IMAGE} AS uv
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Reconcile the base with the lock checked out in this build. When the base was
 # published from this lock the install changes nothing, so the site-packages
 # layer copied below stays byte-identical across releases. REQUIRE_CURRENT_BASE=1
@@ -84,7 +85,8 @@ COPY backend/nodejs/apps/src ./src
 RUN npm run build
 # tsc does not emit .hbs, and emailTemplates.ts reads them from ${process.cwd()}/src
 # at runtime, so every template under src is staged here with its path kept.
-RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /app/templates/ \;
+WORKDIR /app/backend/src
+RUN mkdir -p /app/templates && find . -name '*.hbs' -exec cp --parents {} /app/templates/ \;
 
 FROM ${NODE_IMAGE} AS nodejs-prod-deps
 WORKDIR /app/backend
