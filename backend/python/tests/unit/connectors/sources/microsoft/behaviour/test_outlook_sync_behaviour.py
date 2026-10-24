@@ -2075,7 +2075,7 @@ class TestOutlookPersonal:
         personal_api.on("GET", me_delta_path(), graph_error(401, "InvalidAuthenticationToken"))
         personal_api.on("GET", me_delta_path("sent"), graph_error(401, "InvalidAuthenticationToken"))
 
-        with pytest.raises(Exception, match="InvalidAuthenticationToken"):
+        with pytest.raises(Exception, match="401"):  # the Graph code is not in newer Kiota error text
             await personal.run_sync()
 
         assert len(refreshes) == 1, "each rejected refresh counts toward deactivating the connector"
