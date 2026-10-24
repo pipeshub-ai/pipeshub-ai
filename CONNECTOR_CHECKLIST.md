@@ -121,7 +121,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] Rate limits come from `with_resilience_config`; `Retry-After` is honoured; parallel calls are bounded.
 - [ ] Listing and writing go page by page and batch by batch; memory stays bounded on a large tenant; files are streamed.
 - [ ] No graph, vector, broker or config-store client is imported.
-- [ ] Every request to a user-supplied address goes through the address guard: `HTTPClient`, or `guarded_async_client`, `AddressGuardAdapter` or `check_url_allowed` for another library ([02-low-level-design.md](./docs/connectors/02-low-level-design.md)). No bare `httpx.AsyncClient`, `aiohttp.ClientSession` or `requests.Session`. A user-supplied base URL requires `https` unless the human agreed otherwise.
+- [ ] Every request to a user-supplied address goes through the address guard: `HTTPClient`, `guarded_async_client` or `AddressGuardAdapter`, or `check_url_allowed` only for an SDK that connects by itself and takes no guarded transport ([02-low-level-design.md](./docs/connectors/02-low-level-design.md)). No bare `httpx.AsyncClient`, `aiohttp.ClientSession` or `requests.Session`. A user-supplied base URL requires `https` unless the human agreed otherwise.
 
 ## 14. Tests and CI
 
