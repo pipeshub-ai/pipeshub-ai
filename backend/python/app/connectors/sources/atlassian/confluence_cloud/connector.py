@@ -608,7 +608,8 @@ class ConfluenceConnector(BaseConnector):
         self._run_started_at = 0.0
         self._persistent_problems: set[str] = set()
         self._quota_hit_in_run = False
-        self._sync_running = False
+        # Syncs, re-indexes and streams running on this instance; the HTTP client closes after the last.
+        self._in_use = 0
         self._sync_finished = False
         self._close_after_sync = False
         # Pages just stored as blocks, whose comment records from older versions are dropped once saved.
@@ -913,7 +914,7 @@ class ConfluenceConnector(BaseConnector):
         self._persistent_problems = set()
         self._quota_hit_in_run = False
         self._run_started_at = time.time()
-        self._sync_running = True
+        self._in_use += 1
         self._sync_finished = False
         self._now_blocks = {}
         try:
@@ -977,11 +978,15 @@ class ConfluenceConnector(BaseConnector):
                 self._note_problem(f"The sync stopped: {str(e)[:200]}")
             raise
         finally:
-            self._sync_running = False
             await self._report_sync_problems()
-            if self._close_after_sync:
-                self._close_after_sync = False
-                await self.cleanup()
+            await self._release()
+
+    async def _release(self) -> None:
+        """One use of this instance ended; close the client if it was evicted meanwhile."""
+        self._in_use -= 1
+        if self._close_after_sync and not self._in_use:
+            self._close_after_sync = False
+            await self.cleanup()
 
     # Per connector, across instances: the persistent conditions last reported, and the quota
     # reset time last reported.
@@ -2777,57 +2782,67 @@ class ConfluenceConnector(BaseConnector):
 
         A space's page or blog post checkpoint moves only once that space's removals
         for that type have succeeded, so a failed read or delete is repeated by the
-        next sync.
+        next sync. A space that fails is reported and the rest still sync.
         """
         for space in spaces:
-            space_key = space.short_name
-
-            self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
-            await self._sync_folders(space_key)
-            await self._remove_folders_gone(space)
-
             try:
-                await self._reindex_pages_with_changed_comments(space_key)
+                await self._sync_space_content(space)
             except AtlassianQuotaExhausted:
                 raise
             except Exception as e:
-                # The comment check keeps its clock, so the next sync looks at these comments again.
-                self.logger.warning(f"Could not check the comments of space {space_key}: {e}", exc_info=True)
+                self.logger.error(f"Could not sync space {space.short_name}: {e}", exc_info=True)
+                self._note_problem(f"Space {space.short_name}: sync failed ({str(e)[:200]}); the next sync tries again")
+
+    async def _sync_space_content(self, space: RecordGroup) -> None:
+        """One space's folders, pages and blog posts, then what left it."""
+        space_key = space.short_name
+
+        self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
+        await self._sync_folders(space_key)
+        await self._remove_folders_gone(space)
+
+        try:
+            await self._reindex_pages_with_changed_comments(space_key)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            # The comment check keeps its clock, so the next sync looks at these comments again.
+            self.logger.warning(f"Could not check the comments of space {space_key}: {e}", exc_info=True)
+            self._note_problem(
+                f"Space {space_key}: couldn't check for new comments; the next sync tries again", unread=False
+            )
+
+        for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
+            self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
+            listing = await self._sync_content(space_key, record_type, defer_checkpoint=True)
+            settled = await self._remove_content_gone_from_source(space, record_type, listing)
+            if settled:
+                if listing.checkpoint_time:
+                    await self.pages_sync_point.update_sync_point(
+                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
+                    )
+            else:
+                self.logger.warning(
+                    f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
+                    "could not be checked or made, so the next sync repeats them"
+                )
                 self._note_problem(
-                    f"Space {space_key}: couldn't check for new comments; the next sync tries again", unread=False
+                    f"Space {space_key}: couldn't check or remove some deleted items; the next sync tries again",
+                    # After a full listing an unsettled check may hide items it missed: no unlink then.
+                    unread=listing.full,
                 )
 
-            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
-                self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
-                listing = await self._sync_content(space_key, record_type, defer_checkpoint=True)
-                settled = await self._remove_content_gone_from_source(space, record_type, listing)
-                if settled:
-                    if listing.checkpoint_time:
-                        await self.pages_sync_point.update_sync_point(
-                            listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
-                        )
-                else:
-                    self.logger.warning(
-                        f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
-                        "could not be checked or made, so the next sync repeats them"
-                    )
-                    self._note_problem(
-                        f"Space {space_key}: couldn't check or remove some deleted items; the next sync tries again",
-                        # After a full listing an unsettled check may hide items it missed: no unlink then.
-                        unread=listing.full,
-                    )
-
-            try:
-                await self._resync_pages_with_changed_attachments(space_key)
-            except AtlassianQuotaExhausted:
-                raise
-            except Exception as e:
-                # The attachment check keeps its clock, so the next sync looks at these files again.
-                self.logger.warning(f"Could not check the attachments of space {space_key}: {e}", exc_info=True)
-                self._note_problem(
-                    f"Space {space_key}: couldn't check for changed attachments; the next sync tries again",
-                    unread=False,
-                )
+        try:
+            await self._resync_pages_with_changed_attachments(space_key)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            # The attachment check keeps its clock, so the next sync looks at these files again.
+            self.logger.warning(f"Could not check the attachments of space {space_key}: {e}", exc_info=True)
+            self._note_problem(
+                f"Space {space_key}: couldn't check for changed attachments; the next sync tries again",
+                unread=False,
+            )
 
     async def _remove_content_gone_from_source(
         self, space: RecordGroup, record_type: RecordType, listing: ContentListing
@@ -5653,6 +5668,15 @@ class ConfluenceConnector(BaseConnector):
         return ""
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record; see ``_stream_record``."""
+        # shortcut: covers building the response; a file still downloading after it is returned is not covered.
+        self._in_use += 1
+        try:
+            return await self._stream_record(record)
+        finally:
+            await self._release()
+
+    async def _stream_record(self, record: Record) -> StreamingResponse:
         """
         Stream record content (page BlocksContainer or attachment file) from Confluence.
 
@@ -7118,6 +7142,14 @@ class ConfluenceConnector(BaseConnector):
         await self.run_sync()
 
     async def reindex_records(self, records: list[Record]) -> None:
+        """Reindex records; see ``_reindex_records``."""
+        self._in_use += 1
+        try:
+            await self._reindex_records(records)
+        finally:
+            await self._release()
+
+    async def _reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Confluence records.
 
         This method:
@@ -7440,9 +7472,9 @@ class ConfluenceConnector(BaseConnector):
     async def cleanup(self) -> None:
         """Close the HTTP client, so its pooled connections go when the connector does."""
         self.logger.info("Cleaning up Confluence connector resources")
-        if self._sync_running:
-            # The router evicts a cached instance on a settings change; a sync on it still needs the client.
-            self.logger.info("A sync is running on this connector; its HTTP client closes when the sync ends")
+        if self._in_use:
+            # The router evicts a cached instance on a settings change; work on it still needs the client.
+            self.logger.info("Work is running on this connector; its HTTP client closes when it ends")
             self._close_after_sync = True
             return
         client = self.external_client.get_client() if self.external_client else None

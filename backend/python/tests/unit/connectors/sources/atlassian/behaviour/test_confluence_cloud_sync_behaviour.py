@@ -2496,6 +2496,37 @@ class TestSmallAuditFixes:
 
         assert client.client is None
 
+    async def test_cleanup_during_a_reindex_closes_the_client_after_it(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", {"results": []})
+        await connector.test_connection_and_access()
+        client = connector.external_client.get_client()
+        open_during: list[bool] = []
+
+        async def reindex(_: object) -> None:
+            await connector.cleanup()  # the instance is evicted meanwhile
+            open_during.append(client.client is not None)
+
+        connector._reindex_records = reindex
+        await connector.reindex_records([])
+
+        assert open_during == [True] and client.client is None
+
+    async def test_a_space_that_fails_does_not_stop_the_others(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        done: list[str] = []
+
+        async def one(space: object) -> None:
+            if space.short_name == "ENG":
+                raise RuntimeError("boom")
+            done.append(space.short_name)
+
+        connector._sync_space_content = one
+        await connector._sync_spaces_content([ENG, ENG.model_copy(update={"short_name": "OPS"})])
+
+        assert done == ["OPS"]
+        assert any("Space ENG: sync failed" in p for p in connector._sync_problems)
+
     async def test_a_cancelled_sync_sends_no_notice(self, api, db, checkpoints) -> None:
         connector, _ = await ready_connector(db, checkpoints)
         for step in ("_sync_users", "register_authenticated_source_user"):
