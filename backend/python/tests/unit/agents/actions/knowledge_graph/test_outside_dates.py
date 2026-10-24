@@ -182,6 +182,12 @@ class TestLabels:
         )
         assert record_dates_label({}) == "no source date"
 
+    def test_a_knowledge_base_upload_names_what_its_date_is(self) -> None:
+        uploaded = _ms("2026-10-15") + 40
+        kb = {"connectorName": "KB", "origin": "UPLOAD", "createdAtTimestamp": uploaded}
+        assert record_dates_label({**_record("u", "2026-10-15"), **kb}) == "uploaded 2026-10-15"
+        assert record_dates_label({**_record("f", "2025-03-03"), **kb}) == "file last modified 2025-03-03"
+
     def test_the_assistants_list(self) -> None:
         picked = pick_outside_dates(_response(("release", _record("release", "2026-05-21"))), _WEEK)
 
