@@ -93,6 +93,20 @@ class TestRecordDates:
         legacy_file = _kb_doc(sourceCreatedAtTimestamp=FILE_MTIME, sourceLastModifiedTimestamp=FILE_MTIME)
         assert RecordDates.from_graph(legacy_file).origin is SourceTimestampOrigin.FILE
 
+    def test_a_re_upload_stored_before_the_origin_was_kept_is_not_called_a_file_time(self) -> None:
+        # The first upload sent the file's time; a later API upload sent none,
+        # and a rename has since moved updatedAtTimestamp.
+        reuploaded = _kb_doc(
+            sourceCreatedAtTimestamp=FILE_MTIME,
+            sourceLastModifiedTimestamp=UPLOADED + 30 * DAY_MS,
+            updatedAtTimestamp=UPLOADED + 31 * DAY_MS,
+        )
+        assert RecordDates.from_graph(reuploaded).listing_date() == ("uploaded", UPLOADED)
+
+    def test_a_later_versions_time_older_than_the_first_upload_is_the_files(self) -> None:
+        older = _kb_doc(sourceCreatedAtTimestamp=FILE_MTIME, sourceLastModifiedTimestamp=FILE_MTIME + DAY_MS)
+        assert RecordDates.from_graph(older).listing_date() == ("fileModified", FILE_MTIME + DAY_MS)
+
     def test_an_origin_this_build_does_not_know_is_inferred(self) -> None:
         assert RecordDates.from_graph(_kb_doc(sourceTimestampOrigin="later")).origin is SourceTimestampOrigin.UPLOAD
 
@@ -115,6 +129,11 @@ class TestRecordHeader:
         assert lines[0].startswith("File Last Modified: 2025-03-04 11:06:40 UTC")
         assert lines[1].startswith("Uploaded At: 2026-10-15 18:48:19 UTC")
         assert not any(line.startswith(("Created At", "Last Updated At")) for line in lines)
+
+    def test_a_re_upload_stored_before_the_origin_was_kept_shows_no_file_time(self) -> None:
+        record = _kb_record(source_created_at=FILE_MTIME, source_updated_at=UPLOADED + 30 * DAY_MS)
+        lines = _date_lines(record.to_llm_context())
+        assert lines == ["Uploaded At: 2026-10-15 18:48:19 UTC (Thu, Oct 15, 2026, 6:48 PM UTC) (upload time, not a document date)"]
 
     def test_a_connectors_record_keeps_created_and_updated(self) -> None:
         record = _kb_record(origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE)
