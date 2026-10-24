@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { BotType } from '../types';
 
 // ========================================
@@ -124,6 +125,7 @@ export function BotCard({ name, botType, agentName, onManage }: BotCardProps) {
 // ========================================
 
 function ManageButton({ onClick }: { onClick: () => void }) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
@@ -147,7 +149,7 @@ function ManageButton({ onClick }: { onClick: () => void }) {
         justifyContent: 'center',
         gap: 'var(--space-2)',
         width: '100%',
-        height: 'var(--space-6)',
+        height: isMobile ? 44 : 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-a4)' : 'var(--accent-a3)',
         cursor: 'pointer',

@@ -37,6 +37,7 @@ from helper.admin_routes import (
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
+    router_mounts,
 )
 from helper.admin_route_conditional_table import (
     ADMIN,
@@ -169,6 +170,43 @@ def test_the_reader_finds_inline_and_router_wide_admin_checks(tmp_path: Path) ->
     assert got[("POST", "/api/v1/sample/gated/:id")] == (
         "authMiddleware.authenticate", "ValidationMiddleware.validate",
     )
+
+
+def test_the_reader_finds_admin_checks_in_a_spread_list(tmp_path: Path) -> None:
+    source = _write(tmp_path, "spread.routes.ts", """
+        export function createSpreadRouter(container: Container) {
+          const router = Router();
+          const guard = [authMiddleware.authenticate, userAdminCheck];
+          const open = [authMiddleware.authenticate];
+          router.get('/gated', ...guard, handler);
+          router.post('/checked/:id', ...guard, ValidationMiddleware.validate(schema), handler);
+          router.get('/open', ...open, handler);
+          return router;
+        }
+    """)
+    routes = {(r.method, r.path): r for r in admin_routes_in_file(source, "/api/v1/spread")}
+    assert set(routes) == {("GET", "/api/v1/spread/gated"), ("POST", "/api/v1/spread/checked/:id")}
+    assert routes[("POST", "/api/v1/spread/checked/:id")].after_admin == ("ValidationMiddleware.validate",)
+
+
+def test_a_router_mounted_outside_app_ts_is_found(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        // Routers come from `./modules/*` through the barrel.
+        this.app.use('/api/v1/main', createMainRouter(container));
+    """)
+    (tmp_path / "feature").mkdir()
+    _write(tmp_path, "feature/boot.ts", """
+        /**
+         *   app.use('/api/v1/quoted', createFeatureRouter(container))
+         */
+        export function mountRoutes(app) {
+          app.use('/api/v1/feature', createFeatureRouter(container));
+        }
+    """)
+    assert router_mounts(tmp_path) == {
+        "createMainRouter": {"/api/v1/main"},
+        "createFeatureRouter": {"/api/v1/feature"},
+    }
 
 
 def _conditional_rows() -> dict[str, ConditionalRoute]:

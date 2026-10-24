@@ -710,8 +710,8 @@ class TestSanitizePathSegmentEdgeCases:
     def test_unicode_characters_preserved(self) -> None:
         assert sanitize_path_segment("日本語ファイル") == "日本語ファイル"
 
-    def test_empty_string(self) -> None:
-        assert sanitize_path_segment("") == ""
+    def test_empty_string_keeps_a_segment(self) -> None:
+        assert sanitize_path_segment("") == "_"
 
     def test_only_unsafe_chars(self) -> None:
         assert sanitize_path_segment('/:*?"<>|') == "________"
@@ -903,8 +903,8 @@ class TestSanitizeControlChars:
     def test_integer_returns_empty(self) -> None:
         assert sanitize_path_segment(123) == ""  # type: ignore[arg-type]
 
-    def test_whitespace_only_returns_empty(self) -> None:
-        assert sanitize_path_segment("   ") == ""
+    def test_whitespace_only_keeps_a_segment(self) -> None:
+        assert sanitize_path_segment("   ") == "_"
 
 
 # ---------------------------------------------------------------------------
@@ -913,28 +913,42 @@ class TestSanitizeControlChars:
 
 
 class TestEmptySegmentFiltering:
-    """Whitespace-only or None segments must be filtered AFTER sanitization
-    to prevent double-slash paths like ``records/conn-1//child``."""
+    """A blank name keeps its own ``_`` segment: dropping it would file the
+    record at its parent's path, where the parent's own documents and its
+    children already live. Non-string segments are still dropped."""
 
     @pytest.mark.asyncio
-    async def test_whitespace_only_segment_filtered(self) -> None:
-        """A whitespace-only recordName passes the graph query's != ''
-        filter but becomes '' after sanitize — must not produce //."""
+    async def test_whitespace_only_segment_keeps_its_level(self) -> None:
         record = _Record(id="rec-1", record_name=None)
         gp = _make_graph_provider()
         gp.get_record_path_segments = AsyncMock(return_value=["   ", "child.txt"])
         result = await build_hierarchical_storage_path(record, gp)
         assert "//" not in result
-        assert result == "records/conn-1/child.txt"
+        assert result == "records/conn-1/_/child.txt"
 
     @pytest.mark.asyncio
-    async def test_all_whitespace_segments_fall_back_to_record_name(self) -> None:
-        """If every segment sanitizes to empty, fallback to record_name."""
+    async def test_blank_record_does_not_take_its_parents_path(self) -> None:
+        gp = _make_graph_provider()
+        gp.get_record_path_segments = AsyncMock(return_value=["Docs"])
+        folder = await build_hierarchical_storage_path(_Record(id="f"), gp)
+        gp.get_record_path_segments = AsyncMock(return_value=["Docs", "   "])
+        blank = await build_hierarchical_storage_path(_Record(id="r"), gp)
+        assert folder == "records/conn-1/Docs"
+        assert blank == "records/conn-1/Docs/_"
+
+    @pytest.mark.asyncio
+    async def test_all_whitespace_segments_keep_their_levels(self) -> None:
         record = _Record(id="rec-1", record_name="fallback.txt")
         gp = _make_graph_provider()
         gp.get_record_path_segments = AsyncMock(return_value=["   ", "\t", "\n"])
         result = await build_hierarchical_storage_path(record, gp)
-        assert result == "records/conn-1/fallback.txt"
+        assert result == "records/conn-1/_/_/_"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_record_name_fallback_has_no_trailing_slash(self) -> None:
+        record = _Record(id=None, record_name="   ")
+        result = await build_hierarchical_storage_path(record, _make_graph_provider())
+        assert result == "records/conn-1/_"
 
     @pytest.mark.asyncio
     async def test_none_in_segments_list_filtered(self) -> None:
@@ -957,38 +971,35 @@ class TestEmptySegmentFiltering:
         assert result == "records/conn-1/child.txt"
 
     @pytest.mark.asyncio
-    async def test_whitespace_only_group_name_filtered(self) -> None:
-        """Whitespace-only group name from get_record_group_path must not
-        produce a // in the path."""
+    async def test_whitespace_only_group_name_keeps_its_level(self) -> None:
         record = _Record(record_group_id="grp-1", id=None, record_name="file.txt")
         gp = _make_graph_provider()
         gp.get_record_group_path = AsyncMock(return_value=["  ", "Valid"])
         result = await build_hierarchical_storage_path(record, gp)
         assert "//" not in result
-        assert result == "records/conn-1/Valid/file.txt"
+        assert result == "records/conn-1/_/Valid/file.txt"
 
     @pytest.mark.asyncio
     async def test_mixed_valid_and_empty_segments(self) -> None:
-        """Only non-empty sanitized segments appear in the path."""
         record = _Record(id="rec-1", record_name=None)
         gp = _make_graph_provider()
         gp.get_record_path_segments = AsyncMock(
             return_value=["Root", "   ", "Middle", "", "leaf.txt"]
         )
         result = await build_hierarchical_storage_path(record, gp)
-        assert result == "records/conn-1/Root/Middle/leaf.txt"
+        assert result == "records/conn-1/Root/_/Middle/_/leaf.txt"
         assert "//" not in result
 
 
 class TestBuildRecordGroupPrefixFromChainDefensive:
-    def test_whitespace_only_names_filtered(self) -> None:
+    def test_whitespace_only_names_keep_their_level(self) -> None:
         result = build_record_group_prefix_from_chain("conn-1", ["  ", "Valid"])
-        assert result == "records/conn-1/Valid"
+        assert result == "records/conn-1/_/Valid"
         assert "//" not in result
 
-    def test_all_whitespace_names_returns_none(self) -> None:
+    def test_all_whitespace_names_still_name_a_group(self) -> None:
         result = build_record_group_prefix_from_chain("conn-1", ["  ", "\t"])
-        assert result is None
+        assert result == "records/conn-1/_/_"
 
     def test_none_in_list_filtered(self) -> None:
         result = build_record_group_prefix_from_chain("conn-1", [None, "Valid"])  # type: ignore[list-item]
@@ -1255,3 +1266,108 @@ class TestGraphErrorsAreUnknownAncestry:
         record = _Record(record_group_id=None, id="rec-1", record_name="f.txt")
         result = await build_hierarchical_storage_path(record, _FailingOnlyWhenAskedProvider())
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Byte limits: a segment must fit a filesystem name (255 bytes) and the whole
+# path an S3/Azure key (1024 bytes, including Node's prefix and suffix).
+# Names that already fit keep their exact segment, since moves recompute a
+# record's old path from its name.
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentByteLimit:
+    def test_multibyte_name_fits_a_filesystem_name(self) -> None:
+        seg = sanitize_path_segment("文" * 150)
+        assert len(seg.encode("utf-8")) <= 255
+        assert seg.startswith("文" * 10)
+
+    def test_four_byte_emoji_name_fits(self) -> None:
+        seg = sanitize_path_segment("📁" * 100)
+        assert len(seg.encode("utf-8")) <= 255
+        assert "�" not in seg
+
+    def test_names_that_differ_after_the_cut_stay_distinct(self) -> None:
+        a = sanitize_path_segment("文" * 100 + "A")
+        b = sanitize_path_segment("文" * 100 + "B")
+        assert a != b
+
+    def test_cut_names_are_stable(self) -> None:
+        assert sanitize_path_segment("文" * 150) == sanitize_path_segment("文" * 150)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["a" * 100, "é" * 100, "文" * 85, "Report Q3.pdf", "x" * 250, "Ω" * 100],
+    )
+    def test_names_within_the_limit_are_unchanged(self, name: str) -> None:
+        # 85 CJK chars = 255 bytes, the largest that fits; "x" * 250 is cut to
+        # 100 chars exactly as before.
+        assert sanitize_path_segment(name) == name[:100]
+
+    def test_first_name_over_the_limit_is_cut(self) -> None:
+        seg = sanitize_path_segment("文" * 86)  # 258 bytes
+        assert len(seg.encode("utf-8")) <= 255
+        assert seg != "文" * 86
+
+
+class TestTotalPathCap:
+    def test_short_paths_are_unchanged(self) -> None:
+        assert build_record_group_prefix_from_chain("c", ["A", "B"]) == "records/c/A/B"
+
+    def test_deep_chain_fits_a_storage_key(self) -> None:
+        chain = ["x" * 90 + str(i) for i in range(15)]
+        prefix = build_record_group_prefix_from_chain("conn-1", chain)
+        assert len(prefix.encode("utf-8")) <= 900
+        assert prefix.startswith("records/conn-1/" + chain[0] + "/")
+
+    def test_deep_chains_differing_only_at_the_leaf_stay_distinct(self) -> None:
+        chain = ["x" * 90 + str(i) for i in range(15)]
+        a = build_record_group_prefix_from_chain("conn-1", [*chain, "A"])
+        b = build_record_group_prefix_from_chain("conn-1", [*chain, "B"])
+        assert a != b
+
+    def test_path_at_the_cap_is_unchanged(self) -> None:
+        parts = ["y" * 100] * 8 + ["z" * 82]  # records/c/ + 882 + 8 slashes = 900
+        expected = "records/c/" + "/".join(parts)
+        assert len(expected.encode()) == 900
+        assert build_record_group_prefix_from_chain("c", parts) == expected
+
+    def test_path_one_byte_over_the_cap_is_folded(self) -> None:
+        parts = ["y" * 100] * 8 + ["z" * 83]
+        folded = build_record_group_prefix_from_chain("c", parts)
+        assert len(folded.encode()) <= 900
+        assert folded != "records/c/" + "/".join(parts)
+
+    @pytest.mark.asyncio
+    async def test_deep_record_path_fits_a_storage_key(self) -> None:
+        record = _Record(id="rec-1")
+        gp = _make_graph_provider()
+        gp.get_record_path_segments = AsyncMock(return_value=["文" * 85] * 6)
+        path = await build_hierarchical_storage_path(record, gp)
+        assert len(path.encode("utf-8")) <= 900
+        assert path.startswith("records/conn-1/")
+
+    @pytest.mark.asyncio
+    async def test_record_under_a_deep_group_keeps_the_connector_prefix(self) -> None:
+        record = _Record(record_group_id="g", id="rec-1")
+        gp = _make_graph_provider()
+        gp.get_record_group_path = AsyncMock(return_value=["g" * 100] * 12)
+        gp.get_record_path_segments = AsyncMock(return_value=["leaf.txt"])
+        path = await build_hierarchical_storage_path(record, gp)
+        assert len(path.encode("utf-8")) <= 900
+        assert path.startswith("records/conn-1/" + "g" * 100 + "/")
+
+
+class TestWebStoragePathCredentials:
+    @pytest.mark.asyncio
+    async def test_userinfo_is_not_a_directory(self) -> None:
+        record = _Record(connector_name="WEB", weburl="https://bob:s3cret@example.com/docs/a")
+        path = await build_hierarchical_storage_path(record, _make_graph_provider())
+        assert "s3cret" not in path
+        assert path == "records/conn-1/example.com/docs/a"
+
+    @pytest.mark.asyncio
+    async def test_host_with_port_is_kept(self) -> None:
+        record = _Record(connector_name="WEB", weburl="https://example.com:8443/a")
+        path = await build_hierarchical_storage_path(record, _make_graph_provider())
+        assert path == "records/conn-1/example.com_8443/a"

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
+import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -401,6 +402,7 @@ function TeamsPageContent() {
       },
       {
         key: 'createdBy',
+        hideOnMobile: true,
         label: t('workspace.teams.columns.createdBy'),
         width: '20%',
         minWidth: '180px',
@@ -422,6 +424,7 @@ function TeamsPageContent() {
       },
       {
         key: 'createdOn',
+        hideOnMobile: true,
         label: t('workspace.teams.columns.createdOn'),
         width: '140px',
         render: (team) => (
@@ -497,8 +500,7 @@ function TeamsPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: '40px',
-        paddingRight: '40px',
+        paddingInline: PAGE_PADDING_X,
       }}
     >
       {/* Header */}

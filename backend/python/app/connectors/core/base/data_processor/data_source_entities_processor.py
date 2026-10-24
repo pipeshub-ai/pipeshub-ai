@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
@@ -84,7 +84,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
-from app.services.vector_db.membership import record_group_id_from_edge
+from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -449,23 +449,38 @@ class DataSourceEntitiesProcessor:
                 )
                 continue
 
-            # When a collision was detected the endpoint moved only this
-            # record's documents at the exact path — no descendants were
-            # relocated.  Skip child-path rewriting so sibling records'
-            # pending moves still point at the correct (unmoved) location.
-            # A folder's collision-safe move did relocate its whole subtree, so
-            # its own descendants' moves are still rewritten; the twin's are not.
+            if not result.get("moved") and not result.get("failed"):
+                await self._move_from_actual_path(storage_cleanup, org_id, old_path, new_path, owner)
+
+            # An owner tuple moved only the listed content, so a later move is
+            # carried along only when its content is among it (or, without a
+            # collision, when its content is unknown: then the whole prefix
+            # moved). Two moves that swap names ("X"->"Y", "Y"->"X") must not
+            # carry each other. With a single vrid on a collision only the other
+            # records' documents at old_path itself stayed.
+            collided = bool(result.get("collision"))
             moved_vrids: set[str] | None = None
-            if result.get("collision"):
-                if not isinstance(owner, tuple):
-                    continue
+            exact_path_vrids: set[str] | None = None
+            if isinstance(owner, tuple):
                 moved_vrids = set(owner)
+            elif collided and isinstance(owner, str):
+                exact_path_vrids = {owner}
 
             prefix = old_path + "/"
             partial = bool(result.get("failed"))
             left_behind: list[list[str | None]] = []
             for j in range(i + 1, len(moves)):
-                if moved_vrids is not None and not _owner_within(moves[j][3], moved_vrids):
+                if (
+                    moved_vrids is not None
+                    and not _owner_within(moves[j][3], moved_vrids)
+                    and (collided or moves[j][3] is not None)
+                ):
+                    continue
+                if (
+                    exact_path_vrids is not None
+                    and moves[j][1] == old_path
+                    and not _owner_within(moves[j][3], exact_path_vrids)
+                ):
                     continue
                 j_old = moves[j][1]
                 j_new = moves[j][2]
@@ -491,6 +506,64 @@ class DataSourceEntitiesProcessor:
     # A deployment where several orgs share the graph turns this off, so a
     # caller that forgets the org fails instead of writing into another org.
     allow_first_org_fallback: bool = True
+
+    async def _move_from_actual_path(
+        self,
+        storage_cleanup: StorageCleanupHelper,
+        org_id: str,
+        old_path: str,
+        new_path: str,
+        owner: str | tuple[str, ...] | None,
+    ) -> None:
+        """A record's move found nothing at the old path it computed: a concurrent
+        move (its folder renamed by another request) already carried it elsewhere.
+        Move it from where its document actually is. Only when the content has one
+        holder and *new_path* is that holder's own path: shared content is filed
+        under one holder's path, so another holder's path never held it, and a
+        group or folder move owning one vrid must not pull that record's content
+        up to the folder's own path."""
+        if isinstance(owner, str):
+            vrid = owner
+        elif isinstance(owner, tuple) and len(owner) == 1:
+            vrid = owner[0]
+        else:
+            return
+        graph = storage_cleanup.graph_provider
+        try:
+            holders = remaining_record_keys(
+                await graph.get_records_by_virtual_record_id(vrid, raise_on_error=True)
+            )
+            if len(holders) != 1:
+                return
+            holder = await graph.get_record_by_id(holders[0])
+            if holder is None or await storage_cleanup.build_record_path(holder) != new_path:
+                return
+        except Exception as e:
+            self.logger.warning("Could not check the record holding vrid %s: %s", vrid, e)
+            return
+        try:
+            actual = await storage_cleanup.current_content_path(org_id, vrid)
+        except Exception as e:
+            self.logger.warning("Could not locate stored content of vrid %s: %s", vrid, e)
+            return
+        if not actual or actual in (old_path, new_path):
+            return
+        self.logger.info(
+            "Nothing at %s for vrid %s; moving it from where it is stored: %s -> %s",
+            old_path, vrid, actual, new_path,
+        )
+        try:
+            result = await storage_cleanup.move_record_tree(
+                org_id, actual, new_path, virtual_record_ids=[vrid],
+            )
+        except Exception as e:
+            self.logger.error("Blob tree move failed for %s -> %s: %s", actual, new_path, e)
+            return
+        if result.get("failed") or not result.get("moved"):
+            self.logger.warning(
+                "Stored content of vrid %s was not moved from %s to %s: %s",
+                vrid, actual, new_path, result,
+            )
 
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -2005,6 +2078,38 @@ class DataSourceEntitiesProcessor:
         pending_moves.append((self.org_id, old_path, new_path, owner))
         return pending_moves
 
+    async def _group_move_owner(
+        self,
+        storage_cleanup: StorageCleanupHelper,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[tuple[str, ...]]:
+        """The owners of a record group's PendingMoves: every vrid stored under it,
+        in batches of at most ``_MAX_FOLDER_MOVE_VRIDS``, one move each.
+
+        Two groups whose names sanitize alike ("Team" and "Team", "a/b" and
+        "a_b") share one storage prefix; naming the moved group's content keeps
+        the other group's files where they are, so the prefix is never moved
+        whole. When the content cannot be listed the move is skipped: the copies
+        stay readable where they are and follow the group when re-indexed.
+        """
+        try:
+            vrids = list(
+                await storage_cleanup.graph_provider.get_record_group_virtual_record_ids(
+                    record_group_id, transaction=transaction,
+                )
+            )
+        except Exception as e:
+            self.logger.error(
+                "Could not list content of record group %s; its stored content is not moved: %s",
+                record_group_id, e,
+            )
+            return []
+        return [
+            tuple(vrids[i:i + _MAX_FOLDER_MOVE_VRIDS])
+            for i in range(0, len(vrids), _MAX_FOLDER_MOVE_VRIDS)
+        ] or [()]
+
     async def _blob_move_owner(
         self,
         record: Record,
@@ -2038,8 +2143,6 @@ class DataSourceEntitiesProcessor:
                 record.id, str(e),
             )
             return vrid or None
-        if vrid and not descendants:
-            return vrid
         owned = ([vrid] if vrid else []) + [v for v in descendants if v != vrid]
         if len(owned) > _MAX_FOLDER_MOVE_VRIDS:
             # Keeps the move-tree request well under Node's 10 MB JSON limit;
@@ -2592,10 +2695,13 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
-            elif record.is_placeholder:
+            elif record.is_placeholder and not (
+                record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED
+            ):
                 # The record is upserted below whether or not its content changed,
                 # so a changed restriction reaches the node without a content edit.
-                # A stub carries no ACL and must not reset a real record's rule.
+                # A stub carries no ACL and must not reset a real record's rule, unless it
+                # knows its source restriction (a rewrite, or RESTRICTED) and so corrects it.
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
@@ -4088,7 +4194,12 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _reindex_event_payload(
-        record: Record, *, vector_db_only: bool, stages: list[str] | None = None
+        record: Record,
+        *,
+        vector_db_only: bool,
+        stages: list[str] | None = None,
+        stage_rev: str | None = None,
+        selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
@@ -4097,11 +4208,19 @@ class DataSourceEntitiesProcessor:
             payload["vectorDbOnly"] = True
         if stages:
             payload["stages"] = list(stages)
+            if selected:
+                # Null for a record selected with no revision: it has moved on once it has one.
+                payload["stageRev"] = stage_rev or None
         return payload
 
     @retry_on_deadlock()
     async def reindex_existing_records(
-        self, records: list[Record], *, vector_db_only: bool = False, stages: list[str] | None = None
+        self,
+        records: list[Record],
+        *,
+        vector_db_only: bool = False,
+        stages: list[str] | None = None,
+        stage_revisions: Mapping[str, str | None] | None = None,
     ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
@@ -4114,6 +4233,9 @@ class DataSourceEntitiesProcessor:
                 without re-parsing the source.
             stages: When given, indexing re-runs only these pipeline stages for each
                 record's current revision; the record stays searchable.
+            stage_revisions: Record id -> the revision its stages were selected on (None
+                when it had none). A record that has moved to another revision by the time
+                indexing reads the event is left to that revision's own stages.
 
         Returns:
             The ids whose reindex event reached the broker.
@@ -4164,7 +4286,11 @@ class DataSourceEntitiesProcessor:
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
                             "payload": self._reindex_event_payload(
-                                record, vector_db_only=vector_db_only, stages=stages
+                                record,
+                                vector_db_only=vector_db_only,
+                                stages=stages,
+                                stage_rev=(stage_revisions or {}).get(record.id),
+                                selected=record.id in (stage_revisions or {}),
                             ),
                         },
                     )
@@ -4311,6 +4437,7 @@ class DataSourceEntitiesProcessor:
                 # Sequential: an ArangoDB stream transaction does not support
                 # overlapping requests on the same transaction id.
                 old_prefix_snapshot: dict[str, str | None] = {}
+                moved_groups: list[tuple[RecordGroup, str]] = []
                 storage_cleanup = self._get_storage_cleanup()
                 if storage_cleanup:
                     for rg, _ in record_groups:
@@ -4318,7 +4445,10 @@ class DataSourceEntitiesProcessor:
                             connector_id=rg.connector_id,
                             external_id=rg.external_group_id,
                         )
-                        if not existing or existing.name == rg.name:
+                        if not existing or (
+                            existing.name == rg.name
+                            and existing.parent_external_group_id == rg.parent_external_group_id
+                        ):
                             continue
                         try:
                             old_prefix_snapshot[rg.external_group_id] = (
@@ -4347,6 +4477,11 @@ class DataSourceEntitiesProcessor:
                         rewritten.add(record_group.connector_id)
 
                     old_group_name: str | None = None
+                    parent_changed = (
+                        existing_record_group is not None
+                        and existing_record_group.parent_external_group_id
+                        != record_group.parent_external_group_id
+                    )
 
                     if existing_record_group is None:
                         record_group.id = str(uuid.uuid4())
@@ -4364,25 +4499,12 @@ class DataSourceEntitiesProcessor:
                         record_group.connector_id, CollectionNames.RECORD_GROUPS.value, record_group.id
                     )
 
-                    if old_group_name is not None and old_group_name != record_group.name:
-                        if storage_cleanup:
-                            new_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
-                                record_group.id,
-                                record_group.connector_id,
-                                transaction=tx_store.txn,
-                            )
-                            old_prefix = old_prefix_snapshot.get(
-                                record_group.external_group_id,
-                            )
-                            if old_prefix is None:
-                                old_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
-                                    record_group.id,
-                                    record_group.connector_id,
-                                    override_leaf_name=old_group_name,
-                                    transaction=tx_store.txn,
-                                )
-                            if old_prefix and new_prefix and old_prefix != new_prefix:
-                                pending_moves.append((self.org_id, old_prefix, new_prefix, None))
+                    if storage_cleanup and old_group_name is not None and (
+                        old_group_name != record_group.name or parent_changed
+                    ):
+                        # Its new prefix is known only once every group in this
+                        # batch has its new name and parent edge (below).
+                        moved_groups.append((record_group, old_group_name))
 
                     # 2. Create the BELONGS_TO edge for the organization and connector instance
                     org_relation = {
@@ -4633,6 +4755,34 @@ class DataSourceEntitiesProcessor:
                         replace=existing_record_group is not None,
                     )
 
+                for record_group, old_group_name in moved_groups:
+                    # The storage move is best-effort; it must not roll back the group writes.
+                    try:
+                        new_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                            record_group.id,
+                            record_group.connector_id,
+                            transaction=tx_store.txn,
+                        )
+                        old_prefix = old_prefix_snapshot.get(record_group.external_group_id)
+                        if old_prefix is None:
+                            old_prefix = await storage_cleanup.build_record_group_hierarchical_prefix(
+                                record_group.id,
+                                record_group.connector_id,
+                                override_leaf_name=old_group_name,
+                                transaction=tx_store.txn,
+                            )
+                    except Exception as e:
+                        self.logger.warning(
+                            "Could not compute the storage prefixes of moved group %s; its content is not moved: %s",
+                            record_group.id, e,
+                        )
+                        continue
+                    if old_prefix and new_prefix and old_prefix != new_prefix:
+                        owners = await self._group_move_owner(
+                            storage_cleanup, record_group.id, transaction=tx_store.txn,
+                        )
+                        pending_moves.extend((self.org_id, old_prefix, new_prefix, owner) for owner in owners)
+
             await self._access_changed(rewritten)
             await self._flush_pending_blob_moves(pending_moves)
 
@@ -4654,6 +4804,7 @@ class DataSourceEntitiesProcessor:
         """
         old_prefix: str | None = None
         new_prefix: str | None = None
+        group_owners: list[tuple[str, ...]] = []
         old_group_name: str | None = None
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -4703,6 +4854,9 @@ class DataSourceEntitiesProcessor:
                         override_leaf_name=old_group_name,
                         transaction=tx_store.txn,
                     )
+                    group_owners = await self._group_move_owner(
+                        storage_cleanup, existing_group.id, transaction=tx_store.txn,
+                    )
 
                 self.logger.debug(
                     f"Successfully renamed record group {folder_id} from '{old_group_name}' to '{new_name}' "
@@ -4718,7 +4872,9 @@ class DataSourceEntitiesProcessor:
         # and blob storage diverged until the next rename/move touches this
         # group or one of its records.
         if new_prefix and old_prefix and old_prefix != new_prefix:
-            await self._flush_pending_blob_moves([(self.org_id, old_prefix, new_prefix, None)])
+            await self._flush_pending_blob_moves(
+                [(self.org_id, old_prefix, new_prefix, owner) for owner in group_owners]
+            )
 
     @retry_on_deadlock()
     async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
@@ -4735,6 +4891,7 @@ class DataSourceEntitiesProcessor:
             )
         return bool(edges)
 
+    @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
@@ -5203,6 +5360,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_groups(connector_id, self.org_id, raise_on_error=raise_on_error)
 
+    @retry_on_deadlock()
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         """Write user groups without their members, one node per external id.
 
@@ -5235,6 +5393,7 @@ class DataSourceEntitiesProcessor:
         for ug in user_groups:
             self._note_full_sync_seen(ug.connector_id, GROUP_WRITTEN_WITHOUT_MEMBERS, ug.source_user_group_id)
 
+    @retry_on_deadlock()
     async def delete_edges_between_collections(
         self,
         from_id: str,
@@ -5263,6 +5422,7 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id, external_id=external_id
             )
 
+    @retry_on_deadlock()
     async def upsert_permission_edge(
         self,
         from_id: str,
@@ -5722,6 +5882,7 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
+    @retry_on_deadlock()
     async def update_user_group_name(
         self,
         external_group_id: str,
@@ -6298,6 +6459,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_creator_user(connector_id)
 
+    @retry_on_deadlock()
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
@@ -6317,10 +6479,12 @@ class DataSourceEntitiesProcessor:
                 raise_on_error=raise_on_error,
             )
 
+    @retry_on_deadlock()
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
 
+    @retry_on_deadlock()
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.delete_parent_child_edge_to_record(record_id)
@@ -6353,6 +6517,20 @@ class DataSourceEntitiesProcessor:
                 connector_id, conversation_index, thread_id, self.org_id, user_id
             )
 
+    @retry_on_deadlock()
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Take away everything the user was granted directly on this connector's content and groups, for a
+        person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            if not user:
+                return 0
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)
+        if removed:
+            await self._access_changed([connector_id])
+        return removed
+
+    @retry_on_deadlock()
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str
     ) -> None:
@@ -6376,6 +6554,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_weburl(weburl, self.org_id)
 
+    @retry_on_deadlock()
     async def create_record_relation(
         self, from_record_id: str, to_record_id: str, relation_type: str
     ) -> None:
@@ -6404,6 +6583,7 @@ class DataSourceEntitiesProcessor:
             # were gone would never come back to it.
             raise RuntimeError(f"Deletion failed: {(result or {}).get('reason')}")
 
+    @retry_on_deadlock()
     async def delete_records_and_relations(
         self, record_key: str, hard_delete: bool = False
     ) -> None:
@@ -6412,6 +6592,7 @@ class DataSourceEntitiesProcessor:
                 record_key, hard_delete=hard_delete
             )
 
+    @retry_on_deadlock()
     async def batch_upsert_records(self, records: list[Record]) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_records(records)

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -123,6 +123,8 @@ from app.connectors.core.base.error.stream_errors import (
     not_found_at_source,
     to_stream_error,
 )
+_T = TypeVar("_T")
+
 
 # Constants for SharePoint site ID composite format
 # A composite site ID has the format: "hostname,site-id,web-id"
@@ -990,14 +992,17 @@ class SharePointConnector(BaseConnector):
 
         return site_id
 
-    async def _safe_api_call(self, api_call, max_retries: int = 3, retry_delay: float = 1.0) -> None:
+    async def _safe_api_call(self, api_call: Callable[[], Awaitable[_T]], max_retries: int = 3, retry_delay: float = 1.0) -> _T | None:
         """
         Enhanced safe API call execution with intelligent retry logic and error handling.
+
+        ``api_call`` is a zero-argument callable returning a fresh awaitable, because a
+        coroutine object can only be awaited once and each retry needs a new request.
         """
 
         for attempt in range(max_retries + 1):
             try:
-                result = await api_call
+                result = await api_call()
                 return result
 
             except Exception as e:
@@ -1055,7 +1060,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 try:
                     root_site = await self._safe_api_call(
-                        self.client.sites.by_site_id("root").get()
+                        lambda: self.client.sites.by_site_id("root").get()
                     )
                     if root_site:
                         sites.append(root_site)
@@ -1081,7 +1086,7 @@ class SharePointConnector(BaseConnector):
             try:
                 async with self.rate_limiter:
                     search_results = await self._safe_api_call(
-                        self.client.sites.get()
+                        lambda: self.client.sites.get()
                     )
 
                 while True:
@@ -1124,7 +1129,7 @@ class SharePointConnector(BaseConnector):
                         self.logger.info(f"Following nextLink for more sites (found {total_found} so far)...")
                         async with self.rate_limiter:
                             search_results = await self._safe_api_call(
-                                self.client.sites.with_url(search_results.odata_next_link).get()
+                                lambda link=search_results.odata_next_link: self.client.sites.with_url(link).get()
                             )
                     else:
                         break
@@ -1186,7 +1191,7 @@ class SharePointConnector(BaseConnector):
 
             async with self.rate_limiter:
                 result = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).sites.get()
+                    lambda: self.client.sites.by_site_id(encoded_site_id).sites.get()
                 )
 
             if result and result.value:
@@ -1320,7 +1325,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 encoded_site_id = self._normalize_site_id(site_id)
                 drives_response = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).drives.get()
+                    lambda: self.client.sites.by_site_id(encoded_site_id).drives.get()
                 )
 
             if not drives_response or not drives_response.value:
@@ -1808,7 +1813,7 @@ class SharePointConnector(BaseConnector):
 
             async with self.rate_limiter:
                 lists_response = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).lists.get()
+                    lambda: self.client.sites.by_site_id(encoded_site_id).lists.get()
                 )
 
             if not lists_response or not lists_response.value:
@@ -1976,15 +1981,15 @@ class SharePointConnector(BaseConnector):
                     async with self.rate_limiter:
                         if skip_token:
                             items_response = await self._safe_api_call(
-                                self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.get(
+                                lambda token=skip_token: self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.get(
                                     request_configuration={
-                                        "query_parameters": {"$skiptoken": skip_token}
+                                        "query_parameters": {"$skiptoken": token}
                                     }
                                 )
                             )
                         else:
                             items_response = await self._safe_api_call(
-                                self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.get()
+                                lambda: self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.get()
                             )
 
                     if not items_response or not items_response.value:
@@ -2141,7 +2146,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 try:
                     pages_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).pages.get(
+                        lambda: self.client.sites.by_site_id(encoded_site_id).pages.get(
                             request_configuration=request_config
                         )
                     )
@@ -2877,11 +2882,11 @@ class SharePointConnector(BaseConnector):
                 # Use the correct Graph API structure for drive permissions
                 # For SharePoint, we need to get the root item first, then its permissions
                 root_item = await self._safe_api_call(
-                    self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).root.get()
+                    lambda: self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).root.get()
                 )
                 if root_item:
                     perms_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).items.by_drive_item_id(root_item.id).permissions.get()
+                        lambda: self.client.sites.by_site_id(encoded_site_id).drives.by_drive_id(drive_id).items.by_drive_item_id(root_item.id).permissions.get()
                     )
                 else:
                     perms_response = None
@@ -2903,7 +2908,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 # Use the drives endpoint directly without going through sites
                 perms_response = await self._safe_api_call(
-                    self.client.drives.by_drive_id(drive_id)
+                    lambda: self.client.drives.by_drive_id(drive_id)
                         .items.by_drive_item_id(item_id)
                         .permissions.get()
                 )
@@ -4486,7 +4491,7 @@ class SharePointConnector(BaseConnector):
 
                     async with self.rate_limiter:
                         site = await self._safe_api_call(
-                            self.client.sites.by_site_id(site_id).get()
+                            lambda: self.client.sites.by_site_id(site_id).get()
                         )
 
                     if site:
@@ -4661,7 +4666,7 @@ class SharePointConnector(BaseConnector):
             # Fetch fresh item from MS Graph
             async with self.rate_limiter:
                 item = await self._safe_api_call(
-                    self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+                    lambda: self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
                 )
 
             if not item:
@@ -4721,7 +4726,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 try:
                     page = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).pages.by_base_site_page_id(page_id).get()
+                        lambda: self.client.sites.by_site_id(encoded_site_id).pages.by_base_site_page_id(page_id).get()
                     )
                 except Exception as page_error:
                     if any(term in str(page_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
@@ -4748,7 +4753,7 @@ class SharePointConnector(BaseConnector):
             try:
                 async with self.rate_limiter:
                     site_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).get()
+                        lambda: self.client.sites.by_site_id(encoded_site_id).get()
                     )
                 if site_response:
                     site_name = getattr(site_response, 'display_name', '') or getattr(site_response, 'name', '')
@@ -4802,7 +4807,7 @@ class SharePointConnector(BaseConnector):
             async with self.rate_limiter:
                 try:
                     item = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.by_list_item_id(item_id).get()
+                        lambda: self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.by_list_item_id(item_id).get()
                     )
                 except Exception as item_error:
                     if any(term in str(item_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):

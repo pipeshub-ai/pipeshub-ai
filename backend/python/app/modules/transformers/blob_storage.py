@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import concurrent.futures
 import contextlib
 import errno
 import json
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
 import msgspec
+import zstandard as zstd
 from yarl import URL
 
 from app.config.constants.arangodb import CollectionNames
@@ -21,7 +24,10 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.exceptions.storage_exceptions import (
+    StorageRequestRejectedError,
+    StoredRecordTooLargeError,
+)
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -35,6 +41,7 @@ from app.services.vector_db.membership import (
 )
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_move import post_move_tree
 from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
@@ -43,7 +50,29 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
+# Decks repeat the same base64 image on every slide, further apart than the
+# default 4 MiB window at this level, so they barely compressed (112 -> 84 MiB).
+# A 128 MiB window with long-distance matching finds them (-> 13 MiB). 2^27 is
+# the default decoder's window limit; a bigger one would fail to decode. Level 6
+# matched level 10 on decks and was within 8% on text, at 2-3x the speed.
+COMPRESSION_LEVEL = 6
+COMPRESSION_WINDOW_LOG = 27
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
+
+# Decoding a large record holds ~2.4x its msgpack size as Python objects and,
+# inline, freezes the event loop for the whole decode. Records over
+# LARGE_DECODE_BYTES (msgpack, read from the zstd header) decode in a thread,
+# LARGE_DECODE_SLOTS at a time per event loop. Independent of the compression
+# threshold: that is a JSON size that steers writes, and at 0 it would send
+# every record of a chat turn through the one slot. A record whose *stored*
+# size is over it also downloads inside the slot: otherwise readers queued for
+# the decode each hold their whole download while they wait.
+LARGE_DECODE_BYTES = 20 * 1024 * 1024
+LARGE_DECODE_SLOTS = 1
+# Optional hard cap on one record's decoded (msgpack) bytes, for a deployment
+# whose pods can't afford a single huge decode. Off by default: a refused record
+# drops out of every answer and re-index without telling anyone.
+_MAX_DECODED_BYTES_ENV = "PIPESHUB_RECORD_MAX_DECODED_BYTES"
 
 
 def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records are free-form
@@ -177,6 +206,15 @@ def compression_threshold_bytes() -> int:
         return COMPRESSION_THRESHOLD_BYTES_DEFAULT
 
 
+def max_decoded_record_bytes() -> int | None:
+    """Largest record (msgpack bytes) a reader will decode, or None for no limit (the default)."""
+    try:
+        value = int(os.getenv(_MAX_DECODED_BYTES_ENV) or 0)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 _SIGNED_URL_CACHE_ENV = "PIPESHUB_SIGNED_URL_CACHE_SECONDS"
 # storage.controller.ts signs download URLs for 3600s. Cache well inside that so
 # a URL handed out at the end of its cached life still has plenty left to use.
@@ -228,6 +266,18 @@ _STORAGE_SERVICE_NAME = "storage"
 
 class TransientStorageError(aiohttp.ClientError):
     """A storage response (502/503/504) that a retry can reasonably fix."""
+
+
+# What a stored record holds that is the same for every record sharing its vrid;
+# everything else (name, link, ids, connector, statuses) belongs to one record.
+_SHARED_CONTENT_FIELDS = (
+    "block_containers", "semantic_metadata", "md5_hash", "virtual_record_id",
+    "is_vlm_ocr_processed",
+)
+
+
+class StorageLookupUnavailableError(Exception):
+    """Whether stored content exists could not be determined (not: it is absent)."""
 
 
 class StorageDocumentNotFoundError(aiohttp.ClientError):
@@ -422,6 +472,67 @@ def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
         return lock
 
 
+# Per loop for the same reason as _shared_redis_locks: a semaphore shared
+# across loops hangs instead of failing.
+_decode_slots: "dict[asyncio.AbstractEventLoop, asyncio.Semaphore]" = {}
+_decode_slots_guard = threading.Lock()
+
+
+def _decode_slot_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Semaphore:
+    with _decode_slots_guard:
+        for stale in [lp for lp in _decode_slots if lp.is_closed()]:
+            del _decode_slots[stale]
+        slot = _decode_slots.get(loop)
+        if slot is None:
+            slot = _decode_slots[loop] = asyncio.Semaphore(LARGE_DECODE_SLOTS)
+        return slot
+
+
+# One thread for every large decode in the process, not the default executor's
+# many: glibc gives each thread its own malloc arena, which the rest of the
+# process can't reuse, so decodes spread over N threads kept N arenas' worth of
+# record memory (+40% peak on a text-heavy record, and growing with N).
+_DECODE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="record-decode")
+
+
+class _DecodeSlotLease:
+    """A held decode slot. Its holder releases it, unless a decode thread was started
+    on it: then the thread releases it when it finishes, even if the holder is cancelled."""
+
+    def __init__(self, slot: asyncio.Semaphore) -> None:
+        self._slot = slot
+        self.handed_off = False
+
+    def hand_off(self) -> asyncio.Semaphore:
+        self.handed_off = True
+        return self._slot
+
+    def release(self) -> None:
+        if not self.handed_off:
+            self.handed_off = True
+            self._slot.release()
+
+
+async def _acquire_decode_slot() -> asyncio.Semaphore:
+    # No time limit: a reader waits its turn rather than drop the record from an
+    # answer, and a cancelled reader leaves the queue at once.
+    slot = _decode_slot_for(asyncio.get_running_loop())
+    await slot.acquire()
+    return slot
+
+
+def _compressed_content_size(data: dict[str, Any]) -> int | None:
+    """Decoded size from the zstd frame header; None if not compressed or unreadable."""
+    encoded: object = data.get("record")
+    if not data.get("isCompressed") or not isinstance(encoded, str):
+        return None
+    try:
+        # A zstd frame header is at most 18 bytes = 24 base64 chars.
+        return zstd.get_frame_parameters(base64.b64decode(encoded[:24])).content_size
+    except Exception:
+        return None
+
+
 async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISignedUrlCache:  # noqa: ANN401
     """Process-wide `ISignedUrlCache`, one per event loop.
 
@@ -517,7 +628,7 @@ def _versioned_json_form(
     if compressed:
         form_data.add_field(f'customMetadata[{idx}][key]', 'compression')
         form_data.add_field(f'customMetadata[{idx}][value][algorithm]', 'zstd')
-        form_data.add_field(f'customMetadata[{idx}][value][level]', '10')
+        form_data.add_field(f'customMetadata[{idx}][value][level]', str(COMPRESSION_LEVEL))
         form_data.add_field(f'customMetadata[{idx}][value][format]', 'msgspec')
         form_data.add_field(f'customMetadata[{idx}][value][version]', 'v1')
         form_data.add_field(f'customMetadata[{idx}][value][compressed]', 'true')
@@ -575,6 +686,7 @@ class BlobStorage(Transformer):
         signed_url: str,
         file_size_bytes: int | None,
         virtual_record_id: str,
+        lease: _DecodeSlotLease | None = None,
     ) -> dict | None:
         """Download and decode a record from an already-signed storage URL.
 
@@ -594,10 +706,11 @@ class BlobStorage(Transformer):
 
         try:
             if use_parallel:
-                file_bytes = await self._download_with_range_requests(
+                # Not kept in a local: a reader waiting for a decode slot would hold
+                # the raw download alongside the parsed envelope it was parsed into.
+                data = _decode_json(await self._download_with_range_requests(
                     session, signed_url, chunk_size_mb=2, max_connections=6
-                )
-                data = _decode_json(file_bytes)
+                ))
             else:
                 data = await _single()
         except Exception as e:
@@ -617,7 +730,7 @@ class BlobStorage(Transformer):
 
         if not data.get("record"):
             return None
-        record = self._process_downloaded_record(data)
+        record = await self._decode_record(data, lease)
         self.logger.debug(
             "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
             record.get("record_name"), virtual_record_id,
@@ -754,18 +867,17 @@ class BlobStorage(Transformer):
         Compress record data using msgspec (C-based) + zstd.
         Returns: base64_encoded_compressed_data
         """
-        import base64
-
-        import msgspec
-        import zstandard as zstd
-
         # Serialize directly to bytes using msgspec (high-performance msgpack encoder)
         msgpack_bytes = msgspec.msgpack.encode(record)
         original_size = len(msgpack_bytes)
 
-        # Compression level 10: maximum compression
-        compressor = zstd.ZstdCompressor(level=10)
-        compressed = compressor.compress(msgpack_bytes)
+        # level goes in from_level: ZstdCompressor ignores level= when given compression_params.
+        params = zstd.ZstdCompressionParameters.from_level(
+            COMPRESSION_LEVEL, window_log=COMPRESSION_WINDOW_LOG, enable_ldm=True,
+        )
+        # One-shot compress() writes the content size the reader's decode guard needs.
+        # A compressor per call: they are not thread-safe.
+        compressed = zstd.ZstdCompressor(compression_params=params).compress(msgpack_bytes)
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
@@ -781,8 +893,6 @@ class BlobStorage(Transformer):
         Decompress raw bytes using zstd.
         Returns decompressed bytes.
         """
-        import zstandard as zstd
-
         decompressor = zstd.ZstdDecompressor()
         return decompressor.decompress(compressed_bytes)
 
@@ -791,26 +901,9 @@ class BlobStorage(Transformer):
         Process downloaded record data, handling decompression if needed.
         Supports new isCompressed flag format and backward compatibility with uncompressed records.
         """
-        import base64
-
-        import msgspec
-
         # NEW FORMAT: Check for isCompressed flag
         if data.get("isCompressed"):
-            compressed_base64 = data.get("record")
-            if not compressed_base64:
-                self.logger.error("❌ isCompressed is true but no record found")
-                raise Exception("Missing record in compressed record")
-
-            try:
-                compressed_bytes = base64.b64decode(compressed_base64)
-                decompressed_bytes = self._decompress_bytes(compressed_bytes)
-                record = msgspec.msgpack.decode(decompressed_bytes)
-                return record
-
-            except Exception as e:
-                self.logger.error("❌ Failed to decompress record: %s", str(e))
-                raise Exception(f"Decompression failed: {str(e)}")
+            return self._unpack_payload(self._decompressed_payload(data))
 
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
@@ -820,6 +913,78 @@ class BlobStorage(Transformer):
             # Unknown format
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
+
+    def _decompressed_payload(self, data: dict) -> bytes:
+        """The msgpack bytes of a compressed envelope: base64 and zstd decode."""
+        compressed_base64 = data.get("record")
+        if not compressed_base64:
+            self.logger.error("❌ isCompressed is true but no record found")
+            raise Exception("Missing record in compressed record")
+        try:
+            return self._decompress_bytes(base64.b64decode(compressed_base64))
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
+
+    def _unpack_payload(self, payload: bytes) -> dict:
+        try:
+            return msgspec.msgpack.decode(payload)
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
+
+    async def _decode_record(
+        self, data: dict[str, Any], lease: _DecodeSlotLease | None = None
+    ) -> dict[str, Any]:
+        """``_process_downloaded_record`` with large records gated and taken off the event loop.
+
+        *lease* is a slot the caller already holds for this record; a large decode uses
+        it instead of queueing for another.
+        """
+        size = _compressed_content_size(data)
+        if size is None:
+            return self._process_downloaded_record(data)
+        # Unknown size (a streamed frame) still takes the gate, but has no size to check.
+        ceiling = max_decoded_record_bytes()
+        if ceiling is not None and size != zstd.CONTENTSIZE_UNKNOWN and size > ceiling:
+            raise StoredRecordTooLargeError(
+                f"record decodes to {size} bytes, over the {ceiling}-byte limit ({_MAX_DECODED_BYTES_ENV})"
+            )
+        if size <= LARGE_DECODE_BYTES:
+            return self._process_downloaded_record(data)
+        if lease is not None and not lease.handed_off:
+            slot = lease.hand_off()
+        else:
+            slot = await _acquire_decode_slot()
+        # Only zstd runs in the thread: it releases the GIL. msgpack holds it, so it
+        # would stall the loop from a thread too, and there it would allocate the
+        # record from the thread's malloc arena, which the process can't reuse.
+        work = asyncio.get_running_loop().run_in_executor(
+            _DECODE_EXECUTOR, self._decompressed_payload, data
+        )
+        released = abandoned = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                slot.release()
+
+        # A cancelled caller must not free the slot mid-decode: the thread does, when it ends.
+        work.add_done_callback(lambda _: abandoned and release())
+        # Read the exception so a cancelled caller doesn't leave "exception never retrieved" noise.
+        work.add_done_callback(lambda f: f.cancelled() or f.exception())
+        try:
+            payload = await asyncio.shield(work)
+        except BaseException:
+            abandoned = True
+            if work.done():
+                release()
+            raise
+        try:
+            return self._unpack_payload(payload)
+        finally:
+            release()
 
     async def _get_content_length(self, session: aiohttp.ClientSession, url: str) -> int:
         """
@@ -1119,9 +1284,15 @@ class BlobStorage(Transformer):
             return document_path[len(prefix):]
         return document_path
 
-    async def _get_current_document_path(self, org_id: str, document_id: str) -> str | None:
+    async def _get_current_document_path(
+        self, org_id: str, document_id: str, *, strict: bool = False,
+    ) -> str | None:
         """Fetch the ACTUAL currently-stored documentPath for a document via
-        Node's internal document-info endpoint -- not recomputed/guessed."""
+        Node's internal document-info endpoint -- not recomputed/guessed.
+
+        None means the document is gone (404). Any other failure is None too,
+        unless *strict*, which raises StorageLookupUnavailableError instead.
+        """
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
             get_url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
@@ -1130,6 +1301,10 @@ class BlobStorage(Transformer):
                 if response.status == 404:
                     return None
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    if strict:
+                        raise StorageLookupUnavailableError(
+                            f"Storage answered {response.status} for document {document_id}"
+                        )
                     self.logger.warning(
                         "Unexpected status fetching current document path for %s: %s",
                         document_id, response.status
@@ -1138,29 +1313,37 @@ class BlobStorage(Transformer):
                 doc = await response.json()
                 return doc.get("documentPath")
         except Exception as e:
+            if strict:
+                if isinstance(e, StorageLookupUnavailableError):
+                    raise
+                raise StorageLookupUnavailableError(
+                    f"Could not read stored document {document_id}: {e}"
+                ) from e
             self.logger.warning(
                 "Could not fetch current document path for %s: %s", document_id, str(e)
             )
             return None
 
     async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
-        """Return a record's content document's ACTUAL current stored path,
-        or None if no content document exists yet for this vrid (or it can't
-        be determined)."""
+        """Return a record's content document's ACTUAL current stored path, or
+        None when there is provably none (no mapping, or storage answers 404).
+
+        Raises StorageLookupUnavailableError when that cannot be told (graph or
+        storage error, a 503 during a move): callers decide what "unknown"
+        means instead of reading it as "content gone" and re-indexing.
+        """
         if not self.graph_provider:
             return None
         try:
             existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
         except Exception as e:
-            self.logger.warning(
-                "⚠️ Failed to look up existing doc for vrid %s in get_actual_content_path: %s",
-                virtual_record_id, str(e)
-            )
-            return None
+            raise StorageLookupUnavailableError(
+                f"Could not look up the stored document of vrid {virtual_record_id}: {e}"
+            ) from e
         if not existing_lookup or not existing_lookup.get("record_doc_id"):
             return None
         raw_path = await self._get_current_document_path(
-            org_id, existing_lookup["record_doc_id"]
+            org_id, existing_lookup["record_doc_id"], strict=True,
         )
         return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
@@ -1221,19 +1404,19 @@ class BlobStorage(Transformer):
             record_group_id = record_dict.get("record_group_id")
         existing_lookup = None
         if self.graph_provider:
-            try:
-                existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
-            except Exception as e:
-                self.logger.warning(
-                    "⚠️ Failed to look up existing doc for vrid %s, will create new: %s",
-                    virtual_record_id, str(e)
-                )
-                existing_lookup = None
+            # A failed lookup must not read as "no document": creating one then
+            # leaves the existing copy unreferenced but still on disk.
+            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
 
         actual_storage_path = storage_path
 
         replaced_doc_id: str | None = None
+        holders: list[str] | None = None
         if existing_lookup and existing_lookup.get("record_doc_id"):
+            holders = await self._live_holders(virtual_record_id)
+            record_dict = await self._keep_owner_identity(
+                org_id, record_id, virtual_record_id, record_dict, existing_lookup, holders,
+            )
             existing_doc_id = existing_lookup["record_doc_id"]
             self.logger.info(
                 "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
@@ -1280,19 +1463,63 @@ class BlobStorage(Transformer):
                         "⚠️ Retry also failed for doc %s, falling back to new upload: %s",
                         existing_doc_id, str(retry_e),
                     )
+                    # Shared content stays on its owner's path, not this writer's.
+                    replacement_path = storage_path
+                    if holders is None or set(holders) - {record_id}:
+                        raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                        if raw_path:
+                            replacement_path = self._strip_org_prefix(org_id, raw_path)
                     document_id, file_size_bytes = await self.save_record_to_storage(
-                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                        org_id, record_id, virtual_record_id, record_dict, document_path=replacement_path,
                         connector_id=connector_id, record_group_id=record_group_id,
                     )
+                    actual_storage_path = replacement_path
                     replaced_doc_id = existing_doc_id
         else:
-            self.logger.debug(
-                "📄 No existing storage doc for vrid %s, creating new document at path: %s",
-                virtual_record_id, storage_path
+            unmapped_doc_id = (
+                await self._find_unmapped_record_document(org_id, virtual_record_id)
+                if self.graph_provider else None
             )
-            document_id, file_size_bytes = await self.save_record_to_storage(
-                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
-                connector_id=connector_id, record_group_id=record_group_id,
+            document_id = None
+            if unmapped_doc_id:
+                # An earlier attempt stored this record but died before mapping it.
+                self.logger.info(
+                    "📄 Reusing unmapped storage doc %s for vrid %s",
+                    unmapped_doc_id, virtual_record_id,
+                )
+                try:
+                    document_id, file_size_bytes = await self.update_record_buffer(
+                        org_id, unmapped_doc_id, record_dict, virtual_record_id
+                    )
+                    if document_id:
+                        # The earlier attempt may have filed it where the record no longer is.
+                        holders = await self._live_holders(virtual_record_id)
+                    raw_path = await self._get_current_document_path(org_id, unmapped_doc_id)
+                    if raw_path:
+                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+                except StorageDocumentNotFoundError:
+                    document_id = None
+            if not document_id:
+                self.logger.debug(
+                    "📄 No existing storage doc for vrid %s, creating new document at path: %s",
+                    virtual_record_id, storage_path
+                )
+                document_id, file_size_bytes = await self.save_record_to_storage(
+                    org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                    connector_id=connector_id, record_group_id=record_group_id,
+                )
+
+        if (
+            document_id
+            and self.graph_provider
+            and holders is not None
+            and actual_storage_path
+            and storage_path != f"records/{virtual_record_id}"
+            and actual_storage_path != storage_path
+        ):
+            actual_storage_path = await self._relocate_stored_copy(
+                org_id, record_id, virtual_record_id, actual_storage_path, storage_path,
+                holders=holders, document_id=document_id,
             )
 
         if document_id and self.graph_provider:
@@ -1637,7 +1864,7 @@ class BlobStorage(Transformer):
                         "key": "compression",
                         "value": {
                             "algorithm": "zstd",
-                            "level": 10,
+                            "level": COMPRESSION_LEVEL,
                             "format": "msgspec",
                             "version": "v1",
                             "compressed": True
@@ -1790,6 +2017,157 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Failed to save binary to storage for record %s: %s", record_id, str(e))
             return None, None
+
+    async def _relocate_stored_copy(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        current_path: str,
+        expected_path: str,
+        *,
+        holders: list[str] | None,
+        document_id: str,
+    ) -> str:
+        """Move this record's stored copy to where its graph path says it belongs.
+
+        A copy lands on a wrong path when its path could not be computed (a
+        graph error falls back to records/<vrid>), when it was indexed before its
+        parent existed, when a move was skipped, or when it predates
+        hierarchical storage. Grep searches only records/<connector>/, so such a
+        copy is invisible to it until moved. Shared content stays where its
+        first record filed it. Returns the path the copy is at afterwards.
+        """
+        # Only the content's sole live holder moves it. A record being deleted
+        # holds nothing any more: its path is computed without the links the
+        # delete already removed, and moving the copy there would take it away
+        # from where the delete is cleaning up.
+        if holders is None or set(holders) != {record_id}:
+            return current_path
+        if expected_path.startswith(current_path + "/"):
+            # A record whose name used to clean to nothing was filed at its
+            # parent's path; storage refuses to move a folder into itself, and
+            # moving the parent would carry its siblings along.
+            self.logger.debug(
+                "Not relocating vrid %s into its own folder: %s -> %s",
+                virtual_record_id, current_path, expected_path,
+            )
+            return current_path
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            result = await post_move_tree(
+                get_shared_session(), nodejs_endpoint, headers, current_path, expected_path,
+                virtual_record_ids=[virtual_record_id],
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not relocate vrid %s from %s to %s: %s",
+                virtual_record_id, current_path, expected_path, e,
+            )
+            return current_path
+        if result.get("failed"):
+            return current_path
+        if not result.get("moved"):
+            # Nothing at current_path: a concurrent move already carried it.
+            raw_path = await self._get_current_document_path(org_id, document_id)
+            return self._strip_org_prefix(org_id, raw_path) if raw_path else current_path
+        self.logger.info(
+            "📦 Relocated stored copy of vrid %s: %s -> %s", virtual_record_id, current_path, expected_path,
+        )
+        return expected_path
+
+    async def _live_holders(self, virtual_record_id: str) -> list[str] | None:
+        """The live records holding *virtual_record_id*, or None when the graph
+        cannot say (callers then leave shared content as it is)."""
+        try:
+            return remaining_record_keys(
+                await self.graph_provider.get_records_by_virtual_record_id(
+                    virtual_record_id, raise_on_error=True,
+                )
+            )
+        except Exception as e:
+            self.logger.warning("Could not list records sharing vrid %s: %s", virtual_record_id, e)
+            return None
+
+    async def _keep_owner_identity(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict,
+        lookup_result: dict,
+        holders: list[str] | None,
+    ) -> dict:
+        """The stored copy to write when *record_id* rewrites shared content.
+
+        Deduplicated content is stored once, filed under and named after the
+        record that stored it first. Another record re-indexing it must replace
+        only the content: writing its own name, link and ids into that file shows
+        them to the owner's connector (grep, linked-record context).
+
+        When the record named in the copy no longer holds the content (it was
+        deleted and the copy handed over), the owner is the one storage hands
+        over to: the smallest live holder key. Until that record writes, the
+        copy carries no record's identity.
+        """
+        if holders is not None and set(holders) <= {record_id}:
+            return record_dict
+        try:
+            stored = await self.get_record_from_storage(
+                virtual_record_id, org_id, lookup_result=lookup_result,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read the stored copy of shared vrid %s; writing it whole: %s",
+                virtual_record_id, e,
+            )
+            return record_dict
+        owner = stored.get("id") if isinstance(stored, dict) else None
+        if holders is not None and owner not in holders:
+            if min(holders, default=record_id) == record_id:
+                return record_dict
+            stored = {k: v for k, v in stored.items() if k in _SHARED_CONTENT_FIELDS}
+            owner = "a record that no longer holds it"
+        elif not owner or owner == record_id:
+            return record_dict
+        merged = dict(stored)
+        for key in _SHARED_CONTENT_FIELDS:
+            if key in record_dict:
+                merged[key] = record_dict[key]
+            else:
+                merged.pop(key, None)
+        self.logger.info(
+            "Shared vrid %s: record %s replaces the content of %s's stored copy only",
+            virtual_record_id, record_id, owner,
+        )
+        return merged
+
+    async def _find_unmapped_record_document(
+        self, org_id: str, virtual_record_id: str, kind: str = "record",
+    ) -> str | None:
+        """The newest live ``<kind>_<vrid>`` document (kind: record / metadata),
+        for a vrid whose mapping does not name one.
+
+        Raises when storage cannot be asked: guessing "none" would store a
+        second copy beside the one an interrupted attempt left behind.
+        """
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_VIRTUAL_RECORD_DOCUMENTS.value.format(virtualRecordId=virtual_record_id)}"
+        )
+        async with get_shared_session().get(url, headers=headers) as resp:
+            if resp.status == HttpStatusCode.NOT_FOUND.value:
+                # A storage service older than this route; nothing to reuse.
+                return None
+            if resp.status != HttpStatusCode.SUCCESS.value:
+                raise _storage_status_error(resp.status, "Could not list stored documents")
+            body = await resp.json()
+        name = f"{kind}_{virtual_record_id}"
+        for doc in body.get("documents") or []:
+            if doc.get("documentName") == name and doc.get("_id"):
+                return str(doc["_id"])
+        return None
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> dict | None:
         """
@@ -2147,45 +2525,62 @@ class BlobStorage(Transformer):
             download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             session = get_shared_session()
 
-            # A cached signed URL skips the gateway hop entirely. On any failure
-            # reading it back, fall through to the gateway and re-sign.
-            cached_url = await self._cached_signed_url(org_id, document_id)
-            if cached_url:
-                try:
+            lease = (
+                _DecodeSlotLease(await _acquire_decode_slot())
+                if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
+                else None
+            )
+            try:
+                # A cached signed URL skips the gateway hop entirely. On any failure
+                # reading it back, fall through to the gateway and re-sign.
+                cached_url = await self._cached_signed_url(org_id, document_id)
+                if cached_url:
+                    try:
+                        record = await self._record_from_signed_url(
+                            session, cached_url, file_size_bytes, virtual_record_id, lease
+                        )
+                        if record is not None:
+                            return record
+                    except StoredRecordTooLargeError:
+                        # Refused after the download, not because of the URL: re-signing
+                        # would only download the same record again.
+                        raise
+                    except Exception as e:
+                        self.logger.debug(
+                            "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
+                        )
+
+                data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+                if data.get("signedUrl"):
+                    await self._store_signed_url(org_id, document_id, data["signedUrl"])
+
+                if data.get("record"):
+                    record = await self._decode_record(data, lease)
+                    record_name = record.get("record_name")
+                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                    return record
+                elif data.get("signedUrl"):
                     record = await self._record_from_signed_url(
-                        session, cached_url, file_size_bytes, virtual_record_id
+                        session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
                     )
                     if record is not None:
                         return record
-                except Exception as e:
-                    self.logger.debug(
-                        "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
-                    )
-
-            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-            if data.get("signedUrl"):
-                await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-            if data.get("record"):
-                record = self._process_downloaded_record(data)
-                record_name = record.get("record_name")
-                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                return record
-            elif data.get("signedUrl"):
-                record = await self._record_from_signed_url(
-                    session, data["signedUrl"], file_size_bytes, virtual_record_id
-                )
-                if record is not None:
-                    return record
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
-            else:
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+                else:
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+            finally:
+                if lease is not None:
+                    lease.release()
         except StorageDocumentNotFoundError:
             self.logger.warning(
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
             )
+            raise
+        except StoredRecordTooLargeError as e:
+            # The reader skips this record; an expected refusal, not a fault worth a traceback.
+            self.logger.warning("⚠️ Skipping stored record %s: %s", virtual_record_id, str(e))
             raise
         except Exception as e:
             self.logger.exception(
@@ -2353,6 +2748,7 @@ class BlobStorage(Transformer):
         self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict,
         document_path: str | None = None,
         *, connector_id: str | None = None, record_group_id: str | None = None,
+        create_if_missing: bool = True,
     ) -> str | None:
         """
         On first call, creates a new document. On subsequent calls, overrides in place.
@@ -2367,6 +2763,11 @@ class BlobStorage(Transformer):
             metadata_dict: Reconciliation metadata dictionary
             document_path: Storage path (same as record content path) so metadata
                 lives alongside the record. Falls back to records/<vrid> if None.
+            create_if_missing: False when *document_path* is not known: an
+                existing metadata document is updated in place, none is created
+                at a guessed path (no document means no stale state to reset).
+                Raises StorageLookupUnavailableError when the existing one could
+                not be updated, so the caller retries.
 
         Returns:
             str | None: metadata document_id if successful
@@ -2377,15 +2778,17 @@ class BlobStorage(Transformer):
 
             existing_metadata_doc_id = None
             if self.graph_provider:
-                try:
-                    collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                    doc = await self.graph_provider.get_document(
-                        virtual_record_id, collection_name
+                # As for the record document: a failed lookup must not create a
+                # second metadata document beside the unreferenced first one.
+                doc = await self.graph_provider.get_document(
+                    virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                )
+                if doc and doc.get("record_metadata_doc_id"):
+                    existing_metadata_doc_id = doc["record_metadata_doc_id"]
+                else:
+                    existing_metadata_doc_id = await self._find_unmapped_record_document(
+                        org_id, virtual_record_id, kind="metadata",
                     )
-                    if doc and doc.get("record_metadata_doc_id"):
-                        existing_metadata_doc_id = doc["record_metadata_doc_id"]
-                except Exception as e:
-                    self.logger.warning("Could not check existing metadata mapping: %s", str(e))
 
             metadata_document_id = None
             replaced_metadata_doc_id: str | None = None
@@ -2396,6 +2799,8 @@ class BlobStorage(Transformer):
                     )
                     metadata_document_id = doc_id
                 except StorageDocumentNotFoundError:
+                    if not create_if_missing:
+                        return None
                     self.logger.warning(
                         "Stored metadata document %s for vrid %s no longer exists; creating a replacement",
                         existing_metadata_doc_id, virtual_record_id,
@@ -2416,6 +2821,10 @@ class BlobStorage(Transformer):
                         )
                         metadata_document_id = doc_id
                     except Exception as retry_e:
+                        if not create_if_missing:
+                            raise StorageLookupUnavailableError(
+                                f"Could not update metadata document {existing_metadata_doc_id}: {retry_e}"
+                            ) from retry_e
                         self.logger.warning(
                             "⚠️ Retry also failed for metadata doc %s; creating replacement: %s",
                             existing_metadata_doc_id, str(retry_e),
@@ -2425,6 +2834,8 @@ class BlobStorage(Transformer):
                             connector_id=connector_id, record_group_id=record_group_id,
                         )
                         replaced_metadata_doc_id = existing_metadata_doc_id
+            elif not create_if_missing:
+                return None
             else:
                 metadata_document_id = await self._create_metadata_document(
                     org_id, record_id, virtual_record_id, metadata_dict, effective_path,

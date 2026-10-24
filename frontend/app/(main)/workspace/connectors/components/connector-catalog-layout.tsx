@@ -1,12 +1,16 @@
 'use client';
 
 import React, { useMemo } from 'react';
+import { lower } from '@/lib/utils/safe';
 import { useTranslation } from 'react-i18next';
-import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { Connector } from '../types';
 import { ConnectorCard } from './connector-card';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Types
@@ -34,7 +38,7 @@ interface ConnectorCatalogLayoutProps {
   activeTab: string;
   /** Tab change handler. */
   onTabChange: (value: string) => void;
-  /** Optional right-side element next to segmented control (e.g. "Your Personal Connectors →" link). */
+  /** Optional right-side element next to segmented control (e.g. "Your connectors →" link). */
   trailingAction?: React.ReactNode;
   /** Optional admin actions rendered beside the search field in the header. */
   headerActions?: React.ReactNode;
@@ -86,6 +90,7 @@ export function ConnectorCatalogLayout({
   extraTabCounts,
   tabContent,
 }: ConnectorCatalogLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const resolvedSearchPlaceholder = searchPlaceholder ?? t('form.searchPlaceholder');
   // Count active (isActive=true) and inactive (isActive=false) instances per connector type
@@ -149,10 +154,10 @@ export function ConnectorCatalogLayout({
     const q = searchQuery.toLowerCase();
     return tabFiltered.filter(
       (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.type.toLowerCase().includes(q) ||
-        c.appDescription.toLowerCase().includes(q) ||
-        c.appGroup.toLowerCase().includes(q)
+        lower(c.name).includes(q) ||
+        lower(c.type).includes(q) ||
+        lower(c.appDescription).includes(q) ||
+        lower(c.appGroup).includes(q)
     );
   }, [tabFiltered, searchQuery]);
 
@@ -164,10 +169,10 @@ export function ConnectorCatalogLayout({
       const q = searchQuery.toLowerCase();
       return list.filter(
         (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.type.toLowerCase().includes(q) ||
-          c.appDescription.toLowerCase().includes(q) ||
-          c.appGroup.toLowerCase().includes(q)
+          lower(c.name).includes(q) ||
+          lower(c.type).includes(q) ||
+          lower(c.appDescription).includes(q) ||
+          lower(c.appGroup).includes(q)
       );
     };
     const base = searchFiltered(allConnectors);
@@ -193,16 +198,15 @@ export function ConnectorCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         overflowY: 'auto',
       }}
     >
       {/* ── Header: title + search ── */}
-      <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
-        <Flex direction="column" gap="2" style={{ flex: 1 }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {title}
           </Heading>
@@ -213,35 +217,44 @@ export function ConnectorCatalogLayout({
 
         {headerActions}
 
-        <TextField.Root
-          size="2"
-          placeholder={resolvedSearchPlaceholder}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          style={{ width: 224, flexShrink: 0 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-          </TextField.Slot>
-        </TextField.Root>
+        {/* Phones: the trailing link sits under the subtitle, above search */}
+        {isMobile && trailingAction && <Box width="100%">{trailingAction}</Box>}
+
+        <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
+          <TextField.Root
+            size="2"
+            placeholder={resolvedSearchPlaceholder}
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{ width: '100%' }}
+          >
+            <TextField.Slot>
+              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+            </TextField.Slot>
+          </TextField.Root>
+        </Box>
       </Flex>
 
       {banner}
 
       {/* ── Tabs + trailing action ── */}
-      <Flex align="center" justify="between" style={{ width: '100%' }}>
-        <SegmentedControl.Root
-          value={activeTab}
-          onValueChange={(value) => onTabChange(value)}
-          size="2"
-        >
-          {tabs.map((tab) => (
-            <SegmentedControl.Item key={tab.value} value={tab.value}>
-              {tab.label} ({tabCounts[tab.value] ?? 0})
-            </SegmentedControl.Item>
-          ))}
-        </SegmentedControl.Root>
-        {trailingAction}
+      <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
+        <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <SegmentedControl.Root
+            value={activeTab}
+            onValueChange={(value) => onTabChange(value)}
+            size="2"
+            style={{ minWidth: 'max-content' }}
+          >
+            {tabs.map((tab) => (
+              <SegmentedControl.Item key={tab.value} value={tab.value}>
+                {tab.label} ({tabCounts[tab.value] ?? 0})
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+        </Box>
+        {!isMobile && trailingAction}
       </Flex>
 
       {/* ── Connector grid (or custom tab content) ── */}
@@ -268,7 +281,7 @@ export function ConnectorCatalogLayout({
         </Flex>
       ) : (
         <Grid
-          columns={{ initial: '2', md: '3', lg: '3' }}
+          columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }}
           gap="4"
           style={{ width: '100%' }}
         >

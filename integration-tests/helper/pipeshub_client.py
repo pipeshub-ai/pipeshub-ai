@@ -2,7 +2,7 @@
 Minimal HTTP client for talking to the Pipeshub connectors API on test.pipeshub.com.
 
 Supports:
-  - OAuth2 client-credentials authentication
+  - The admin test user's login session (local stack), else OAuth2 client-credentials
   - Connector CRUD (create, list, get, toggle, delete)
   - Polling helpers for sync completion
 """
@@ -192,8 +192,38 @@ class PipeshubClient:
                 )
         self._token_expires_at = max(now + 60.0, candidate)
 
+    @staticmethod
+    def _uses_admin_session() -> bool:
+        """True when this client signs in as the admin test user.
+
+        A client_credentials app must act as a service account, and a service
+        account is never an admin, so on the local stack the suite runs as the
+        admin's own login session instead. Prod keeps its provisioned app.
+        """
+        return (
+            os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() == "local"
+            and bool(os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip())
+            and bool(os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip())
+        )
+
+    def _fetch_admin_session_token(self) -> None:
+        try:
+            from local_auth import obtain_user_session_token
+        except ImportError:
+            from helper.local_auth import obtain_user_session_token
+        try:
+            token = obtain_user_session_token(self.base_url, self.timeout_seconds)
+        except RuntimeError as exc:
+            raise PipeshubAuthError(str(exc)) from exc
+        self._access_token = token
+        self._token_claims = None
+        self._set_token_expiry_from_token_response({})
+
     def _fetch_access_token(self) -> None:
         """Always request a new token (caller clears old state first)."""
+        if self._uses_admin_session():
+            self._fetch_admin_session_token()
+            return
         client_id = os.getenv("CLIENT_ID")
         client_secret = os.getenv("CLIENT_SECRET")
         if not client_id or not client_secret:
@@ -237,7 +267,7 @@ class PipeshubClient:
 
     def _ensure_access_token(self) -> None:
         """
-        Ensure a valid access token: reuse until near expiry, then client_credentials again.
+        Ensure a valid access token: reuse until near expiry, then fetch a new one.
         """
         if self._access_token and time.time() < self._token_expires_at:
             return

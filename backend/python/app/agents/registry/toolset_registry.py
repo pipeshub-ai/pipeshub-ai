@@ -274,10 +274,11 @@ class ToolsetRegistry:
         for attr_name in list(vars(toolset_class)):
             try:
                 attr = vars(toolset_class).get(attr_name)
-                if not (inspect.isfunction(attr) or inspect.ismethod(attr) or
-                        (callable(attr) and hasattr(attr, '__func__'))):
-                    continue
                 actual_func = getattr(attr, '__func__', attr)
+                # Any callable carrying tool metadata: a compiled build's methods
+                # are neither Python functions nor bound methods.
+                if not callable(actual_func):
+                    continue
 
                 if hasattr(actual_func, '_tool_metadata'):
                     meta = actual_func._tool_metadata

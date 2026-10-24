@@ -246,7 +246,7 @@ describe('error toasts', () => {
       requestId: 'req-42',
     });
     expect(errorToasts().map((t) => [t.title, t.description])).toEqual([
-      ['Server Error', 'The export could not be created. Try again in a minute. Reference: req-42'],
+      ['Server error', 'The export could not be created. Try again in a minute. Reference: req-42'],
     ]);
   });
 
@@ -273,7 +273,7 @@ describe('error toasts', () => {
   it('says to check the connection when the request never reached the server', async () => {
     fakeServer(new Error('Network Error'));
     await expect(apiClient.get('/x')).rejects.toMatchObject({ type: ErrorType.NETWORK_ERROR });
-    expect(errorToasts()[0].title).toBe('Connection Error');
+    expect(errorToasts()[0].title).toBe('Connection error');
   });
 
   it('stays quiet for a cancelled request', async () => {
@@ -289,7 +289,7 @@ describe('error toasts', () => {
     await expect(apiClient.get('/b', { suppressErrorToast: onlyNotFound })).rejects.toBeDefined();
     expect(errorToasts()).toHaveLength(0);
     await expect(apiClient.get('/c', { suppressErrorToast: onlyNotFound })).rejects.toMatchObject({ type: ErrorType.CONFLICT });
-    expect(errorToasts().map((t) => t.title)).toEqual(['Action Required']);
+    expect(errorToasts().map((t) => t.title)).toEqual(['Action required']);
   });
 
   it('reads the error out of a Blob body from a download request', async () => {

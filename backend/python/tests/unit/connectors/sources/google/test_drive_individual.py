@@ -695,6 +695,10 @@ class TestRunSync:
             # Mock sync point to return None (no existing sync, triggers full sync)
             connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
 
+            # A listing that is not a drive list makes the run incomplete, so the mock lists none.
+
+            connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+
             await connector.run_sync()
 
             # Should create user

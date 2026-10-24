@@ -103,7 +103,8 @@ export function formatChatMode(chatMode?: string): string {
           : strategy;
     return `Agent (${label})`;
   }
-  return formatSnakeCaseTitle(chatMode);
+  const words = chatMode.split('_').filter(Boolean).join(' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**

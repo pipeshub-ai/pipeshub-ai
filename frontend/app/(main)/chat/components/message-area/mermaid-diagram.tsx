@@ -5,6 +5,7 @@ import { Box, Dialog, Flex, IconButton, Spinner, Text, VisuallyHidden } from '@r
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -13,6 +14,8 @@ const MAX_ZOOM = 400;
 const ZOOM_STEP = 25;
 /** 100% = SVG fills the full width of the dialog content area. */
 const DEFAULT_ZOOM = 100;
+/** On a phone, 100% shrinks a wide diagram to unreadable text, so start zoomed in and let the user pan. */
+const MOBILE_DEFAULT_ZOOM = 200;
 const COPY_FEEDBACK_MS = 2000;
 
 // ─── Dark-mode detection ──────────────────────────────────────────────────────
@@ -541,6 +544,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   const [zoom, setZoom]                   = useState(DEFAULT_ZOOM);
   const [copyFeedback, setCopyFeedback]   = useState<CopyFeedback>(null);
   const { t } = useTranslation();
+  const startZoom = useIsMobile() ? MOBILE_DEFAULT_ZOOM : DEFAULT_ZOOM;
 
   // Inline view: max-width variant — natural size for compact diagrams,
   // shrinks to fit container for wide ones (no horizontal scroll).
@@ -622,13 +626,13 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
   // ── Reset zoom when dialog opens ────────────────────────────────────────────
   useEffect(() => {
-    if (open) setZoom(DEFAULT_ZOOM);
-  }, [open]);
+    if (open) setZoom(startZoom);
+  }, [open, startZoom]);
 
   // ── Zoom ────────────────────────────────────────────────────────────────────
   const zoomIn    = useCallback(() => setZoom((z) => Math.min(z + ZOOM_STEP, MAX_ZOOM)), []);
   const zoomOut   = useCallback(() => setZoom((z) => Math.max(z - ZOOM_STEP, MIN_ZOOM)), []);
-  const zoomReset = useCallback(() => setZoom(DEFAULT_ZOOM), []);
+  const zoomReset = useCallback(() => setZoom(startZoom), [startZoom]);
 
   // ── Copy feedback helper ────────────────────────────────────────────────────
   const flash = useCallback((ok: boolean) => {
@@ -668,7 +672,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
   // ── Copy image button (shared between inline toolbar and fullscreen header) ──
   const copyImageBtn = svgContent ? (
-    <IconButton
+    <IconButton className="touch-hit"
       key="copy-img"
       size="1"
       variant="ghost"
@@ -709,6 +713,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
       >
         {/* Error banner row */}
         <Flex
+          className="touch-row"
           align="center"
           gap="2"
           style={{
@@ -723,7 +728,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
           </Text>
 
           {/* Toggle source view */}
-          <IconButton
+          <IconButton className="touch-hit"
             size="1"
             variant="ghost"
             color={showErrorSource ? 'amber' : 'gray'}
@@ -735,7 +740,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
           </IconButton>
 
           {/* Copy source — only in error banner */}
-          <IconButton
+          <IconButton className="touch-hit"
             size="1"
             variant="ghost"
             color={errorCopyFeedback === true ? 'green' : errorCopyFeedback === false ? 'red' : 'gray'}
@@ -790,7 +795,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
         <Flex justify="end" align="center" gap="1" style={{ marginBottom: '4px' }}>
           {copyImageBtn}
           <ToolbarSep />
-          <IconButton
+          <IconButton className="touch-hit"
             size="1"
             variant="ghost"
             color="gray"
@@ -868,13 +873,17 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
               flexShrink: 0,
             }}
           >
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+            <Text
+              size="2"
+              weight="medium"
+              style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
+            >
               {t('chat.fullDiagramView')}
             </Text>
 
-            <Flex align="center" gap="1">
+            <Flex className="touch-row" align="center" gap="1">
               {/* Zoom controls */}
-              <IconButton
+              <IconButton className="touch-hit"
                 size="1" variant="ghost" color="gray"
                 title={t('chat.zoomOut')}
                 disabled={zoom <= MIN_ZOOM}
@@ -900,7 +909,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
                 {zoom}%
               </Text>
 
-              <IconButton
+              <IconButton className="touch-hit"
                 size="1" variant="ghost" color="gray"
                 title={t('chat.zoomIn')}
                 disabled={zoom >= MAX_ZOOM}
@@ -919,7 +928,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
               {/* Close */}
               <Dialog.Close>
-                <IconButton size="1" variant="ghost" color="gray" style={{ cursor: 'pointer' }}>
+                <IconButton className="touch-hit" size="1" variant="ghost" color="gray" style={{ cursor: 'pointer' }}>
                   <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
               </Dialog.Close>

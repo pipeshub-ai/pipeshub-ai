@@ -27,6 +27,7 @@ import {
 import { apiClient } from '@/lib/api';
 import { VectorDbMemoryWarning } from './vector-db-memory';
 import { getVectorDbMemoryReport, type VectorDbMemoryReport } from './api';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Service metadata
@@ -323,11 +324,11 @@ export default function ServicesPage() {
 
   return (
     <Box style={{ height: '100%', overflowY: 'auto', background: 'linear-gradient(180deg, var(--olive-2) 0%, var(--olive-1) 100%)' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 24 }}>
           <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.services.pageTitle')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
@@ -345,6 +346,7 @@ export default function ServicesPage() {
               variant="outline"
               color="gray"
               size="2"
+              className="touch-hit"
               onClick={handleRefresh}
               disabled={isRefreshing}
               style={{ cursor: isRefreshing ? 'wait' : 'pointer', flexShrink: 0, gap: 6 }}
@@ -459,7 +461,7 @@ export default function ServicesPage() {
             </Text>
           </Flex>
         </Flex>
-      </Box>
+      </SettingsPageContainer>
     </Box>
   );
 }

@@ -17,6 +17,7 @@ import {
   type WebSearchProviderMeta,
 } from '../../../workspace/web-search/types';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
 import { useWebSearchConfig } from '../hooks/use-web-search-config';
 import type { AgentWebSearchAttachment } from '../types';
 
@@ -207,6 +208,7 @@ function ProviderRow({
 }) {
   const { t } = useTranslation();
   const dimmed = (dragBlocked && !isAttached) || (anotherAttached && !isAttached);
+  const tapAdd = usePaletteTapAdd(buildWebSearchDragData(meta, configured), dragBlocked);
 
   return (
     <Box mb="1">
@@ -308,6 +310,8 @@ function ProviderRow({
             </span>
           </Tooltip>
         ) : null}
+
+        <TapAddButton onTap={tapAdd} />
 
         {meta.configurable && isAdmin ? (
           <Box

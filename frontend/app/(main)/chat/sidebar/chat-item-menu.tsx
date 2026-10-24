@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { DropdownMenu, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 
 interface ChatItemMenuProps {
   /** Whether the parent item is hovered (controls meatball visibility) */
@@ -50,7 +51,8 @@ export function ChatItemMenu({
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [isMeatballHovered, setIsMeatballHovered] = useState(false);
-  const visible = isParentHovered || isOpen;
+  const canHover = useCanHover();
+  const visible = isParentHovered || isOpen || !canHover;
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -64,6 +66,7 @@ export function ChatItemMenu({
       <DropdownMenu.Trigger>
         <button
           type="button"
+          className="touch-hit"
           onMouseEnter={() => setIsMeatballHovered(true)}
           onMouseLeave={() => setIsMeatballHovered(false)}
           onClick={(e) => {

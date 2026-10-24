@@ -1,0 +1,83 @@
+{
+  "multimodal": false,
+  "record": {
+    "virtual_record_id": "vr-table",
+    "record_name": "sales.xlsx",
+    "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "block_containers": {
+      "blocks": [
+        {
+          "index": 0,
+          "type": "table_row",
+          "parent_index": 0,
+          "data": {
+            "row_natural_language_text": "Region North sold 120 units in Q3.",
+            "row_number": 1
+          }
+        },
+        {
+          "index": 1,
+          "type": "table_row",
+          "parent_index": 0,
+          "data": {
+            "row_natural_language_text": "Region South sold 95 units in Q3.",
+            "row_number": 2
+          }
+        },
+        {
+          "index": 2,
+          "type": "table_row",
+          "parent_index": 0,
+          "data": {
+            "row_natural_language_text": "Region West sold 143 units in Q3.",
+            "row_number": 3
+          }
+        }
+      ],
+      "block_groups": [
+        {
+          "index": 0,
+          "type": "table",
+          "data": {
+            "table_summary": "Q3 unit sales by region"
+          },
+          "table_metadata": {
+            "num_of_cells": 9
+          },
+          "children": [
+            {
+              "block_index": 0
+            },
+            {
+              "block_index": 1
+            },
+            {
+              "block_index": 2
+            }
+          ],
+          "parent_index": null
+        }
+      ]
+    }
+  },
+  "hits": [
+    {
+      "metadata": {
+        "virtualRecordId": "vr-table",
+        "isBlockGroup": true,
+        "blockIndex": 0
+      },
+      "score": 0.88,
+      "content": "Q3 unit sales by region"
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-table",
+        "isBlockGroup": false,
+        "blockIndex": 2
+      },
+      "score": 0.71,
+      "content": "Region West sold 143 units in Q3."
+    }
+  ]
+}

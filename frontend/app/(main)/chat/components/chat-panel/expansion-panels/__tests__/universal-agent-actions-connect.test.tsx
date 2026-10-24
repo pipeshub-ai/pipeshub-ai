@@ -1,9 +1,10 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
 
 const api = vi.hoisted(() => ({
   getMyToolsets: vi.fn(),
@@ -11,6 +12,7 @@ const api = vi.hoisted(() => ({
   findMyToolsetByInstanceId: vi.fn(),
   getInstanceOAuthAuthorizationUrl: vi.fn(),
 }));
+const apiActionsApi = vi.hoisted(() => ({ listInstances: vi.fn() }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -18,6 +20,18 @@ vi.mock('@/lib/store/toast-store', () => ({ toast }));
 vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: api, MAX_TOOLSETS_LIST_LIMIT: 200 }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({
   McpServersApi: { getMyMcpServers: vi.fn(async () => ({ instances: [] })) },
+}));
+vi.mock('@/app/(main)/workspace/api-toolsets/api', () => ({ ApiToolsetsApi: apiActionsApi }));
+// The real dialog saves the credential; here "Save" stands for one that was accepted.
+vi.mock('@/app/(main)/workspace/api-toolsets/components', () => ({
+  ApiActionConnectionPanel: ({ toolset, onChanged }: { toolset: ApiToolset | null; onChanged: () => void }) =>
+    toolset ? (
+      <div role="dialog" aria-label={`Connect ${toolset.name}`}>
+        <button type="button" onClick={onChanged}>
+          Save
+        </button>
+      </div>
+    ) : null,
 }));
 vi.mock('../connectors-collections/collections-tab', () => ({ CollectionsTab: () => null }));
 // The real dialog posts the credentials; here "Save" stands for credentials that were accepted.
@@ -101,6 +115,7 @@ beforeEach(() => {
     return { toolsets: backend.pages[page - 1] ?? [], hasNext: page < backend.pages.length };
   });
   api.getAllMyToolsets.mockImplementation(async () => ({ toolsets: backend.toConnect }));
+  apiActionsApi.listInstances.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -191,5 +206,124 @@ describe('the chat’s Actions tab', () => {
     await waitFor(() => expect(screen.queryByTestId('toolset-connect-row')).toBeNull());
     expect(screen.getByText('Jira Cloud')).toBeTruthy();
     expect(screen.getByText('Gmail')).toBeTruthy();
+  });
+});
+
+const ID_A = 'a'.repeat(32);
+const ID_B = 'b'.repeat(32);
+
+function apiAction(overrides: Partial<ApiToolset>): ApiToolset {
+  return {
+    id: ID_A,
+    name: 'Orders API',
+    description: '',
+    specTitle: 'Orders',
+    authType: 'api_key',
+    useSharedCredential: false,
+    isConnected: true,
+    operations: [{ toolName: 'listOrders', method: 'get', path: '/orders', summary: 'List orders', kind: 'read' }],
+    updatedAt: 0,
+    ...overrides,
+  };
+}
+
+describe('API actions in the chat’s Actions tab', () => {
+  beforeEach(() => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_API_TOOLSETS: true } });
+  });
+
+  it('lists connected API actions as groups and offers to connect the rest', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([
+      apiAction({}),
+      apiAction({ id: ID_B, name: 'Billing API', isConnected: false }),
+    ]);
+
+    await openActionsTab();
+    expect(screen.getByText('Orders API')).toBeTruthy();
+    expect(useChatStore.getState().universalAgentToolCatalogFullNames).toContain(`${ID_A}:${ID_A}:listOrders`);
+    expect(within(await screen.findByTestId('api-action-connect-row')).getByText('Billing API')).toBeTruthy();
+    // The Jira row above carries the "Not connected" heading.
+    expect(screen.getAllByText('Not connected')).toHaveLength(1);
+  });
+
+  it('turns a newly connected API action’s operations on for a hand-picked selection', async () => {
+    backend.toConnect = [];
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({ isConnected: false })]);
+    useChatStore.getState().setUniversalAgentStreamTools(['sl:slack.send_message']);
+
+    renderInTheme(<UniversalAgentResourcesPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+    const row = await screen.findByTestId('api-action-connect-row');
+    fireEvent.click(within(row).getByRole('button', { name: 'Connect' }));
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Connect Orders API' })).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(useChatStore.getState().universalAgentStreamTools).toEqual([
+        'sl:slack.send_message',
+        `${ID_A}:${ID_A}:listOrders`,
+      ])
+    );
+    expect(screen.queryByTestId('api-action-connect-row')).toBeNull();
+  });
+
+  it('shows a shared-credential action a member cannot connect as waiting for an admin', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({ useSharedCredential: true, isConnected: false })]);
+
+    await openActionsTab();
+    const row = await screen.findByTestId('api-action-connect-row');
+    expect(within(row).getByText('Waiting for admin')).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: 'Connect' })).toBeNull();
+  });
+
+  it('lists the other actions when API actions cannot be loaded', async () => {
+    // A failure keeps the last list, and the panel's cache outlives a test: start from an empty one.
+    await openActionsTab();
+    cleanup();
+    clockOffset += 10 * 60 * 1000;
+    apiActionsApi.listInstances.mockRejectedValue(new Error('labs flag off'));
+
+    await openActionsTab();
+    expect(screen.getByText('Slack')).toBeTruthy();
+    expect(screen.queryByTestId('api-action-connect-row')).toBeNull();
+  });
+
+  it('keeps the API actions it had when a refresh fails', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+    cleanup();
+
+    clockOffset += 10 * 60 * 1000;
+    apiActionsApi.listInstances.mockRejectedValue(new Error('network blip'));
+    await openActionsTab();
+    await waitFor(() => expect(apiActionsApi.listInstances).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+  });
+
+  it('finds an operation by the summary its row shows', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    fireEvent.change(screen.getByPlaceholderText('Search actions'), { target: { value: 'list orders' } });
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+  });
+
+  it('loads API actions once the flag arrives after the panel opened', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false } });
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    expect(apiActionsApi.listInstances).not.toHaveBeenCalled();
+
+    act(() => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_API_TOOLSETS: true } });
+    });
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+  });
+
+  it('does not ask for API actions with the flag off', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false } });
+
+    await openActionsTab();
+    expect(apiActionsApi.listInstances).not.toHaveBeenCalled();
   });
 });

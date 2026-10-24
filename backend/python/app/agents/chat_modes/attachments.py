@@ -36,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.artifacts.reader import record_artifact_reader
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
 from app.utils.record_access import caller_can_read_virtual_record
@@ -113,7 +114,7 @@ async def resolve_attachments(
             continue
         virtual_record_ids.append(vrid)
         try:
-            record = await blob_store.get_record_from_storage(vrid, org_id)
+            record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
         except Exception as exc:  # noqa: BLE001 - one bad attachment must not fail the turn
             logger.warning("resolve_attachments: failed to resolve vrid=%s: %s", vrid, exc)
             continue

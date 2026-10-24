@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon, FilterDropdown, DateRangePicker, type DateFilterType } from '@/app/components/ui';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -60,6 +60,8 @@ function filterHasValues(filter: StagedFilter): boolean {
 export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  // Below desktop the chips scroll in one row instead of wrapping a lone chip.
+  const scrollRow = useIsBelowDesktop();
   const {
     // Collections mode state and actions
     filter,
@@ -257,26 +259,63 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
 
   const hasAnyFilter = filterHasValues(draft) || filterHasValues(activeFilter);
 
-  return (
+  const actions = (
+    <>
+      {isDirty && (
+        <Button
+          type="button"
+          size="1"
+          variant="solid"
+          onClick={applyFilters}
+          style={{
+            height: '26px',
+            minHeight: isMobile ? '44px' : undefined,
+            cursor: 'pointer',
+          }}
+        >
+          {t('filter.applyFilters')}
+        </Button>
+      )}
+
+      {/* Clear Filter */}
+      {hasAnyFilter && (
+        <Flex
+          align="center"
+          gap="1"
+          onClick={resetFilter}
+          style={{
+            height: 32,
+            padding: '0 8px',
+            cursor: 'pointer',
+          }}
+        >
+          <MaterialIcon name="close" size={14} color="var(--neutral-11)" />
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 400, lineHeight: '20px', whiteSpace: 'nowrap' }}>
+            {t('filter.clearFilter')}
+          </Text>
+        </Flex>
+      )}
+    </>
+  );
+
+  const scroller = (
     <Flex
       align="center"
-      gap={isMobile ? '2' : '2'}
-      className={isMobile ? 'kb-filter-bar-mobile no-scrollbar' : undefined}
-      style={{
-        minHeight: 0,
-        padding: isMobile ? 'var(--space-2)' : '8px 16px',
-        borderBottom: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(8px)',
-        // Mobile: single-row horizontal scroll so chips never wrap.
-        // Desktop: keep the wrap behavior.
-        flexWrap: isMobile ? 'nowrap' : 'wrap',
-        overflowX: isMobile ? 'auto' : 'visible',
-      }}
+      gap="2"
+      className={scrollRow ? 'kb-filter-bar-mobile no-scrollbar' : undefined}
+      style={
+        scrollRow
+          ? { flex: 1, minWidth: 0, overflowX: 'auto', flexWrap: 'nowrap' }
+          : {
+              minHeight: 0,
+              padding: '8px 16px',
+              borderBottom: '1px solid var(--olive-3)',
+              backgroundColor: 'var(--olive-2)',
+              backdropFilter: 'blur(8px)',
+              flexWrap: 'wrap',
+            }
+      }
     >
-      {/* Pin chip widths on mobile so they scroll instead of shrinking below
-          their content. Scoped by `.kb-filter-bar-mobile` so desktop is unaffected. */}
-      {isMobile && <style>{`.kb-filter-bar-mobile > * { flex-shrink: 0; }`}</style>}
       {!isMobile && <MaterialIcon name="filter_list" size={16} color="var(--neutral-11)" />}
 
       {/* Type Filter */}
@@ -367,38 +406,29 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         defaultDateType="between"
       />
 
-      {isDirty && (
-        <Button
-          type="button"
-          size="1"
-          variant="solid"
-          onClick={applyFilters}
-          style={{
-            height: '26px',
-            minHeight: isMobile ? '44px' : undefined,
-            cursor: 'pointer',
-          }}
-        >
-          {t('filter.applyFilters')}
-        </Button>
-      )}
+      {!scrollRow && actions}
+    </Flex>
+  );
 
-      {/* Clear Filter */}
-      {hasAnyFilter && (
-        <Flex
-          align="center"
-          gap="1"
-          onClick={resetFilter}
-          style={{
-            height: 32,
-            padding: '0 8px',
-            cursor: 'pointer',
-          }}
-        >
-          <MaterialIcon name="close" size={14} color="var(--neutral-11)" />
-          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 400, lineHeight: '20px', whiteSpace: 'nowrap' }}>
-            {t('filter.clearFilter')}
-          </Text>
+  if (!scrollRow) return scroller;
+
+  // Apply and Clear stay outside the scroller so they never slide off-screen.
+  return (
+    <Flex
+      align="center"
+      gap="2"
+      style={{
+        minHeight: 0,
+        padding: isMobile ? 'var(--space-2)' : '8px 16px',
+        borderBottom: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--olive-2)',
+        backdropFilter: 'blur(8px)',
+      }}
+    >
+      {scroller}
+      {(isDirty || hasAnyFilter) && (
+        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          {actions}
         </Flex>
       )}
     </Flex>

@@ -1198,7 +1198,7 @@ function getFooterConfig({
 
   if (panelActiveTab === 'authenticate') {
     return {
-      primaryLabel: isCheckingConnection ? labels.testingConnection : `${labels.next} →`,
+      primaryLabel: isCheckingConnection ? labels.testingConnection : labels.next,
       /** Validation runs on click; only disable while the check or save request is in flight. */
       primaryDisabled: isSavingAuth || isCheckingConnection,
       primaryLoading: isSavingAuth || isCheckingConnection,

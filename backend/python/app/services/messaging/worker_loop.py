@@ -34,16 +34,35 @@ class WorkerLoop:
         # One per loop, not per consumer: every consumer's handlers share this loop, so one
         # monitor measures what all of them see.
         self.lag_monitor: LoopLagMonitor | None = None
+        # Why the loop exited when stop() had not asked it to; read by the /health route.
+        self.failure: BaseException | None = None
+        self._exit_listeners: set[Callable[[], None]] = set()
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
         return self._loop
 
+    def add_exit_listener(self, listener: Callable[[], None]) -> None:
+        """Call ``listener`` on the loop's thread if the loop exits without a stop() request."""
+        with self._lock:
+            self._exit_listeners.add(listener)
+
+    def remove_exit_listener(self, listener: Callable[[], None]) -> None:
+        with self._lock:
+            self._exit_listeners.discard(listener)
+
     def start(self) -> asyncio.AbstractEventLoop:
         """Start the loop on its own thread unless it is already running; return it."""
         with self._lock:
-            if self._stopping and self._thread is not None and self._thread.is_alive():
+            if self.failure is not None:
+                # The clients bound to the dead loop cannot move to a new one; a consumer
+                # starting late would otherwise run on a second loop and hide the failure.
+                raise RuntimeError("the shared worker event loop died; restart the indexing service")
+            exiting = self._stopping or self._loop is None or not self._loop.is_running()
+            if exiting and self._thread is not None and self._thread.is_alive():
                 # A second loop beside one still shutting down would split the shared clients.
+                # Covers an unrequested exit too: its thread records the failure only once it
+                # gets this lock, which a start() waiting for its new loop would be holding.
                 raise RuntimeError("the previous shared worker event loop is still shutting down")
             if not self._stopping and self._loop is not None and self._loop.is_running():
                 return self._loop
@@ -57,9 +76,16 @@ class WorkerLoop:
                 if lag_monitor is not None:
                     loop.call_soon(lag_monitor.start)
                 loop.call_soon(ready.set)
+                error: BaseException | None = None
                 try:
                     loop.run_forever()
+                except BaseException as exc:
+                    error = exc
+                    raise
                 finally:
+                    # Before the tasks are cancelled: stopping the consumers first keeps them from
+                    # handing more work to a loop that is about to close.
+                    self._on_exit(error)
                     if lag_monitor is not None:
                         lag_monitor.stop()
                     pending = asyncio.all_tasks(loop)
@@ -78,6 +104,29 @@ class WorkerLoop:
             self.lag_monitor = lag_monitor
             self._logger.info("Shared worker event loop started")
             return loop
+
+    def _on_exit(self, error: BaseException | None) -> None:
+        """Stop every consumer on the loop if the loop exited without a stop() request.
+
+        Left running, a consumer hands each message to the closed loop and its recovery
+        re-claims the same entries until their delivery count dead-letters healthy records.
+        The cause is logged here because the thread's own report is unreliable:
+        threading.excepthook drops a SystemExit silently.
+        """
+        with self._lock:
+            if self._stopping:
+                return
+            self.failure = error or RuntimeError("the shared worker event loop stopped without a stop request")
+            listeners = list(self._exit_listeners)
+        for listener in listeners:
+            listener()
+        self._logger.critical(
+            "Shared worker event loop exited unexpectedly (%r); every indexing consumer on it has "
+            "stopped taking work and un-acknowledged messages stay pending for redelivery. "
+            "Restart the indexing service to resume.",
+            self.failure,
+            exc_info=error,
+        )
 
     def call(self, fn: Callable[[], T], timeout: float = _START_TIMEOUT_S) -> T:
         """Run ``fn`` on the loop's thread and return its result, for setup that must run there."""

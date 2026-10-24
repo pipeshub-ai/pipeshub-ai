@@ -25,6 +25,7 @@ from google_behaviour_fakes import (
 from googleapiclient.errors import HttpError
 
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
@@ -79,7 +80,14 @@ class Workspace:
         return self.connector
 
     async def sync(self) -> None:
-        await (await self.connector_()).run_sync()
+        """One run. A run that left part of Drive unread ends with DriveSyncIncomplete, after doing everything
+        else it could; that is recorded in `incomplete` rather than raised, so a test checks what the run did
+        and, where it matters, that it was reported as incomplete."""
+        try:
+            await (await self.connector_()).run_sync()
+            self.incomplete = False
+        except DriveSyncIncomplete:
+            self.incomplete = True
 
     def names(self) -> set[str]:
         return {r.record_name for r in self.records.records.values() if not r.is_placeholder}
@@ -507,7 +515,12 @@ async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -
     ws.http.fail("GET", "/drive/v3/files/shared/permissions", 500, "backendError")
     await ws.sync()
 
-    assert ws.records.records["shared"].record_name == "plan-v2.txt"
+    assert (BOB, "USER", "READ") in ws.grants("shared")
+    assert ws.incomplete, "a change whose permissions could not be read is not reported as synced"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert ws.records.records["shared"].record_name == "plan-v2.txt", "the change is read again"
     assert (BOB, "USER", "READ") in ws.grants("shared")
 
 
@@ -813,7 +826,8 @@ async def test_a_file_a_synced_user_still_opens_through_a_nested_group_is_kept(w
     ws.world.add_group("emea@example.com", [ALICE])
     _file_shared_with_a_group_in_an_unwalked_drive(ws, ["emea@example.com"])
     await ws.sync()
-    assert ws.records.user_groups["sales@example.com"][1] == [], "sales@ has no direct user members"
+    assert [m.email for m in ws.records.user_groups["sales@example.com"][1]] == [ALICE], \
+        "sales@ holds Alice through emea@: Drive gives a nested group's members the outer group's access"
     assert ("sales@example.com", "GROUP", "READ") in ws.grants("g1")
     assert ALICE not in ws.records.perm_emails("g1"), "Alice's only access is sales@ through emea@"
 
@@ -1101,11 +1115,6 @@ async def test_a_failed_change_page_does_not_advance_the_users_checkpoint(ws: Wo
     assert {f"a{n}.txt" for n in range(4)} <= ws.names()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A database error while saving a changed file is logged and swallowed, and the user's "
-    "checkpoint still moves past the change, so that update is lost for good.",
-)
 async def test_a_database_failure_on_a_change_keeps_the_users_checkpoint(ws: Workspace) -> None:
     ws.world.add_item("a1", "draft.txt", parent="root-alice", owner=ALICE)
     await ws.sync()
@@ -1128,7 +1137,7 @@ async def test_an_empty_page_with_a_next_token_does_not_end_a_users_full_sync(ws
     assert {f"a{n}.txt" for n in range(4)} <= ws.names()
 
 
-async def test_one_bad_item_does_not_abort_the_users_sync(ws: Workspace) -> None:
+async def test_one_bad_item_does_not_abort_the_users_sync_but_holds_their_checkpoint(ws: Workspace) -> None:
     ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE)
     ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE)
     ws.world.add_item("a3", "also-good.txt", parent="root-alice", owner=ALICE)
@@ -1138,7 +1147,21 @@ async def test_one_bad_item_does_not_abort_the_users_sync(ws: Workspace) -> None
 
     assert {"good.txt", "also-good.txt"} <= ws.names()
     assert "bad.txt" not in ws.names()
-    assert ws.user_checkpoint(ALICE) is not None
+    assert ws.incomplete, "a run that skipped an item is not reported as complete"
+    assert ws.user_checkpoint(ALICE) is None, "nothing else would bring the skipped item back"
+
+
+async def test_an_item_that_keeps_failing_holds_the_checkpoint_only_for_a_few_runs(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE)
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+
+    assert ws.user_checkpoint(ALICE) is not None, "a feed must not stop for good on one item"
 
 
 # --- folder filter ------------------------------------------------------------
@@ -1740,12 +1763,6 @@ async def test_reindex_reads_the_file_as_a_user_who_can_see_it(ws: Workspace) ->
     assert {r.identity for r in ws.http.requests[before:] if r.path.startswith("/drive/")} == {ALICE}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Every file whose sharing can be read is reported as 'changed' (its permissions are always "
-    "marked as changed), so reindex re-saves an unchanged, already-indexed file instead of asking "
-    "for a reindex, and nothing is re-indexed.",
-)
 async def test_reindex_of_an_unchanged_indexed_file_asks_for_a_reindex(ws: Workspace) -> None:
     ws.world.folder("dir", "Docs", parent="root-alice", owner=ALICE)
     ws.world.add_item("a1", "same.txt", parent="dir", owner=ALICE)

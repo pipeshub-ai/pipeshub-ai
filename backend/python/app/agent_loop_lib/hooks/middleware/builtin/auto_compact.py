@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
+from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
 from app.agent_loop_lib.core.usage_source import llm_usage_source
@@ -175,7 +176,7 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
 # Atomic message groups
 # ---------------------------------------------------------------------------
 
-def _build_groups(messages: list[Message], pin_first_n: int) -> list[list[int]]:
+def _build_groups(messages: list[Message]) -> list[list[int]]:
     """Partition *messages* into atomic groups that must stay together.
 
     A group is one of:
@@ -187,8 +188,7 @@ def _build_groups(messages: list[Message], pin_first_n: int) -> list[list[int]]:
       earlier shapers, but handled defensively).
 
     Returns a list of groups where each group is a list of message
-    indices.  Pinned messages (indices < pin_first_n) each form their own
-    single-element group at the front.
+    indices, in message order.
     """
     groups: list[list[int]] = []
     i = 0
@@ -229,21 +229,19 @@ def shape_auto_compact(
     summarizer: Summarizer | None = None,
     trigger_ratio: float = 0.85,
     max_tail_ratio: float = 0.6,
-    pin_first_n: int = 1,
 ):
     """PRE_MODEL middleware: budget-aware context compaction.
 
-    Fires when total tokens exceed ``budget.trigger_tokens(trigger_ratio)``.  Splits
-    messages into three regions:
+    Fires when total tokens exceed ``budget.trigger_tokens(trigger_ratio)``.
 
-    1. **Head** (pinned, never compacted) — first ``pin_first_n`` messages.
-    2. **Tail** (protected recent context) — determined by walking
-       backwards from the end, accumulating atomic message groups until
-       adding the next group would exceed ``max_tail_ratio × budget``
-       tokens.  Groups are never split: an ``AssistantMessage`` and its
-       ``ToolMessage``s move together.
-    3. **Middle** (everything between head and tail) — replaced with a
-       single summary message.
+    1. **Tail** (recent context, kept verbatim): walking back from the end,
+       atomic message groups are added until the next group would exceed
+       ``max_tail_ratio × budget`` tokens. Groups are never split: an
+       ``AssistantMessage`` and its ``ToolMessage``s move together.
+    2. **Protected** messages before the tail (the current request, pinned
+       messages, see ``context/protection.py``) stay verbatim, in place.
+    3. Every run of other groups before the tail is replaced by one
+       injected summary message.
 
     This approach adapts to any message-size distribution: a conversation
     with 50 small turns keeps most of them; a conversation with 3 huge
@@ -258,8 +256,6 @@ def shape_auto_compact(
         Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_tail_ratio:
         Maximum fraction of the budget the tail may consume.
-    pin_first_n:
-        Number of leading messages (goal/system) to never compact.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
@@ -271,54 +267,54 @@ def shape_auto_compact(
             await next_fn()
             return
 
-        if len(messages) <= pin_first_n + 1:
-            await next_fn()
-            return
-
-        groups = _build_groups(messages, pin_first_n)
+        groups = _build_groups(messages)
         if len(groups) <= 1:
             await next_fn()
             return
 
-        tail_start_group = _find_tail_start(
-            messages, groups, pin_first_n, budget, max_tail_ratio,
-        )
+        tail_start_group = _find_tail_start(messages, groups, budget, max_tail_ratio)
+        protected = protected_indices(messages)
 
-        # Flatten group indices into head / middle / tail message slices
-        head_indices: list[int] = []
-        middle_indices: list[int] = []
-        tail_indices: list[int] = []
-
-        for gi, group in enumerate(groups):
-            if all(idx < pin_first_n for idx in group):
-                head_indices.extend(group)
-            elif gi >= tail_start_group:
-                tail_indices.extend(group)
+        # Runs of consecutive unprotected groups before the tail.
+        runs: list[list[int]] = []
+        current: list[int] = []
+        for group in groups[:tail_start_group]:
+            if any(idx in protected for idx in group):
+                if current:
+                    runs.append(current)
+                current = []
             else:
-                middle_indices.extend(group)
-
-        if not middle_indices:
+                current.extend(group)
+        if current:
+            runs.append(current)
+        if not runs:
             await next_fn()
             return
 
-        head = [messages[i] for i in sorted(head_indices)]
-        middle = [messages[i] for i in sorted(middle_indices)]
-        tail = [messages[i] for i in sorted(tail_indices)]
+        summary_for: dict[int, UserMessage] = {}
+        for run in runs:
+            run_messages = [messages[i] for i in run]
+            summary_text = (
+                await summarizer(run_messages) if summarizer is not None else _naive_summary(run_messages)
+            )
+            summary_for[run[0]] = UserMessage(
+                content=f"[Auto-compacted summary of {len(run)} earlier message(s)]\n{summary_text}",
+                injected=True,
+            )
+        summarised = {i for run in runs for i in run}
 
-        summary_text = (
-            await summarizer(middle) if summarizer is not None else _naive_summary(middle)
-        )
-        summary_msg = UserMessage(
-            content=f"[Auto-compacted summary of {len(middle)} earlier message(s)]\n{summary_text}",
-        )
+        shaped: list[Message] = []
+        for i, msg in enumerate(messages):
+            if i in summary_for:
+                shaped.append(summary_for[i])
+            elif i not in summarised:
+                shaped.append(msg)
 
-        ctx.messages = [*head, summary_msg, *tail]
+        ctx.messages = shaped
         logger.info(
-            "auto_compact: summarized %d middle messages (%d groups, tail=%d messages), "
+            "auto_compact: summarized %d messages into %d summaries (tail=%d groups), "
             "%d→%d tokens (turn=%d, budget=%d)",
-            len(middle),
-            tail_start_group - _first_non_pinned_group(groups, pin_first_n),
-            len(tail),
+            len(summarised), len(runs), len(groups) - tail_start_group,
             total, count_tokens(ctx.messages), ctx.turn_index, budget,
         )
         await next_fn()
@@ -326,18 +322,9 @@ def shape_auto_compact(
     return _middleware
 
 
-def _first_non_pinned_group(groups: list[list[int]], pin_first_n: int) -> int:
-    """Index of the first group that contains non-pinned messages."""
-    for gi, group in enumerate(groups):
-        if any(idx >= pin_first_n for idx in group):
-            return gi
-    return len(groups)
-
-
 def _find_tail_start(
     messages: list[Message],
     groups: list[list[int]],
-    pin_first_n: int,
     budget: int,
     max_tail_ratio: float,
 ) -> int:
@@ -349,20 +336,13 @@ def _find_tail_start(
     - The tail never exceeds ``max_tail_ratio × budget`` tokens unless
       a single atomic group exceeds that limit (unavoidable — we never
       split a group).
-    - Pinned groups are never included in the tail calculation.
     """
     max_tail_tokens = int(budget * max_tail_ratio)
     tail_tokens = 0
     tail_start = len(groups)
 
     for gi in range(len(groups) - 1, -1, -1):
-        group = groups[gi]
-
-        # Never include pinned messages in the tail — they're always head.
-        if all(idx < pin_first_n for idx in group):
-            break
-
-        group_cost = _group_tokens(messages, group)
+        group_cost = _group_tokens(messages, groups[gi])
 
         # Always include at least one group in the tail.
         if tail_start == len(groups):

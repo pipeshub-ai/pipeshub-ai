@@ -161,6 +161,89 @@ describe('a new conversation, start to finish', () => {
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-real']);
   });
 
+  it('ignores an artifact event with no payload instead of failing the run', async () => {
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', { name: 'artifact' }),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('ok') } }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+
+    expect(slot(slotId).error).toBeFalsy();
+    expect(texts(slotId)).toContainEqual(['assistant', 'ok']);
+  });
+
+  it('settles the turn and reloads the saved thread when a new message finishes without the conversation', async () => {
+    const slotId = newSlot('conv-1');
+    respondWith([frame('TEXT_MESSAGE_START'), frame('RUN_FINISHED', { result: {} })]);
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('saved answer'), id: 'conv-1' } },
+    });
+    await streamMessageForSlot(slotId, Q, request());
+
+    await vi.waitFor(() => expect(texts(slotId)).toContainEqual(['assistant', 'saved answer']));
+    expect(get.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/');
+    expect(slot(slotId).error).toBeFalsy();
+    expect(slot(slotId).isStreaming).toBe(false);
+  });
+
+  it('keeps a newer turn when the reload of an earlier settled turn arrives late', async () => {
+    const slotId = newSlot('conv-1');
+    respondWith([frame('TEXT_MESSAGE_START'), frame('RUN_FINISHED', { result: {} })]);
+    let deliverReload: (value: unknown) => void = () => {};
+    vi.spyOn(apiClient, 'get').mockReturnValueOnce(new Promise((resolve) => { deliverReload = resolve; }));
+    await streamMessageForSlot(slotId, Q, request());
+
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('newer answer'), _id: 'conv-1' } } })]);
+    await streamMessageForSlot(slotId, 'And Q4?', request({ query: 'And Q4?' }));
+    expect(texts(slotId)).toContainEqual(['assistant', 'newer answer']);
+
+    deliverReload({ data: { conversation: { ...finishedConversation('stale answer'), id: 'conv-1' } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(texts(slotId)).toContainEqual(['assistant', 'newer answer']);
+    expect(texts(slotId)).not.toContainEqual(['assistant', 'stale answer']);
+  });
+
+  it('keeps the streamed answer and drops the generating row when that reload fails', async () => {
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-1', title: 'Quarterly revenue' } }),
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was $4.2M.' }),
+      frame('RUN_FINISHED', { result: {} }),
+    ]);
+    vi.spyOn(apiClient, 'get').mockRejectedValueOnce(new Error('offline'));
+    await streamMessageForSlot(slotId, Q, request());
+
+    await vi.waitFor(() => expect(useChatStore.getState().pendingConversations[slotId]).toBeUndefined());
+    expect(texts(slotId)).toContainEqual(['assistant', 'Revenue was $4.2M.']);
+    expect(slot(slotId).convId).toBe('conv-1');
+    expect(slot(slotId).isTemp).toBe(false);
+  });
+
+  it('files the new chat in the sidebar and restarts paging from the reloaded page', async () => {
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-1', title: 'Quarterly revenue' } }),
+      frame('RUN_FINISHED', { result: {} }),
+    ]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: {
+        conversation: {
+          ...finishedConversation('saved answer'),
+          id: 'conv-1',
+          pagination: { page: 1, limit: 20, totalCount: 30, totalPages: 2, hasNextPage: true, hasPrevPage: false },
+        },
+      },
+    });
+    await streamMessageForSlot(slotId, Q, request());
+
+    await vi.waitFor(() => expect(texts(slotId)).toContainEqual(['assistant', 'saved answer']));
+    expect(useChatStore.getState().pendingConversations[slotId]).toBeUndefined();
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-1']);
+    expect(slot(slotId).messagePagination).toEqual({ currentPage: 1, hasOlderMessages: true, isLoadingOlder: false });
+  });
+
   it('posts to the new-conversation endpoint with a run id that a Stop can target', async () => {
     const slotId = newSlot();
     respondWith([frame('RUN_FINISHED', { result: { conversation: finishedConversation('ok') } })]);

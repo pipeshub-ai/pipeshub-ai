@@ -27,6 +27,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
@@ -427,6 +428,7 @@ const HEADING_STYLES: Record<number, React.CSSProperties> = {
 
 function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; children?: React.ReactNode }) {
   const [showAnchor, setShowAnchor] = useState(false);
+  const canHover = useCanHover();
   const id = slugify(extractNodeText(children));
   const tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
   return (
@@ -445,7 +447,7 @@ function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; chil
           aria-label={`Link to section`}
           style={{
             marginLeft: '8px',
-            opacity: showAnchor ? 0.55 : 0,
+            opacity: showAnchor || !canHover ? 0.55 : 0,
             transition: 'opacity 0.15s ease',
             color: 'var(--slate-9)',
             textDecoration: 'none',

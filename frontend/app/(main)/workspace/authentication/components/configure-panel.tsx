@@ -24,16 +24,12 @@ interface ConfigurePanelProps {
 const METHOD_DOC_URLS: Record<ConfigurableMethod, string> = {
   google: 'https://docs.pipeshub.com/auth/google',
   microsoft: 'https://docs.pipeshub.com/auth/microsoft-azureAd',
-  samlSso: 'https://docs.pipeshub.com/auth/saml',
-  oauth: 'https://docs.pipeshub.com/auth',
 };
 
 // Material Icons has no 'google' glyph; the name would render as raw text.
 const METHOD_ICONS: Record<ConfigurableMethod, React.ReactNode> = {
   google: <img src="/icons/auth-config/google.svg" alt="" width={24} height={24} />,
   microsoft: 'window',
-  samlSso: 'security',
-  oauth: 'vpn_key',
 };
 
 // ========================================

@@ -121,7 +121,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def ok():
             return "result"
-        result = await c._safe_api_call(ok())
+        result = await c._safe_api_call(ok)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -129,7 +129,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("403 forbidden")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -137,7 +137,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("404 notfound")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -145,28 +145,24 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("400 badrequest invalid hostname")
-        result = await c._safe_api_call(fail(), max_retries=2, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=2, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_throttle_retries_then_succeeds(self):
         c = _make_connector()
 
-        class _FlakyAwaitable:
-            def __init__(self):
-                self._attempts = 0
+        attempts = 0
 
-            def __await__(self):
-                return self._run().__await__()
-
-            async def _run(self):
-                self._attempts += 1
-                if self._attempts == 1:
-                    raise Exception("429 too many requests throttle")
-                return "ok"
+        async def _flaky():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Exception("429 too many requests throttle")
+            return "ok"
 
         with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await c._safe_api_call(_FlakyAwaitable(), max_retries=1, retry_delay=0.01)
+            result = await c._safe_api_call(_flaky, max_retries=1, retry_delay=0.01)
         assert result == "ok"
         mock_sleep.assert_awaited()
 
@@ -178,7 +174,7 @@ class TestSharePointSafeApiCall:
             raise Exception("500 internal server error")
 
         with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock):
-            result = await c._safe_api_call(always_fail(), max_retries=1, retry_delay=0.01)
+            result = await c._safe_api_call(always_fail, max_retries=1, retry_delay=0.01)
         assert result is None
         assert c.stats["errors_encountered"] >= 1
 

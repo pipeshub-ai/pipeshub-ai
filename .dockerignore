@@ -82,6 +82,9 @@ backend/nodejs/apps/dist/
 # Documentation
 **/*.md
 **/docs/
+# Code packages named docs (the Google Docs toolset and its client), not documentation
+!backend/python/app/agents/actions/google/docs/
+!backend/python/app/sources/external/google/docs/
 **/README*
 **/CHANGELOG*
 **/LICENSE*

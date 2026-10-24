@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 
+from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     TextPart,
@@ -119,13 +120,13 @@ def _compact_user(msg: UserMessage, max_chars: int = 200) -> UserMessage:
 def shape_deterministic_compact(
     trigger_ratio: float = 0.85,
     keep_last_n_messages: int = 6,
-    pin_first_n: int = 1,
     preview_chars: int = 100,
 ):
     """Deterministic replacement for ``shape_auto_compact``.
 
-    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``
-    and there are enough messages to compact.
+    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
+    Messages ``context/protection.py`` protects (the current request, pinned
+    messages) and the last ``keep_last_n_messages`` stay verbatim.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
@@ -134,16 +135,12 @@ def shape_deterministic_compact(
         if total <= ctx.budget.trigger_tokens(trigger_ratio):
             await next_fn()
             return
-        if len(messages) <= pin_first_n + keep_last_n_messages:
-            await next_fn()
-            return
 
-        head = messages[:pin_first_n]
         raw_tail_start = len(messages) - keep_last_n_messages if keep_last_n_messages > 0 else len(messages)
-        tail_start = safe_tail_boundary(messages, raw_tail_start, pin_first_n)
-        tail = messages[tail_start:]
-        middle = messages[pin_first_n:tail_start]
-        if not middle:
+        tail_start = safe_tail_boundary(messages, raw_tail_start, 0)
+        protected = protected_indices(messages)
+        compactable = {i for i in range(tail_start) if i not in protected}
+        if not compactable:
             await next_fn()
             return
 
@@ -155,31 +152,29 @@ def shape_deterministic_compact(
                     call_id_to_name[tc.id] = tc.name
                     call_id_to_args[tc.id] = getattr(tc, "arguments", {}) or {}
 
-        compacted_middle: list[Message] = []
-        for msg in middle:
-            if msg.role == MessageRole.SYSTEM:
-                compacted_middle.append(msg)
+        shaped: list[Message] = []
+        for i, msg in enumerate(messages):
+            if i not in compactable or msg.role == MessageRole.SYSTEM:
+                shaped.append(msg)
             elif isinstance(msg, UserMessage):
                 if _is_compaction_summary(msg):
-                    compacted_middle.append(msg)
+                    shaped.append(msg)
                 elif getattr(msg, "injected", False):
-                    compacted_middle.append(_compact_user(msg))
+                    shaped.append(_compact_user(msg))
                 else:
-                    compacted_middle.append(msg)
+                    shaped.append(msg)
             elif isinstance(msg, AssistantMessage):
-                compacted_middle.append(_compact_assistant(msg))
+                shaped.append(_compact_assistant(msg))
             elif isinstance(msg, ToolMessage):
-                compacted_middle.append(
-                    _compact_tool(msg, preview_chars, call_id_to_name, call_id_to_args)
-                )
+                shaped.append(_compact_tool(msg, preview_chars, call_id_to_name, call_id_to_args))
             else:
-                compacted_middle.append(msg)
+                shaped.append(msg)
 
-        ctx.messages = [*head, *compacted_middle, *tail]
+        ctx.messages = shaped
         logger.info(
-            "deterministic_compact: compacted %d middle messages (head=%d, tail=%d), "
+            "deterministic_compact: compacted %d messages (%d protected, tail=%d), "
             "%d→%d tokens (turn=%d, budget=%d)",
-            len(middle), len(head), len(tail), total, count_tokens(ctx.messages),
+            len(compactable), len(protected), len(messages) - tail_start, total, count_tokens(ctx.messages),
             ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()

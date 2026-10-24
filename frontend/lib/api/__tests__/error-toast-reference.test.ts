@@ -40,3 +40,43 @@ describe('the reference an admin can quote', () => {
     expect(options.description).not.toContain('Reference:');
   });
 });
+
+describe('a server message without a full stop', () => {
+  it('becomes a sentence before the reference', () => {
+    showErrorToast(serverError({ message: 'admin access required', statusCode: 403, requestId: 'ref-1' }));
+
+    const [, options] = errorToast.mock.calls[0] as [string, { description: string }];
+    expect(options.description).toBe('Admin access required. Reference: ref-1');
+  });
+
+  it.each(['Still loading…', 'Saved (partly)', 'Name taken: "Ops"', 'Name taken: “Ops”', "Name taken: 'Ops'"])(
+    'adds no full stop after an ending the server already closed: %s',
+    (message) => {
+      showErrorToast(serverError({ message, statusCode: 403, requestId: 'ref-3' }));
+
+      const [, options] = errorToast.mock.calls[0] as [string, { description: string }];
+      expect(options.description).toBe(`${message} Reference: ref-3`);
+    },
+  );
+
+  it('keeps punctuation the server already wrote', () => {
+    showErrorToast(serverError({ message: 'Try again later!', statusCode: 403, requestId: 'ref-2' }));
+
+    const [, options] = errorToast.mock.calls[0] as [string, { description: string }];
+    expect(options.description).toBe('Try again later! Reference: ref-2');
+  });
+});
+
+describe('the toast title', () => {
+  it('is a translated sentence-case title', () => {
+    showErrorToast(serverError());
+
+    expect(errorToast.mock.calls[0][0]).toBe('Server error');
+  });
+
+  it('asks for a retry when the server is busy', () => {
+    showErrorToast(serverError({ statusCode: 503 }));
+
+    expect(errorToast.mock.calls[0][0]).toBe('Please try again shortly');
+  });
+});

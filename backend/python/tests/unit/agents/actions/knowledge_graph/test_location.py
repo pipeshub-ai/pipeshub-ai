@@ -16,6 +16,7 @@ from app.agents.actions.knowledge_graph.location import (
     walk_ancestors,
 )
 from app.models.entities import Connectors, OriginTypes, Record, RecordType
+from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
@@ -468,3 +469,74 @@ async def test_resolve_names_no_ancestor_when_the_check_fails() -> None:
     mock_provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
     locs = await resolve_ancestor_locations(["story"], graph_provider=mock_provider, org_id="org", user_key="uk")
     assert locs["story"] == "Jira (App ID: app1)"
+
+
+def _story_provider() -> MagicMock:
+    provider = MagicMock()
+    provider.get_record_parent_adjacency = AsyncMock(return_value=_jira_adjacency_payload())
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"rg1", "epic"})))
+    return provider
+
+
+class TestAConnectionLimitTrimsTheTrail:
+    """A connected app's limit shows only the part of the trail it shares."""
+
+    @pytest.mark.asyncio
+    async def test_a_named_record_does_not_name_what_is_above_it(self) -> None:
+        limit = SelectionScope(records={"story": ("v-story", "app1")})
+
+        locs = await resolve_ancestor_locations(
+            ["story"], graph_provider=_story_provider(), org_id="org", user_key="uk",
+            record_docs={"story": {"connectorId": "app1", "connectorName": "Jira"}}, connection_limit=limit,
+        )
+
+        assert "story" not in locs
+
+    @pytest.mark.asyncio
+    async def test_a_record_under_a_named_record_keeps_that_parent(self) -> None:
+        limit = SelectionScope(records={"epic": ("v-epic", "app1"), "story": ("v-story", "app1")})
+
+        locs = await resolve_ancestor_locations(
+            ["story"], graph_provider=_story_provider(), org_id="org", user_key="uk", connection_limit=limit,
+        )
+
+        assert locs["story"] == "Epic (Record ID: epic)"
+
+    @pytest.mark.asyncio
+    async def test_a_named_group_starts_the_trail(self) -> None:
+        limit = SelectionScope(groups={"rg1": "app1"})
+
+        locs = await resolve_ancestor_locations(
+            ["story"], graph_provider=_story_provider(), org_id="org", user_key="uk", connection_limit=limit,
+        )
+
+        assert locs["story"] == "PROJ (Record Group ID: rg1) -> Epic (Record ID: epic)"
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_limit_keeps_the_whole_trail(self) -> None:
+        locs = await resolve_ancestor_locations(
+            ["story"], graph_provider=_story_provider(), org_id="org", user_key="uk",
+            connection_limit=SelectionScope(app_ids=frozenset({"app1"})),
+        )
+
+        assert locs["story"] == (
+            "Jira (App ID: app1) -> PROJ (Record Group ID: rg1) -> Epic (Record ID: epic)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_names_an_app_only_when_the_limit_covers_it_whole(self) -> None:
+        provider = MagicMock()
+        provider.get_record_parent_adjacency = AsyncMock(side_effect=RuntimeError("DB down"))
+        docs = {"story": {"connectorId": "app1", "connectorName": "Jira"}}
+
+        named = await resolve_ancestor_locations(
+            ["story"], graph_provider=provider, org_id="org", user_key="uk", record_docs=docs,
+            connection_limit=SelectionScope(records={"story": ("v-story", "app1")}),
+        )
+        whole = await resolve_ancestor_locations(
+            ["story"], graph_provider=provider, org_id="org", user_key="uk", record_docs=docs,
+            connection_limit=SelectionScope(app_ids=frozenset({"app1"})),
+        )
+
+        assert named == {}
+        assert whole == {"story": "Jira (App ID: app1)"}

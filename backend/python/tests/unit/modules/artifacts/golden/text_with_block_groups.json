@@ -1,0 +1,91 @@
+{
+  "multimodal": false,
+  "record": {
+    "virtual_record_id": "vr-text",
+    "record_name": "handbook.pdf",
+    "mime_type": "application/pdf",
+    "block_containers": {
+      "blocks": [
+        {
+          "index": 0,
+          "type": "text",
+          "data": "Onboarding handbook",
+          "citation_metadata": {
+            "page_number": 1
+          }
+        },
+        {
+          "index": 1,
+          "type": "text",
+          "data": "Laptops are issued on day one.",
+          "parent_index": 0,
+          "citation_metadata": {
+            "page_number": 1
+          }
+        },
+        {
+          "index": 2,
+          "type": "text",
+          "data": "Badges are collected at reception.",
+          "parent_index": 0,
+          "citation_metadata": {
+            "page_number": 1
+          }
+        },
+        {
+          "index": 3,
+          "type": "text",
+          "data": "Expenses are reimbursed monthly.",
+          "citation_metadata": {
+            "page_number": 2
+          }
+        }
+      ],
+      "block_groups": [
+        {
+          "index": 0,
+          "type": "list",
+          "data": "",
+          "children": [
+            {
+              "block_index": 1
+            },
+            {
+              "block_index": 2
+            }
+          ],
+          "parent_index": null
+        }
+      ]
+    }
+  },
+  "hits": [
+    {
+      "metadata": {
+        "virtualRecordId": "vr-text",
+        "isBlockGroup": false,
+        "blockIndex": 1
+      },
+      "score": 0.91,
+      "content": "Laptops are issued on day one."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-text",
+        "isBlockGroup": false,
+        "blockIndex": 2
+      },
+      "score": 0.62,
+      "content": "Badges are collected at reception."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-text",
+        "isBlockGroup": false,
+        "blockIndex": 3
+      },
+      "score": 0.55,
+      "content": "Expenses are reimbursed monthly."
+    }
+  ]
+}

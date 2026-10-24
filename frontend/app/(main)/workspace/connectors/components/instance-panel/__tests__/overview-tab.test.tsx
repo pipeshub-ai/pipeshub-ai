@@ -68,7 +68,7 @@ describe('OverviewTab: record status', () => {
         stats={stats({ COMPLETED: 40, FAILED: 3, QUEUED: 2 }, 45)}
       />
     );
-    expect(screen.getByText('Records Status')).toBeTruthy();
+    expect(screen.getByText('Records status')).toBeTruthy();
     expect(screen.getByText('45')).toBeTruthy();
     expect(screen.getByText('40')).toBeTruthy();
     expect(screen.getByText('Errors (API / permission issues)')).toBeTruthy();
@@ -89,7 +89,7 @@ describe('OverviewTab: record status', () => {
         stats={null}
       />
     );
-    expect(screen.getByText('35% Complete')).toBeTruthy();
+    expect(screen.getByText('35% complete')).toBeTruthy();
   });
 
   it('opens the failed records in the knowledge base', () => {

@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { WorkspaceHeaderIconButton } from '../../../components';
+import { WorkspaceHeaderIconButton, HeaderOverflowMenu } from '../../../components';
 import { McpAddServerButton, isMcpInstanceDisabled } from '../../components';
 import { offeredForPersonalServers } from '../../catalog-replacement';
 import { mcpConnectionState } from '../../connection-state';
@@ -13,6 +13,9 @@ import { McpServerCard } from '../../team/components/mcp-server-card';
 import type { McpMyServerEntry, McpServerTemplate } from '../../types';
 import { isPersonalMcpInstance } from '../../types';
 import { McpPersonalServerCard } from './mcp-personal-server-card';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 type Tab = 'all' | 'connected' | 'notConnected';
 const TABS: Tab[] = ['all', 'connected', 'notConnected'];
@@ -62,6 +65,7 @@ export function McpPersonalLayout({
   onEdit,
   onDelete,
 }: McpPersonalLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>('all');
   const q = searchQuery.trim().toLowerCase();
@@ -104,16 +108,15 @@ export function McpPersonalLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         overflowY: 'auto',
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
-      <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
-        <Flex direction="column" gap="2" style={{ flex: 1 }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.mcpServers.personal.title')}
           </Heading>
@@ -121,31 +124,45 @@ export function McpPersonalLayout({
             {t('workspace.mcpServers.personal.subtitle')}
           </Text>
         </Flex>
-        <TextField.Root
-          size="2"
-          placeholder={t('workspace.mcpServers.searchPlaceholder')}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          style={{ width: 224, flexShrink: 0 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-          </TextField.Slot>
-        </TextField.Root>
+        {/* Phones: compact actions under the subtitle */}
+        {isMobile && (
+          <Flex align="center" gap="2" style={{ width: '100%' }}>
+            <McpAddServerButton onClick={onAddServer} />
+            <HeaderOverflowMenu items={[{ label: t('action.refresh'), icon: 'refresh', onSelect: onRefresh }]} />
+          </Flex>
+        )}
+        <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
+          <TextField.Root
+            size="2"
+            placeholder={t('workspace.mcpServers.searchPlaceholder')}
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{ width: '100%' }}
+          >
+            <TextField.Slot>
+              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+            </TextField.Slot>
+          </TextField.Root>
+        </Box>
       </Flex>
 
       <Flex align="center" justify="between" gap="2" wrap="wrap" style={{ width: '100%' }}>
-        <SegmentedControl.Root value={tab} onValueChange={(value) => setTab(value as Tab)} size="2">
-          {TABS.map((id) => (
-            <SegmentedControl.Item key={id} value={id}>
-              {t(`workspace.mcpServers.personal.tabs.${id}`)} ({counts[id]})
-            </SegmentedControl.Item>
-          ))}
-        </SegmentedControl.Root>
-        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          <McpAddServerButton onClick={onAddServer} />
-          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
-        </Flex>
+        {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
+        <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <SegmentedControl.Root value={tab} onValueChange={(value) => setTab(value as Tab)} size="2" style={{ minWidth: 'max-content' }}>
+            {TABS.map((id) => (
+              <SegmentedControl.Item key={id} value={id}>
+                {t(`workspace.mcpServers.personal.tabs.${id}`)} ({counts[id]})
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+        </Box>
+        {!isMobile && (
+          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+            <McpAddServerButton onClick={onAddServer} />
+            <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
+          </Flex>
+        )}
       </Flex>
 
       {isLoading ? (
@@ -169,7 +186,7 @@ export function McpPersonalLayout({
           )}
         </Flex>
       ) : (
-        <Grid columns={{ initial: '2', md: '3', lg: '3' }} gap="4" style={{ width: '100%' }}>
+        <Grid columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }} gap="4" style={{ width: '100%' }}>
           {shownServers.map((instance) => {
             const own = isPersonalMcpInstance(instance);
             return (

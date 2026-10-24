@@ -11,7 +11,7 @@ import {
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
-import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
+import LocalStorageAdapter, { fitPathSegment } from '../../../../src/modules/storage/providers/local-storage.provider'
 import { FilePayload } from '../../../../src/modules/storage/types/storage.service.types'
 import os from 'os'
 import path from 'path'
@@ -90,6 +90,19 @@ describe('LocalStorageAdapter', () => {
       mimeType: 'text/plain',
       documentPath,
       isVersioned: false,
+    })
+
+    it('stores and reads back a file whose name is over 255 bytes', async () => {
+      const adapter = adapterOn(mount)
+      const key = `org/doc/current/${'報告書'.repeat(40)}.txt` // 360-byte name
+      const result = await adapter.uploadDocumentToStorageService(payload(key, 'long name'))
+
+      expect(result.statusCode).to.equal(200)
+      const [file] = await fs.readdir(path.join(mount, 'org/doc/current'))
+      expect(Buffer.byteLength(file)).to.be.at.most(255)
+      expect(file.endsWith('.txt')).to.equal(true)
+      const read = await adapter.getBufferFromStorageService({ local: { localPath: result.data } } as any)
+      expect(read.data?.toString()).to.equal('long name')
     })
 
     it('stores the bytes and leaves no temporary file behind', async () => {
@@ -242,6 +255,52 @@ describe('LocalStorageAdapter', () => {
   // -------------------------------------------------------------------------
   // sanitizePath (private)
   // -------------------------------------------------------------------------
+  describe('fitPathSegment', () => {
+    const bytes = (s: string) => Buffer.byteLength(s)
+
+    it('keeps a segment of up to 255 bytes byte for byte', () => {
+      const name = 'a'.repeat(251) + '.pdf'
+      expect(fitPathSegment(name)).to.equal(name)
+    })
+
+    it('caps a 256-byte segment at 255 bytes and keeps the extension', () => {
+      const file = fitPathSegment('a'.repeat(252) + '.pdf')
+      expect(bytes(file)).to.equal(255)
+      expect(file).to.match(/^a+~[0-9a-f]{16}\.pdf$/)
+    })
+
+    it('cuts multi-byte names at a character boundary', () => {
+      const file = fitPathSegment('報告書'.repeat(40) + '.txt')
+      expect(bytes(file)).to.be.at.most(255)
+      expect(file).to.not.include('\uFFFD')
+      expect(file.endsWith('.txt')).to.equal(true)
+      const emoji = fitPathSegment('😀'.repeat(80))
+      expect(bytes(emoji)).to.be.at.most(255)
+      expect(Array.from(emoji.split('~')[0]).every((c) => c === '😀')).to.equal(true)
+    })
+
+    it('gives long names that share a prefix different stored names, and the same one each time', () => {
+      const a = fitPathSegment('x'.repeat(300) + 'one.txt')
+      const b = fitPathSegment('x'.repeat(300) + 'two.txt')
+      const c = fitPathSegment('x'.repeat(300) + 'one.md')
+      expect(new Set([a, b, c]).size).to.equal(3)
+      expect(fitPathSegment('é'.repeat(200) + '.pdf')).to.equal(fitPathSegment('é'.repeat(200) + '.pdf'))
+    })
+
+    it('folds an overlong extension into the capped name', () => {
+      const file = fitPathSegment('report.' + 'z'.repeat(300))
+      expect(bytes(file)).to.equal(255)
+      expect(file).to.match(/^report\.z+~[0-9a-f]{16}$/)
+    })
+
+    it('is applied to every segment of a local path', () => {
+      const long = 'd'.repeat(300)
+      const result = (createAdapter() as any).sanitizePath(`org/${long}/${long}.txt`).replace(/\\/g, '/')
+      expect(result.split('/').every((s: string) => bytes(s) <= 255)).to.equal(true)
+      expect(result.startsWith('org/')).to.equal(true)
+    })
+  })
+
   describe('sanitizePath (private)', () => {
     it('should reject leading parent-directory segments', () => {
       const adapter = createAdapter()

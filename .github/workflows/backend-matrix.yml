@@ -151,11 +151,21 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      # The dependencies below, CUDA torch among them, can leave a hosted runner's
+      # disk about 96% full: past OpenSearch's 95% flood stage, where the node
+      # refuses to create any index. None of these jobs use Android or .NET.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+          df -h /
+
       - name: Install dependencies
         working-directory: backend/python
         run: |
           uv pip install --system pytest pytest-asyncio pytest-timeout
           uv pip install --system -e ".[dev]"
+          df -h /
 
       - name: Start ${{ matrix.backend }}
         working-directory: deployment/docker-compose

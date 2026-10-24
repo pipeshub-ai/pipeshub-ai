@@ -35,6 +35,7 @@ import {
   updateUserQueryContent,
   deleteMessagesById,
   getMessages,
+  appendMessageFeedback,
   attachMessages,
   findSessionIdsMatchingContent,
   isClassifiedFailureAnswer,
@@ -101,7 +102,7 @@ function stubAppendMessages(insertedDocs: any[] = [{ _id: new mongoose.Types.Obj
 
 /** Stub the two calls `updateMessageById()` makes: `ChatSessionMessage.findById()` then `.findOneAndReplace()`. */
 function stubUpdateMessageById(existingDoc: any, updatedDoc: any = existingDoc) {
-  const findByIdStub = sinon.stub(ChatSessionMessage, 'findById').resolves(existingDoc)
+  const findByIdStub = sinon.stub(ChatSessionMessage, 'findOne').resolves(existingDoc)
   const findOneAndReplaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(updatedDoc)
   return { findByIdStub, findOneAndReplaceStub }
 }
@@ -124,6 +125,36 @@ function stubGetMessagesChain(resolvedMessages: any[] = []) {
 describe('Enterprise Search Utils', () => {
   afterEach(() => {
     sinon.restore()
+  })
+
+  describe('message helpers are org-scoped', () => {
+    const sessionId = new mongoose.Types.ObjectId()
+    const orgId = new mongoose.Types.ObjectId()
+
+    it('getMessages filters by sessionId and orgId', async () => {
+      const { findStub } = stubGetMessagesChain([])
+      await getMessages(sessionId, { orgId })
+      expect(findStub.firstCall.args[0]).to.deep.equal({ sessionId, orgId })
+    })
+
+    it('updateMessageById returns null for a message of another org', async () => {
+      const findOne = sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
+      const id = new mongoose.Types.ObjectId()
+      expect(await updateMessageById(id, orgId, {} as any)).to.equal(null)
+      expect(findOne.firstCall.args[0]).to.deep.equal({ _id: id, orgId })
+      expect(replace.called).to.be.false
+    })
+
+    it('deleteMessagesById and appendMessageFeedback carry the orgId', async () => {
+      const id = new mongoose.Types.ObjectId()
+      const del = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({ deletedCount: 0 } as any)
+      const upd = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
+      await deleteMessagesById([id], orgId)
+      await appendMessageFeedback(id, orgId, {})
+      expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: [id] }, orgId })
+      expect(upd.firstCall.args[0]).to.deep.equal({ _id: id, orgId })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1885,7 +1916,7 @@ describe('Enterprise Search Utils', () => {
 
     it('should log and continue (not throw) when the message id does not exist', async () => {
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findById').resolves(null)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const findOneAndReplaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
 
       const mockConversation: any = {
@@ -4058,7 +4089,7 @@ describe('chatSessions helpers', () => {
     const sessionId = new mongoose.Types.ObjectId()
     const orgId = new mongoose.Types.ObjectId()
     const existing = { _id: messageId, sessionId, orgId, seq: 7, content: 'old' }
-    sinon.stub(ChatSessionMessage, 'findById').resolves(existing as any)
+    sinon.stub(ChatSessionMessage, 'findOne').resolves(existing as any)
     const replaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ ...existing, content: 'new' } as any)
     await updateMessageById(messageId, { messageType: 'bot_response', content: 'new' } as any)
     expect(replaceStub.firstCall.args[1].seq).to.equal(7)
@@ -4078,8 +4109,9 @@ describe('chatSessions helpers', () => {
     const ids = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()]
     const sessionId = new mongoose.Types.ObjectId()
     const del = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({ deletedCount: 2 } as any)
-    await deleteMessagesById(ids, null, sessionId)
-    expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: ids }, sessionId })
+    const orgId = new mongoose.Types.ObjectId()
+    await deleteMessagesById(ids, orgId, null, sessionId)
+    expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: ids }, orgId, sessionId })
   })
 
   it('updateUserQueryContent leaves the files alone unless the edit replaced them', async () => {
@@ -4179,7 +4211,7 @@ describe('chatSessions helpers', () => {
         status: CONVERSATION_STATUS.INPROGRESS,
         save: sinon.stub().resolves(true),
       }
-      sinon.stub(ChatSessionMessage, 'findById').resolves(null)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const findOneAndReplaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
 
       await savePartialConversation(mockConversation, 'text', null, { replaceMessageId: messageId })

@@ -8,6 +8,7 @@ export function McpAddServerButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
+      className="touch-hit"
       onClick={onClick}
       style={{
         appearance: 'none',

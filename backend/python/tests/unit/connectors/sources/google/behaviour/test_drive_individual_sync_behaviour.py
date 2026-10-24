@@ -24,8 +24,10 @@ from google_behaviour_fakes import (
 from googleapiclient.errors import HttpError
 
 from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.individual.connector import (
@@ -81,7 +83,14 @@ class Harness:
         return self.connector
 
     async def sync(self) -> None:
-        await (await self.connector_()).run_sync()
+        """One run. A run that left part of Drive unread ends with DriveSyncIncomplete, after doing everything
+        else it could; that is recorded in `incomplete` rather than raised, so a test checks what the run did
+        and, where it matters, that it was reported as incomplete."""
+        try:
+            await (await self.connector_()).run_sync()
+            self.incomplete = False
+        except DriveSyncIncomplete:
+            self.incomplete = True
 
     def checkpoint(self) -> Optional[str]:
         value = self.sync_points.value(CHECKPOINT)
@@ -474,7 +483,8 @@ async def test_one_unreadable_item_does_not_abort_the_sync(drive: Harness) -> No
     await drive.sync()
 
     assert drive.names() == {"good-1.txt", "good-2.txt"}
-    assert drive.checkpoint() is not None
+    assert drive.incomplete, "a run that skipped an item is not reported as complete"
+    assert drive.checkpoint() is None, "nothing else would bring the skipped item back"
 
 
 async def test_a_database_failure_on_a_change_fails_the_run_and_keeps_the_checkpoint(drive: Harness) -> None:
@@ -922,7 +932,8 @@ async def test_the_connection_test_fails_once_the_refresh_token_is_revoked(drive
     drive.http._token_owner.pop("access-1")
     drive.http.revoked_refresh_tokens.add("refresh-1")
 
-    assert not await connector.test_connection_and_access()
+    with pytest.raises(ConnectorInitError, match="sign in to Google again"):
+        await connector.test_connection_and_access()
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
@@ -982,15 +993,10 @@ async def test_reindex_refreshes_changed_records_and_republishes_unchanged_ones(
     await connector.reindex_records([drive.records.records["same"], drive.records.records["changed"]])
 
     assert drive.records.records["changed"].record_name == "changed-at-source.txt"
-    assert [r.external_record_id for r in drive.records.reindexed] == ["same"]
+    assert [r.external_record_id for r in drive.records.reindexed] == ["same", "changed"], \
+        "a rename is applied, and the file is re-queued too: reindex re-queues every record it is given"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A file at the top of My Drive always looks moved: its stored parent is empty (the drive "
-    "root is dropped) but the fresh parent is the root folder id. Reindex then re-saves it as "
-    "'changed' instead of asking for a reindex, and an already-indexed file is never re-indexed.",
-)
 async def test_reindex_of_an_unchanged_file_at_the_top_of_my_drive_asks_for_a_reindex(drive: Harness) -> None:
     my_file(drive.world, "top", "top.txt")
     await drive.sync()

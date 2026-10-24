@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.core.tokens import count_message_tokens
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -9,18 +10,17 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 logger = logging.getLogger(__name__)
 
 
-def shape_sliding_window(pin_first_n: int = 1):
-    """Layer 4 context shaper: drops the oldest non-pinned messages until the
-    call fits under `budget.max_tokens`.
+def shape_sliding_window():
+    """Context shaper of last resort before the synthesis guard: drops the
+    oldest unprotected messages until the call fits under the budget.
 
     This is the PRE_MODEL equivalent of `context/window.py`'s
-    `SlidingWindowContext` — same eviction policy (oldest-first, SYSTEM
-    always pinned), but expressed as a shaper so it composes with the other
-    layers and only runs on the outgoing call rather than mutating stored
-    history. `pin_first_n` additionally protects the goal/task-setup
-    messages at the start of the conversation, which are usually small but
-    important context the model shouldn't lose. Direct replacement for
-    `SlidingWindowHook`.
+    `SlidingWindowContext` — same eviction policy (oldest-first), but expressed
+    as a shaper so it composes with the other layers and only runs on the
+    outgoing call rather than mutating stored history. It never evicts what
+    `context/protection.py` protects: the current request, pinned messages and
+    system messages. It runs after the extractive and summarising layers, so
+    it evicts only what they could not shrink.
 
     Evicts tool-call groups atomically: an ``AssistantMessage`` with
     ``tool_calls`` is always evicted together with its matching
@@ -33,10 +33,7 @@ def shape_sliding_window(pin_first_n: int = 1):
             await next_fn()
             return
 
-        pinned = set(range(min(pin_first_n, len(messages))))
-        for i, msg in enumerate(messages):
-            if msg.role == MessageRole.SYSTEM or getattr(msg, "pinned", False):
-                pinned.add(i)
+        pinned = protected_indices(messages)
 
         working = list(messages)
         index_map = list(range(len(messages)))
@@ -65,7 +62,7 @@ def shape_sliding_window(pin_first_n: int = 1):
 
 
 def _find_evictable(
-    working: list, index_map: list[int], pinned: set[int]
+    working: list, index_map: list[int], pinned: frozenset[int]
 ) -> int | None:
     """Find the oldest non-pinned, non-ToolMessage index to evict.
 

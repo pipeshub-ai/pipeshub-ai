@@ -835,7 +835,8 @@ li > blockquote {
    Pure CSS — no JS or React state required.
    ======================== */
 
-@media screen and (orientation: landscape) and (max-width: 900px) {
+/* Height and pointer, not width: large phones (up to ~932px wide) are caught, and keyboards or narrow desktop windows are not. */
+@media screen and (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
   .landscape-block-overlay {
     display: flex !important;
   }
@@ -876,6 +877,28 @@ li > blockquote {
   font-family: 'Material Symbols Outlined' !important;
   font-weight: 300;
   font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 40 !important;
+}
+
+/* Full-width segmented control: equal columns that may shrink below their text, which then ends in an ellipsis. */
+.rt-SegmentedControlRoot.segmented-fill {
+  grid-auto-columns: minmax(0, 1fr);
+}
+.segmented-fill .rt-SegmentedControlItemLabel {
+  min-width: 0;
+  overflow: hidden;
+}
+.segmented-fill .rt-SegmentedControlItemLabelActive,
+.segmented-fill .rt-SegmentedControlItemLabelInactive {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+.segmented-fill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Icon-only segmented controls: square items instead of 12px side padding around a glyph. */
@@ -985,6 +1008,20 @@ li > blockquote {
   border-color: var(--gray-9) !important;
 }
 
+/* Handles are 13px. On touch screens widen the grab area to 44px; it stays 22px tall,
+ * the spacing between stacked handles, so a finger never lands on the neighbour. */
+@media (pointer: coarse) {
+  .agent-builder-flow .react-flow__handle.agent-builder-node-handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 22px;
+    transform: translate(-50%, -50%);
+  }
+}
+
 /* Delete control on generic flow nodes: hidden until hover/focus within the card */
 .agent-builder-flow .flow-node-card .flow-node-delete {
   opacity: 0;
@@ -996,6 +1033,12 @@ li > blockquote {
 .agent-builder-flow .flow-node-card:hover .flow-node-delete,
 .agent-builder-flow .flow-node-card:focus-within .flow-node-delete {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .agent-builder-flow .flow-node-card .flow-node-delete {
+    opacity: 1;
+  }
 }
 
 .agent-builder-flow .flow-node-surface {
@@ -1481,6 +1524,31 @@ th code {
   }
 }
 
+/* Inline citation number circle: same idea, 44px tall and never wider than the
+ * circle plus a little, anchored at its left edge so neighbouring circles and
+ * the text before it keep their own taps. */
+@media (pointer: coarse) {
+  .citation-number-circle {
+    position: relative;
+  }
+  .citation-number-circle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: max(100%, 24px);
+    height: 44px;
+    transform: translateY(-50%);
+  }
+}
+
+/* Rows of small icon buttons: space them so their 44px hit areas do not overlap. */
+@media (pointer: coarse) {
+  .touch-row {
+    gap: 20px !important;
+  }
+}
+
 /* Inline citation "+N" chip: a 44px tap target on touch screens without
  * growing the 16px chip. Anchored at the chip's left edge so it never
  * covers the numbered circle just before it. */
@@ -1494,4 +1562,72 @@ th code {
     height: 44px;
     transform: translateY(-50%);
   }
+}
+
+/* Filter chips keep their content width so the row scrolls instead of shrinking them. */
+.entity-filter-bar-mobile > * {
+  flex-shrink: 0;
+}
+
+/* Full-screen shells: dvh avoids the mobile URL-bar overflow; vh is the fallback. */
+.viewport-height {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Grows the tap area to 44px on touch screens without growing the element. */
+@media (pointer: coarse) {
+  .touch-hit {
+    position: relative;
+  }
+  .touch-hit::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* iOS Safari zooms into inputs under 16px. */
+@media (max-width: 768px) and (pointer: coarse) {
+  .rt-TextFieldInput,
+  .rt-TextAreaInput,
+  textarea,
+  input,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* t5: integrations catalogs */
+/* Fades the right edge of a sideways-scrolling tab row while more tabs are off-screen.
+   Browsers without scroll-driven animations show the row unfaded. */
+@property --tab-scroll-fade {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes tab-scroll-fade {
+  from {
+    --tab-scroll-fade: 56px;
+  }
+  to {
+    --tab-scroll-fade: 0px;
+  }
+}
+@supports (animation-timeline: scroll()) {
+  .tab-scroll-fade {
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--tab-scroll-fade)), transparent);
+    animation: tab-scroll-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+/* t3: knowledge base */
+/* Filter chips keep their width and scroll below desktop instead of shrinking. */
+.kb-filter-bar-mobile > * {
+  flex-shrink: 0;
 }

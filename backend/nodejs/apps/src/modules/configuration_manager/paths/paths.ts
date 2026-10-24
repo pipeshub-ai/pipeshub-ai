@@ -51,6 +51,7 @@ export const configPaths = {
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',
+  signInMethodsRemovalMigration: '/migrations/sign_in_methods_removal_v1',
   // Value: JSON.stringify({ conversationsMigrated, agentConversationsMigrated, ... }).
   // See chat_sessions.migration.ts.
   chatSessionsMigration: '/migrations/chat_sessions_v1',

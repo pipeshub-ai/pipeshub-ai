@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useRef, useContext, useMemo, useEffect, useId } from 'react';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
+import { FormField, labelEndsWithOptional, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
   WorkspaceRightPanelBodyPortalContext,
@@ -385,7 +387,7 @@ function FieldExamples({
                   {ex.value}
                 </Box>
                 <Tooltip content={justCopied ? 'Copied' : 'Copy to clipboard'}>
-                  <IconButton
+                  <IconButton className="touch-hit"
                     type="button"
                     variant="soft"
                     color="gray"
@@ -620,7 +622,7 @@ function TagsInput({
               <Text size="1" style={{ color: 'var(--gray-12)', wordBreak: 'break-word' }}>
                 {tag}
               </Text>
-              <IconButton
+              <IconButton className="touch-hit"
                 type="button"
                 size="1"
                 variant="ghost"
@@ -658,6 +660,7 @@ function PasswordInput({
   revealed?: boolean;
 }) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [showPassword, setShowPassword] = useState(false);
   // Follow the reveal: shown when the form fetched the stored value, hidden again when it
   // moves to another config. The eye still toggles freely in between.
@@ -703,6 +706,7 @@ function PasswordInput({
           aria-label={t(showPassword ? 'auth.common.hidePassword' : 'auth.common.showPassword')}
           onClick={() => setShowPassword(!showPassword)}
           style={{
+            ...touchTarget(isMobile),
             position: 'absolute',
             right: 6,
             top: 8,
@@ -903,23 +907,25 @@ function SelectInput({
   startAdornment?: React.ReactNode;
   hasError?: boolean;
 }) {
+  const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const control = useFormFieldControl();
   const optionLabels = 'optionLabels' in field ? field.optionLabels : undefined;
 
-  const optionItems = useMemo(
-    () =>
-      (options ||
-        ('options' in field && Array.isArray(field.options)
-          ? field.options.map((opt: string | { id: string; label: string }) =>
-              typeof opt === 'string'
-                ? { label: optionLabels?.[opt] ?? opt, value: opt }
-                : { label: opt.label, value: opt.id }
-            )
-          : [])
-      ).filter((opt) => opt.value !== ''),
-    [options, field, optionLabels]
-  );
+  const optionItems = useMemo(() => {
+    // Schemas send yes/no as bare values; show them as words, not "yes".
+    const fallbackLabel = (opt: string) =>
+      opt === 'yes' ? t('common.yes') : opt === 'no' ? t('common.no') : opt;
+    return (options ||
+      ('options' in field && Array.isArray(field.options)
+        ? field.options.map((opt: string | { id: string; label: string }) =>
+            typeof opt === 'string'
+              ? { label: optionLabels?.[opt] ?? fallbackLabel(opt), value: opt }
+              : { label: opt.label, value: opt.id }
+          )
+        : [])
+    ).filter((opt) => opt.value !== '');
+  }, [options, field, optionLabels, t]);
 
   const hasYesNoOptions = useMemo(() => {
     const optionValues = new Set(optionItems.map((opt) => opt.value));
@@ -1363,7 +1369,7 @@ function FileInput({
         <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
         </Text>
-        {isOptional && (
+        {isOptional && !labelEndsWithOptional(field.displayName, t('form.optional')) && (
           <Text size="1" style={{ color: 'var(--gray-10)' }}>
             {t('form.optional')}
           </Text>

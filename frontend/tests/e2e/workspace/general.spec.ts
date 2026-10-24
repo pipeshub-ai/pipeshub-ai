@@ -12,14 +12,14 @@ test.describe('Workspace General Settings', () => {
   });
 
   test('displays editable registered name field', async ({ page }) => {
-    const nameInput = page.locator('input[placeholder="eg: Paypal Co. LLC"]');
+    const nameInput = page.locator('input[placeholder="e.g. Paypal Co. LLC"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     const value = await nameInput.inputValue();
     expect(value.length).toBeGreaterThan(0);
   });
 
   test('can edit and save org name', async ({ page }) => {
-    const nameInput = page.locator('input[placeholder="eg: Paypal Co. LLC"]');
+    const nameInput = page.locator('input[placeholder="e.g. Paypal Co. LLC"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     const originalValue = await nameInput.inputValue();
 

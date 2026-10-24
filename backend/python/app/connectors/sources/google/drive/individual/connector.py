@@ -61,9 +61,18 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveApp
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
+from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
+from app.connectors.sources.google.drive.utils.drive_run_report import (
+    DriveRunReport,
+    message_for_connection_failure,
+)
+from app.connectors.sources.google.drive.utils.folder_removal import remove_folder_confirming_contents
+from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
@@ -89,6 +98,8 @@ from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_mime import (
+    DriveNativeKind,
+    classify_drive_mime,
     download_filename,
     drive_content_changed,
     export_extension_for,
@@ -119,6 +130,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
+    is_permission_denied_403,
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
@@ -514,8 +526,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     is_updated = True
 
                 if drive_content_changed(existing_record, metadata):
-                    content_changed = True
                     is_updated = True
+                    content_changed = await self._content_changed(existing_record, metadata, self.drive_data_source)
 
                 if existing_record and drive_id != existing_record.external_record_group_id:
                     is_updated = True
@@ -610,6 +622,15 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self._sync_ledger.fail_item()
             return None
 
+    async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
+        """Whether a file whose Drive revision moved has new content. A native file's `version` also moves
+        on a rename or a sharing change, so its revisions decide."""
+        if classify_drive_mime(metadata.get("mimeType")) is not DriveNativeKind.EXPORTABLE:
+            return True
+        return await native_content_changed(
+            str(metadata.get("id")), existing.source_updated_at, source.revisions_list, self.logger
+        )
+
     def _parse_datetime(self, dt_obj) -> Optional[int]:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         return parse_drive_datetime(dt_obj)
@@ -687,9 +708,15 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     )
                     return
                 self.logger.info("Deleting record: %s", existing_record.record_name)
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=existing_record.id
-                )
+                if existing_record.mime_type in FOLDER_MIME_TYPES:
+                    # Drive may report only the folder; what is stored under it goes too, unless
+                    # this account can still open it through its own share.
+                    await remove_folder_confirming_contents(
+                        self.data_entities_processor, self.connector_id, existing_record,
+                        self._record_still_open, self.logger,
+                    )
+                else:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
@@ -1131,6 +1158,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             self.logger.info(f"📋 Start page token: {start_page_token[:20]}...")
             self._sync_ledger.note_full_listing()
+            failures_before = self._sync_ledger.item_failures
+            stored_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
 
             total_files = 0
             batch_records = []
@@ -1198,12 +1227,15 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
                 raise
 
-            if walk.incomplete:
+            hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
+            if walk.incomplete or hold is not None:
                 # Files a partial listing left out are not changes, so the changes feed
-                # would never return them; only another full listing can.
+                # would never return them; only another full listing can. A failed item too.
                 self._sync_ledger.note_incomplete()
-                if holds.changes():
-                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
+                if holds.changes() or hold:
+                    await self.drive_delta_sync_point.update_sync_point(
+                        sync_point_key, {**holds.changes(), **(hold or {})}
+                    )
                 self.logger.warning(
                     "Full sync listing was incomplete; page token not saved, the next run lists again"
                 )
@@ -1212,7 +1244,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             # Save start page token to sync point for future incremental syncs
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
-                {"pageToken": start_page_token, **holds.checkpoint_changes()}
+                {"pageToken": start_page_token, **holds.checkpoint_changes(), **released(stored_point)}
             )
 
             self.logger.info(f"✅ Full sync completed. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
@@ -1416,6 +1448,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         try:
             self._sync_ledger.note_incremental()
+            failures_before = self._sync_ledger.item_failures
             current_page_token = page_token
             total_changes = 0
             batch_records = []
@@ -1550,12 +1583,23 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.info(f"💾 Processing final batch of {len(batch_records)} records")
                 await self.data_entities_processor.on_new_records(batch_records)
 
+            stored_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
+            if self._sync_ledger.item_failures > failures_before:
+                hold = hold_again(stored_point)
+                if hold is not None:
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
+                    self.logger.warning("Some changes could not be stored; they are read again next run")
+                    return
+                self.logger.error(
+                    f"Some changes failed on {MAX_HELD_RUNS} runs in a row; moving on. They are synced again "
+                    "when the items change next, or by a full sync."
+                )
             # Update sync point with latest page token
             if current_page_token and current_page_token != page_token:
                 self.logger.info(f"💾 Updating sync point from {page_token[:20]}... to {current_page_token[:20]}...")
                 await self.drive_delta_sync_point.update_sync_point(
                     sync_point_key,
-                    {"pageToken": current_page_token}
+                    {"pageToken": current_page_token, **released(stored_point)}
                 )
                 self.logger.info(f"✅ Incremental sync completed. Processed {total_changes} changes.")
             else:
@@ -1584,7 +1628,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             await self._get_fresh_datasource()
             about = await self.drive_data_source.about_get(fields="user(emailAddress)")
         except Exception as e:
-            self.logger.error(f"❌ Google Drive refused the connection test: {e}")
+            self.logger.error("Google Drive refused the connection test: %s", e)
+            message = message_for_connection_failure(e, personal=True)
+            if message:
+                raise ConnectorInitError(message) from e
             return False
 
         if not (about or {}).get("user"):
@@ -2044,6 +2091,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self._sync_ledger.note_incomplete()
             return
         self._sync_ledger.note_full_listing()
+        failures_before = self._sync_ledger.item_failures
         walk = DrivePageWalk()
         if self._tracked_folder_ids:
             await self._sync_tracked_folders_in_drive(drive_id, user_id, user_email, walk)
@@ -2073,14 +2121,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise GoogleDriveError(
                 f"Google Drive repeated a page token while listing shared drive {drive_id}"
             )
-        if walk.incomplete:
+        stored_point = await self.drive_delta_sync_point.read_sync_point(sync_key)
+        hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
+        if walk.incomplete or hold is not None:
             self._sync_ledger.note_incomplete()
+            if hold:
+                await self.drive_delta_sync_point.update_sync_point(sync_key, hold)
             self.logger.warning(
                 "Listing of shared drive %s was incomplete; page token not saved, the next run lists it again",
                 drive_id,
             )
             return
-        await self.drive_delta_sync_point.update_sync_point(sync_key, {"pageToken": start_token})
+        await self.drive_delta_sync_point.update_sync_point(
+            sync_key, {"pageToken": start_token, **released(stored_point)}
+        )
 
     async def _sync_tracked_folders_in_drive(
         self, drive_id: str, user_id: str, user_email: str, walk: DrivePageWalk
@@ -2130,6 +2184,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         user_email: str,
     ) -> None:
         self._sync_ledger.note_incremental()
+        failures_before = self._sync_ledger.item_failures
         current = page_token
         while True:
             await self._get_fresh_datasource()
@@ -2158,6 +2213,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 file_metadata = change.get("file")
                 removed = bool(change.get("removed"))
                 trashed = bool(file_metadata and file_metadata.get("trashed"))
+                if removed and not trashed and await self._still_open_elsewhere(change.get("fileId")):
+                    continue
                 if removed or trashed:
                     file_id = change.get("fileId") or (file_metadata or {}).get("id")
                     if file_id:
@@ -2191,10 +2248,44 @@ class GoogleDriveIndividualConnector(BaseConnector):
             if isinstance(new_start, str) and new_start:
                 current = new_start
             break
+        stored_point = await self.drive_delta_sync_point.read_sync_point(sync_key)
+        if self._sync_ledger.item_failures > failures_before:
+            hold = hold_again(stored_point)
+            if hold is not None:
+                await self.drive_delta_sync_point.update_sync_point(sync_key, hold)
+                return
         if current and current != page_token:
-            await self.drive_delta_sync_point.update_sync_point(sync_key, {"pageToken": current})
+            await self.drive_delta_sync_point.update_sync_point(
+                sync_key, {"pageToken": current, **released(stored_point)}
+            )
 
     async def run_sync(self) -> None:
+        """One run. A run that could not read part of Drive does everything else it can, then fails, so it is
+        recorded as failed and nothing it did not read is treated as deleted; a sign-in Google no longer
+        accepts is reported to the user who connected it (DriveRunReport)."""
+        self._sync_ledger = FullSyncLedger()
+        report = DriveRunReport(personal=True, notify=self.notify, title=self._notification_title,
+                                sync_point=self.drive_delta_sync_point, logger=self.logger)
+        try:
+            await self._run_sync_steps()
+        except Exception as e:
+            report.note_failure(e)
+            report.note_unreadable_folders(sorted(self._blocked_folder_ids))
+            await report.finish(complete=False)
+            raise
+        report.note_unreadable_folders(sorted(self._blocked_folder_ids))
+        complete = not self._sync_ledger.has_gaps
+        await report.finish(complete=complete)
+        if not complete:
+            raise DriveSyncIncomplete(
+                "Part of Google Drive could not be read in this run; it is read again on the next run"
+            )
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A run that left part of Drive unread must not have the links of what it did not see removed."""
+        return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
+
+    async def _run_sync_steps(self) -> None:
 
         self.logger.info("Starting sync for Google Drive Individual")
 
@@ -2281,6 +2372,29 @@ class GoogleDriveIndividualConnector(BaseConnector):
         )
 
         self.logger.info("Sync completed for Google Drive Individual")
+
+    async def _record_still_open(self, record: Record) -> bool:
+        return await self._still_open_elsewhere(record.external_record_id)
+
+    async def _still_open_elsewhere(self, file_id: str | None) -> bool:
+        """Whether a file a shared drive's feed reported removed is still open to this account elsewhere.
+
+        Drive reports `removed` when a file moved to another drive too. Its new place's feed files it, so
+        deleting it here would lose it whenever that feed was read first. Any failure other than "not found"
+        or a known refusal raises, so the drive's checkpoint stays and the change is read again.
+        """
+        if not file_id:
+            return False
+        await self._get_fresh_datasource()
+        try:
+            metadata = await self.drive_data_source.files_get(
+                fileId=file_id, supportsAllDrives=True, fields="id, trashed"
+            )
+        except HttpError as e:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                return False
+            raise
+        return not metadata.get("trashed")
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Drive."""
@@ -2410,12 +2524,15 @@ class GoogleDriveIndividualConnector(BaseConnector):
             if not record_update or record_update.is_deleted:
                 return None
 
-            # Only return data if there's an actual update (metadata, content, or permissions)
-            if record_update.is_updated:
+            record_update.record.id = record.id
+            # Only new content goes through the write path, which queues indexing for it. An
+            # already-indexed record written that way is not queued again, so a rename is applied here
+            # and the record is re-queued like any unchanged one.
+            if record_update.content_changed:
                 self.logger.info(f"Record {file_id} has changed at source. Updating.")
-                # Ensure we keep the internal DB ID
-                record_update.record.id = record.id
                 return (record_update.record, record_update.new_permissions)
+            if record_update.is_updated:
+                await self._handle_record_updates(record_update)
 
             return None
 

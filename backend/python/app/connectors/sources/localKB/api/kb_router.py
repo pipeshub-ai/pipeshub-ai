@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
 from app.api.connection_limit import (
+    hide_record_parents_outside_connection,
+    hide_record_parents_unchecked,
+    hide_source_paths,
     ids_outside_connection,
     ids_outside_connection_on_restore,
     keep_path_inside_connection,
@@ -729,6 +732,23 @@ async def create_folder_in_kb_root(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        if (
+            "parentId" in body
+            or "parent_id" in body
+            or "folderId" in body
+            or any(
+                k in request.query_params
+                for k in ("parentId", "parent_id", "folderId")
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot nest folders via the root endpoint. Use the "
+                    "/{kb_id}/folder/{parent_id}/subfolder route instead."
+                )
+            )
+
         # Accept both "name" and "folderName" for compatibility
         folder_name = body.get("name") or body.get("folderName")
         if not folder_name:
@@ -774,6 +794,13 @@ async def create_nested_folder(
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder inside another folder"""
     try:
+        for param_name in ("parentId", "parent_id", "folderId"):
+            for val in request.query_params.getlist(param_name):
+                if val != parent_folder_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Conflicting {param_name} query parameter specified.",
+                    )
         try:
             body = await request.json()
         except Exception:
@@ -1005,6 +1032,7 @@ async def get_kb_children(
                 detail=error_reason
             )
 
+        hide_source_paths(request, result, kb_id)
         return result
 
     except HTTPException as he:
@@ -1015,6 +1043,28 @@ async def get_kb_children(
             status_code=500,
             detail=action_failed("open this knowledge base")
         )
+
+
+async def _keep_update_inside_connection(request: Request, response: dict[str, Any], kb_id: str) -> None:
+    """A connected app limited to part of a collection is told nothing of the
+    rest of it: not the collection, its other folders, the updated record's
+    parents outside the limit, or the file's source path."""
+    if connection_limit(request.state.user) is None:
+        return
+    user = request.state.user
+    graph_provider = request.app.state.graph_provider
+    kb = response.get("kb") if isinstance(response.get("kb"), dict) else {}
+    folders = [f for f in kb.get("folders") or [] if isinstance(f, dict)]
+    outside = await ids_outside_connection(
+        request, graph_provider, user.get("orgId"), user.get("userId"),
+        [kb_id, *(f.get("id") for f in folders if f.get("id"))],
+    )
+    if kb_id in outside:
+        response["kb"] = {}
+    elif kb:
+        kb["folders"] = [f for f in folders if f.get("id") not in outside]
+    await hide_record_parents_outside_connection(request, graph_provider, user.get("orgId"), user.get("userId"), response)
+    hide_source_paths(request, response, kb_id)
 
 
 @kb_router.get(
@@ -1067,6 +1117,7 @@ async def get_folder_children(
                 detail=error_reason
             )
 
+        hide_source_paths(request, result, kb_id)
         return result
 
     except HTTPException as he:
@@ -1355,7 +1406,7 @@ async def update_record(
             kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
                 logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
-                return {
+                fallback = {
                     **result,
                     "fileUpdated": body.get("fileMetadata") is not None,
                     "timestamp": get_epoch_timestamp_in_ms(),
@@ -1363,6 +1414,8 @@ async def update_record(
                     "kb": {},
                     "userPermission": "NONE",
                 }
+                hide_record_parents_unchecked(request, fallback)
+                return fallback
 
             # Get user permission
             user_key = user_id
@@ -1410,6 +1463,7 @@ async def update_record(
                 "kb": kb_info,
                 "userPermission": user_permission,
             }
+            await _keep_update_inside_connection(request, enriched_result, kb_id)
 
             return enriched_result
 
@@ -1417,8 +1471,10 @@ async def update_record(
             raise
         except Exception as e:
             logger.error(f"❌ Failed to enrich update record response: {str(e)}")
-            # Return with required fields even if enrichment fails
-            return {
+            # Return with required fields even if enrichment fails. For a
+            # connected app with a limit, the enrichment's own limit check may be
+            # what failed: nothing above the record is named then.
+            fallback = {
                 **result,
                 "fileUpdated": body.get("fileMetadata") is not None,
                 "timestamp": get_epoch_timestamp_in_ms(),
@@ -1426,6 +1482,8 @@ async def update_record(
                 "kb": {},
                 "userPermission": "NONE",
             }
+            hide_record_parents_unchecked(request, fallback)
+            return fallback
 
     except HTTPException as he:
         raise he

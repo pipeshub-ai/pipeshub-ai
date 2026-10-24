@@ -579,3 +579,48 @@ class TestStorageRefusal:
         from app.utils.user_errors import GENERIC_FAILURE, to_user_reason
 
         assert to_user_reason(StorageRequestRejectedError("refused (HTTP 415)", 415)) == GENERIC_FAILURE
+
+
+class TestTooLargeRefusal:
+    """Only the storage service refusing the content for its size, wherever it sits in the chain."""
+
+    @staticmethod
+    def _refusal(too_large: bool = True) -> Exception:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+
+        return StorageRequestRejectedError("refused (HTTP 400): larger than the 30 MB limit", 400, too_large=too_large)
+
+    def test_the_refusal_itself(self) -> None:
+        refusal = self._refusal()
+        assert ue.too_large_refusal(refusal) is refusal
+
+    def test_as_the_cause_of_a_wrapper(self) -> None:
+        try:
+            raise RuntimeError("Failed to save record") from self._refusal()
+        except RuntimeError as wrapped:
+            assert ue.too_large_refusal(wrapped) is wrapped.__cause__
+
+    def test_as_the_context_of_a_later_error(self) -> None:
+        try:
+            try:
+                raise self._refusal()
+            except Exception:
+                raise ValueError("cleanup failed")  # noqa: B904 - the implicit context is the point
+        except ValueError as later:
+            assert ue.too_large_refusal(later) is later.__context__
+
+    def test_a_refusal_for_another_reason(self) -> None:
+        assert ue.too_large_refusal(self._refusal(too_large=False)) is None
+
+    def test_other_too_large_reasons_do_not_count(self) -> None:
+        assert ue.to_user_reason(MemoryError()) == ue.FILE_TOO_LARGE
+        assert ue.too_large_refusal(MemoryError()) is None
+        assert ue.too_large_refusal(ValueError("file is too large")) is None
+
+    def test_none(self) -> None:
+        assert ue.too_large_refusal(None) is None
+
+    def test_a_cyclic_chain_terminates(self) -> None:
+        a, b = ValueError("a"), ValueError("b")
+        a.__cause__, b.__cause__ = b, a
+        assert ue.too_large_refusal(a) is None

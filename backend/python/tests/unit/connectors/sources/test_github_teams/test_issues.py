@@ -477,6 +477,24 @@ class TestProcessIssueToTicket:
         link = ru.record.related_external_records[0]
         assert link.external_record_id == "777/issues/9"
         assert link.relation_type.value == "BLOCKS"
+        assert link.record_name is None  # another repository's title is not copied
+
+    async def test_blocking_link_in_same_repo_keeps_the_title(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_blocking": ok_response([
+                {"number": 9, "title": "Downstream", "repository": {"id": 42}},
+                {"number": 10, "title": "By url", "repository_url": "https://api.github.com/repos/acme/widgets"},
+                {"number": 11, "title": "Other url", "repository_url": "https://api.github.com/repos/acme/other"},
+                {"number": 12, "title": "Unknown repository"},
+            ]),
+        })
+
+        ru = await IssuesSync(c)._process_issue_to_ticket(
+            make_repo(repo_id=42), _issue(number=2, blocked_by=0, blocking=1),
+        )
+
+        assert [r.record_name for r in ru.record.related_external_records] == ["Downstream", "By url", None, None]
 
     async def test_dependency_fetch_failure_does_not_fail_the_ticket(self) -> None:
         c = make_mock_connector()

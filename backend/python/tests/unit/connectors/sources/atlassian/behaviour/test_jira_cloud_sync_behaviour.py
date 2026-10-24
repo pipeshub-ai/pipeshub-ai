@@ -2176,15 +2176,15 @@ def browse_by_product_access(api: AtlassianApiStub, parameter: str | None) -> No
 
 
 class TestWhoMayBrowse:
-    async def test_any_logged_in_user_is_an_org_grant(self, api, site_db, checkpoints, search) -> None:
-        # Org access reaches only the org's users that hold this Jira connector's app.
+    async def test_any_logged_in_user_is_the_groups_with_product_access(self, api, site_db, checkpoints, search) -> None:
+        # As on main (#4383): the union of the application roles' groups, not an org grant.
         stub_site(api)
         browse_by_product_access(api, None)
         connector, _ = await ready_connector(site_db, checkpoints)
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.ORG", "all_licensed_users")]
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sd"), ("EntityType.GROUP", "grp-sw")]
 
     async def test_unreadable_application_roles_keep_the_access_of_a_project_granted_through_one(
         self, api, site_db, checkpoints, search

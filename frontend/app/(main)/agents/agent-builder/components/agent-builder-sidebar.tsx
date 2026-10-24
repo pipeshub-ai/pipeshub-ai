@@ -52,7 +52,9 @@ const paletteRowLabelStyle: React.CSSProperties = {
 
 export function AgentBuilderSidebar(props: {
   open: boolean;
-  width: number;
+  /** Inside the phone bottom sheet, which already shows the palette title. */
+  inSheet?: boolean;
+  width: number | string;
   loading: boolean;
   nodeTemplates: NodeTemplate[];
   availableSkills: SkillForBuilder[];
@@ -105,6 +107,7 @@ export function AgentBuilderSidebar(props: {
     paletteDragBlockedMessage = '',
     toolsetsOrgCredentialLocked = false,
     webSearchAttached,
+    inSheet = false,
   } = props;
 
   const { t } = useTranslation();
@@ -157,8 +160,8 @@ export function AgentBuilderSidebar(props: {
       style={{
         width,
         flexShrink: 0,
-        borderRight: '1px solid var(--olive-3)',
-        background: 'var(--olive-1)',
+        borderRight: inSheet ? undefined : '1px solid var(--olive-3)',
+        background: inSheet ? 'transparent' : 'var(--olive-1)',
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
@@ -169,11 +172,11 @@ export function AgentBuilderSidebar(props: {
         style={{
           flexShrink: 0,
           borderBottom: '1px solid var(--olive-3)',
-          background: 'var(--olive-1)',
+          background: inSheet ? 'transparent' : 'var(--olive-1)',
         }}
       >
-        <Flex align="start" gap="2" px="2" py="2" style={{ minHeight: HEADER_HEIGHT }}>
-          <Box
+        <Flex align="start" gap="2" px="2" py="2" style={inSheet ? undefined : { minHeight: HEADER_HEIGHT }}>
+          {inSheet ? null : <Box
             style={{
               width: 32,
               height: 32,
@@ -188,17 +191,19 @@ export function AgentBuilderSidebar(props: {
             }}
           >
             <MaterialIcon name="account_tree" size={ICON_SIZE_DEFAULT} color="var(--olive-11)" />
-          </Box>
+          </Box>}
           <Box style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-12)', lineHeight: 1.25 }}>
-              {t('agentBuilder.palette')}
-            </Text>
+            {inSheet ? null : (
+              <Text size="2" weight="medium" style={{ color: 'var(--olive-12)', lineHeight: 1.25 }}>
+                {t('agentBuilder.palette')}
+              </Text>
+            )}
             <Text
               size="1"
               style={{
                 display: 'block',
                 color: 'var(--olive-11)',
-                marginTop: 4,
+                marginTop: inSheet ? 0 : 4,
                 lineHeight: 1.4,
                 whiteSpace: 'normal',
                 overflowWrap: 'anywhere',
@@ -209,11 +214,13 @@ export function AgentBuilderSidebar(props: {
                 ? toolsetsOrgCredentialLocked
                   ? t('agentBuilder.paletteViewOnlyServiceAccount')
                   : t('agentBuilder.paletteViewerAuthenticateInTools')
-                : t('agentBuilder.paletteDragHint')}
+                : inSheet
+                  ? t('agentBuilder.paletteTapHint')
+                  : t('agentBuilder.paletteDragHint')}
             </Text>
           </Box>
         </Flex>
-        <Box px="2" pb="2" style={{ background: 'var(--olive-1)' }}>
+        <Box px="2" pb="2" style={inSheet ? undefined : { background: 'var(--olive-1)' }}>
           <TextField.Root
             placeholder={t('agentBuilder.searchNodes')}
             value={search}

@@ -26,6 +26,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+from helper.local_auth import session_service_account_id
+
 DEFAULT_REDIRECT_URI = "http://localhost/callback"
 ALL_GRANT_TYPES = ["authorization_code", "refresh_token", "client_credentials"]
 
@@ -103,15 +105,23 @@ def create_oauth_app(
     """
     base_url = base_url.rstrip("/")
     scopes = scopes or list_scope_names(base_url, user_jwt, timeout)
+    grant_types = grant_types or ALL_GRANT_TYPES
+    # A client_credentials app must name the service account it acts as.
+    identity = (
+        {"tokenIdentityUserId": session_service_account_id(base_url, user_jwt, timeout)}
+        if "client_credentials" in grant_types
+        else {}
+    )
     data = _check(
         requests.post(
             f"{base_url}/api/v1/oauth-clients",
             headers=_bearer(user_jwt),
             json={
                 "name": name,
-                "allowedGrantTypes": grant_types or ALL_GRANT_TYPES,
+                "allowedGrantTypes": grant_types,
                 "allowedScopes": scopes,
                 "redirectUris": [redirect_uri],
+                **identity,
                 **({"knowledgeLimit": knowledge_limit} if knowledge_limit is not None else {}),
             },
             timeout=timeout,

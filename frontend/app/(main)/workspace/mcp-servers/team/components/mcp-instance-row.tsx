@@ -9,6 +9,7 @@ import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -42,6 +43,7 @@ export function McpInstanceRow({
   onDiscoverTools,
 }: McpInstanceRowProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [toolsExpanded, setToolsExpanded] = useState(false);
 
   const managedByAdmin = instance.useAdminAuth;
@@ -96,7 +98,7 @@ export function McpInstanceRow({
         overflow: 'hidden',
       }}
     >
-      <Flex direction="column" gap="4" style={{ padding: 16, minWidth: 325 }}>
+      <Flex direction="column" gap="4" style={{ padding: 16 }}>
         {/* Header row */}
         <Flex align="center" gap="2" style={{ width: '100%' }}>
           <Flex
@@ -126,7 +128,7 @@ export function McpInstanceRow({
 
           <McpInheritedBadge instance={instance} />
 
-          <IconButton
+          <IconButton className="touch-hit"
             variant="outline"
             color="red"
             size="1"
@@ -139,7 +141,7 @@ export function McpInstanceRow({
             <MaterialIcon name="delete" size={16} color="var(--red-11)" />
           </IconButton>
 
-          <IconButton
+          <IconButton className="touch-hit"
             variant="outline"
             color="gray"
             size="1"
@@ -244,7 +246,8 @@ export function McpInstanceRow({
             direction="column"
             gap="2"
             style={{
-              marginLeft: 164,
+              // Phones stack InfoRow labels above values, so there is no label column to clear.
+              marginLeft: isMobile ? 0 : 164,
               padding: 'var(--space-3)',
               backgroundColor: 'var(--gray-a2)',
               borderRadius: 'var(--radius-3)',
@@ -332,14 +335,15 @@ export function McpInstanceRow({
 // ========================================
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" gap="4">
+    <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--gray-10)',
-          width: 164,
+          width: isMobile ? 'auto' : 164,
           flexShrink: 0,
           textTransform: 'uppercase',
           letterSpacing: '0.04px',

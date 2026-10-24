@@ -532,7 +532,7 @@ export function createAGUIEventHandler(
         const textOps: AGUIJsonPatchOp[] = [];
         for (const op of ops) {
           if (op.op === 'add' && op.path === '/artifacts/-') {
-            callbacks.onArtifact?.(op.value as SSEArtifactEvent);
+            if (op.value) callbacks.onArtifact?.(op.value as SSEArtifactEvent);
           } else {
             textOps.push(op);
           }
@@ -574,7 +574,7 @@ export function createAGUIEventHandler(
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
-          callbacks.onArtifact?.(value as SSEArtifactEvent);
+          if (value) callbacks.onArtifact?.(value as SSEArtifactEvent);
         } else if (name === 'message_discarded') {
           const runId = typeof data?.runId === 'string' ? data.runId : undefined;
           const discarded = (value ?? {}) as { messageId?: unknown };

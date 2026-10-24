@@ -18,6 +18,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -78,7 +79,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
+    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
+    # No issue security scheme: unsecured issues are unchanged
+    connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return connector
 
 
 def _resp(status=200, data=None):
@@ -293,6 +297,7 @@ class TestSyncAllProjectIssues:
             "failed_project_keys": [],
             "failed_project_statuses": {},
             "full_sync_project_ids": set(),
+            "leveled_reread_project_ids": set(),
         }
 
 

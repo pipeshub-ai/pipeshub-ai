@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
+import { Button } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useFeatureFlagsStore, selectVectorStoreRebuildEnabled } from '@/lib/store/feature-flags-store';
@@ -584,51 +586,21 @@ function TeamConnectorsPageContent() {
 // Sub-component: trailing nav button
 // ========================================
 
-function NavigateButton({
-  label,
-  onClick,
-}: {
-  label: string;
-  onClick: () => void;
-}) {
-  const [isHovered, setIsHovered] = useState(false);
-
+function NavigateButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const isMobile = useIsMobile();
+  // Phones get a light text link; wider screens keep the soft button.
   return (
-    <button
-      type="button"
+    <Button
+      size="2"
+      variant={isMobile ? 'ghost' : 'soft'}
+      color="gray"
+      className="touch-hit"
       onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        padding: '0 var(--space-3)',
-        font: 'inherit',
-        outline: 'none',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 'var(--space-2)',
-        height: 'var(--space-6)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-        cursor: 'pointer',
-        transition: 'background-color 150ms ease',
-      }}
+      style={{ cursor: 'pointer' }}
     >
-      <span
-        style={{
-          fontSize: 14,
-          fontWeight: 500,
-          lineHeight: '20px',
-          color: 'var(--gray-11)',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {label}
-      </span>
+      {label}
       <MaterialIcon name="arrow_forward" size={16} color="var(--gray-11)" />
-    </button>
+    </Button>
   );
 }
 

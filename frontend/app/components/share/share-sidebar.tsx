@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -49,6 +51,7 @@ export function ShareSidebar({
   onShareSuccess,
   headerContent,
 }: ShareSidebarProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
@@ -358,18 +361,12 @@ export function ShareSidebar({
           }
         }}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           overflow: 'hidden',
           display: 'flex',

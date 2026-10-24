@@ -33,7 +33,12 @@ from app.modules.agents.qna.chat_state import (
     remember_record_ids,
 )
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.utils.chat_helpers import resolve_frontend_url
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.chat_helpers import (
+    keep_context_blocks_inside_connection,
+    keep_row_summaries_inside_connection,
+    resolve_frontend_url,
+)
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
@@ -194,9 +199,14 @@ def _time_range_error_message(error_json: str) -> str:
         return error_json
 
 
-def _copies_outside_selection(identifier: str, matches: list) -> str:
+def _copies_outside_selection(identifier: str, matches: list, *, connected_app: bool = False) -> str:
     """Where the readable copies of an issue key or URL live, when none of
-    them is inside this conversation. Success, not a failed tool call."""
+    them is inside this conversation. Success, not a failed tool call.
+
+    A connected app's limit is the most it may learn about, so a copy outside
+    it is not named (``connected_app``)."""
+    if connected_app:
+        return f"{identifier} is outside what this conversation is limited to."
     places = []
     for match in matches:
         name = getattr(match, "name", None) or match.id
@@ -493,7 +503,10 @@ class KnowledgeGraph:
                     )
                     chosen = next((match for match in result.matches if match.id in inside), None)
                     if chosen is None:
-                        return True, _copies_outside_selection(node_id, result.matches)
+                        return True, _copies_outside_selection(
+                            node_id, result.matches,
+                            connected_app=connection_sources_of(state.get("filters")) is not None,
+                        )
                     node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
@@ -540,6 +553,14 @@ class KnowledgeGraph:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            limit_sources = connection_sources_of(state.get("filters"))
+            await keep_context_blocks_inside_connection(
+                [(view.current.id if view.current else None, view)], graph_provider,
+                state.get("user_id", ""), org_id, limit_sources,
+            )
+            await keep_row_summaries_inside_connection(
+                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+            )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
@@ -680,6 +701,10 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
+        await keep_context_blocks_inside_connection(
+            [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
+            connection_sources_of(state.get("filters")),
+        )
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`

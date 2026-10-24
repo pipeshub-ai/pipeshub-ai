@@ -27,6 +27,7 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-cs")
 from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
+from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -1160,6 +1161,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.stored_content_heal_task = asyncio.create_task(
         run_stored_content_heal_loop(app_container, graph_provider), name="stored_content_heal"
     )
+    # Moves pre-hierarchical records/<vrid> copies into the hierarchy; one replica leads.
+    from app.connectors.services.flat_storage_migration import (
+        run_flat_storage_migration,
+    )
+
+    app.state.flat_storage_migration_task = asyncio.create_task(
+        run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -1179,6 +1188,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
         "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "flat_storage_migration_task",
     ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
@@ -1591,6 +1601,7 @@ async def vector_db_memory_check(request: Request) -> JSONResponse:
 app.include_router(entity_router)
 app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
+app.include_router(api_toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)

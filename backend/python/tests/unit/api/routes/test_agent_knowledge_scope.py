@@ -231,7 +231,7 @@ class TestSourceLimitedToSomeNodes:
             {**_agent(service_account=service_account), "knowledge": LIMITED_KNOWLEDGE},
             {
                 "query": "q",
-                "filters": {"apps": [], "kb": [], "records": ["picked"], "projectApps": ["anything"]},
+                "filters": {"apps": [], "kb": [], "records": ["picked"]},
                 "allowedFilters": {"apps": ["kb-1"], "records": ["project-folder"]},
                 "strictScope": True,
             },

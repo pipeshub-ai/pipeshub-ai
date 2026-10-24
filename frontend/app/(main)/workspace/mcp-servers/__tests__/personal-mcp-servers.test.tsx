@@ -151,7 +151,7 @@ describe('McpPersonalLayout', () => {
     expect(screen.queryByText('Local Files')).toBeNull();
     expect(screen.queryByText('Old Slack')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Setup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set up' }));
     expect(onSetUp).toHaveBeenCalledWith(notion);
   });
 
@@ -703,7 +703,7 @@ describe('McpInstanceConfigPanel — More actions', () => {
     const handlers = renderEditing(editing);
     openMenu();
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Remove server/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete server/ }));
     expect(handlers.onRequestDelete).toHaveBeenCalledWith(editing);
   });
 

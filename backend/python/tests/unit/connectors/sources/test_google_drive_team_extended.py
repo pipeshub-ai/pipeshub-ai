@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
@@ -140,6 +141,11 @@ def connector():
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
         conn.config = {"credentials": {}}
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
         yield conn
 
 
@@ -401,7 +407,7 @@ class TestFetchPermissionsExtended:
             await connector._fetch_permissions("drive-1", is_drive=True)
 
     async def test_403_without_insufficient_permissions_reason(self, connector):
-        """403 without specific reason returns empty perms."""
+        """A 403 that is not a rate limit keeps the reader's own grant."""
         from googleapiclient.errors import HttpError
         mock_resp = MagicMock()
         mock_resp.status = HttpStatusCode.FORBIDDEN.value
@@ -412,7 +418,7 @@ class TestFetchPermissionsExtended:
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is True, "a failed read keeps the stored grants"
-        assert len(perms) == 0
+        assert [p.email for p in perms] == ["user@example.com"]
 
     async def test_non_403_http_error_for_file(self, connector):
         """Non-403 HttpError for files returns empty perms."""
@@ -421,16 +427,18 @@ class TestFetchPermissionsExtended:
         mock_resp.status = 500
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert len(perms) == 0
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
-    async def test_generic_error_for_file_returns_empty(self, connector):
+    async def test_generic_error_for_file_raises(self, connector):
         """Generic error for files returns empty perms."""
         connector.drive_data_source.permissions_list = AsyncMock(
-            side_effect=Exception("network error")
+            side_effect=RuntimeError("network error")
         )
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert len(perms) == 0
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     async def test_generic_error_for_drive_raises(self, connector):
         """Generic error for drives raises."""
@@ -774,7 +782,7 @@ class TestTeamProcessDriveItemExtended:
         assert result.record.shared_with_me_record_group_ids == ["0S:reader@example.com"]
 
     async def test_permission_fetch_failure_continues(self, connector):
-        """Permission fetch failure still returns record update."""
+        """A failed permission read skips the item: it is not stored without its grants."""
         connector.drive_data_source.permissions_list = AsyncMock(
             side_effect=Exception("perm error")
         )
@@ -783,9 +791,8 @@ class TestTeamProcessDriveItemExtended:
             metadata=metadata, user_id="u1", user_email="user@example.com",
             drive_id="drive-1", is_shared_drive=True,
         )
-        assert result is not None
-        assert result.permissions_changed is False, "a failed read must not replace the stored grants"
-        assert result.new_permissions == []
+        assert result is None
+        assert connector._sync_ledger.item_failures == 1
 
     async def test_fallback_permissions_adds_to_existing_record(self, connector):
         """Fallback permissions are added to existing record."""

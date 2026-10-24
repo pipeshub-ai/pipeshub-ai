@@ -506,6 +506,11 @@ _EQUALS_SHAPE = "a=b=c=d=e=token" + "=" * _N
 # its port check to the end of the text for every head. The text stays under
 # the logging cap, so it is redacted ten times over to keep the gap wide.
 _PASSWORD_SHAPE = ",//a:1" * 1300 + "?=@"
+# The same text with no `:port`, which the old regex read once.
+_PASSWORD_CONTROL = _PASSWORD_SHAPE.replace(":", "-")
+# Linear code takes ~1.5x as long on the shape as on the control, with or
+# without coverage; the quadratic version took ~100x.
+_MAX_SLOWDOWN = 10
 
 
 def _ten_times(url: str) -> None:
@@ -521,12 +526,21 @@ class TestAdversarialInput:
             pytest.param(lambda: redact_sensitive_query_params(f"/x?{_TRIM_SHAPE}=1"), id="url-trim"),
             pytest.param(lambda: redact_sensitive_query_params(f"/x?{_EQUALS_SHAPE}"), id="url-equals"),
             pytest.param(lambda: redact_sensitive_query_params(f"/x?a{'=' * (_CAP - 8)}"), id="url-equals-under-cap"),
-            pytest.param(lambda: _ten_times(f"/x?a={_PASSWORD_SHAPE}"), id="url-password"),
-            pytest.param(lambda: _ten_times(f"https://h.example/x?a={_PASSWORD_SHAPE}"), id="referer-password"),
         ],
     )
     def test_finishes_in_linear_time(self, run) -> None:
         assert _elapsed_ms(run) < _BOUND_MS
+
+    # A ratio, not a time bound: coverage slows this Python code ~3x and a
+    # shared CI core slows it again, but both inputs alike. Fastest of three,
+    # since load only ever adds time.
+    @pytest.mark.parametrize(
+        "prefix", ["/x?a=", "https://h.example/x?a="], ids=["url-password", "referer-password"],
+    )
+    def test_port_like_heads_cost_no_more_than_plain_text(self, prefix: str) -> None:
+        shape = min(_elapsed_ms(lambda: _ten_times(prefix + _PASSWORD_SHAPE)) for _ in range(3))
+        control = min(_elapsed_ms(lambda: _ten_times(prefix + _PASSWORD_CONTROL)) for _ in range(3))
+        assert shape < control * _MAX_SLOWDOWN
 
     @pytest.mark.parametrize("key", ["..code..", "%00code", "__token__", "code\u212a"])
     def test_stray_characters_around_a_sensitive_name_are_trimmed(self, key: str) -> None:

@@ -140,12 +140,30 @@ describe('Redis Streams Service', () => {
         expect(producer.maxLen).to.equal(5000);
       });
 
-      it('should default maxLen to 500000 when not specified', () => {
+      it('should not cap streams when maxLen is not specified', async () => {
         class TestP extends BaseRedisStreamsProducerConnection {
           constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
         }
         const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
-        expect(p.maxLen).to.equal(500000);
+        expect(p.maxLen).to.be.undefined;
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('test-topic', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args).to.not.include('MAXLEN');
+        expect(args[1]).to.equal('*');
+      });
+
+      it('should keep a small fixed cap on the consumer-less health-check stream', async () => {
+        class TestP extends BaseRedisStreamsProducerConnection {
+          constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
+        }
+        const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('health-check', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args.slice(1, 4)).to.deep.equal(['MAXLEN', '~', '1000']);
       });
 
       it('should report isConnected false before connect', () => {

@@ -590,6 +590,29 @@ describe('MessageList — jump to newest', () => {
     }
   });
 
+  it('sits 12px above the composer so it never covers the text box', () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? 120 : 0;
+      },
+    });
+    try {
+      thread.messages = TWO_TURNS;
+      geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+      openConversation('conv-1');
+      render(<MessageList composer={<div data-testid="composer" />} />);
+      settle();
+      scrollTo(100);
+
+      const holder = (jumpButton() as HTMLElement).parentElement as HTMLElement;
+      expect(holder.style.bottom).toBe('132px');
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+    }
+  });
+
   it('does not force a minimum size on desktop', () => {
     openTwoTurns();
     scrollTo(100);

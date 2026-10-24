@@ -8,6 +8,11 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceHeaderIconButton } from '../../components';
 import type { SlackBotConfig, AgentOption } from '../types';
 import { BotCard } from './bot-card';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
+import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
+import { WorkspaceDocsButton } from '@/app/(main)/workspace/components/workspace-docs-button';
 
 const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 
@@ -36,6 +41,7 @@ export function BotPageLayout({
   onRefresh,
   onManage,
 }: BotPageLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const agentMap = new Map(agents.map((a) => [a.id, a.name]));
   return (
@@ -45,17 +51,16 @@ export function BotPageLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         overflowY: 'auto',
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
       {/* ── Header ── */}
-      <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
-        <Flex direction="column" gap="2" style={{ flex: 1 }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.bots.title')}
           </Heading>
@@ -66,11 +71,23 @@ export function BotPageLayout({
 
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           <CreateBotButton onClick={onCreateBot} />
-          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} />
-          <WorkspaceHeaderIconButton
-            icon="open_in_new"
-            onClick={() => window.open('https://docs.pipeshub.com/integrations', '_blank')}
-          />
+          {isMobile ? (
+            <HeaderOverflowMenu
+              items={[
+                { label: t('action.refresh'), icon: 'refresh', onSelect: onRefresh },
+                {
+                  label: t('workspace.actions.documentation'),
+                  icon: 'open_in_new',
+                  onSelect: () => window.open('https://docs.pipeshub.com/integrations', '_blank'),
+                },
+              ]}
+            />
+          ) : (
+            <>
+              <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
+              <WorkspaceDocsButton href="https://docs.pipeshub.com/integrations" />
+            </>
+          )}
         </Flex>
       </Flex>
 
@@ -83,7 +100,7 @@ export function BotPageLayout({
         <EmptyState onAdd={onCreateBot} />
       ) : (
         <Grid
-          columns={{ initial: '2', md: '3', lg: '4' }}
+          columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }}
           gap="4"
           style={{ width: '100%' }}
         >
@@ -147,40 +164,8 @@ function CreateBotButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function IconButton({ icon, onClick }: { icon: string; onClick: () => void }) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        padding: 0,
-        border: '1px solid var(--gray-a4)',
-        outline: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 'var(--space-8)',
-        height: 'var(--space-8)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: isHovered ? 'var(--gray-a3)' : 'transparent',
-        cursor: 'pointer',
-        transition: 'background-color 150ms ease',
-      }}
-    >
-      <MaterialIcon name={icon} size={16} color="var(--gray-11)" />
-    </button>
-  );
-}
-
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
 
   return (
     <Flex
@@ -194,37 +179,12 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
         {t('workspace.bots.noBots')}
       </Text>
-      <Text size="2" style={{ color: 'var(--gray-11)' }}>
+      <Text size="2" style={{ color: 'var(--gray-11)', textAlign: 'center', maxWidth: 420 }}>
         {t('workspace.bots.setupFirstBot')}
       </Text>
-      <button
-        type="button"
-        onClick={onAdd}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        style={{
-          appearance: 'none',
-          margin: 0,
-          marginTop: 'var(--space-2)',
-          font: 'inherit',
-          outline: 'none',
-          border: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          height: 'var(--space-6)',
-          padding: '0 16px',
-          borderRadius: 'var(--radius-2)',
-          backgroundColor: isHovered ? 'var(--accent-10)' : 'var(--accent-9)',
-          cursor: 'pointer',
-          transition: 'background-color 150ms ease',
-        }}
-      >
-        <MaterialIcon name="add" size={16} color="white" />
-        <span style={{ fontSize: 14, fontWeight: 500, color: 'white' }}>
-          {t('workspace.bots.addBot')}
-        </span>
-      </button>
+      <Flex style={{ marginTop: 'var(--space-2)' }}>
+        <CreateBotButton onClick={onAdd} />
+      </Flex>
     </Flex>
   );
 }

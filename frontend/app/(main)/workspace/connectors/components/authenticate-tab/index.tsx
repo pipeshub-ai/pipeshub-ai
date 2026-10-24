@@ -331,7 +331,7 @@ export function AuthenticateTab() {
               <code>{callbackUrl}</code>
             </Box>
             <Tooltip content={t('workspace.connectors.authTab.copyRedirectCallbackUrl')}>
-              <IconButton
+              <IconButton className="touch-hit"
                 type="button"
                 size="1"
                 variant="ghost"

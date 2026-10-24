@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Flex, Heading, Text, Button, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MentionIcon } from '@/chat/components/mention-icon';
 import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
 import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
@@ -215,7 +216,7 @@ function QueryActions({
 
 export function ExpandableUserQuery({
   question,
-  isMobile: _isMobile = false,
+  isMobile = false,
   messageId,
   isStreaming = false,
   onEdit,
@@ -223,6 +224,7 @@ export function ExpandableUserQuery({
 }: ExpandableUserQueryProps) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const canHover = useCanHover();
 
   useEffect(() => setExpanded(false), [question]);
 
@@ -262,7 +264,7 @@ export function ExpandableUserQuery({
               question={question}
               showEdit={showEdit}
               onEdit={onEdit}
-              visible={hovered}
+              visible={hovered || isMobile || !canHover}
             />
           </span>
         </Heading>

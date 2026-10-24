@@ -21,7 +21,6 @@ import pytest_asyncio
 
 from connectors.nextcloud.nextcloud_source_helper import NextcloudSourceHelper
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
     Role,
@@ -56,7 +55,8 @@ class NextcloudAdapter(ScenarioAdapter):
 
     async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
         extension = FILTERED_EXTENSION if role is Role.FILTERED else "txt"
-        path = f"{self.folder}/{role.value}-{token}.{extension}"
+        folder = f"/dir-{token}" if role is Role.FOLDER else ""
+        path = f"{self.folder}{folder}/{role.value}-{token}.{extension}"
         self.nextcloud.put(path, text)
         return self._item(role, path, text, token)
 
@@ -77,6 +77,24 @@ class NextcloudAdapter(ScenarioAdapter):
 
     async def delete_item(self, item: SourceItem) -> None:
         self.nextcloud.delete(item.key)
+
+    async def move_item(self, item: SourceItem) -> SourceItem:
+        folder = f"moved-{item.token}"
+        self.nextcloud.mkdir(f"{self.folder}/{folder}")
+        new_path = f"{self.folder}/{folder}/{item.record_name}"
+        self.nextcloud.move(item.key, new_path)
+        return SourceItem(
+            role=item.role, key=new_path, record_name=item.record_name, text=item.text,
+            token=item.token, external_id=item.external_id, extra={"folder": folder},
+        )
+
+    async def rename_folder(self, item: SourceItem) -> SourceItem:
+        old, new = f"dir-{item.token}", f"dir-{item.token}-renamed"
+        self.nextcloud.move(f"{self.folder}/{old}", f"{self.folder}/{new}")
+        return SourceItem(
+            role=item.role, key=f"{self.folder}/{new}/{item.record_name}", record_name=item.record_name,
+            text=item.text, token=item.token, external_id=item.external_id, extra={"folder": new},
+        )
 
     async def exclusion_filter(self, excluded: SourceItem, kept: list[SourceItem]) -> dict[str, Any]:
         assert excluded.record_name.endswith(f".{FILTERED_EXTENSION}")
@@ -147,7 +165,7 @@ async def scenario_adapter(
 @pytest.mark.nextcloud
 class TestNextcloudScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Nextcloud"
-    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
+    TREE_MOVES = True
     SCHEDULED_SYNC = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (

@@ -1,5 +1,6 @@
 'use client';
 
+import { overlayWidth } from '@/app/components/ui/responsive';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -93,8 +94,7 @@ export function ChangePasswordDialog({
 
       <Dialog.Content
         style={{
-          width: '37.5rem',
-          minWidth: 480,
+          width: overlayWidth(600),
           padding: 'var(--space-5)',
           background: 'var(--slate-2)',
           borderRadius: 'var(--radius-5)',

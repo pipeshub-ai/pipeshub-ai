@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Callout, Checkbox, Flex, Grid, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { toast } from '@/lib/store/toast-store';
@@ -928,7 +928,7 @@ export function McpInstanceConfigPanel({
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.mcpServers.form.timeoutsHeading')}
         </Text>
-        <Flex gap="3">
+        <Grid columns="2" gap="3">
           <FormField
             label={t('workspace.mcpServers.form.connectTimeout')}
             optional
@@ -963,7 +963,7 @@ export function McpInstanceConfigPanel({
               placeholder="60"
             />
           </FormField>
-        </Flex>
+        </Grid>
       </Flex>
 
       {mode === 'create' && authMode !== 'none' && !useAdminAuth && (

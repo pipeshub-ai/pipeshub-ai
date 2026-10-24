@@ -27,6 +27,7 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
     - [4. Run tests](#4-run-tests)
   - [Running tests](#running-tests)
   - [Test lifecycle](#test-lifecycle)
+  - [Pattern-match storage](#pattern-match-storage)
   - [Local runs](#local-runs)
   - [Sample data](#sample-data)
   - [Key files](#key-files)
@@ -102,11 +103,11 @@ Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.lo
 |------------------------------|----------------------|---------|
 | `CLIENT_ID`                   | Prod (remote)        | OAuth2 client ID for client_credentials grant. |
 | `CLIENT_SECRET`               | Prod (remote)        | OAuth2 client secret. |
-| `PIPESHUB_TEST_USER_EMAIL`    | Local (when not using pre-set client creds) | Org admin email; used to create OAuth app and set CLIENT_ID/CLIENT_SECRET for the run. |
+| `PIPESHUB_TEST_USER_EMAIL`    | Local (when not using pre-set client creds) | Org admin email. The suite signs in as this user, and creates an OAuth app bound to a new service account for the client_credentials tests. |
 | `PIPESHUB_TEST_USER_PASSWORD` | Local (when not using pre-set client creds) | Org admin password. |
 
 - **Prod (remote):** Use **CLIENT_ID** and **CLIENT_SECRET** from the test org’s OAuth app. The client gets an access token via `POST /api/v1/oauth2/token`.
-- **Local:** Use **PIPESHUB_TEST_USER_EMAIL** and **PIPESHUB_TEST_USER_PASSWORD** (org admin). The suite creates an OAuth app and sets CLIENT_ID/CLIENT_SECRET for the run. Alternatively, set CLIENT_ID and CLIENT_SECRET in `.env.local` and leave email/password empty.
+- **Local:** Use **PIPESHUB_TEST_USER_EMAIL** and **PIPESHUB_TEST_USER_PASSWORD** (org admin). `PipeshubClient` signs in as that user with its login session. The suite also creates a service account and an OAuth app bound to it, and sets CLIENT_ID/CLIENT_SECRET for the tests that exercise client_credentials: an app with that grant must act as a service account, and a service account is never an admin. Alternatively, set CLIENT_ID and CLIENT_SECRET in `.env.local` and leave email/password empty.
 
 ---
 
@@ -261,7 +262,7 @@ pytest -m mcp -v                                     # compare with the golden
 pytest response-validation/mcp --update-mcp-golden   # rewrite the golden from the live server
 ```
 
-**MCP tools** (`response-validation/mcp/integration_test_mcp_tools.py`): calls every tool on `/mcp` with a client_credentials token minted from the same OAuth app's client id and secret, and checks each answer against a document indexed for the run in a collection of its own and an agent with that collection as its knowledge. It needs the AI model credentials that indexing needs, and `pipeshub_chat` makes two model calls. It runs with `pytest -m mcp`.
+**MCP tools** (`response-validation/mcp/integration_test_mcp_tools.py`): calls every tool on `/mcp` with an authorization_code + PKCE token for the test user from the same OAuth app, and checks each answer against a document indexed for the run in a collection of its own and an agent with that collection as its knowledge. It needs the AI model credentials that indexing needs, and `pipeshub_chat` makes two model calls. It runs with `pytest -m mcp`.
 
 **Storage backends** (`storage/`): drives upload, download, versioning, rollback and metadata through the running product, against each configured backend. These repoint the whole deployment's storage while they run, so they never join a plain `pytest` or `-m integration` session — ask for them by name:
 
@@ -355,6 +356,44 @@ Each connector test class runs an **ordered 11-step lifecycle**:
 
 ---
 
+## Pattern-match storage
+
+Indexing files each record's processed content under
+`<orgId>/PipesHub/records/<connectorId>/<groups>/<parents>/<name>/<docId>/record_<vrid>.json`
+(plus `metadata_<vrid>.json`), so pattern-match search can grep it by place.
+`pattern_match/` (marker `pattern_match`, runs in the core shard) checks that
+MongoDB, blob storage and the graph agree on where that is:
+
+| File | What it covers |
+|------|----------------|
+| `test_internal_storage_routes.py` | The storage service's `move-tree`, record listings and connector delete, called directly. Needs no model. |
+| `test_kb_storage.py` | Knowledge-base content lands at the expected path, follows file and folder renames and moves, and leaves nothing behind when deleted. |
+| `test_shared_content.py` | Identical files in two knowledge bases share one copy that stays readable through renames and deletes. |
+
+`helper/storage_layout.py` does the looking. `assert_stored_at` and
+`assert_nothing_under` check one record or folder; `assert_connector_consistent`
+checks a whole connector (every indexed record filed where the graph puts it, no
+orphan rows or files, no flat-layout leftovers, no segment over 255 bytes). The
+connector scenario matrix ends its add, edit, rename, move, delete, full-sync
+and filter scenarios with that check, so every connector with a matrix gets it; a
+connector opts out with `STORAGE_LAYOUT_EXEMPT = "<reason>"`.
+
+Two matrix scenarios move things at the source: `incr_move` moves an item into
+another folder and `incr_rename_folder` renames the folder an item sits in. Each
+checks that the record survives, its content is filed under the new folder, and
+nothing is left at the old path. A connector runs them once its adapter
+implements `move_item` and `rename_folder` and its test class sets
+`TREE_MOVES = True`: today S3, MinIO, GCS, Azure Blob, Azure Files, SMB,
+Nextcloud, BookStack, Confluence and Google Drive Workspace.
+
+`expected_segment` in the helper is the folder-naming rule written out
+independently of the app; `unit/test_storage_layout.py` compares the two.
+
+The blob checks read local storage through `docker exec`; set
+`PIPESHUB_APP_CONTAINER` when more than one stack runs on the machine.
+
+---
+
 ## Local runs
 
 To run against your **local backend** (e.g. `localhost:3000`):
@@ -363,7 +402,7 @@ To run against your **local backend** (e.g. `localhost:3000`):
 2. **`.env.local`:** Fill from `.env.local.example` (see [Environment variables reference](#environment-variables-reference) and [Setup step 3](#3-create-env-files)).
 3. **Backend:** Start the backend so it is reachable at `PIPESHUB_BASE_URL` from `.env.local`.
 4. **Neo4j:** Set `TEST_NEO4J_*` in `.env.local` (local or remote instance).
-5. **Auth:** Either set `CLIENT_ID` and `CLIENT_SECRET` in `.env.local`, or leave them empty and set `PIPESHUB_TEST_USER_EMAIL` and `PIPESHUB_TEST_USER_PASSWORD`; the suite will create an OAuth app and use client_credentials.
+5. **Auth:** Either set `CLIENT_ID` and `CLIENT_SECRET` in `.env.local`, or leave them empty and set `PIPESHUB_TEST_USER_EMAIL` and `PIPESHUB_TEST_USER_PASSWORD`; the suite signs in as that user.
 
 Run: `pytest -m integration -v` (same command; `.env` with `PIPESHUB_TEST_ENV=local` selects local).
 
@@ -391,7 +430,7 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON, and calls a tool (`call_mcp_tool`). |
 | `helper/mcp_pin.py` | Reads the `@pipeshub-ai/mcp` pin from `backend/nodejs/apps/package.json`. |
 | `response-validation/mcp/` | MCP surface tests, the per-version golden files, and the tool tests. |
-| `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
+| `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (login session locally, client_credentials against a remote instance). |
 | `helper/graph_provider.py` | `GraphProviderProtocol` — common graph test helper interface. |
 | `helper/graph_provider_utils.py` | Shared polling helpers (`wait_until_graph_condition`, etc.). |
 | `helper/neo4j_integration/test_neo4j_provider.py` | `TestNeo4jProvider` — extends backend `Neo4jProvider` with graph validation helpers. |

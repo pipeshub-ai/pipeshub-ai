@@ -59,7 +59,7 @@ async def _run_middleware(middleware, messages, budget=None, turn_index=0):
     )
     called = []
 
-    async def next_fn():
+    async def next_fn() -> None:
         called.append(True)
 
     await middleware(ctx, next_fn)
@@ -73,7 +73,7 @@ class TestProviderPairingPreservation:
     """Verify that compaction never breaks tool_use/tool_result pairing."""
 
     @pytest.mark.asyncio
-    async def test_artifact_compaction_preserves_pairing(self):
+    async def test_artifact_compaction_preserves_pairing(self) -> None:
         """Each ToolMessage still has its tool_call_id after compaction."""
         meta = ToolMessageMeta(artifact_id="a1", summary="data", original_token_count=5000, turn_index=0)
         messages = [
@@ -90,7 +90,7 @@ class TestProviderPairingPreservation:
         assert tool_msgs[0].tool_call_id == "tc_1"
 
     @pytest.mark.asyncio
-    async def test_deterministic_compact_preserves_pairing(self):
+    async def test_deterministic_compact_preserves_pairing(self) -> None:
         """Deterministic compaction keeps tool_call_id and tool_calls."""
         messages = [
             SystemMessage(content="system"),
@@ -104,7 +104,7 @@ class TestProviderPairingPreservation:
             _tool_msg("final result", call_id="tc_1"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result = await _run_middleware(shaper, messages, _budget(500))
 
@@ -119,7 +119,7 @@ class TestProviderPairingPreservation:
 
 class TestArtifactCompaction:
     @pytest.mark.asyncio
-    async def test_old_turn_compacted(self):
+    async def test_old_turn_compacted(self) -> None:
         """Results from 2+ turns ago are compacted (past keep_last_n_turns window)."""
         meta = ToolMessageMeta(
             artifact_id="a1", summary="old data",
@@ -137,7 +137,7 @@ class TestArtifactCompaction:
         assert "x" * 1000 not in tool_msg.content
 
     @pytest.mark.asyncio
-    async def test_last_turn_kept_when_under_budget(self):
+    async def test_last_turn_kept_when_under_budget(self) -> None:
         """Artifacts from the immediately preceding turn stay full so the
         model sees its tool results at least once — it never sees them
         inline on the turn it called the tool."""
@@ -156,7 +156,7 @@ class TestArtifactCompaction:
         assert tool_msg.content == "x" * 20_000
 
     @pytest.mark.asyncio
-    async def test_last_turn_compacted_when_over_budget(self):
+    async def test_last_turn_compacted_when_over_budget(self) -> None:
         """Even recent-turn artifacts are compacted if context exceeds the
         absolute budget — the budget overflow fallback still applies."""
         meta = ToolMessageMeta(
@@ -175,7 +175,7 @@ class TestArtifactCompaction:
         assert "x" * 1000 not in tool_msg.content
 
     @pytest.mark.asyncio
-    async def test_current_turn_kept_when_under_budget(self):
+    async def test_current_turn_kept_when_under_budget(self) -> None:
         """Current-turn results stay full when budget allows."""
         meta = ToolMessageMeta(
             artifact_id="a1", summary="data",
@@ -192,7 +192,7 @@ class TestArtifactCompaction:
         assert tool_msg.content == "short result"
 
     @pytest.mark.asyncio
-    async def test_current_turn_with_schema_compacted_first(self):
+    async def test_current_turn_with_schema_compacted_first(self) -> None:
         """When over budget, schema-bearing results compact before non-schema."""
         schema_meta = ToolMessageMeta(
             artifact_id="a1", summary="jira", turn_index=0,
@@ -222,7 +222,7 @@ class TestArtifactCompaction:
 
 class TestDeterministicCompaction:
     @pytest.mark.asyncio
-    async def test_identical_input_identical_output(self):
+    async def test_identical_input_identical_output(self) -> None:
         """Same input always produces same output."""
         messages = [
             SystemMessage(content="system"),
@@ -233,7 +233,7 @@ class TestDeterministicCompaction:
             AssistantMessage(content="response 2"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result1 = await _run_middleware(shaper, messages, _budget(500))
         result2 = await _run_middleware(shaper, messages, _budget(500))
@@ -246,7 +246,7 @@ class TestDeterministicCompaction:
                 assert m1.text == m2.text
 
     @pytest.mark.asyncio
-    async def test_multipart_tool_message_compacts_text_and_drops_images(self):
+    async def test_multipart_tool_message_compacts_text_and_drops_images(self) -> None:
         """A middle-zone ToolMessage carrying images (search/fetch result)
         must compact to a plain-text preview like any other tool result —
         images from old turns are expendable, and `.text` must be used
@@ -268,7 +268,7 @@ class TestDeterministicCompaction:
             AssistantMessage(content="response 2"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result = await _run_middleware(shaper, messages, _budget(500))
 
@@ -281,7 +281,7 @@ class TestDeterministicCompaction:
 
 class TestSynthesisGuard:
     @pytest.mark.asyncio
-    async def test_strips_thinking_first(self):
+    async def test_strips_thinking_first(self) -> None:
         """Thinking parts are stripped before aggressive clearing."""
         from app.agent_loop_lib.core.messages import ThinkingPart
 
@@ -299,17 +299,32 @@ class TestSynthesisGuard:
         assert not any(isinstance(p, ThinkingPart) for p in assistant.content)
 
     @pytest.mark.asyncio
-    async def test_raises_on_unresolvable_overflow(self):
-        """Raises ContextBudgetExceeded when budget is impossibly small."""
+    async def test_raises_on_unresolvable_overflow(self) -> None:
+        """Raises ContextBudgetExceeded when the context cannot fit the window."""
         messages = [
             SystemMessage(content="x" * 10_000),
         ]
         shaper = shape_synthesis_guard()
         with pytest.raises(ContextBudgetExceeded):
-            await _run_middleware(shaper, messages, _budget(1_100))
+            await _run_middleware(
+                shaper, messages, ContextBudget(max_tokens=1_100, model="test", reserved_output_tokens=0),
+            )
 
     @pytest.mark.asyncio
-    async def test_passes_when_under_budget(self):
+    async def test_over_budget_inside_window_is_sent(self, caplog) -> None:
+        """Over the budget but inside the window: sent, with a warning, since
+        the request fits and only the reply's reserve shrinks."""
+        messages = [
+            SystemMessage(content="x" * 10_000),
+        ]
+        shaper = shape_synthesis_guard()
+        with caplog.at_level("WARNING"):
+            result = await _run_middleware(shaper, messages, _budget(1_100))
+        assert result == messages
+        assert "over budget but inside the window" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_passes_when_under_budget(self) -> None:
         """No-op when context fits."""
         messages = [SystemMessage(content="short")]
         shaper = shape_synthesis_guard()
@@ -318,7 +333,7 @@ class TestSynthesisGuard:
         assert result[0].content == "short"
 
     @pytest.mark.asyncio
-    async def test_truncates_multipart_tool_result_using_text(self):
+    async def test_truncates_multipart_tool_result_using_text(self) -> None:
         """Last-resort truncation must use `.text` (not raw `.content`
         slicing) so a multipart ToolMessage with a large image payload
         doesn't crash `len()`/slicing and still gets truncated."""
@@ -353,7 +368,7 @@ class TestSynthesisGuard:
         assert "truncated by synthesis_guard" in multipart_result.content
 
     @pytest.mark.asyncio
-    async def test_truncates_multipart_tool_result_with_short_text(self):
+    async def test_truncates_multipart_tool_result_with_short_text(self) -> None:
         """A multipart ToolMessage with short/no text (e.g. an image-only
         result) must still be reduced to plain text — `len(msg.text) > 200`
         alone would let its images slip through untouched, since images

@@ -53,7 +53,7 @@ from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
-from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField
+from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1230,6 +1230,9 @@ class EventService:
                 if record_id is not None or record_group_id is not None:
                     self.logger.error("Re-running pipeline stages is connector-wide only; ignoring this event")
                     return False
+                if len({RETRYABLE_STAGES[s] for s in stages}) > 1:
+                    self.logger.error(f"Stages re-run together must be selected the same way: {stages!r}")
+                    return False
                 # Records are selected by the stages' own status, and a retry is for what failed.
                 status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
 
@@ -1339,6 +1342,14 @@ class EventService:
         # republished: that would run two pipelines against the same
         # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        if stages and RETRYABLE_STAGES[stages[0]] is None:
+            await self._rerun_stage_by_state(
+                connector, connector_id, org_id, user_key, stages,
+                status_filters or [ProgressStatus.FAILED.value], exclude_statuses, batch_size,
+            )
+            return
+        # Past the branch above, a stage's selector is a record field.
+        status_field = (RETRYABLE_STAGES[stages[0]] if stages else None) or HeadlineField.INDEXING
 
         while True:
             if record_id is not None:
@@ -1377,7 +1388,7 @@ class EventService:
                     after_key=after_key,
                     exclude_statuses=exclude_statuses,
                     is_placeholder=False,
-                    status_field=(RETRYABLE_STAGES[stages[0]] if stages else HeadlineField.INDEXING).value,
+                    status_field=status_field.value,
                 )
 
             fetched_count = len(records)
@@ -1414,7 +1425,18 @@ class EventService:
             if stages:
                 # Only the stages re-run: the record stays searchable and its indexing
                 # status is untouched, and the connector is not asked to re-fetch it.
-                await connector.data_entities_processor.reindex_existing_records(records, stages=stages)
+                # Each record is bound to its revision, so one re-indexed before its event is
+                # handled is left to that revision's stages. The revision is read together with
+                # a re-check of the selection: a record that left it since is not re-run.
+                revisions = await self.graph_provider.get_record_content_revs(
+                    [r.id for r in records], status_field=status_field.value,
+                    statuses=status_filters or [], exclude_indexing_statuses=exclude_statuses,
+                )
+                records = [r for r in records if r.id in revisions]
+                if records:
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages, stage_revisions=revisions,
+                    )
                 total_processed += len(records)
                 if fetched_count < batch_size:
                     break
@@ -1439,6 +1461,61 @@ class EventService:
                 break
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+
+    async def _rerun_stage_by_state(
+        self,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str,
+        user_key: str | None,
+        stages: list[str],
+        statuses: list[str],
+        exclude_indexing_statuses: list[str],
+        batch_size: int,
+    ) -> None:
+        """Re-run ``stages`` for records selected by their stage state: one keyset pass over the
+        connector's states in each status, ``batch_size`` states a page.
+
+        The cursor is the state key, so a page reads at most ``batch_size`` states however many
+        match. Records a page could not be built for are skipped; a page whose records could
+        not be read at all raises, rather than being passed over as empty.
+        """
+        stage = stages[0]
+        total = 0
+        for status in dict.fromkeys(statuses):
+            after_key: str | None = None
+            while True:
+                page = await self.graph_provider.get_stage_states_with_records(
+                    org_id, connector_id, stage, status,
+                    limit=batch_size, after_key=after_key,
+                    exclude_indexing_statuses=exclude_indexing_statuses,
+                )
+                if not page:
+                    break
+                after_key = page[-1][0]
+                keys = list(dict.fromkeys(k for _, record_keys in page for k in record_keys))
+                revisions = {k: stage_state_rev(state) for state, record_keys in page for k in record_keys}
+                typed = (
+                    await self.graph_provider.get_typed_records_batch(keys, raise_on_error=True)
+                    if keys else {}
+                )
+                records = [typed[k] for k in keys if k in typed and not typed[k].is_placeholder]
+                if user_key is not None and records:
+                    allowed = (await self.graph_provider.check_access(
+                        user_key, org_id, node_ids=[r.id for r in records],
+                    )).node_ids
+                    records = [r for r in records if r.id in allowed]
+                if records:
+                    self.logger.info(
+                        f"Re-running {stages} for {len(records)} records ({stage} {status}, after {after_key})"
+                    )
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages, stage_revisions=revisions
+                    )
+                    total += len(records)
+                if len(page) < batch_size:
+                    break
+        self.logger.info(f"✅ Re-ran {stages} for {total} records of connector {connector_id}")
 
     async def _release_storage(
         self,

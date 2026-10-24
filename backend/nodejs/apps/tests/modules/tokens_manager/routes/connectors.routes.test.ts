@@ -1058,6 +1058,15 @@ describe('Connector Routes', () => {
       expect(result.success && result.data.body?.stages).to.deep.equal(['classify'])
     })
 
+    it('accepts stages: ["entities"], which has no record status of its own', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['entities'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['entities'])
+    })
+
     it('accepts a body without stages', () => {
       const result = reindexConnectorSchema.safeParse({ params, body: { statusFilters: ['FAILED'] } })
       expect(result.success).to.be.true

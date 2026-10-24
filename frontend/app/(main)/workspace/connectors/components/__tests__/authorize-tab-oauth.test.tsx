@@ -73,7 +73,7 @@ function postFromCallback(type: string, origin = window.location.origin) {
   });
 }
 
-const signInButton = () => screen.getByRole('button', { name: 'Authenticate Jira to Proceed' });
+const signInButton = () => screen.getByRole('button', { name: 'Authenticate Jira to proceed' });
 
 let openSpy: ReturnType<typeof vi.spyOn>;
 
@@ -171,7 +171,7 @@ describe('Authorize tab: starting OAuth', () => {
 
     fireEvent.click(signInButton());
 
-    expect(await screen.findByText('Failed to Authenticate your Jira')).toBeTruthy();
+    expect(await screen.findByText('Failed to authenticate your Jira')).toBeTruthy();
     expect(openSpy).not.toHaveBeenCalled();
   });
 });
@@ -223,7 +223,7 @@ describe('Authorize tab: finishing OAuth', () => {
 
     postFromCallback(CONNECTOR_OAUTH_POST_MESSAGE.ERROR);
 
-    expect(await screen.findByText('Failed to Authenticate your Jira')).toBeTruthy();
+    expect(await screen.findByText('Failed to authenticate your Jira')).toBeTruthy();
     expect(useConnectorsStore.getState().authState).toBe('failed');
   });
 

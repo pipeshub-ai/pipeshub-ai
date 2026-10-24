@@ -29,6 +29,7 @@ import re
 import jsonschema
 import pytest
 
+from helper.local_auth import jwt_claims, session_service_account_id
 from helper.mcp_client import ASSISTANT_PROMPT, mcp_initialize_raw, read_mcp_surface
 
 CURATED_TOOLS = {
@@ -228,7 +229,11 @@ class TestMcpAuth:
     def test_client_credentials_token_sees_the_same_tools(
         self, mcp_base_url: str, mcp_client_credentials_token: str, mcp_surface: dict
     ) -> None:
-        """The route resolves a client_credentials token to the app owner and lists every tool."""
+        """A client_credentials token acts as the app's service account and lists every tool."""
+        # The backend resolves a client_credentials token to its createdBy claim,
+        # so that claim, not the tool list, shows whose access the token carries.
+        claims = jwt_claims(mcp_client_credentials_token)
+        assert claims.get("createdBy") == session_service_account_id(mcp_base_url), claims
         other = read_mcp_surface(mcp_base_url, mcp_client_credentials_token)
         assert [t["name"] for t in other["tools"]] == [t["name"] for t in mcp_surface["tools"]]
 

@@ -516,6 +516,12 @@ def sub_in_order(pattern: re.Pattern[str], text: str, replace: Callable[[re.Matc
     return out + text[pos:]
 
 
+def _badge_url(url: str) -> str:
+    """``url`` with ``(`` and ``)`` percent-encoded, so ``[N](url)`` cannot end early in a
+    reader that stops a link at the first ``)``. Browsers treat both forms as the same address."""
+    return url.replace("(", "%28").replace(")", "%29")
+
+
 def _renumber_citation_links(
     text: str,
     md_matches: list,
@@ -536,6 +542,8 @@ def _renumber_citation_links(
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
+        # Looked up raw above; written into the badge with parentheses encoded.
+        full_url = _badge_url(full_url)
         out += text[pos:match.start()]
         if new_num is None:
             out += match.group(0)

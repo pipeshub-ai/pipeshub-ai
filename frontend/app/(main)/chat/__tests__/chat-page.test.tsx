@@ -139,7 +139,7 @@ vi.mock('@/app/components/ui/service-gate', () => ({
   ServiceGate: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const getUsersByIds = vi.fn();
 vi.mock('@/app/(main)/workspace/users/api', () => ({
@@ -595,7 +595,7 @@ describe('Chat page — opening a conversation', () => {
     await waitFor(() => expect(fetchConversation).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
     expect(toastError).toHaveBeenCalledTimes(1);
-    expect(toastError.mock.calls[0][0]).toBe('Server Error');
+    expect(toastError.mock.calls[0][0]).toBe('Server error');
   });
 
   it('tells the user when the conversation cannot be read, instead of showing an empty chat', async () => {

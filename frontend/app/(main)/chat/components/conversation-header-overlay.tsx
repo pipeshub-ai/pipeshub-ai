@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { Box } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface ConversationHeaderOverlayProps {
   conversationId: string | null;
@@ -13,9 +14,11 @@ export interface ConversationHeaderOverlayProps {
 
 /** Top-right items over the conversation. Editions plug in via config.ts. */
 export function ConversationHeaderOverlay({ agentChip, shareGroup }: ConversationHeaderOverlayProps) {
+  // No room on a phone; the agent header menu shows the creator instead.
+  const showChip = !useIsMobile() && !!agentChip;
   return (
     <>
-      {agentChip && (
+      {showChip && (
         <Box
           style={{
             position: 'absolute',

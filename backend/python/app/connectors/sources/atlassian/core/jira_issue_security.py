@@ -2,7 +2,7 @@
 
 Issue security is not the project permission scheme. A project browse grant
 does not show an issue that has a security level. Sub-tasks inherit their
-parent issue's level; a story under an epic does not.
+parent issue's level. A story under an epic inherits the epic and also has its own level.
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -32,6 +32,7 @@ Center ``/rest/api/2`` where the server exposes them):
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -83,31 +84,66 @@ class IssueSecurityContext:
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
 
-    def fingerprint(self) -> str:
+    def level_fingerprints(
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, str]:
+        """Level id -> a digest of its holders, so a change names the levels it touched.
+
+        An application-role holder is granted as that role's groups, so the groups are part
+        of its digest: a group leaving the role re-reads the level's issues.
+        """
+        return {
+            level_id: hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
+            )).encode()).hexdigest()[:16]
+            for level_id, holders in self.members_by_level.items()
+        }
+
+    def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
             return "none"
         if self.knowledge != SchemeKnowledge.PRESENT:
             return "unknown"
-        parts = [self.scheme_id or "", "1" if self.members_readable else "0"]
-        for level_id in sorted(self.members_by_level):
-            bits = sorted(
-                _holder_fingerprint(holder)
-                for holder in self.members_by_level[level_id]
-                if isinstance(holder, dict)
-            )
-            parts.append(f"{level_id}={','.join(bits)}")
-        return "|".join(parts)
+        levels = self.level_fingerprints(app_roles_mapping)
+        return "|".join([self.scheme_id or "", "1" if self.members_readable else "0",
+                         *(f"{lid}={levels[lid]}" for lid in sorted(levels))])
 
 
-def _holder_fingerprint(holder: dict[str, Any]) -> str:
+def _holder_fingerprint(
+    holder: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
     """Include the user. value alone misses an account change."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     account = user.get("accountId") or user.get("key") or user.get("name") or ""
     email = str(user.get("emailAddress") or "").lower()
-    return (
-        f"{holder.get('type')}:{holder.get('value') or holder.get('parameter')}:"
-        f"{account}:{email}"
-    )
+    role_key = holder.get("parameter") or holder.get("value")
+    # A deactivated user is not granted, so deactivation must change the digest too.
+    active = "inactive" if user.get("active") is False else ""
+    digest = f"{holder.get('type')}:{role_key}:{account}:{email}:{active}"
+    if holder.get("type") == HOLDER_APPLICATION_ROLE:
+        groups = application_role_groups(role_key, app_roles_mapping)
+        digest += ":" + "+".join(sorted(str(_group_ref(g)) for g in groups))
+    return digest
+
+
+def application_role_groups(
+    role_key: str | None, app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """The groups an application-role holder stands for.
+
+    A bare holder (no role key) is "Any logged in user": an account with access to any
+    Jira product, which is the union of every role's groups, not the whole org.
+    """
+    mapping = app_roles_mapping or {}
+    if role_key:
+        groups = mapping.get(role_key) or []
+    else:
+        groups = [g for role_groups in mapping.values() for g in role_groups or []]
+    return [g for g in groups if isinstance(g, dict) and _group_ref(g)]
+
+
+def _group_ref(group_info: dict[str, Any]) -> str | None:
+    return group_info.get("groupId") or group_info.get("name")
 
 
 def http_status_is_transient(status: int | None) -> bool:
@@ -384,13 +420,11 @@ def _permissions_for_holder(
     if holder_type == HOLDER_APPLICATION_ROLE:
         # A security level must not become an org-wide grant. Resolve the role
         # to its groups, or skip it when those groups cannot be read.
-        role_key = parameter or value
-        groups = (app_roles_mapping or {}).get(role_key) if role_key else None
+        groups = application_role_groups(parameter or value, app_roles_mapping)
         if not groups:
             return grants, False, HOLDER_APPLICATION_ROLE
         for group_info in groups:
-            if isinstance(group_info, dict):
-                add_group(group_info.get("groupId") or group_info.get("name"))
+            add_group(_group_ref(group_info))
         return grants, False, None
 
     if holder_type == HOLDER_ANYONE:
@@ -472,7 +506,7 @@ def level_grants(
     return grants, False, skipped
 
 
-def apply_issue_access(
+def apply_issue_access_settled(
     record: Record,
     fields: dict[str, Any] | None,
     *,
@@ -483,13 +517,18 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
-) -> tuple[list[Permission], list[str]]:
-    """Set the issue's access rule and return the grants to write.
+) -> tuple[list[Permission], list[str], bool]:
+    """Set the issue's access rule and return the grants to write, the holder types
+    skipped, and whether the result is settled. Settled means the level (or its
+    absence) was read in full; a closed issue whose level could not be read is not,
+    though both write no grants.
 
-    A story under an epic in the same project inherits that epic. The epic's
-    level then hides the story from people who cannot open the epic. A parent
-    in another project is handled by the processor, which keeps the story on
-    its own project. Attachments are handled separately and stay empty.
+    A child issue (a sub-task, or a story under an epic) in the same project
+    inherits its hierarchy parent. It is visible to a user who can open both the
+    parent and the child, so a story under a leveled epic needs the epic's level
+    too (an accepted under-share, never an over-share). A parent in another
+    project is handled by the processor, which keeps the child on its own
+    project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
@@ -497,24 +536,28 @@ def apply_issue_access(
         record.inherit_permissions = True
         record.rewrite_permissions = True
         record.inherit_permissions_from_group = False
-        return [], []
+        return [], [], True
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 
-    def close() -> tuple[list[Permission], list[str]]:
+    def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
-        return [], []
+        return [], [], False
 
-    def project_open() -> tuple[list[Permission], list[str]]:
+    def project_open() -> tuple[list[Permission], list[str], bool]:
         record.access_rule = AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], []
+        return [], [], True
+
+    if present and security is None:
+        # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
+        return project_open()
 
     if context.knowledge == SchemeKnowledge.UNKNOWN:
         return close()
@@ -549,6 +592,28 @@ def apply_issue_access(
         return close()
     record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    return grants, skipped, True
+
+
+def apply_issue_access(
+    record: Record,
+    fields: dict[str, Any] | None,
+    *,
+    is_subtask: bool,
+    project_key: str,
+    context: IssueSecurityContext,
+    user_by_account_id: dict[str, Any] | None = None,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    reporter_email: str | None = None,
+    assignee_email: str | None = None,
+) -> tuple[list[Permission], list[str]]:
+    """``apply_issue_access_settled`` without the settled flag: the grants to write
+    and the holder types skipped."""
+    grants, skipped, _settled = apply_issue_access_settled(
+        record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
+        user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=reporter_email, assignee_email=assignee_email,
+    )
     return grants, skipped
 
 
