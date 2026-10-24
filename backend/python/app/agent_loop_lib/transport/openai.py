@@ -97,6 +97,20 @@ def _marked(block: dict[str, Any]) -> dict[str, Any]:
     return {**block, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)}
 
 
+def _system_parts(
+    system: str | None, system_blocks: list[str] | None, *, mark_stable: bool,
+) -> list[tuple[str, bool]]:
+    """The system prompt as one system message per part, each with whether
+    it ends in a cache breakpoint. With one, the stable block is a message
+    of its own: on Chat Completions a change later in the same message
+    misses the cache even past an explicit breakpoint."""
+    stable, volatile = split_system_prompt(system, system_blocks)
+    if mark_stable and stable:
+        return [(stable, True), *([(volatile, False)] if volatile else [])]
+    text = system or "\n\n".join(block for block in system_blocks or [] if block)
+    return [(text, False)] if text else []
+
+
 def _mark_last(item: dict[str, Any], text_type: str) -> None:
     """A breakpoint on the last block of a user or tool item (a chat message,
     or a Responses message or function output); string content becomes the
@@ -441,10 +455,12 @@ class OpenAITransport(LLMTransport):
 
     def _format_messages(
         self, messages: list[Message], system: str | None, system_blocks: list[str] | None = None,
+        *, cache_markers: bool = True,
     ) -> list[dict[str, Any]]:
+        plan = self._cache_plan if cache_markers else OpenAICachePlan()
         formatted = [
             {"role": "system", "content": [_marked({"type": "text", "text": text})] if marked else text}
-            for text, marked in self._system_parts(system, system_blocks)
+            for text, marked in _system_parts(system, system_blocks, mark_stable=plan.breakpoint)
         ]
         formatted.extend(self._format_message(m) for m in messages)
         # The images `_format_message` left out of tool results, sent the way
@@ -452,20 +468,9 @@ class OpenAITransport(LLMTransport):
         relocated = relocated_tool_images(messages)
         if relocated is not None:
             formatted.append(self._format_message(relocated))
-        if self._cache_plan.last_message and messages:
+        if plan.last_message and messages:
             _mark_last(formatted[-1], "text")
         return formatted
-
-    def _system_parts(self, system: str | None, system_blocks: list[str] | None) -> list[tuple[str, bool]]:
-        """The system prompt as one system message per part, each with whether
-        it ends in a cache breakpoint. With one, the stable block is a message
-        of its own: on Chat Completions a change later in the same message
-        misses the cache even past an explicit breakpoint."""
-        stable, volatile = split_system_prompt(system, system_blocks)
-        if self._cache_plan.breakpoint and stable:
-            return [(stable, True), *([(volatile, False)] if volatile else [])]
-        text = system or "\n\n".join(block for block in system_blocks or [] if block)
-        return [(text, False)] if text else []
 
     # ------------------------------------------------------------------
     # Responses API
@@ -504,7 +509,7 @@ class OpenAITransport(LLMTransport):
         system_items = [
             {"type": "message", "role": "system",
              "content": [_marked({"type": "input_text", "text": text})] if marked else text}
-            for text, marked in self._system_parts(system, system_blocks)
+            for text, marked in _system_parts(system, system_blocks, mark_stable=self._cache_plan.breakpoint)
         ]
         items = format_responses_input(messages, None)
         if self._cache_plan.last_message and items:
@@ -911,7 +916,9 @@ class OpenAITransport(LLMTransport):
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            # Unmarked, as on the LangChain arm: this call sends no cache kwargs
+            # and has no refusal retry, so a refused breakpoint would fail it.
+            "messages": self._format_messages(messages, system, cache_markers=False),
             "tools": [tool_def],
             "tool_choice": {"type": "function", "function": {"name": "structured_output"}},
             **self._default_request_kwargs(),

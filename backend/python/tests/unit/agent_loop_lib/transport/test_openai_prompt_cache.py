@@ -150,6 +150,22 @@ class TestBreakpoint:
         assert retry["messages"][0] == {"role": "system", "content": "\n\n".join(BLOCKS)}
         refused.assert_called_once_with(frozenset({"prompt_cache_breakpoint"}))
 
+    async def test_a_structured_call_carries_no_markers(self) -> None:
+        """As on the LangChain arm, a structured call sends no cache kwargs and
+        has no refusal retry, so a breakpoint there could only fail it."""
+        plan = OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True, last_message=True)
+        transport = _transport(cache_plan=plan)
+        reply = _chat()
+        reply.choices[0].message.tool_calls = [
+            SimpleNamespace(function=SimpleNamespace(name="structured_output", arguments='{"ok": true}')),
+        ]
+        transport._client.chat.completions.create = AsyncMock(return_value=reply)
+        result = await transport.complete_structured([UserMessage(content="hi")], {"type": "object"}, system=BLOCKS[0])
+        assert result.data == {"ok": True}
+        sent = transport._client.chat.completions.create.call_args.kwargs
+        assert sent["messages"] == [{"role": "system", "content": BLOCKS[0]}, {"role": "user", "content": "hi"}]
+        assert "prompt_cache_key" not in sent
+
 
 class TestLastMessage:
     """Through OpenRouter, Claude caches the history only up to a marked block."""
