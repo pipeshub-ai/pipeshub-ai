@@ -18,6 +18,7 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
+    keep_record_text_inside_connection,
 )
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ class KnowledgeContextBuilder:
         if include_fk_children:
             await enrich_virtual_record_id_to_result_with_fk_children(
                 records, self._blob_store, self._org_id, self._graph_provider, ranked,
-                user_id=self._user_id,
+                user_id=self._user_id, connection_sources=self._connection_sources,
             )
         if ranked and self._graph_provider:
             await enrich_records_with_graph_context(
@@ -108,5 +109,9 @@ class KnowledgeContextBuilder:
             )
             await enrich_records_with_address_links(
                 records, self._graph_provider, self._org_id, user_id=self._user_id,
+                connection_sources=self._connection_sources,
             )
+        await keep_record_text_inside_connection(
+            records.values(), self._graph_provider, self._user_id, self._org_id, self._connection_sources,
+        )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)

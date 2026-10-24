@@ -6118,7 +6118,7 @@ class TestEnrichRecordsWithGraphContext:
         assert check.await_args.args[4] == self._FILE_LIMIT
 
     @pytest.mark.asyncio
-    async def test_a_parent_relation_outside_the_limit_is_left_out_and_children_stay(self) -> None:
+    async def test_a_parent_relation_outside_the_limit_is_left_out_and_a_child_inside_stays(self) -> None:
         rec = self._ticket_record()
         gp = self._make_graph_provider(
             outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
@@ -6131,7 +6131,33 @@ class TestEnrichRecordsWithGraphContext:
                 user_id="user-1", connection_sources=self._FILE_LIMIT,
             )
         assert [r["record_id"] for r in rec["node_relations"]] == ["rec-child-1"]
-        assert set(check.await_args.args[3]) == {"rec-parent"}  # only parents are checked
+        assert set(check.await_args.args[3]) == {"rec-parent", "rec-child-1"}
+
+    @pytest.mark.asyncio
+    async def test_a_child_outside_the_limit_is_left_out_and_a_related_header_names_no_source_parent(
+        self,
+    ) -> None:
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [
+                {"record_id": "rec-child-in"}, {"record_id": "rec-child-out"},
+            ]},
+            docs_by_id={"rec-child-in": {
+                "id": "rec-child-in", "_key": "rec-child-in", "recordName": "Child", "recordType": "TICKET",
+                "connectorName": "JIRA", "connectorId": "conn-1", "externalRecordId": "PST-10",
+                "externalParentId": "ext-secret-parent",
+            }},
+        )
+        gp.get_records_by_record_ids = AsyncMock(return_value=[])
+        check = AsyncMock(side_effect=lambda _gp, _u, _o, ids, _s: set(ids) & {"rec-child-out"})
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1",
+                user_id="user-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-child-in"]
+        assert "ext-secret-parent" not in str(rec["node_relations"])
+        assert "Name-rec-child-out" not in str(rec)
 
     @pytest.mark.asyncio
     async def test_without_a_limit_the_parent_is_named_and_no_limit_is_checked(self) -> None:

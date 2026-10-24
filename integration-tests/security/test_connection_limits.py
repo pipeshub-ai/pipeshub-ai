@@ -546,3 +546,26 @@ class TestKnowledgeBaseRoutes:
 
         # The folder's own limit shares the folder, so the same file names it.
         assert folder in _rest_search(base_url, folder_pat, corpus["inside_needle"])
+
+    def test_a_file_limit_reads_its_file_without_the_folder_or_its_path(
+        self, base_url, file_pat, collection_pat, corpus,
+    ) -> None:
+        folder, folder_name = corpus["picked_folder"], f"picked-{corpus['tag']}"
+        record_url = f"{base_url}/api/v1/knowledgeBase/record/{corpus['inside_record']}"
+        details = requests.get(record_url, headers=_bearer(file_pat), timeout=60)
+        assert details.status_code == 200, details.text[:300]
+        body = details.json()
+        assert body.get("folder") is None and body.get("knowledgeBase") is None
+        assert ((body.get("record") or {}).get("fileRecord") or {}).get("path") is None
+        assert folder not in details.text and folder_name not in details.text
+
+        content = requests.get(f"{base_url}/api/v1/connectors/record/{corpus['inside_record']}/content",
+                               headers=_bearer(file_pat), timeout=120)
+        assert content.status_code == 200, content.text[:300]
+        assert corpus["inside_needle"] in content.text
+        assert folder not in content.text and folder_name not in content.text
+
+        # The whole collection's limit shares the folder, so the same file names it.
+        whole = requests.get(record_url, headers=_bearer(collection_pat), timeout=60)
+        assert whole.status_code == 200, whole.text[:300]
+        assert (whole.json().get("folder") or {}).get("id") == folder

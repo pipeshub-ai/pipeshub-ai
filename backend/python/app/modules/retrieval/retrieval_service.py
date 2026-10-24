@@ -60,6 +60,7 @@ from app.modules.retrieval.selection_scope import (
     SelectionScope,
     SelectionTooLargeError,
     connection_bound_scope,
+    connection_sources_of,
     require_membership_ready,
     resolve_request_scopes,
 )
@@ -1472,6 +1473,7 @@ class RetrievalService:
                 # search tool) gets the same on each record document.
                 await describe_search_records(
                     records, self.graph_provider, org_id, user_id=user_id,
+                    connection_sources=connection_sources_of(filter_groups),
                 )
             if search_results or records:
                 response_data = {

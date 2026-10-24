@@ -196,9 +196,41 @@ async def hide_record_parents_outside_connection(
     for key, node_id in above.items():
         if node_id in outside:
             holder[key] = None
+    whole_apps = set((connection_limit(request.state.user) or {}).get("apps") or ())
     for doc in docs:
         for key, source_keys in _RECORD_PARENT_FIELDS.items():
             if doc.get(key) in outside:
                 for field in (key, *source_keys):
                     if field in doc:
                         doc[field] = None
+        # A source parent with no parent node to check it by is inside only
+        # when the limit covers the record's whole app.
+        if doc.get("externalParentId") and not doc.get("parentNodeId") and doc.get("connectorId") not in whole_apps:
+            doc["externalParentId"] = None
+
+
+#: A file's path in its source system, which names every folder above it.
+SOURCE_PATH_FIELDS = ("path", "filePath", "localFsRelativePath")
+
+
+def _clear_source_paths(value: object) -> None:
+    if isinstance(value, dict):
+        for key in SOURCE_PATH_FIELDS:
+            if isinstance(value.get(key), str):
+                value[key] = None
+        for child in value.values():
+            _clear_source_paths(child)
+    elif isinstance(value, list):
+        for child in value:
+            _clear_source_paths(child)
+
+
+def hide_source_paths(request: Request, payload: object, app_id: str | None) -> None:
+    """Clear every source path under ``payload``, all of it in app ``app_id``,
+    unless the calling app's limit covers that app whole: a path names the
+    folders above a file, which a narrower limit leaves out. Nothing changes
+    without a limit, and nothing is asked of the graph."""
+    limit = connection_limit(request.state.user)
+    if limit is None or (app_id and app_id in (limit.get("apps") or ())):
+        return
+    _clear_source_paths(payload)

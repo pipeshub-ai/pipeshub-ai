@@ -221,6 +221,7 @@ async def read_record_content(
             blob_store=blob_store,
             org_id=org_id,
             user_id=user_id,
+            connection_sources=connection_limit(request.state.user),
         )
     except Exception as exc:
         logger.error("Error fetching record content for %s: %s", record_id, exc, exc_info=True)
