@@ -120,4 +120,48 @@ describe('validateAttachmentFile', () => {
     expect(result.fileName).to.equal('large.png');
     expect(result.size).to.equal(2 * 1024 * 1024);
   });
+
+  it('stores the type the bytes are when the label is wrong, keeping the name and bytes', async () => {
+    const png = await pngBuffer();
+    const jpeg = await sharp(png).jpeg().toBuffer();
+    const cases = [
+      [png, 'image/jpeg', 'image/png'],
+      [jpeg, 'image/png', 'image/jpeg'],
+    ] as const;
+    for (const [buffer, label, actual] of cases) {
+      const result = await validateAttachmentFile(
+        file({ buffer, mimetype: label, originalname: 'shot.jpg' }),
+      );
+      expect(result.mimeType).to.equal(actual);
+      expect(result.fileName).to.equal('shot.jpg');
+      expect(result.buffer.equals(buffer)).to.equal(true);
+    }
+  });
+
+  it('keeps the label on WebP bytes, since WebP is not an attachment type', async () => {
+    const webp = await sharp(await pngBuffer()).webp().toBuffer();
+    const result = await validateAttachmentFile(
+      file({ buffer: webp, mimetype: 'image/png' }),
+    );
+    expect(result.mimeType).to.equal('image/png');
+  });
+
+  it('rejects an image over 50 megapixels as too large', async () => {
+    const huge = await sharp({
+      create: { width: 10000, height: 6000, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    try {
+      await validateAttachmentFile(
+        file({ buffer: huge, mimetype: 'image/png', originalname: 'huge.png' }),
+      );
+      expect.fail('an image over the pixel cap should be rejected');
+    } catch (error) {
+      expect(error).to.be.instanceOf(BadRequestError);
+      expect((error as Error).message).to.equal(
+        'huge.png is too large to attach: images can be at most 50 megapixels',
+      );
+    }
+  });
 });

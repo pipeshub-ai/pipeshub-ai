@@ -20,7 +20,11 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
+import {
+  assertRasterImage,
+  RasterImageFormat,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
 import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
@@ -350,6 +354,14 @@ const RASTER_IMAGE_MIMES = new Set([
   'image/png',
   'image/webp',
 ]);
+// A decode allocates by pixel count, not file size: a 5 MiB PNG can hold
+// hundreds of megapixels. 50 MP admits a 48 MP camera photo (8000 × 6000).
+const MAX_ATTACHMENT_IMAGE_PIXELS = 50_000_000;
+// The image types an attachment can be stored as, by what its bytes are.
+const ATTACHMENT_MIME_BY_FORMAT: Partial<Record<RasterImageFormat, string>> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+};
 
 export interface NormalizedAttachmentFile {
   fileName: string;
@@ -359,10 +371,10 @@ export interface NormalizedAttachmentFile {
 }
 
 /**
- * Rejects an image whose bytes are not the raster its type claims, and
- * forwards every file exactly as uploaded: the stored file is what downloads,
- * code and other apps receive, so it stays the user's original. The query
- * service shrinks only the copy the model reads.
+ * Rejects an image that does not decode as a raster or is over the pixel cap,
+ * and forwards every file's bytes exactly as uploaded: the stored file is what
+ * downloads, code and other apps receive, so it stays the user's original. The
+ * query service shrinks only the copy the model reads.
  */
 export const validateAttachmentFile = async (
   file: Express.Multer.File,
@@ -380,13 +392,36 @@ export const validateAttachmentFile = async (
   // Magic bytes reject SVG, but they also accept a bare PNG signature.
   const invalidImageMessage =
     `${file.originalname} is not a valid JPEG, PNG or WebP image`;
-  assertRasterImage(file.buffer, ['jpeg', 'png', 'webp'], invalidImageMessage);
+  const format = assertRasterImage(
+    file.buffer,
+    ['jpeg', 'png', 'webp'],
+    invalidImageMessage,
+  );
+  let pixels: number;
   try {
-    await sharp(file.buffer).raw().toBuffer();
+    const { width, height } = await sharp(file.buffer).metadata();
+    pixels = width * height;
   } catch {
     throw new BadRequestError(invalidImageMessage);
   }
-  return passthrough;
+  if (pixels > MAX_ATTACHMENT_IMAGE_PIXELS) {
+    throw new BadRequestError(
+      `${file.originalname} is too large to attach: images can be at most 50 megapixels`,
+    );
+  }
+  try {
+    await sharp(file.buffer, { limitInputPixels: MAX_ATTACHMENT_IMAGE_PIXELS })
+      .raw()
+      .toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
+  }
+  // A browser labels a file by its name, so a renamed screenshot arrives as
+  // the wrong type: store the type its bytes are. A WebP keeps its label:
+  // WebP is not an attachment type, so relabelling it would refuse an upload
+  // that works today.
+  const actualMime = ATTACHMENT_MIME_BY_FORMAT[format];
+  return actualMime ? { ...passthrough, mimeType: actualMime } : passthrough;
 };
 
 /** Shared with `projects/controller/project.controller.ts` — project file uploads reuse this same chat-attachment pipeline. */
