@@ -26,6 +26,12 @@ from app.sources.client.azure.azure_files import (
 # ============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.azure.azure_files.check_url_allowed", lambda *_a, **_k: None)
+
+
 class TestAzureFilesRESTClientShareServiceClient:
     def test_get_share_service_client_success(self):
         config = MagicMock(spec=AzureFilesAccountKeyConfig)

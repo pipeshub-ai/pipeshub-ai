@@ -36,6 +36,13 @@ from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
 )
 
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.cifs.cifs.dial_address", lambda server: server)
+
+
 NOW = datetime(2024, 6, 1, tzinfo=timezone.utc)
 SHARE = "public"
 
