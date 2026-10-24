@@ -297,6 +297,10 @@ record_schema = {
             # Knowledge-base uploads: what set the two above (SourceTimestampOrigin).
             # A pattern, so a new origin needs no schema release first.
             "sourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
+            # What the upload had set, kept while dates the content states replace it.
+            "uploadSourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "uploadSourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},

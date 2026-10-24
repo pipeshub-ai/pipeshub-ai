@@ -768,9 +768,11 @@ class KnowledgeGraph:
             "and modified_after/modified_before to scope by source last-modified date. "
             "For connected apps these are the source system's timestamps (when the file was "
             "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
-            "A knowledge-base upload has only what the upload gave it — the file's last-modified "
-            "time, or else the upload time — so these filters match uploads by that, not by a "
-            "date the document states; its record header says which it has.\n\n"
+            "A knowledge-base upload is dated as its record header shows: by a date the "
+            "document states when one was found in it, otherwise only by the upload (the "
+            "file's last-modified time or the upload time), which is not when it was written. "
+            "A date filter can keep an upload dated only by its upload although it was written "
+            "outside the range, so check its header before treating it as in range.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -813,7 +815,7 @@ class KnowledgeGraph:
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
                     "For connected apps this is the creation date at the source "
                     "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
-                    "knowledge-base upload it is the date the upload gave it. "
+                    "knowledge-base upload, the date its record header shows. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -1443,7 +1445,8 @@ class KnowledgeGraph:
                     "'created' (default) places each record by when it was created at its source: "
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
                     "places it by its last update, for tickets or pages that changed over the span. "
-                    "A knowledge-base upload has only what the upload gave it for both: its file's "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found; otherwise it has only what the upload gave it for both: its file's "
                     "last-modified time, or else its upload time."
                 ),
                 required=False,

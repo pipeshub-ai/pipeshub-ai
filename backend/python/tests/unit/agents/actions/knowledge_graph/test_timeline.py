@@ -38,6 +38,7 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
     timeline_summaries_enabled,
 )
 from app.models.blocks import BlockType
+from app.models.source_dates import DATED_ONLY_TIME_RANGE_KEY
 
 _BUILDER = "app.modules.retrieval.context.builder"
 
@@ -260,10 +261,14 @@ class TestShowsEveryPeriodInDateOrder:
             "source_created_after_ms": _ms("2026-03-01"), "source_created_before_ms": _end_of("2026-05-31"),
         }
         assert whole["limit"] == SPAN_SEARCH_LIMIT
+        # A period holds only what is dated in it (DATED_ONLY_TIME_RANGE_KEY).
         assert [c["time_range"] for c in periods] == [
-            {"source_created_after_ms": _ms("2026-03-01"), "source_created_before_ms": _end_of("2026-03-31")},
-            {"source_created_after_ms": _ms("2026-04-01"), "source_created_before_ms": _end_of("2026-04-30")},
-            {"source_created_after_ms": _ms("2026-05-01"), "source_created_before_ms": _end_of("2026-05-31")},
+            {"source_created_after_ms": _ms("2026-03-01"), "source_created_before_ms": _end_of("2026-03-31"),
+             DATED_ONLY_TIME_RANGE_KEY: 1},
+            {"source_created_after_ms": _ms("2026-04-01"), "source_created_before_ms": _end_of("2026-04-30"),
+             DATED_ONLY_TIME_RANGE_KEY: 1},
+            {"source_created_after_ms": _ms("2026-05-01"), "source_created_before_ms": _end_of("2026-05-31"),
+             DATED_ONLY_TIME_RANGE_KEY: 1},
         ]
         assert all(c["limit"] == PERIOD_SEARCH_LIMIT and c["queries"] == ["slack bot problems"] for c in periods)
         assert all(c["filter_groups"]["apps"] == ["slack-1"] for c in corpus.calls)
@@ -453,7 +458,9 @@ class TestTheSpan:
         with patch.object(timeline, "_now_ms", return_value=_TODAY):
             await _run(corpus, end="2026-04-30")
 
-        assert corpus.calls[0]["time_range"] == {"source_created_before_ms": _end_of("2026-04-30")}
+        assert corpus.calls[0]["time_range"] == {
+            "source_created_before_ms": _end_of("2026-04-30"), DATED_ONLY_TIME_RANGE_KEY: 1,
+        }
         start = _end_of("2026-04-30") - DEFAULT_LOOKBACK_DAYS * 86_400_000
         assert corpus.calls[1]["time_range"]["source_created_after_ms"] == start
         assert corpus.calls[-1]["time_range"]["source_created_before_ms"] == _end_of("2026-04-30")
@@ -885,3 +892,15 @@ class TestKnowledgeBaseUploads:
         text = await _run(_Corpus(_THREE_MONTHS), start="2026-03-01", end="2026-05-31")
 
         assert "knowledge-base upload" not in text
+
+    @pytest.mark.asyncio
+    async def test_with_content_dates_it_says_an_upload_dated_only_by_its_upload_has_no_date(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CONTENT_DOCUMENT_DATES", "true")
+        dated = {"connectorName": "KB", "origin": "UPLOAD", "sourceTimestampOrigin": "content"}
+        text = await _run(_Corpus(_THREE_MONTHS, docs={"apr": dated}), start="2026-03-01", end="2026-05-31")
+
+        header = text.split("\n", 1)[0]
+        assert "placed by a date its content states" in header
+        assert "one dated only by its upload time has no source date" in header

@@ -99,14 +99,16 @@ class GraphEntitiesIO(RecordStageIO):
         with stage("entities.extract"):
             return await self._sink.extract_named_entities(ctx, client=self._extraction_client)
 
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
         """Each record's entities in the graph and the entity points, under its lease. Returns
         the owner's persist outcome (``written``, ``kept``, ``disabled``, ...)."""
         owner = record_ids[0]
         outcomes: dict[str, str] = {}
 
         async def persist(record_id: str) -> None:
-            ctx = await self._context(record_id, None)
+            ctx = await self._context(record_id, blocks)
             if ctx is None:
                 return
             with stage("entities.persist"):

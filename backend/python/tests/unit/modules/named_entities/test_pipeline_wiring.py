@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.blocks import BlocksContainer
 from app.models.entities import EntityType
 from app.modules.named_entities import stage
 from app.modules.named_entities.domain.kinds import EntityKind
@@ -457,7 +458,10 @@ async def test_an_extraction_never_touches_the_stored_record() -> None:
 
     io = GraphEntitiesIO(_view_job(), Deadline(30), **common)
     await io.current_record_ids(_view_job())
-    assert await io.save(_view_job(), ["rec-1"], _extraction()) == "written"
+    blocks = BlocksContainer(blocks=[], block_groups=[])
+    assert await io.save(_view_job(), ["rec-1"], _extraction(), blocks) == "written"
+    # The persist also dates a knowledge-base upload by its text, so it gets the blocks.
+    assert sink.persist_named_entities.await_args.args[0].record.block_containers is blocks
 
     blob.save_semantic_metadata.assert_not_awaited()
     assert stored["semantic_metadata"] is None

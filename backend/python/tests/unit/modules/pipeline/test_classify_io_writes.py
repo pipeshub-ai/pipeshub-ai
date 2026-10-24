@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.events.processor import convert_record_dict_to_record
-from app.models.blocks import SemanticMetadata
+from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
@@ -89,6 +89,10 @@ def _entities_io(blob: _Blob, rev: str = "rev-a") -> GraphEntitiesIO:
     )
 
 
+# The content the entities were extracted from, as the stage hands it to save().
+_BLOCKS = BlocksContainer(blocks=[], block_groups=[])
+
+
 def _extraction() -> NamedEntityExtraction:
     return NamedEntityExtraction(status="COMPLETED", strategy="deterministic")
 
@@ -102,7 +106,7 @@ async def test_a_record_that_moved_to_a_newer_revision_is_not_written() -> None:
     with pytest.raises(RevisionSuperseded):
         await io.restore_stored_metadata(_job(), SemanticMetadata(summary="s"))
     with pytest.raises(RevisionSuperseded):
-        await _entities_io(blob, rev="rev-b").save(_job("entities"), ["rec-1"], _extraction())
+        await _entities_io(blob, rev="rev-b").save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS)
     assert blob.saves == 0
 
 
@@ -147,7 +151,7 @@ async def test_entities_never_writes_the_stored_record() -> None:
     entities = _entities_io(blob)
     assert await entities.current_record_ids(_job("entities")) == ["rec-1"]
 
-    assert await entities.save(_job("entities"), ["rec-1"], _extraction()) == "written"
+    assert await entities.save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS) == "written"
 
     assert blob.saves == 0
     assert blob.stored["semantic_metadata"] is None  # type: ignore[index]
@@ -256,7 +260,7 @@ async def test_named_entities_are_persisted_under_each_records_lease(second_rev:
         return "kept"
 
     io._sink.persist_named_entities = AsyncMock(side_effect=persist)  # type: ignore[attr-defined]
-    assert await io.save(_job("entities"), ["rec-1", "rec-2"], _extraction()) == "kept"
+    assert await io.save(_job("entities"), ["rec-1", "rec-2"], _extraction(), _BLOCKS) == "kept"
     expected = [("rec-1", True), ("rec-2", True)] if second_rev == "rev-a" else [("rec-1", True)]
     assert seen == expected
 
@@ -283,7 +287,7 @@ async def test_classification_and_entities_are_written_under_the_jobs_virtual_re
         _job("entities"), Deadline(30), policy=DEFAULT_POLICY, graph=_graph("rev-a"), blob_storage=blob,  # type: ignore[arg-type]
         sink=sink, config_service=MagicMock(), record_from_document=_record, record_leases=RecordLeases(),
     )
-    await entities.save(_job("entities"), ["rec-1"], _extraction())
+    await entities.save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS)
     assert seen == ["vr-1", "vr-1"]
 
 

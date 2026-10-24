@@ -4,16 +4,19 @@ A connector's record carries the source system's own created and modified
 times. A knowledge-base upload carries what the upload gave it: the file's
 last-modified time when the uploader sent one, otherwise the upload time.
 Neither is a date the document states, so the model is not shown either as
-the document's creation date.
+the document's creation date. With CONTENT_DOCUMENT_DATES on, a date the
+upload's content states replaces them (app.modules.indexing.content_dates).
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.utils.time_conversion import format_day_for_llm
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -22,9 +25,20 @@ if TYPE_CHECKING:
 class SourceTimestampOrigin(str, Enum):
     UPLOAD = "upload"
     FILE = "file"
+    CONTENT = "content"
 
 
 SOURCE_TIMESTAMP_ORIGIN_FIELD = "sourceTimestampOrigin"
+# What the upload had set, kept when the content's dates replace it.
+UPLOAD_SOURCE_CREATED_FIELD = "uploadSourceCreatedAtTimestamp"
+UPLOAD_SOURCE_MODIFIED_FIELD = "uploadSourceLastModifiedTimestamp"
+UPLOAD_SOURCE_ORIGIN_FIELD = "uploadSourceTimestampOrigin"
+
+CONTENT_DOCUMENT_DATES_ENV_VAR = "CONTENT_DOCUMENT_DATES"
+# A time_range flag: leave out an upload dated only by its upload instead of
+# bounding it by that upload (upload_times_undated). A timeline places records
+# by date, so its period and span searches set it.
+DATED_ONLY_TIME_RANGE_KEY = "dated_only"
 
 # Node stamps a file sent without a last-modified time while it receives the
 # upload, a moment before it stamps the record's createdAtTimestamp.
@@ -83,6 +97,28 @@ def _inferred_origin(created: int | None, modified: int | None, uploaded: int | 
     return SourceTimestampOrigin.UPLOAD
 
 
+def content_dates_replace() -> frozenset[SourceTimestampOrigin]:
+    """The upload-set timestamps a date the content states replaces.
+
+    ``CONTENT_DOCUMENT_DATES``: unset or anything else is off; ``true`` replaces
+    only the upload time standing in for a date; ``all`` also replaces the file
+    last-modified time the uploader sent.
+    """
+    raw = os.getenv(CONTENT_DOCUMENT_DATES_ENV_VAR, "").strip().lower()
+    if raw == "all":
+        return frozenset({SourceTimestampOrigin.UPLOAD, SourceTimestampOrigin.FILE})
+    if raw == "true":
+        return frozenset({SourceTimestampOrigin.UPLOAD})
+    return frozenset()
+
+
+def upload_times_undated() -> bool:
+    """Whether a record dated only by its upload counts as undated: bounded only
+    by its upload in date filters (written then or earlier) and put last in
+    newest-first listings. On with content dates."""
+    return bool(content_dates_replace())
+
+
 @dataclass(frozen=True)
 class RecordDates:
     """A record's two source timestamps and what they are.
@@ -136,7 +172,14 @@ class RecordDates:
         if self.origin is None:
             return [f"Created At: {full(self.created_ms)}", f"Last Updated At: {full(self.modified_ms)}"]
         lines: list[str] = []
-        if self.origin is SourceTimestampOrigin.FILE and (self.modified_ms or self.created_ms):
+        if self.origin is SourceTimestampOrigin.CONTENT and self.created_ms:
+            # Stored at midnight UTC of the day the document states.
+            created = format_day_for_llm(self.created_ms, calendar_date=True)
+            lines.append(f"Document Date: {created} (stated in the document)")
+            modified = format_day_for_llm(self.modified_ms, calendar_date=True) if self.modified_ms else created
+            if modified != created:
+                lines.append(f"Last Updated: {modified} (stated in the document)")
+        elif self.origin is SourceTimestampOrigin.FILE and (self.modified_ms or self.created_ms):
             lines.append(
                 f"File Last Modified: {full(self.modified_ms or self.created_ms)} "
                 "(the uploaded file's timestamp, not a document date)"
@@ -151,6 +194,8 @@ class RecordDates:
         if self.origin is None:
             modified = self.modified_ms or epoch_ms(fallback_ms)
             return ("modified", modified) if modified else None
+        if self.origin is SourceTimestampOrigin.CONTENT and self.created_ms:
+            return "dated", self.created_ms
         file_ms = self.modified_ms or self.created_ms
         if self.origin is SourceTimestampOrigin.FILE and file_ms:
             return "fileModified", file_ms
