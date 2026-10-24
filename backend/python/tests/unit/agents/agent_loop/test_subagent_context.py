@@ -29,6 +29,9 @@ from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
+from app.agent_loop_lib.tools.builtin.coordination.parent_results import (
+    with_user_request,
+)
 from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgentTool
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
@@ -148,8 +151,6 @@ async def test_child_keeps_its_own_compaction_memo() -> None:
 
 
 def test_a_long_request_is_capped_in_the_childs_goal() -> None:
-    from app.agent_loop_lib.tools.builtin.coordination.parent_results import with_user_request
-
     request = "Summarise the attached contract.\n\n" + "clause text " * 5_000
     child = with_user_request(Goal(description="List the termination clauses."), request)
 
@@ -161,8 +162,6 @@ def test_a_long_request_is_capped_in_the_childs_goal() -> None:
 
 
 def test_a_goal_that_already_carries_the_request_is_not_wrapped_again() -> None:
-    from app.agent_loop_lib.tools.builtin.coordination.parent_results import with_user_request
-
     request = "Summarise the attached contract.\n\n" + "clause text " * 5_000
     once = with_user_request(Goal(description="List the termination clauses."), request)
 
