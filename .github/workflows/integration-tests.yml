@@ -280,7 +280,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
@@ -318,14 +318,17 @@ jobs:
       # notion_sim.env, loaded by the "Use the connector simulators" step.
       # CONNSIM_REF pins the simulator commit the image is built from and
       # CONNSIM_PACK_* the content pack it serves; together they fix every fixture
-      # value in those env files.
-      CONNSIM_REF: d31bd5189fe24903ab5933e4b18f5e0da0557b56
+      # value in those env files. The same image serves the Gmail simulator. The
+      # pinned commit is connectors-simulator's integration/notion-gmail branch:
+      # d31bd51 (Confluence hardening, with the Notion simulator, #6) plus the
+      # Gmail simulator (#5); none of them merged into its main yet.
+      CONNSIM_REF: 7b4ec0f83c717f9d5e81178303c884924ad6bfed
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
       CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
-      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 4, with the Drive suites'
-      # Google credentials; connectors/gmail_sim.env points the Gmail connectors at it.
-      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
+      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 2, next to Jira's.
+      # connectors/gmail_sim.env points the Gmail connectors at it and holds every value they need: no secrets.
+      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
       NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
       NEEDS_NOTION_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
@@ -404,12 +407,14 @@ jobs:
       # and shard 3 zammad (zammad-source). The two Google Drive suites have
       # shard 4: together they pushed shard 2 past the job timeout.
       # A new connector suite goes on the lightest shard (outlook went on
-      # shard 2, which was lightest); check with scripts/shard_balance.py.
+      # shard 2, which was lightest); check with scripts/shard_balance.py. The
+      # Gmail suites are on shard 2 too: they need the simulator image Jira's
+      # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or gmail_workspace or gmail_individual"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -494,7 +499,8 @@ jobs:
             grep -Ev '^\s*(#|$)' integration-tests/connectors/notion_sim.env >> "$GITHUB_ENV"
           fi
 
-      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes.
+      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes. Its
+      # settings set GMAIL_GOOGLE_API_BASE_URL, so the Gmail suites fail rather than skip if it is not up.
       - name: Use the Gmail simulator
         if: env.NEEDS_GMAIL_SIM == 'true'
         run: |
