@@ -832,7 +832,9 @@ class SinkOrchestrator(Transformer):
             await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
         elif outcome == "written":
             await self._schedule_named_entity_reextract(ctx.record, extraction)
-        await self._apply_content_dates(ctx, extraction)
+        # A newer write replaced this one, and dates the record from its own content.
+        if outcome != "superseded":
+            await self._apply_content_dates(ctx, extraction)
         return outcome
 
     async def _apply_content_dates(self, ctx: TransformContext, extraction: "NamedEntityExtraction") -> None:

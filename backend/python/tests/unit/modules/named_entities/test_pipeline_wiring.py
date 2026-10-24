@@ -547,6 +547,16 @@ async def test_a_failed_persist_is_queued_for_retry_and_never_fails_indexing(sta
         graph.schedule_named_entity_persist_retry.assert_not_awaited()
 
 
+@pytest.mark.parametrize(("stage_outcome", "dated"), [("written", True), ("failed", True), ("superseded", False)])
+async def test_a_superseded_persist_leaves_the_dates_to_the_newer_write(stage_outcome: str, dated: bool) -> None:
+    sink = _sink(MagicMock(schedule_named_entity_persist_retry=AsyncMock(return_value=1)))
+    with patch.object(stage, "persist_named_entities", AsyncMock(return_value=stage_outcome)), \
+            patch("app.services.featureflag.platform_settings.is_named_entity_extraction_enabled", AsyncMock(return_value=True)), \
+            patch.object(SinkOrchestrator, "_apply_content_dates", AsyncMock()) as apply_dates:
+        await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction())
+    assert apply_dates.await_count == (1 if dated else 0)
+
+
 async def test_a_retry_that_cannot_be_recorded_still_does_not_raise():
     graph = MagicMock(schedule_named_entity_persist_retry=AsyncMock(side_effect=RuntimeError("graph down")))
     sink = _sink(graph)
