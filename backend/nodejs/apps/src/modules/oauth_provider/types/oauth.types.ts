@@ -219,6 +219,15 @@ export interface OAuthAppResponse {
   accessTokenLifetime: number;
   refreshTokenLifetime: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own `client_credentials` tokens act as.
+   *
+   * Absent means the app has no service account and its tokens act as whoever
+   * created it. Apps created since that became a requirement always have one;
+   * an app registered before it may not, and those are the ones an
+   * administrator still has to move.
+   */
+  tokenIdentityUserId?: string;
   createdAt: Date;
   updatedAt: Date;
 }

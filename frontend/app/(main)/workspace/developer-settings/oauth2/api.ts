@@ -80,6 +80,24 @@ export const Oauth2Api = {
   },
 
   /**
+   * Point this application's own `client_credentials` tokens at a service
+   * account. Administrators only, and it revokes the tokens the application
+   * has already issued.
+   *
+   * PUT /api/v1/oauth-clients/:id/token-identity
+   */
+  async setOAuthClientTokenIdentity(
+    id: string,
+    serviceAccountId: string
+  ): Promise<OAuthClient> {
+    const { data } = await apiClient.put<OAuthClient>(
+      `${BASE_URL}/${id}/token-identity`,
+      { serviceAccountId }
+    );
+    return data;
+  },
+
+  /**
    * Regenerate client secret.
    * POST /api/v1/oauth-clients/:id/regenerate-secret
    */

@@ -1819,7 +1819,13 @@
         "saveErrorTitle": "保存更改失败",
         "regenerateSuccessTitle": "密钥已重新生成",
         "regenerateErrorTitle": "重新生成密钥失败",
-        "errorLifetimeInvalid": "请输入有效的有效期（整数秒，且不小于 1）。"
+        "errorLifetimeInvalid": "请输入有效的有效期（整数秒，且不小于 1）。",
+        "identityBoundNote": "此应用程序的令牌以所指向的服务账户身份行事。更改它会吊销已经签发的令牌。",
+        "identityUnboundNote": "此应用程序的令牌以创建它的人的身份行事，拥有其文档权限和角色——如果创建者是管理员，就意味着管理员权限。请改为将其指向一个服务账户。",
+        "identityBindAction": "使用此账户",
+        "identityBindRevokes": "此操作会吊销该应用程序已签发的令牌。使用它们的一切都需要重新获取。",
+        "identityBound": "该应用程序现在以此服务账户的身份行事。",
+        "identityBindFailed": "无法更改服务账户。请稍后重试。"
       },
       "create": {
         "panelTitle": "创建 OAuth 2.0 应用",

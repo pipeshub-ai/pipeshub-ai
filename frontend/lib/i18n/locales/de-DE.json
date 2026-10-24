@@ -1742,7 +1742,13 @@
         "saveErrorTitle": "Speichern fehlgeschlagen",
         "regenerateSuccessTitle": "Geheimnis erneuert",
         "regenerateErrorTitle": "Geheimnis konnte nicht erneuert werden",
-        "errorLifetimeInvalid": "Geben Sie gültige Lebensdauern ein (ganze Sekunden, mindestens 1)."
+        "errorLifetimeInvalid": "Geben Sie gültige Lebensdauern ein (ganze Sekunden, mindestens 1).",
+        "identityBoundNote": "Die Tokens dieser Anwendung handeln im Namen des zugewiesenen Dienstkontos. Eine Änderung widerruft die bereits ausgestellten Tokens.",
+        "identityUnboundNote": "Die Tokens dieser Anwendung handeln im Namen der Person, die sie erstellt hat, mit deren Dokumentzugriff und deren Rolle — bei einem Administrator bedeutet das Administratorzugriff. Weisen Sie stattdessen ein Dienstkonto zu.",
+        "identityBindAction": "Dieses Konto verwenden",
+        "identityBindRevokes": "Dies widerruft die bereits ausgestellten Tokens der Anwendung. Alles, was sie verwendet, benötigt ein neues.",
+        "identityBound": "Die Anwendung handelt jetzt im Namen dieses Dienstkontos.",
+        "identityBindFailed": "Das Dienstkonto konnte nicht geändert werden. Versuchen Sie es gleich noch einmal."
       },
       "create": {
         "panelTitle": "OAuth-2.0-Anwendung erstellen",

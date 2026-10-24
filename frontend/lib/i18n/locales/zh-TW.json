@@ -1819,7 +1819,13 @@
         "saveErrorTitle": "儲存變更失敗",
         "regenerateSuccessTitle": "密鑰已重新產生",
         "regenerateErrorTitle": "重新產生密鑰失敗",
-        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。"
+        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。",
+        "identityBoundNote": "此應用程式的權杖以所指向的服務帳號身分行事。變更它會撤銷已經簽發的權杖。",
+        "identityUnboundNote": "此應用程式的權杖以建立它的人的身分行事，擁有其文件權限和角色——如果建立者是管理員，就意味著管理員權限。請改為將其指向一個服務帳號。",
+        "identityBindAction": "使用此帳號",
+        "identityBindRevokes": "此操作會撤銷該應用程式已簽發的權杖。使用它們的一切都需要重新取得。",
+        "identityBound": "該應用程式現在以此服務帳號的身分行事。",
+        "identityBindFailed": "無法變更服務帳號。請稍後再試。"
       },
       "create": {
         "panelTitle": "建立 OAuth 2.0 應用程式",

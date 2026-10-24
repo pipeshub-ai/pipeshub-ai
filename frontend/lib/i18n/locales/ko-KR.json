@@ -1819,7 +1819,13 @@
         "saveErrorTitle": "변경 사항을 저장하지 못했습니다",
         "regenerateSuccessTitle": "시크릿이 재생성됨",
         "regenerateErrorTitle": "시크릿을 재생성하지 못했습니다",
-        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1)."
+        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1).",
+        "identityBoundNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동합니다. 이를 변경하면 이미 발급된 토큰은 취소됩니다.",
+        "identityUnboundNote": "이 애플리케이션의 토큰은 이를 만든 사람으로서, 그 사람의 문서 접근 권한과 역할을 가지고 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다. 대신 서비스 계정을 지정하세요.",
+        "identityBindAction": "이 계정 사용",
+        "identityBindRevokes": "이 작업은 애플리케이션이 이미 발급한 토큰을 취소합니다. 이를 사용하는 모든 것은 새 토큰이 필요합니다.",
+        "identityBound": "이제 애플리케이션이 해당 서비스 계정으로서 작동합니다.",
+        "identityBindFailed": "서비스 계정을 변경하지 못했습니다. 잠시 후 다시 시도하세요."
       },
       "create": {
         "panelTitle": "OAuth 2.0 애플리케이션 생성",

@@ -8,6 +8,7 @@ import {
   Checkbox,
   Flex,
   IconButton,
+  Select,
   Tabs,
   Text,
   TextArea,
@@ -31,6 +32,7 @@ import {
 } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
+import { ServiceAccountsApi } from '../../../service-accounts/api';
 import type { OAuthClient, OAuthGrantTypeValue, OAuthScopeItem } from '../types';
 import {
   isValidHttpUrl,
@@ -226,6 +228,17 @@ export function ManageOAuthApplicationPanel({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // The service account this app's tokens act as, as last loaded. Empty means
+  // it has none and they act as whoever created it.
+  const [tokenIdentityUserId, setTokenIdentityUserId] = useState<string>('');
+  const [serviceAccounts, setServiceAccounts] = useState<
+    { id: string; fullName: string; email: string }[] | null
+  >(null);
+  const [serviceAccountsError, setServiceAccountsError] = useState<string | null>(
+    null
+  );
+  const [chosenServiceAccountId, setChosenServiceAccountId] = useState<string>('');
+  const [bindingIdentity, setBindingIdentity] = useState(false);
   const [grantTypes, setGrantTypes] = useState<Set<OAuthGrantTypeValue>>(
     () => new Set()
   );
@@ -303,6 +316,68 @@ export function ManageOAuthApplicationPanel({
   const OAUTH_SUSPEND_CONFIRMATION_KEYWORD = typedConfirmKeywordFromAppName ?? 'SUSPEND';
 
 
+  const needsServiceAccount =
+    grantTypes.has('client_credentials') && !tokenIdentityUserId;
+
+  useEffect(() => {
+    if (!open || !needsServiceAccount) return;
+    if (serviceAccounts !== null) return;
+    if (serviceAccountsError !== null) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { serviceAccounts: list } = await ServiceAccountsApi.list();
+        if (cancelled) return;
+        setServiceAccounts(
+          list
+            .filter((a) => !a.isDisabled)
+            .map((a) => ({ id: a.id, fullName: a.fullName, email: a.email }))
+        );
+      } catch {
+        if (cancelled) return;
+        setServiceAccountsError(
+          t('workspace.oauth2.create.serviceAccountLoadError')
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, needsServiceAccount, serviceAccounts, serviceAccountsError, t]);
+
+  const retryServiceAccounts = useCallback(() => {
+    setServiceAccountsError(null);
+    setServiceAccounts(null);
+  }, []);
+
+  const bindServiceAccount = useCallback(async () => {
+    if (!clientId || !chosenServiceAccountId) return;
+    setBindingIdentity(true);
+    try {
+      const updated = await Oauth2Api.setOAuthClientTokenIdentity(
+        clientId,
+        chosenServiceAccountId
+      );
+      setTokenIdentityUserId(
+        updated?.tokenIdentityUserId ?? chosenServiceAccountId
+      );
+      setChosenServiceAccountId('');
+      addToast({
+        variant: 'success',
+        message: t('workspace.oauth2.manageApplication.identityBound'),
+      });
+      onSaved?.();
+    } catch {
+      addToast({
+        variant: 'error',
+        message: t('workspace.oauth2.manageApplication.identityBindFailed'),
+      });
+    } finally {
+      setBindingIdentity(false);
+    }
+  }, [clientId, chosenServiceAccountId, addToast, t, onSaved]);
+
   const applyDetailToForm = useCallback((d: OAuthClient) => {
     setName(d.name ?? '');
     setDescription(String(d.description ?? ''));
@@ -314,6 +389,7 @@ export function ManageOAuthApplicationPanel({
     setPrivacyPolicyUrl(oauthUrlFromDetail(d.privacyPolicyUrl));
     setTermsOfServiceUrl(oauthUrlFromDetail(d.termsOfServiceUrl));
     setKnowledgeLimit(selectionFromLimit(d.knowledgeLimit));
+    setTokenIdentityUserId(d.tokenIdentityUserId ?? '');
   }, []);
 
   useEffect(() => {
@@ -326,6 +402,11 @@ export function ManageOAuthApplicationPanel({
       setName('');
       setDescription('');
       setGrantTypes(new Set());
+      setTokenIdentityUserId('');
+      setServiceAccounts(null);
+      setServiceAccountsError(null);
+      setChosenServiceAccountId('');
+      setBindingIdentity(false);
       setRedirectUris(['']);
       setHomepageUrl('');
       setPrivacyPolicyUrl('');
@@ -1078,7 +1159,22 @@ export function ManageOAuthApplicationPanel({
                       </Flex>
                     ))}
                   </Flex>
-                  {grantTypes.has('client_credentials') && (
+                  {grantTypes.has('client_credentials') && !needsServiceAccount && (
+                    <Box
+                      style={{
+                        marginTop: 'var(--space-3)',
+                        backgroundColor: 'var(--slate-2)',
+                        border: '1px solid var(--slate-6)',
+                        borderRadius: 'var(--radius-2)',
+                        padding: 'var(--space-3)',
+                      }}
+                    >
+                      <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                        {t('workspace.oauth2.manageApplication.identityBoundNote')}
+                      </Text>
+                    </Box>
+                  )}
+                  {needsServiceAccount && (
                     <Box
                       style={{
                         marginTop: 'var(--space-3)',
@@ -1088,8 +1184,66 @@ export function ManageOAuthApplicationPanel({
                         padding: 'var(--space-3)',
                       }}
                     >
-                      <Text size="2" style={{ color: 'var(--amber-11)' }}>
-                        {t('workspace.oauth2.create.clientCredentialsIdentityNote')}
+                      <Text
+                        size="2"
+                        style={{ color: 'var(--amber-11)', display: 'block' }}
+                      >
+                        {t('workspace.oauth2.manageApplication.identityUnboundNote')}
+                      </Text>
+                      {serviceAccountsError !== null ? (
+                        <Flex align="center" gap="2" mt="2">
+                          <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                            {serviceAccountsError}
+                          </Text>
+                          <Button
+                            size="1"
+                            variant="soft"
+                            type="button"
+                            onClick={retryServiceAccounts}
+                          >
+                            {t('workspace.oauth2.create.serviceAccountRetry')}
+                          </Button>
+                        </Flex>
+                      ) : serviceAccounts === null ? (
+                        <Text size="1" style={{ color: 'var(--slate-11)' }} mt="2">
+                          {t('workspace.oauth2.create.serviceAccountLoading')}
+                        </Text>
+                      ) : serviceAccounts.length === 0 ? (
+                        <Text size="2" style={{ color: 'var(--amber-11)' }} mt="2">
+                          {t('workspace.oauth2.create.serviceAccountNone')}
+                        </Text>
+                      ) : (
+                        <Flex align="center" gap="2" mt="2" wrap="wrap">
+                          <Select.Root
+                            value={chosenServiceAccountId}
+                            onValueChange={setChosenServiceAccountId}
+                          >
+                            <Select.Trigger
+                              placeholder={t(
+                                'workspace.oauth2.create.serviceAccountPlaceholder'
+                              )}
+                            />
+                            <Select.Content>
+                              {serviceAccounts.map((a) => (
+                                <Select.Item key={a.id} value={a.id}>
+                                  {a.fullName} ({a.email})
+                                </Select.Item>
+                              ))}
+                            </Select.Content>
+                          </Select.Root>
+                          <LoadingButton
+                            size="2"
+                            type="button"
+                            loading={bindingIdentity}
+                            disabled={!chosenServiceAccountId}
+                            onClick={() => void bindServiceAccount()}
+                          >
+                            {t('workspace.oauth2.manageApplication.identityBindAction')}
+                          </LoadingButton>
+                        </Flex>
+                      )}
+                      <Text size="1" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
+                        {t('workspace.oauth2.manageApplication.identityBindRevokes')}
                       </Text>
                     </Box>
                   )}

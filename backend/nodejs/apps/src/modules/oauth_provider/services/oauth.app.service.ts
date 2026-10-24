@@ -933,6 +933,7 @@ export class OAuthAppService {
       accessTokenLifetime: app.accessTokenLifetime,
       refreshTokenLifetime: app.refreshTokenLifetime,
       knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
+      tokenIdentityUserId: app.tokenIdentityUserId?.toString(),
       createdAt: app.createdAt,
       updatedAt: app.updatedAt,
     }

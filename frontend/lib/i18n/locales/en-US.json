@@ -1829,7 +1829,13 @@
         "saveErrorTitle": "Failed to save changes",
         "regenerateSuccessTitle": "Secret regenerated",
         "regenerateErrorTitle": "Failed to regenerate secret",
-        "errorLifetimeInvalid": "Enter valid lifetimes (whole seconds, at least 1)."
+        "errorLifetimeInvalid": "Enter valid lifetimes (whole seconds, at least 1).",
+        "identityBoundNote": "This application's tokens act as the service account it is pointed at. Changing that revokes the tokens it has already issued.",
+        "identityUnboundNote": "This application's tokens act as whoever created it, carrying their document access and their role — so one created by an administrator has administrator access. Point it at a service account instead.",
+        "identityBindAction": "Use this account",
+        "identityBindRevokes": "This revokes the tokens the application has already issued. Anything using them will need a new one.",
+        "identityBound": "The application now acts as that service account.",
+        "identityBindFailed": "Could not change the service account. Try again in a moment."
       },
       "create": {
         "panelTitle": "Create OAuth 2.0 Application",

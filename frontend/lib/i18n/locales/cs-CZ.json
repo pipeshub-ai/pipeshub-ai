@@ -1901,7 +1901,13 @@
         "saveErrorTitle": "Změny se nepodařilo uložit",
         "regenerateSuccessTitle": "Tajný klíč byl znovu vygenerován",
         "regenerateErrorTitle": "Tajný klíč se nepodařilo znovu vygenerovat",
-        "errorLifetimeInvalid": "Zadejte platné doby platnosti (celé sekundy, nejméně 1)."
+        "errorLifetimeInvalid": "Zadejte platné doby platnosti (celé sekundy, nejméně 1).",
+        "identityBoundNote": "Tokeny této aplikace jednají jménem přiřazeného servisního účtu. Jeho změna zneplatní již vydané tokeny.",
+        "identityUnboundNote": "Tokeny této aplikace jednají jménem toho, kdo ji vytvořil, s jeho přístupem k dokumentům a jeho rolí — u správce to znamená správcovský přístup. Přiřaďte jí místo toho servisní účet.",
+        "identityBindAction": "Použít tento účet",
+        "identityBindRevokes": "Tím se zneplatní tokeny, které aplikace již vydala. Vše, co je používá, bude potřebovat nový.",
+        "identityBound": "Aplikace nyní jedná jménem tohoto servisního účtu.",
+        "identityBindFailed": "Servisní účet se nepodařilo změnit. Zkuste to prosím za chvíli znovu."
       },
       "create": {
         "panelTitle": "Vytvořit aplikaci OAuth 2.0",

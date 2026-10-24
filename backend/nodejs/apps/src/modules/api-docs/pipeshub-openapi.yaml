@@ -2968,6 +2968,16 @@ components:
           description: Refresh token lifetime in seconds
         knowledgeLimit:
           $ref: '#/components/schemas/KnowledgeLimit'
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own `client_credentials` tokens act as.
+
+            Absent means the app has no service account and its tokens act as whoever
+            created it. Apps registered since a service account became required always
+            have one; an older app may not, and those are the ones an administrator
+            still has to move.
+          example: "65f0c0ffee00000000000000"
         createdAt:
           type: string
           format: date-time
