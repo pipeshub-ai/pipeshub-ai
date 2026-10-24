@@ -154,7 +154,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello")
 
@@ -176,7 +176,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello")
 
@@ -196,7 +196,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello")
 
@@ -216,7 +216,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="Create a PDF of GitHub repos")
 
@@ -247,7 +247,7 @@ class TestSelectLoopAndGoal:
 
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello")
 
@@ -267,7 +267,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello")
 
@@ -288,7 +288,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(
                 reasoning="r", rewritten_query="Create a PDF of GitHub repos", route="quick",
@@ -362,7 +362,7 @@ class TestSelectLoopAndGoal:
     ) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             captured.update(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="hello", route="react")
 
@@ -411,7 +411,9 @@ class TestSelectLoopAndGoal:
     async def test_clarifying_questions_passed_through_from_decision(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+        from app.agents.actions.internal_tools.intrim_tools import (
+            AskUserQuestionItemInput,
+        )
 
         question = AskUserQuestionItemInput(
             question="Which project should this apply to?",
@@ -464,7 +466,7 @@ class TestResumes:
     ) -> None:
         calls: list = []
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             calls.append(kwargs)
             return IntentRouteDecision(reasoning="r", rewritten_query="briefing")
 
@@ -485,7 +487,9 @@ class TestResumes:
     async def test_auto_mode_resume_still_routes_but_never_asks_again(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+        from app.agents.actions.internal_tools.intrim_tools import (
+            AskUserQuestionItemInput,
+        )
 
         question = AskUserQuestionItemInput(
             question="Which project?", options=[{"label": "A"}, {"label": "B"}, {"label": "C"}],
@@ -493,7 +497,7 @@ class TestResumes:
         )
         calls: list = []
 
-        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+        async def _fake_parse_intent(*_args: object, **kwargs: object) -> IntentRouteDecision:
             calls.append(kwargs)
             return IntentRouteDecision(
                 reasoning="r", rewritten_query="briefing", route="deep", clarifying_questions=[question],

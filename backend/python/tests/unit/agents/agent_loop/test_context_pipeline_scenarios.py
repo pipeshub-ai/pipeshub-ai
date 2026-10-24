@@ -303,7 +303,7 @@ class _SeededAgent:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed_row", [None, {"role": "bot_response", "content": "", "status": "failed"}])
-async def test_errored_previous_turn_is_answered_on_every_call(failed_row):
+async def test_errored_previous_turn_is_answered_on_every_call(failed_row) -> None:
     """SC-08: an earlier turn that failed before an answer (Node either drops its error row or
     sends it with a status). Every call, compacted or not, closes it with a placeholder answer,
     so it never sits next to the current question as a second open question."""

@@ -10,8 +10,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -33,6 +32,9 @@ from app.agent_loop_lib.transport.openai_responses import format_responses_input
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.converters import convert_messages_to_langchain
 from app.agents.agent_loop.factory import PipesHubAgentFactory
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 NOTE_OPEN = '<context_note source="agent">'
 NOTE_CLOSE = "</context_note>"

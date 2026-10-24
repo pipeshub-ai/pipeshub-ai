@@ -45,7 +45,7 @@ def _intent_returns(monkeypatch: pytest.MonkeyPatch, briefing: str, calls: list 
     monkeypatch.setattr("app.agents.agent_loop.router.parse_intent_and_route", _fake)
 
 
-async def _run_turn(chat_mode: str, query: str = QUERY) -> tuple[list[dict], Any]:  # noqa: ANN401
+async def _run_turn(chat_mode: str, query: str = QUERY) -> tuple[list[dict], Any]:
     context = make_context(llm=FakeChatModel(), previous_conversations=[dict(t) for t in HISTORY])
     agent, runtime, goal, _clarifying = await PipesHubAgentFactory().create(
         context, context.llm, chat_mode, query=query,
