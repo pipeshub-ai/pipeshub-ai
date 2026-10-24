@@ -3217,7 +3217,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self._settle_folder_probe_403s(failing)
 
         pending = self._pending_folder_expansions()
-        self._unseen_folder_ids = pending - self._blocked_folder_ids
+        # A folder no user got to ask Google about (every impersonation failed) is unknown, not missing.
+        # Folders refused with an unrecognised 403 only get here once they are left out for good.
+        asked = self._folders_probed | set(self._folder_probe_403s)
+        self._unseen_folder_ids = (pending - self._blocked_folder_ids) & asked
         if pending:
             self.logger.warning(
                 f"📁 {len(pending)} folder(s) could not be listed by any user, so their "
