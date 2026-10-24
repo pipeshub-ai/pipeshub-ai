@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +26,7 @@ from app.agents.actions.storage_search.storage_search import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.models.entities import USER_EMAIL_PLACEHOLDER, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
@@ -2125,6 +2126,7 @@ async def merge_pattern_match_results(
             return []
 
     matches = _best_match_by_vrid(raw_records)
+    viewer_email = await _viewer_email_for(graph_by_vrid.values(), graph_provider, user_id, logger_instance)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -2133,6 +2135,10 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
+        if graph_rec.get("webUrl"):
+            graph_rec["webUrl"] = substitute_user_email(
+                graph_rec["webUrl"], viewer_email, graph_rec.get("connectorName")
+            )
         mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
@@ -2154,6 +2160,27 @@ async def merge_pattern_match_results(
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
     return results
+
+
+async def _viewer_email_for(
+    graph_records: Iterable[dict],
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    logger_instance: logging.Logger,
+) -> str | None:
+    """The searcher's email, read only when a record's link waits on it.
+
+    These records come from the graph, not from search, so a shared Gmail
+    link still holds the placeholder search fills in for the viewer.
+    """
+    if not any(USER_EMAIL_PLACEHOLDER in (r.get("webUrl") or "") for r in graph_records):
+        return None
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception:
+        logger_instance.warning("Pattern match: user unreadable; mail links keep the placeholder", exc_info=True)
+        return None
+    return user.get("email") if isinstance(user, dict) else None
 
 
 def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:
