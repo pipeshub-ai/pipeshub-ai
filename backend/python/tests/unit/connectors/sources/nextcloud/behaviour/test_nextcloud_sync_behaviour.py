@@ -2486,6 +2486,9 @@ class TestChecklistAudit:
     @pytest.mark.parametrize("attributes, disabled", [
         ('[{"scope":"permissions","key":"download","value":false}]', True),
         ('[{"scope":"permissions","key":"download","value":true}]', False),
+        # Before Nextcloud 30 the attribute's flag was "enabled".
+        ('[{"scope":"permissions","key":"download","enabled":false}]', True),
+        ('[{"scope":"permissions","key":"download","enabled":true}]', False),
         ("[]", False),
         ("not json", False),
     ])

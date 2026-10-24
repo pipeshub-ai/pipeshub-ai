@@ -421,7 +421,11 @@ def download_disabled(share_attributes: str) -> bool:
     except ValueError:
         return False
     return isinstance(attributes, list) and any(
-        isinstance(a, dict) and a.get("scope") == "permissions" and a.get("key") == "download" and a.get("value") is False
+        isinstance(a, dict)
+        and a.get("scope") == "permissions"
+        and a.get("key") == "download"
+        # Nextcloud 30 renamed "enabled" to "value"; older servers still send "enabled".
+        and (a.get("value") is False or a.get("enabled") is False)
         for a in attributes
     )
 
