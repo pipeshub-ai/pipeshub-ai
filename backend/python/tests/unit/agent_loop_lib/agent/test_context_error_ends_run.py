@@ -7,6 +7,8 @@ eviction had emptied it, without the user's question (a wrong answer).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
@@ -14,7 +16,6 @@ from app.agent_loop_lib.context.errors import ContextBudgetExceeded
 from app.agent_loop_lib.core.messages import AssistantMessage
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
@@ -24,8 +25,12 @@ from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedTransport,
 )
 
+if TYPE_CHECKING:
+    from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+    from app.agent_loop_lib.hooks.middleware.pipeline import Middleware
 
-def _context_cannot_fit():
+
+def _context_cannot_fit() -> "Middleware[ModelCallContext]":
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         raise ContextBudgetExceeded(250_000, 200_000)
 
@@ -60,7 +65,7 @@ class TestContextErrorEndsRun:
         assert transport.calls == []
 
     async def test_other_shaper_errors_do_not_end_the_run(self) -> None:
-        def _broken():
+        def _broken() -> "Middleware[ModelCallContext]":
             async def _middleware(ctx: ModelCallContext, next_fn) -> None:
                 raise RuntimeError("a shaper bug")
 

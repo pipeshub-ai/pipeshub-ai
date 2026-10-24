@@ -10,7 +10,7 @@ answered the earlier question (docs/context-engineering/REPORT.md, CE-01).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -29,13 +29,19 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.tokens import count_tokens
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import repair_tool_pairing
+from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
+    repair_tool_pairing,
+)
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.factory import (
     PipesHubAgentFactory,
     _append_turn,
     _convert_conversation_turn,
 )
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.hooks.registry import HookRegistry
+
 
 FETCH = "knowledgegraph__fetch_record"
 CURRENT = "I have access to more than one practice. How do I pick which practice to log into and set a default?"
@@ -60,7 +66,7 @@ def _context(**fields: Any) -> AgentContext:  # noqa: ANN401
     return AgentContext(org_id="org", user_id="user", user_email="user@example.com", **fields)
 
 
-def _chain(context: AgentContext | None = None, *, multipart: bool = True):
+def _chain(context: AgentContext | None = None, *, multipart: bool = True) -> "HookRegistry":
     return PipesHubAgentFactory._build_hooks(
         context or _context(), transport_registry=_Registry(), model_name="m",
         supports_multipart_tool_result=multipart,
@@ -98,8 +104,7 @@ def _history(turns: int) -> list:
 def _tool_round(stored: list, n: int, chars: int, *, parallel: int = 1) -> None:
     calls = [ToolCall(id=f"f{n}_{p}", name=FETCH, arguments={"record_ids": [f"r{n}_{p}"]}) for p in range(parallel)]
     stored.append(AssistantMessage(content=[TextPart(text=f"Reading manual {n}.")], tool_calls=calls))
-    for call in calls:
-        stored.append(ToolMessage(content=_text(chars), tool_call_id=call.id))
+    stored.extend(ToolMessage(content=_text(chars), tool_call_id=call.id) for call in calls)
 
 
 def _humans(messages: list) -> list:
@@ -122,7 +127,7 @@ async def _send(hooks, stored: list, budget: ContextBudget, turn: int) -> list:
     return await dispatch_pre_model(hooks, stored, budget, turn_index=turn, max_turns=30)
 
 
-def test_pipeline_order_runs_least_lossy_first():
+def test_pipeline_order_runs_least_lossy_first() -> None:
     names = [mw.__qualname__.split(".<locals>")[0] for _, mw in _chain().on(HookEvent.PRE_MODEL)._stack]
     shapers = [n for n in names if n.startswith("shape_")]
     assert shapers == [
@@ -142,7 +147,7 @@ def test_pipeline_order_runs_least_lossy_first():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fetch_chars", [20_000, 64_000, 146_000])
-async def test_customer_case_current_question_survives_a_long_fetch_loop(fetch_chars, caplog):
+async def test_customer_case_current_question_survives_a_long_fetch_loop(fetch_chars, caplog) -> None:
     """SC-01: earlier question, then the current one, then 12 large fetches
     at a 200K window. Before the fix the current question was gone from the
     5th call on (fetches of 64K chars or more)."""
@@ -162,7 +167,7 @@ async def test_customer_case_current_question_survives_a_long_fetch_loop(fetch_c
 
 
 @pytest.mark.asyncio
-async def test_small_window_with_five_earlier_turns():
+async def test_small_window_with_five_earlier_turns() -> None:
     """SC-02: an 8K window and five earlier turns: every call still carries
     the current question, or the call stops with a typed error."""
     hooks = _chain()
@@ -176,7 +181,7 @@ async def test_small_window_with_five_earlier_turns():
 
 
 @pytest.mark.asyncio
-async def test_single_question_run_keeps_its_goal():
+async def test_single_question_run_keeps_its_goal() -> None:
     """SC-03: with no earlier turns the goal is the first message, as before."""
     hooks = _chain()
     budget = _budget(32_000, 6_000)
@@ -189,7 +194,7 @@ async def test_single_question_run_keeps_its_goal():
 
 
 @pytest.mark.asyncio
-async def test_pinned_plan_is_sent_verbatim_on_every_call():
+async def test_pinned_plan_is_sent_verbatim_on_every_call() -> None:
     """SC-04: a plan-execute run's pinned plan is never shortened."""
     plan = UserMessage(content="PLAN\n" + "\n".join(f"{i}. read manual {i}" for i in range(40)), injected=True, pinned=True)
     hooks = _chain()
@@ -203,7 +208,7 @@ async def test_pinned_plan_is_sent_verbatim_on_every_call():
 
 
 @pytest.mark.asyncio
-async def test_attachment_image_goes_on_the_current_question():
+async def test_attachment_image_goes_on_the_current_question() -> None:
     """SC-07: the current turn's attachment rides on the current question,
     never on the earlier one, and stored history is not changed."""
     context = _context()
@@ -221,7 +226,7 @@ async def test_attachment_image_goes_on_the_current_question():
 
 
 @pytest.mark.asyncio
-async def test_retrieved_images_are_delivered_once_on_the_current_question():
+async def test_retrieved_images_are_delivered_once_on_the_current_question() -> None:
     """SC-07b: non-multipart providers get a search's images once, on the
     current question; stored history keeps no copy."""
     context = _context()
@@ -257,7 +262,7 @@ _SETTINGS = settings(max_examples=40, deadline=None, suppress_health_check=[Heal
 @pytest.mark.asyncio
 async def test_invariants_hold_for_any_chat(
     earlier_turns, rounds, result_chars, parallel, window, prompt_share, nudge_every, with_plan,
-):
+) -> None:
     """PT-01..04, PT-06 on the production chain: the current question is sent
     verbatim as the last human message, pinned messages are verbatim, tool
     pairing holds, stored history is untouched, and the request fits the

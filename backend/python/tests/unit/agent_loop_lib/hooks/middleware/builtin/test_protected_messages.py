@@ -22,8 +22,12 @@ from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import shape_auto_
 from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
     shape_deterministic_compact,
 )
-from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import shape_loop_compaction
-from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import shape_sliding_window
+from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
+    shape_loop_compaction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
+    shape_sliding_window,
+)
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 QUESTION_A = "QUESTION A: how do I set up SMS appointment reminders?"
@@ -75,7 +79,7 @@ def _humans(messages: list) -> list[str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layer", LAYERS)
-async def test_layer_fires_on_this_chat(layer):
+async def test_layer_fires_on_this_chat(layer) -> None:
     messages = _chat()
     sent = await _run(layer, messages)
     assert count_tokens(sent) < count_tokens(messages), f"{layer} must act for the tests below to mean anything"
@@ -83,14 +87,14 @@ async def test_layer_fires_on_this_chat(layer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layer", LAYERS)
-async def test_current_question_is_sent_verbatim_as_the_last_human_message(layer):
+async def test_current_question_is_sent_verbatim_as_the_last_human_message(layer) -> None:
     sent = await _run(layer, _chat())
     assert _humans(sent)[-1] == QUESTION_B
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layer", LAYERS)
-async def test_pinned_plan_is_sent_verbatim(layer):
+async def test_pinned_plan_is_sent_verbatim(layer) -> None:
     sent = await _run(layer, _chat(plan=True), budget_tokens=4_000)
     plans = [m for m in sent if isinstance(m, UserMessage) and m.pinned]
     assert [m.content for m in plans] == [PLAN]
@@ -98,7 +102,7 @@ async def test_pinned_plan_is_sent_verbatim(layer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layer", LAYERS)
-async def test_stored_messages_are_not_modified(layer):
+async def test_stored_messages_are_not_modified(layer) -> None:
     messages = _chat(plan=True)
     before = [m.model_dump() for m in messages]
     await _run(layer, messages)
@@ -107,7 +111,7 @@ async def test_stored_messages_are_not_modified(layer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("layer", LAYERS)
-async def test_messages_a_layer_writes_are_marked_injected(layer):
+async def test_messages_a_layer_writes_are_marked_injected(layer) -> None:
     messages = _chat()
     sent = await _run(layer, messages)
     written = [m for m in sent if isinstance(m, UserMessage) and all(m is not original for original in messages)]
