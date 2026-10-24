@@ -74,20 +74,19 @@ jobs:
           echo "runner architecture: ${actual}"
           [ "$actual" = "${{ matrix.arch }}" ] || { echo "expected ${{ matrix.arch }}, got ${actual}"; exit 1; }
 
-      # From GHCR so CI neither spends nor inflates Docker Hub pulls. Docker Hub
-      # is the fallback per image.
-      - name: Pull pre-built base images
+      # A pull request that changes the base builds python-deps here.
+      - name: Reclaim disk space
         run: |
-          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
-            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
-            if ! docker pull "$image"; then
-              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
-              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
-              image="$hub"
-              docker pull "$image" || true
-            fi
-            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
-          done
+          set -uo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+
+      # The bases for this tree's Dockerfile.base and uv.lock, by content hash
+      # (see scripts/docker/ci_base_images.sh).
+      - name: Resolve base images
+        run: |
+          bash scripts/docker/ci_base_images.sh >> "$GITHUB_ENV"
 
       # Plain `docker build` puts the image straight into the local image store
       # the installer reads from, with no builder to export out of.
@@ -152,16 +151,9 @@ jobs:
                       /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
           sudo docker image prune -af || true
 
-      - name: Pull pre-built base images
+      - name: Resolve base images
         run: |
-          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
-            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
-            if ! docker pull "$image"; then
-              image="pipeshubai/pipeshub-ai-base:${pair#*=}"
-              docker pull "$image"
-            fi
-            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
-          done
+          bash scripts/docker/ci_base_images.sh >> "$GITHUB_ENV"
 
       - name: Rebuild and compare layers
         run: bash deployment/docker-compose/tests/layer_reuse_test.sh
