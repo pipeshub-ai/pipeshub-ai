@@ -138,6 +138,7 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -296,6 +297,9 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Retired roles read as READER, inside Cypher too.
 _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES)) + "]"
+
+# What a member gets from a team's grant; the matches name the edges team_grant and team_member.
+_TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
 
 # Only an org-wide share's edge types grant access through the organization: a
 # domain or "anyone" edge left by an older version grants nothing.
@@ -12348,14 +12352,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // KB Team access: Only for KB records, not connector records
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb2
-                MATCH (team:Teams)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2)
-                WITH u, kb2, collect(DISTINCT team) AS kh_teams
-                UNWIND kh_teams AS team
-                MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
+                MATCH (team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb2)
+                MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team)
                 RETURN [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
-                     role: userTeamPerm.role,
+                     role: __TEAM_GRANT_ROLE__,
                      folder: null
                  }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
             }
@@ -12378,7 +12380,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
             RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
 
             access_results = await self.client.execute_query(
                 access_query,
@@ -13405,8 +13407,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (kb:App {id: $kb_id, type: "KB"})
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
             WITH u, kb, d.role AS direct_role
-            OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
-            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
+            OPTIONAL MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb)
+            WITH direct_role, collect(DISTINCT __TEAM_GRANT_ROLE__) AS team_roles
             WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
@@ -13423,7 +13425,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ORDER BY priority DESC
             LIMIT 1
             RETURN role AS role
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
 
             results = await self.client.execute_query(
                 query,
@@ -13536,16 +13538,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     def _kb_best_role_rows(filters: str = "") -> str:
         """One row (kb, final_role) per KB the user holds a role on, directly or
-        through a team. The team role is the user's role in the team; a retired
-        role reads as READER; the highest role wins and a direct grant wins a tie."""
+        through a team. The team role is what the team's grant gives (see
+        team_grant_role); a retired role reads as READER; the highest role wins and
+        a direct grant wins a tie."""
         return f"""
             MATCH (u:User {{id: $user_id}})
             CALL (u) {{
                 MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
                 RETURN kb, r.role AS stored_role, true AS is_direct
                 UNION
-                MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(:Teams)-[:PERMISSION {{type: "TEAM"}}]->(kb:App)
-                RETURN kb, r.role AS stored_role, false AS is_direct
+                MATCH (u)-[team_member:PERMISSION {{type: "USER"}}]->(:Teams)-[team_grant:PERMISSION {{type: "TEAM"}}]->(kb:App)
+                RETURN kb, {_TEAM_GRANT_ROLE_CYPHER} AS stored_role, false AS is_direct
             }}
             WITH kb, is_direct,
                  CASE WHEN stored_role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE stored_role END AS role
@@ -22908,16 +22911,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 7: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 7: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 9: User -> Org -> target
@@ -23037,16 +23038,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 4: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 4: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 5: User -> Org -> target
@@ -23092,8 +23091,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         - Direct PERMISSION edge (explicit role, e.g. OWNER set on KB creation
           or via sharing) wins outright, regardless of admin/creator/scope.
-        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
-          returns the user's team membership role.
+        - Team KB sharing: user→team (USER) + team→app (PERMISSION TEAM) returns
+          the role the team's grant gives (team_grant_role), never OWNER.
         - Otherwise: USER_APP_RELATION existence gates access; admin gets
           EDITOR (team apps) or OWNER (personal apps); the creator gets OWNER
           regardless of scope; team-only access (no USER_APP_RELATION) gets
@@ -23123,16 +23122,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Check direct PERMISSION edge (e.g. OWNER set on KB creation)
             OPTIONAL MATCH ({user_var})-[direct_perm:PERMISSION {{type: 'USER'}}]->({node_var})
 
-            // KB collection team share: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
+            // KB collection team share: user→team (USER) + team→app (PERMISSION TEAM)
             // Uses a distinct variable name (kb_team) from the connector-share match above —
             // reusing `team` here would make Cypher treat it as a join constraint against
             // whatever (or nothing) the first OPTIONAL MATCH bound, silently breaking this
             // path whenever a team shares a KB via PERMISSION TEAM only (no USER_APP_RELATION).
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
+            OPTIONAL MATCH ({user_var})-[team_member:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
             // Collect team KB roles and find highest priority
             WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
-                collect(DISTINCT ut.role) AS team_kb_roles_list
+                collect(DISTINCT {_TEAM_GRANT_ROLE_CYPHER}) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
                 CASE
@@ -23162,7 +23161,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)
                     THEN team_kb_role
                 WHEN direct_role IS NOT NULL THEN direct_role
-                // Team KB share: return user's team membership role
+                // Team KB share: the role the team's grant gives
                 WHEN team_kb_role IS NOT NULL THEN team_kb_role
                 // Access only via team->app: READER; admin gets EDITOR
                 WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
