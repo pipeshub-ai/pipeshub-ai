@@ -30721,7 +30721,8 @@ paths:
           group), folder and file the limit names, one item each, to open
           by its `id`. `totalItems` counts those items, not what is inside
           them. A search reads
-          forward only (`prevCursor` is always null). Its `totalItems` counts
+          forward only (`prevCursor` is always null), and takes a `page`
+          number up to 5; for later pages, send `nextCursor`. Its `totalItems` counts
           the matches found so far and can grow from page to page; it is
           final once `hasNext` is false. `counts` is returned only when the
           whole result fits in the first page read, and is `null` otherwise.

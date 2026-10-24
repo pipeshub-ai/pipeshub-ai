@@ -214,6 +214,21 @@ class TestASearchInsideAFolderLimit:
         assert [item.id for item in second.items] == ["zz-c"]
         assert second.pagination.totalItems == 3
 
+    async def test_a_deep_page_number_is_refused_without_reading_any_page(self) -> None:
+        """Each page before it would be read first: one request could make dozens of listing reads."""
+        graph = _graph()
+
+        with pytest.raises(HTTPException) as exc:
+            await _nodes(graph, FOLDER_LIMIT, q="budget", limit=2, page=6)
+
+        assert exc.value.status_code == 400 and "cursor" in exc.value.detail
+        assert not connector_pages(graph)
+
+    async def test_a_page_number_within_the_cap_is_still_walked(self) -> None:
+        result = await _nodes(_graph(), FOLDER_LIMIT, q="budget", limit=1, page=3)
+
+        assert [item.id for item in result.items] == ["zz-c"]
+
     async def test_counts_cover_only_what_the_limit_admits(self) -> None:
         result = await _nodes(_graph(), FOLDER_LIMIT, q="budget", include="counts")
 
@@ -348,6 +363,26 @@ class TestWholeAppsAndNoLimit:
         with pytest.raises(HTTPException) as exc:
             await _nodes(graph, APP_LIMIT, q="budget", limit=2, cursor=unlimited.pagination.nextCursor)
         assert exc.value.status_code == 400
+
+    async def test_a_smaller_whole_app_limits_cursor_is_refused_by_a_larger_one(self) -> None:
+        """Its Apps are a subset of the larger limit's, but its total counted only them."""
+        graph = _graph()
+        smaller = await _nodes(graph, APP_LIMIT, q="budget", limit=2)
+        larger = {"apps": ["kb-big", "kb-other"], "recordGroups": [], "records": []}
+
+        with pytest.raises(HTTPException) as exc:
+            await _nodes(graph, larger, q="budget", limit=2, cursor=smaller.pagination.nextCursor)
+        assert exc.value.status_code == 400
+
+    async def test_a_cursor_filtered_to_one_app_resumes_under_its_own_limit(self) -> None:
+        """The same limit's cursor still resumes when a connector filter narrowed it."""
+        graph = _graph()
+        larger = {"apps": ["kb-big", "kb-other"], "recordGroups": [], "records": []}
+        first = await _nodes(graph, larger, q="budget", limit=2, connector_ids="kb-big")
+
+        second = await _nodes(graph, larger, limit=2, cursor=first.pagination.nextCursor)
+
+        assert second.success and second.pagination.totalItems == first.pagination.totalItems
 
     async def test_a_whole_app_limit_pages_on_by_its_own_cursor(self) -> None:
         graph = _graph()

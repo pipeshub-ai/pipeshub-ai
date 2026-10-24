@@ -576,6 +576,10 @@ async def _handle_get_nodes(
 
 # The service refuses a page number past this; a later page is reached by cursor.
 _MAX_PAGE_WALK = 50
+# A search inside a limit below app level reads every page before the one asked
+# for, up to BOUNDED_MAX_BATCHES listing reads each, so a page number is walked
+# only this far; past it the caller pages by cursor, one page per request.
+_MAX_BOUNDED_SEARCH_PAGE = 5
 # The service's largest page.
 _APP_BATCH = 200
 _INVALID_LIMIT_CURSOR = "Invalid cursor: issued for a different listing"
@@ -593,10 +597,10 @@ def _bad_cursor() -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_INVALID_LIMIT_CURSOR)
 
 
-def _page_walk_refused() -> HTTPException:
+def _page_walk_refused(most: int = _MAX_PAGE_WALK) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=f"Invalid page: page must not exceed {_MAX_PAGE_WALK}. Use the cursor from a previous response.",
+        detail=f"Invalid page: page must not exceed {most}. Use the cursor from a previous response.",
     )
 
 
@@ -632,6 +636,8 @@ async def _root_inside_connection(
             query["updated_at"], query["size"],
         )
         mode, seen, position = ("search" if searching else "browse"), 0, Position()
+    if mode == "search" and not cursor and query["page"] > _MAX_BOUNDED_SEARCH_PAGE:
+        raise _page_walk_refused(_MAX_BOUNDED_SEARCH_PAGE)
     if mode == "search":
         return await _search_inside_connection(
             request, service, query, whole | partial, seen=seen, position=position, by_cursor=bool(cursor),
