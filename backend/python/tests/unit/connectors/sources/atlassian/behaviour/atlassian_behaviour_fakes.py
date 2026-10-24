@@ -255,6 +255,8 @@ class FakeRecordsDb:
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         if self.fail_group_listing:
+            if not raise_on_error:
+                return []  # as the store does
             raise RuntimeError("database unavailable")
         return list({g.source_user_group_id: g for g, _ in self.user_groups}.values())
 

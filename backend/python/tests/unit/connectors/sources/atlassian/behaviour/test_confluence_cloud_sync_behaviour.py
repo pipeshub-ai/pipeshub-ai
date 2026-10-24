@@ -1241,6 +1241,14 @@ class TestMovedPages:
 
         assert self._reads_of(search, "11") == 1
 
+    async def test_a_failed_listing_of_a_quiet_space_is_reported(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", lambda _: json_response({"message": "boom"}, status=500))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert any("couldn't check or remove" in p for p in connector._sync_problems)
+
 
 class TestContentGoneFromSource:
     """What the account can no longer find, or a narrowed filter leaves out, is removed; a failed read or delete removes nothing and holds the checkpoint."""
@@ -2242,6 +2250,16 @@ class TestListingsThatDoNotEnd:
 
         assert await connector._fetch_space_permissions("1", "Engineering") is None
 
+    async def test_a_failed_group_read_keeps_the_stored_space_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces/1/permissions", lambda _: json_response({"results": [
+            {"principal": {"type": "access-class", "id": "all-licensed-users"},
+             "operation": {"key": "read", "targetType": "space"}},
+        ], "_links": {}}))
+        connector, _ = await ready_connector(db, checkpoints)
+        db.fail_group_listing = True
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None
+
 
 class TestAttachmentsGoneFromAPage:
     def _page_with(self, api: AtlassianApiStub, search: ContentSearch, *ids: str, version: int = 1) -> None:
@@ -2438,6 +2456,18 @@ class TestCommentRecordsFromOlderVersions:
 
         assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
         assert {"c1", "c2"} <= set(db.records), "the blocks carry no comments, so the records are all there is"
+
+    async def test_a_reindex_drops_them_from_a_page_already_stored_as_blocks(
+        self, api, db, checkpoints, search
+    ) -> None:
+        # Stored as blocks while comments were not indexed; comment indexing is on again.
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.BLOCKS.value})
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "title": "Page 10", "spaceId": "77", "version": {"number": 1}})
+
+        await connector.reindex_records([db.records["10"]])
+
+        assert not {"c1", "c2"} & set(db.records)
 
     async def test_an_unchanged_html_page_keeps_them(self, api, db, checkpoints, search) -> None:
         connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
