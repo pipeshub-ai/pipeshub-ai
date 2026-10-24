@@ -4,8 +4,10 @@ Stdlib only: main.yml runs `python3 -m unittest discover -s scripts` without
 installing anything.
 """
 
+import hashlib
 import os
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -39,9 +41,17 @@ _SECRET = re.compile(
 # A workflow listed here may keep a privileged trigger; it must never check out
 # PR code. Add to it only with a security reviewer's sign-off. post-release-probe
 # runs on the release workflow (tag pushes only) and checks out the default branch.
-# dco.yml is a sign-off check, in a repository that carries one: it reads a pull
-# request's commits through the API and fetches or checks out nothing of it.
-PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
+PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
+
+# A privileged workflow signed off by its content, not its name: the SHA-256 of
+# the file's raw bytes, as `sha256sum .github/workflows/<name>` prints it. Any
+# edit, or another file of the same name, fails until a security reviewer reads
+# it and pins the new hash. A pinned file that is not in the tree has nothing to
+# check. dco.yml is a sign-off check: it reads a pull request's commits through
+# the API and fetches or checks out nothing of it.
+PINNED_PRIVILEGED_WORKFLOWS = {
+    "dco.yml": "4d2ad49edd32c642d57e6e997fa5cb6d1cf3ee7f59a46b3b609b7d6102169310",
+}
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
@@ -58,6 +68,27 @@ _JOBS_KEY = re.compile(r"^jobs:\s*$", re.M)
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _unsigned_privileged_workflows(
+    paths: list[Path],
+    allowlist: set[str] = PRIVILEGED_TRIGGER_ALLOWLIST,
+    pinned: dict[str, str] = PINNED_PRIVILEGED_WORKFLOWS,
+) -> list[str]:
+    """Each privileged workflow that is neither allowlisted by name nor the exact file pinned."""
+    offenders = []
+    for p in paths:
+        if not _PRIVILEGED_TRIGGER.search(_text(p)) or p.name in allowlist:
+            continue
+        actual = hashlib.sha256(p.read_bytes()).hexdigest()
+        if p.name not in pinned:
+            offenders.append(f"{p.name}: privileged trigger with no security sign-off")
+        elif actual != pinned[p.name]:
+            offenders.append(
+                f"{p.name}: changed since its security sign-off (pinned {pinned[p.name]}, now {actual}); "
+                "a security reviewer must read it and pin the new hash"
+            )
+    return offenders
 
 
 def _jobs(text: str) -> dict[str, tuple[str, int]]:
@@ -175,11 +206,7 @@ class TestWorkflowTrust(unittest.TestCase):
         self.assertEqual(offenders, [], "allow-unsafe-pr-checkout: true runs PR code with secrets")
 
     def test_privileged_triggers_are_allowlisted(self) -> None:
-        offenders = [
-            p.name
-            for p in WORKFLOWS
-            if _PRIVILEGED_TRIGGER.search(_text(p)) and p.name not in PRIVILEGED_TRIGGER_ALLOWLIST
-        ]
+        offenders = _unsigned_privileged_workflows(WORKFLOWS)
         self.assertEqual(offenders, [], "pull_request_target/workflow_run need a security sign-off")
 
     def test_privileged_workflows_never_check_out_pr_code(self) -> None:
@@ -344,6 +371,56 @@ class TestUnguardedSecretJobs(unittest.TestCase):
         push_only = "on:\n  push:\njobs:\n  deploy:\n    steps:\n      - run: echo ${{ secrets.API_KEY }}\n"
         self.assertEqual(_unguarded_secret_jobs(no_secrets), [])
         self.assertEqual(_unguarded_secret_jobs(push_only), [])
+
+
+
+class TestPinnedPrivilegedWorkflows(unittest.TestCase):
+    PRIVILEGED = "on:\n  pull_request_target:\njobs:\n  check:\n    steps:\n      - run: echo ok\n"
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def workflow(self, name: str, text: str) -> Path:
+        path = self.dir / name
+        path.write_bytes(text.encode("utf-8"))
+        return path
+
+    def pin(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def test_a_pinned_file_that_is_absent_passes(self) -> None:
+        other = self.workflow("ci.yml", "on:\n  push:\njobs: {}\n")
+        self.assertEqual(_unsigned_privileged_workflows([other], set(), {"dco.yml": self.pin(self.PRIVILEGED)}), [])
+
+    def test_the_pinned_file_passes(self) -> None:
+        dco = self.workflow("dco.yml", self.PRIVILEGED)
+        self.assertEqual(_unsigned_privileged_workflows([dco], set(), {"dco.yml": self.pin(self.PRIVILEGED)}), [])
+
+    def test_a_changed_file_fails_and_names_both_hashes(self) -> None:
+        changed = self.PRIVILEGED + "      - run: gh pr checkout 1\n"
+        dco = self.workflow("dco.yml", changed)
+        offenders = _unsigned_privileged_workflows([dco], set(), {"dco.yml": self.pin(self.PRIVILEGED)})
+        self.assertEqual(len(offenders), 1)
+        self.assertIn(self.pin(self.PRIVILEGED), offenders[0])
+        self.assertIn(self.pin(changed), offenders[0])
+        self.assertIn("security reviewer", offenders[0])
+
+    def test_a_privileged_workflow_of_another_name_fails(self) -> None:
+        other = self.workflow("signoff.yml", self.PRIVILEGED)
+        offenders = _unsigned_privileged_workflows([other], set(), {"dco.yml": self.pin(self.PRIVILEGED)})
+        self.assertEqual(offenders, ["signoff.yml: privileged trigger with no security sign-off"])
+
+    def test_the_name_allowlist_still_admits_its_own_workflows(self) -> None:
+        probe = self.workflow("post-release-probe.yml", "on:\n  workflow_run:\njobs: {}\n")
+        self.assertEqual(_unsigned_privileged_workflows([probe], {"post-release-probe.yml"}, {}), [])
+
+    def test_the_repository_pins_are_full_sha256_digests(self) -> None:
+        for name, digest in PINNED_PRIVILEGED_WORKFLOWS.items():
+            with self.subTest(name=name):
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+                self.assertNotIn(name, PRIVILEGED_TRIGGER_ALLOWLIST, "a pinned file must not also be allowlisted by name")
 
 
 if __name__ == "__main__":
