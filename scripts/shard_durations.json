@@ -11,7 +11,8 @@
     "zammad": "Estimated, not measured: this suite is new. Sized from bookstack (12.1 min, 5 tests) plus Zammad's slower stack start and its wait for the search index.",
     "outlook": "Measured on one leg only: the full suite took 16 min of pytest on the Neo4j backend of a dev stack. 35 min covers both legs (ArangoDB assumed similar) plus slower CI runners and mail-delivery waits. Replace with the minutes from the first nightly that runs it.",
     "scenario_matrix": "Each connector's *_scenario_matrix_test.py (connectors/scenario_matrix.py) is added here as an estimate, not a measurement: Neo4j leg only (it skips on the ArangoDB leg), about 4 to 22 min per connector depending on how slow the source's sync and search index are. smb had no measured figure, so its number is the matrix estimate alone. Replace with measured minutes after the first nightly that runs it.",
-    "google_drive": "google_drive_workspace and google_drive_individual measured from the connectors-2 job of manual run 38789665806 (2026-10-15), which hit the 300-min job timeout: workspace 81.4 min (Neo4j, scenario matrix included) + 79.8 min (ArangoDB), individual 28.2 + 26.5 min. The other suites keep the 2026-09-19 figures."
+    "google_drive": "google_drive_workspace and google_drive_individual measured from the connectors-2 job of manual run 38789665806 (2026-10-15), which hit the 300-min job timeout: workspace 81.4 min (Neo4j, scenario matrix included) + 79.8 min (ArangoDB), individual 28.2 + 26.5 min. The other suites keep the 2026-09-19 figures.",
+    "sharepoint_sim": "Measured locally, not in CI: 11.2 min on Neo4j and 10.8 min on ArangoDB of pytest time (40 tests) against the SharePoint simulator, 2026-10-24. Replace with the minutes from the first nightly that runs it."
   },
   "minutes": {
     "notion": 84.1,
@@ -39,6 +40,7 @@
     "zammad": 25.0,
     "zendesk": 15.0,
     "smb": 6.0,
-    "outlook": 35.0
+    "outlook": 35.0,
+    "sharepoint_sim": 22.0
   }
 }
