@@ -163,12 +163,15 @@ class _Corpus:
     def __init__(
         self, dated: dict[str, str], *, size: int = 400, failing: set[str] | None = None,
         scores: dict[str, float] | None = None, sizes: dict[str, int] | None = None,
+        docs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.dated = {vrid: _ms(day) if day else None for vrid, day in dated.items()}
         self.size = size
         self.failing = failing or set()
         self.scores = scores or {}
         self.sizes = sizes or {}
+        # More of a record's graph document, by virtual record id.
+        self.docs = docs or {}
         self.refuse_groups: set[str] = set()
         self.calls: list[dict[str, Any]] = []
 
@@ -193,7 +196,11 @@ class _Corpus:
             "status_code": 200,
             "searchResults": [{"virtual_record_id": vrid, "score": self.scores.get(vrid, 0.5)} for vrid in vrids],
             "virtual_to_record_map": {
-                vrid: {"sourceCreatedAtTimestamp": self.dated[vrid], "sourceLastModifiedTimestamp": self.dated[vrid]}
+                vrid: {
+                    "sourceCreatedAtTimestamp": self.dated[vrid],
+                    "sourceLastModifiedTimestamp": self.dated[vrid],
+                    **self.docs.get(vrid, {}),
+                }
                 for vrid in vrids
             },
         }
@@ -860,3 +867,21 @@ class TestAConnectedAppsLimit:
 
         graph_context.assert_awaited()
         assert {call.kwargs["connection_sources"] == sources for call in graph_context.await_args_list} == {True}
+
+
+class TestKnowledgeBaseUploads:
+    """An upload's source dates are what the upload gave it, and the timeline says so."""
+
+    @pytest.mark.asyncio
+    async def test_a_timeline_holding_an_upload_says_how_uploads_are_placed(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS, docs={"apr": {"connectorName": "KB", "origin": "UPLOAD"}})
+        text = await _run(corpus, start="2026-03-01", end="2026-05-31")
+
+        header = text.split("\n", 1)[0]
+        assert "A knowledge-base upload is placed by what its upload gave it" in header
+
+    @pytest.mark.asyncio
+    async def test_a_timeline_of_connected_apps_does_not(self) -> None:
+        text = await _run(_Corpus(_THREE_MONTHS), start="2026-03-01", end="2026-05-31")
+
+        assert "knowledge-base upload" not in text

@@ -88,6 +88,7 @@ from app.agents.actions.knowledge_graph.ops.search import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.agents.actions.util.tool_summaries import bullet_list
+from app.models.source_dates import is_kb_upload
 from app.modules.agents.qna.chat_state import (
     remember_record_ids,
     remember_shown_results,
@@ -141,6 +142,10 @@ AUTO_TIMELINE_MIN_DAYS = _WEEKLY_SPAN_DAYS
 DEFAULT_LOOKBACK_DAYS = 365
 _DAY_MS = 24 * 60 * 60 * 1000
 _AUTO_NOTE = f"This date range covers more than {AUTO_TIMELINE_MIN_DAYS} days, so it was searched period by period."
+_UPLOADS_NOTE = (
+    " A knowledge-base upload is placed by what its upload gave it (its file's last-modified "
+    "time, or else its upload time), not by a date it states."
+)
 
 
 def timeline_summaries_enabled() -> bool:
@@ -962,11 +967,15 @@ async def _render_timeline(
     undated_note = (
         " Matches whose record has no source date come last." if dated < len(hits) else ""
     )
+    uploads_note = _UPLOADS_NOTE if any(
+        isinstance(record, dict) and is_kb_upload(record.get("connectorName"), record.get("origin"))
+        for h in hits for record in h.records.values()
+    ) else ""
     header = (
         f'Timeline for "{query}": {dated} period{"s" if dated != 1 else ""} from '
         f"{_day(collected.start_ms)} to {_day(collected.end_ms)}, oldest first. Records are placed by "
-        f"the date they were {placed_by} at their source.{undated_note} Each period shows its "
-        "best-matching blocks: a sample, not every record.\n"
+        f"the date they were {placed_by} at their source.{uploads_note}{undated_note} Each period "
+        "shows its best-matching blocks: a sample, not every record.\n"
         f"{notes}"
     )
     footer = _footer(date_field)
