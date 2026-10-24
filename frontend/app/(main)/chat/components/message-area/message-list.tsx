@@ -60,9 +60,6 @@ const COMPOSER_BLUR_HEIGHT_PX = 180;
 
 export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
-  const activeConvId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
-  );
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
   );
@@ -1130,11 +1127,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     collections={pair.collections}
                     appliedFilters={pair.appliedFilters}
                     attachments={pair.attachments}
-                    redactedAttachments={pair.redactedAttachments}
-                    conversationId={activeConvId ?? undefined}
-                    askedBy={pair.askedBy}
                     messageId={pair.messageId}
-                    authorUserId={pair.authorUserId}
                     isLastMessage={isLast}
                     rowId={pair.key}
                     citationMessageRowKey={pair.key}

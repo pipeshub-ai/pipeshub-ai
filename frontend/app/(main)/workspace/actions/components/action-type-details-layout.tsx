@@ -12,8 +12,8 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 export type ActionInstanceAuthTab = 'all' | 'authenticated' | 'not_authenticated';
 
@@ -119,7 +119,7 @@ export function ActionTypeDetailsLayout({
         height: '100%',
         paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
         paddingBottom: 64,
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >

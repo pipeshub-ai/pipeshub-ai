@@ -8475,16 +8475,6 @@ components:
           type: string
           minLength: 1
           description: Optional synthetic record id used by the graph layer.
-        redacted:
-          type: boolean
-          enum: [true]
-          description: Present and true in responses on an attachment the viewer may not read (shared chat). Only `recordId` is kept; never sent in a request.
-        reason:
-          type: string
-          enum: [no_access]
-          description: Present with `redacted`.
-        requestAccess:
-          $ref: '#/components/schemas/RequestAccessInfo'
 
     ChatAttachmentUploadRef:
       type: object
@@ -9680,28 +9670,6 @@ components:
             `POST /conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
-        redaction:
-          $ref: '#/components/schemas/MessageRedaction'
-        detailsHidden:
-          type: boolean
-          description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the user this message was generated for.
-        askedBy:
-          type: object
-          description: |
-            On a `user_query` asked by someone other than the caller: who
-            asked, resolved within the caller's organization. `name` is empty
-            when it cannot be resolved. Absent on the caller's own questions.
-          properties:
-            userId: {type: string, format: objectId}
-            name: {type: string}
-        authorUserId:
-          type: string
-          format: objectId
-          description: |
-            The user this message was generated for: the one whose access
-            produced it, and the only one who sees it in full. Absent on
-            messages that predate write-sharing, which belong to the
-            conversation's initiator.
         tools:
           type: array
           description: Tool call results invoked during this message turn.
@@ -9744,99 +9712,6 @@ components:
         context:
           type: string
           description: Additional context around the citation
-        redacted:
-          type: boolean
-          enum: [true]
-          description: Present and true on a source the viewer may not read (shared chat or search). The item then carries no text, name or URL of it.
-        reason:
-          type: string
-          enum: [no_access]
-          description: Present with `redacted`.
-        requestAccess:
-          $ref: '#/components/schemas/RequestAccessInfo'
-
-    RequestAccessInfo:
-      type: object
-      additionalProperties: false
-      description: |
-        What a viewer needs to ask for a redacted source. For a `native` record
-        (uploaded to PipesHub) `POST {endpoint}` with `{ "recordId" }` plus the
-        chat (`conversationId`) or saved search (`searchId`) it was shown in asks the
-        owner. For a `connector` record nothing is granted in PipesHub: the reply
-        to `POST {endpoint}` carries `sourceUrl`, the record's page in its source
-        system, to ask there; the grant arrives through the next permission sync.
-        The source's page is never part of a redacted item.
-      required: [recordId, kind, endpoint]
-      properties:
-        recordId:
-          type: string
-        kind:
-          type: string
-          enum: [native, connector]
-        collection:
-          type: boolean
-          description: |
-            Record of a collection (knowledge base): access exists only at the
-            collection, so asking means asking for read access to the whole
-            collection that contains it. The collection's name and owners are
-            never sent to a viewer who cannot read it.
-        endpoint:
-          type: string
-          example: /api/v1/access-requests
-
-    MessageRedaction:
-      type: object
-      additionalProperties: false
-      description: |
-        Present on a message in a shared chat when the viewer cannot read some of
-        its sources. Redaction is per message: a message is never redacted for
-        the user it was generated for (`authorUserId`), and always checked for
-        everyone else, the conversation owner included. `redacted: true`: every cited source is unreadable and
-        `content` is empty. Otherwise `partial: true`: sentences cited only by
-        unreadable sources are replaced by `{{redacted}}`, and the answer is
-        "partially based on sources you can't access". Absent when the viewer
-        can read every source, and for a viewer's own messages. Separately, for ANY
-        viewer who is not the message's user `tools`, `reasoning`, `parts` and
-        `referenceData` are omitted and the message carries `detailsHidden: true`.
-      required: [redacted, partial, reason]
-      properties:
-        redacted:
-          type: boolean
-        partial:
-          type: boolean
-        reason:
-          type: string
-          enum: [no_access]
-
-    AccessRequest:
-      type: object
-      additionalProperties: false
-      required: [id, recordId, kind, status, requesterId, createdAt]
-      properties:
-        id:
-          type: string
-          format: objectId
-        recordId:
-          type: string
-        recordName:
-          type: string
-          description: Only in owner-facing responses (inbox, approve). Never returned to the requester.
-        collectionName:
-          type: string
-          description: Only in owner-facing responses. Set when the record belongs to a collection; the request is then for the whole collection.
-        kind:
-          type: string
-          enum: [native, connector]
-        status:
-          type: string
-          enum: [pending, approved, denied, forwarded]
-          description: '`forwarded`: a connector record; the owner was told and the viewer sent to the source.'
-        requesterId:
-          type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
 
     PopulatedCitationReference:
       type: object
@@ -9861,16 +9736,6 @@ components:
         context:
           type: string
           description: Additional context around the citation
-        redacted:
-          type: boolean
-          enum: [true]
-          description: Present and true on a source the viewer may not read (shared chat or search). The item then carries no text, name or URL of it.
-        reason:
-          type: string
-          enum: [no_access]
-          description: Present with `redacted`.
-        requestAccess:
-          $ref: '#/components/schemas/RequestAccessInfo'
         citationData:
           $ref: '#/components/schemas/Citation'
 
@@ -10997,7 +10862,7 @@ components:
 
     ShareRequest:
       type: object
-      description: Request to share a conversation or search with other users
+      description: Request to share a conversation with other users (read-only)
       required:
         - userIds
       properties:
@@ -11009,21 +10874,6 @@ components:
           minItems: 1
           description: IDs of users to share with
           example: ["507f1f77bcf86cd799439011"]
-        accessLevel:
-          type: string
-          enum: [read, write]
-          description: |
-            Permission level for shared users:
-
-            - `read` — Can view only
-            - `write` — Can add messages
-
-            A new share defaults to `read`. Sharing again with a user who is
-            already shared with changes that user's level when `accessLevel`
-            is given and leaves it as it is when omitted. Only the owner can
-            share or change a level. A `write` user can add messages to the
-            conversation (their turns run with their own access) but cannot
-            share it, rename it or change its settings.
 
     SemanticSearchRequest:
       type: object
@@ -12012,16 +11862,6 @@ components:
         updatedAt:
           type: string
           format: date-time
-        redacted:
-          type: boolean
-          enum: [true]
-          description: Present and true on a hit the viewer may not read (search shared with them). The required fields are then placeholders (empty `content` and `recordName`, `chunkIndex` 0, epoch timestamps). No text, name or URL of the source.
-        reason:
-          type: string
-          enum: [no_access]
-          description: Present with `redacted`.
-        requestAccess:
-          $ref: '#/components/schemas/RequestAccessInfo'
 
     PersistedSemanticSearchSharedWithEntry:
       type: object
@@ -12085,16 +11925,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PersistedSemanticSearchCitation'
-        redaction:
-          type: object
-          additionalProperties: false
-          description: Present when this search is shared with the caller and some hits are unreadable to them.
-          properties:
-            redacted:
-              type: boolean
-            reason:
-              type: string
-              enum: [no_access]
         records:
           type: object
           description: |
@@ -14758,15 +14588,6 @@ components:
           format: objectId
         citationData:
           $ref: '#/components/schemas/Citation'
-        redacted:
-          type: boolean
-          enum: [true]
-          description: Present and true on a source the viewer may not read (shared chat). The item then carries only `citationId`, `reason` and `requestAccess`.
-        reason:
-          type: string
-          enum: [no_access]
-        requestAccess:
-          $ref: '#/components/schemas/RequestAccessInfo'
 
     AgentConversationDetailMessage:
       type: object
@@ -14791,28 +14612,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
-        redaction:
-          $ref: '#/components/schemas/MessageRedaction'
-        detailsHidden:
-          type: boolean
-          description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the user this message was generated for.
-        askedBy:
-          type: object
-          description: |
-            On a `user_query` asked by someone other than the caller: who
-            asked, resolved within the caller's organization. `name` is empty
-            when it cannot be resolved. Absent on the caller's own questions.
-          properties:
-            userId: {type: string, format: objectId}
-            name: {type: string}
-        authorUserId:
-          type: string
-          format: objectId
-          description: |
-            The user this message was generated for: the one whose access
-            produced it, and the only one who sees it in full. Absent on
-            messages that predate write-sharing, which belong to the
-            conversation's initiator.
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -34124,16 +33923,6 @@ paths:
                                     format: objectId
                                   citationData:
                                     $ref: '#/components/schemas/Citation'
-                                  redacted:
-                                    type: boolean
-                                    enum: [true]
-                                    description: Present and true on a source the viewer may not read (shared chat). The item then carries only `citationId`, `reason` and `requestAccess`.
-                                  reason:
-                                    type: string
-                                    enum: [no_access]
-                                    description: Present with `redacted`.
-                                  requestAccess:
-                                    $ref: '#/components/schemas/RequestAccessInfo'
                             followUpQuestions:
                               type: array
                               items:
@@ -34184,21 +33973,6 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
-                            redaction:
-                              $ref: '#/components/schemas/MessageRedaction'
-                            detailsHidden:
-                              type: boolean
-                              description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the user this message was generated for.
-                            askedBy:
-                              type: object
-                              description: On a `user_query` asked by someone other than the caller, who asked (`name` is empty when it cannot be resolved).
-                              properties:
-                                userId: {type: string, format: objectId}
-                                name: {type: string}
-                            authorUserId:
-                              type: string
-                              format: objectId
-                              description: The user this message was generated for; absent on messages that predate write-sharing (the initiator's).
                             tools:
                               type: array
                               description: Tool call results invoked during this message turn.
@@ -34655,14 +34429,6 @@ paths:
         The response arrives only when the whole answer is ready, which can
         take minutes for agent runs. Allow a generous client and proxy
         timeout, or use the `/stream` variant for interactive clients.
-
-        **Shared conversations.** A user the conversation is shared with for
-        writing can add messages. The turn runs as the caller: retrieval,
-        tools and access checks use the caller's permissions, and the history
-        sent to the model holds only what the caller may read. The new
-        messages belong to the caller (`authorUserId`), and the returned
-        conversation is redacted for the caller like a `GET`. A user it is
-        shared with read-only gets 403.
       operationId: addMessage
       x-pipeshub-sdk: true
       security:
@@ -34704,14 +34470,12 @@ paths:
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
-          description: |
-            Forbidden — the token lacks the `conversation:chat` OAuth scope,
-            or the conversation is shared with the caller read-only.
+          description: Forbidden — the token lacks the `conversation:chat` OAuth scope.
         '404':
           description: |
-            Conversation not found — it does not exist, is not the caller's
-            or shared with them, is of the other type (assistant vs agent),
-            or, for agent routes, belongs to a different agent.
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
           content:
             application/json:
               schema:
@@ -34773,13 +34537,6 @@ paths:
         `ConversationMessageStreamSSEEvent`; it is the same event set as
         `/conversations/stream`, while the terminal result reflects an
         existing conversation.
-
-        **Shared conversations.** A user the conversation is shared with for
-        writing can add messages; a read-only user gets 403 before any stream
-        starts. The turn runs as the caller (retrieval, tools and access
-        checks use their permissions, and the model history holds only what
-        they may read), the new messages carry the caller as `authorUserId`,
-        and every message in the final result is redacted for the caller.
       operationId: addMessageStream
       x-pipeshub-sdk: true
       security:
@@ -34791,7 +34548,7 @@ paths:
           required: true
           description: |
             Identifier of the conversation to append the message to. The
-            caller must own it or have write access, and it must not be deleted.
+            conversation must belong to the caller and must not be deleted.
           schema:
             type: string
             format: objectId
@@ -34845,13 +34602,10 @@ paths:
 
         **Overview:**
 
-        Allows the conversation owner to grant access to other users.
-        Shared users can view the conversation and optionally add messages.
-
-        **Access Levels:**
-
-        - `read` - Can view conversation and messages (default)
-        - `write` - Can view and add new messages
+        Allows the conversation owner to grant other users read-only access.
+        Shared users can view the conversation; only the owner adds messages.
+        Recipients see the full transcript, including citations and tool output,
+        as the owner sees it.
 
         **Permissions:**
 
@@ -35515,11 +35269,6 @@ paths:
         Routing still depends on `chatMode`: `internal_search` and
         `web_search` use the assistant backend, while `agent` uses the
         universal agent loop. See `SSEEvent` for the event vocabulary.
-
-        **Shared conversations.** Only the user a message was generated for
-        (`authorUserId`; the owner for older messages) can regenerate it.
-        Anyone else gets a `RUN_ERROR` event and nothing changes. The
-        regenerated answer stays that user's.
       operationId: regenerateAnswer
       x-pipeshub-sdk: true
       security:
@@ -36933,220 +36682,6 @@ paths:
         '401':
           description: Unauthorized — valid bearer token required.
 
-  # -------------------- Access requests --------------------
-  /access-requests:
-    post:
-      tags:
-        - Conversations
-      summary: Request access to a redacted source
-      description: |
-        Ask for a record that was redacted from a chat or search shared with you.
-        Org-scoped and limited to 20 requests per user per hour. The record's kind
-        and owner come from the server.
-
-        - **Native** record (uploaded to PipesHub): a `pending` request is stored and
-          the owners are notified; any of them can approve or deny. A record of a
-          collection (knowledge base) is reachable only through the collection, so
-          the request is addressed to the collection's owners and approval gives you
-          read access to the **whole collection**. Refresh the shared chat to see the source.
-        - **Connector** record: nothing is granted in PipesHub. The request is
-          stored as `forwarded`, the owner is notified and `sourceUrl` links to the
-          record in its source system. Access arrives through the next permission sync.
-
-        Name the chat (`conversationId`) or the saved search (`searchId`) the source was redacted
-        in. Only a record shown to you as redacted there can be asked for. Any other id (unknown,
-        not in that chat or search, now readable, or in a chat you cannot open) gets the same `201`
-        answer as a first request for a native record, so the route says nothing about whether a
-        record exists. Such a request is stored as an internal row, so repeats and the hourly
-        limit behave as they do for a real one, but nobody is notified.
-
-        A repeat request for the same record (or the same collection) answers `201` with the
-        open request again, exactly as a first request does.
-      operationId: createAccessRequest
-      security:
-        - bearerAuth: []
-        - oauth2: [conversation:read]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [recordId]
-              oneOf:
-                - required: [conversationId]
-                - required: [searchId]
-              properties:
-                recordId:
-                  type: string
-                conversationId:
-                  type: string
-                  format: objectId
-                  description: The chat in which the record was shown as redacted. Send this or `searchId`.
-                searchId:
-                  type: string
-                  format: objectId
-                  description: The saved search in which the record was shown as redacted. Send this or `conversationId`.
-      responses:
-        '201':
-          description: Request created, or the open one again for a repeat (or accepted, see above).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request]
-                properties:
-                  request:
-                    $ref: '#/components/schemas/AccessRequest'
-                  sourceUrl:
-                    type: string
-                    description: Connector records only.
-        '400':
-          description: Invalid `recordId`, or neither or both of `conversationId` and `searchId` sent.
-        '401':
-          description: Unauthorized — valid bearer token required.
-        '429':
-          description: Too many access requests. Try again later.
-    get:
-      tags:
-        - Conversations
-      summary: List access requests addressed to you
-      description: Pending requests for native records you own, newest first (up to 100).
-      operationId: listAccessRequests
-      security:
-        - bearerAuth: []
-        - oauth2: [conversation:read]
-      responses:
-        '200':
-          description: Pending requests.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [requests]
-                properties:
-                  requests:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AccessRequest'
-        '401':
-          description: Unauthorized — valid bearer token required.
-
-  /access-requests/{requestId}:
-    get:
-      tags:
-        - Conversations
-      summary: Get an access request
-      description: An owner who may decide the request reads its state (for example to show it was already decided). Others get 404.
-      operationId: getAccessRequest
-      security:
-        - bearerAuth: []
-        - oauth2: [conversation:read]
-      parameters:
-        - name: requestId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: The request.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request]
-                properties:
-                  request:
-                    $ref: '#/components/schemas/AccessRequest'
-        '401':
-          description: Unauthorized — valid bearer token required.
-        '404':
-          description: Access request not found.
-
-  /access-requests/{requestId}/approve:
-    post:
-      tags:
-        - Conversations
-      summary: Approve an access request
-      description: |
-        Owner of the record or collection only. For a collection record this grants the
-        requester read access to the whole collection; notifies them. Fails with `409` if the grant does not take effect or the
-        request was already decided; `400` for a connector request.
-      operationId: approveAccessRequest
-      security:
-        - bearerAuth: []
-        - oauth2: [conversation:write]
-      parameters:
-        - name: requestId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Approved.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request]
-                properties:
-                  request:
-                    $ref: '#/components/schemas/AccessRequest'
-        '400':
-          description: Connector requests are granted in their source system.
-        '401':
-          description: Unauthorized — valid bearer token required.
-        '403':
-          description: Only an owner of the record or collection can decide this request.
-        '404':
-          description: Access request not found.
-        '409':
-          description: Already decided, or access could not be granted.
-
-  /access-requests/{requestId}/deny:
-    post:
-      tags:
-        - Conversations
-      summary: Deny an access request
-      description: Owner only. Marks a native request denied and notifies the requester.
-      operationId: denyAccessRequest
-      security:
-        - bearerAuth: []
-        - oauth2: [conversation:write]
-      parameters:
-        - name: requestId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Denied.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [request]
-                properties:
-                  request:
-                    $ref: '#/components/schemas/AccessRequest'
-        '400':
-          description: Connector requests are granted in their source system.
-        '401':
-          description: Unauthorized — valid bearer token required.
-        '403':
-          description: Only an owner of the record or collection can decide this request.
-        '404':
-          description: Access request not found.
-        '409':
-          description: Already decided.
-
   # -------------------- Semantic Search --------------------
   /search:
     post:
@@ -37600,10 +37135,6 @@ paths:
         persisted search document. An unknown id returns an empty array
         with a `200` status — callers should check array length rather
         than relying on a `404`.
-
-        For a search shared with you, hits from records you cannot read come back
-        as `{ _id, redacted: true, reason, requestAccess }` with no text, and
-        `records` lists only the records you can read.
       operationId: getSearchById
       x-pipeshub-sdk: true
       security:
@@ -38815,10 +38346,6 @@ paths:
         AG-UI is the sole wire protocol. The request must include
         `chatMode: quick`; see `AgentMessageStreamSSEEvent` for the event
         vocabulary.
-
-        **Shared conversations.** An agent conversation is shared read-only:
-        only its owner can add messages. A user it is shared with gets `404`
-        here, as for a conversation they cannot see.
       operationId: streamAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -39184,10 +38711,6 @@ paths:
         The response arrives only when the whole answer is ready, which can
         take minutes for agent runs. Allow a generous client and proxy
         timeout, or use the `/stream` variant for interactive clients.
-
-        **Shared conversations.** An agent conversation is shared read-only:
-        only its owner can add messages. A user it is shared with gets `404`
-        here, as for a conversation they cannot see.
       operationId: addAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -39476,10 +38999,8 @@ paths:
 
         Sharing is additive (existing recipients are kept) and idempotent. The
         recipients are also granted read access to the conversation's artifacts
-        and chat attachments. Recipients see the transcript redacted for
-        them: a source they cannot read is redacted (see `MessageRedaction`),
-        and tool output, reasoning and the activity transcript of a turn are
-        shown only to the user it was generated for.
+        and chat attachments. Recipients see the full transcript, including
+        citations and tool output, as the owner sees it.
       operationId: shareAgentConversation
       x-pipeshub-sdk: false
       security:

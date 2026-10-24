@@ -1425,18 +1425,16 @@ describe('Enterprise Search Utils', () => {
       expect(JSON.stringify(result.$or)).to.not.contain('sharedWith')
     })
 
-    it('with sharedAccess, a recipient matches only when isShared AND they are in sharedWith at that level', () => {
+    it('with includeShared, a recipient matches only when isShared AND they are in sharedWith', () => {
       const req = createMockRequest()
-      const read = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, 'read')
-      const branch = read.$or.find((b: any) => b.isShared)
-      expect(branch.isShared).to.equal(true)
-      expect(String(branch.sharedWith.$elemMatch.userId)).to.equal(VALID_OID)
-      expect(branch.sharedWith.$elemMatch).to.not.have.property('accessLevel')
-      const write = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, 'write')
-      expect(write.$or.find((b: any) => b.isShared).sharedWith.$elemMatch.accessLevel).to.equal('write')
-      expect(read).to.have.property('sessionType', 'agent')
-      expect(read).to.have.property('agentKey', 'agent-key-1')
-      expect(read).to.have.property('isDeleted', false)
+      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, true)
+      const sharedBranch = result.$or.find((branch: any) => branch.$and)
+      expect(sharedBranch.$and).to.have.length(2)
+      expect(sharedBranch.$and[0]).to.deep.equal({ isShared: true })
+      expect(String(sharedBranch.$and[1]['sharedWith.userId'])).to.equal(VALID_OID)
+      expect(result).to.have.property('sessionType', 'agent')
+      expect(result).to.have.property('agentKey', 'agent-key-1')
+      expect(result).to.have.property('isDeleted', false)
     })
 
     it('should handle shared filter in agent conversations', () => {
@@ -2055,6 +2053,16 @@ describe('Enterprise Search Utils', () => {
       expect(thrown).to.equal(outage)
     })
 
+    it('should match the user and the write level in the same sharedWith entry', async () => {
+      const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
+
+      await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2, 'write')
+
+      const shared = findOneStub.firstCall.args[0].$or.find((b: any) => b.sharedWith)
+      expect(shared.sharedWith.$elemMatch).to.deep.equal({ userId: VALID_OID, accessLevel: 'write' })
+      expect(shared).to.not.have.property('sharedWith.accessLevel')
+    })
+
     it('should scope the query to agent sessions only (defense-in-depth)', async () => {
       const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
 
@@ -2153,14 +2161,14 @@ describe('Enterprise Search Utils', () => {
       stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
       sinon.stub(ChatSession, 'findById').resolves({
         _id: sessionId,
-        toObject: () => ({ _id: sessionId, initiator: 'author-1', title: 'Test' }),
+        toObject: () => ({ _id: sessionId, title: 'Test' }),
       })
       stubGetMessagesChain([
         { _id: messageId, content: 'Regeneration failed', messageType: 'error' },
       ])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, 'author-1'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error'
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -4149,16 +4157,9 @@ describe('chatSessions helpers', () => {
   it('findSessionIdsMatchingContent groups by sessionId and honours the cap', async () => {
     const sid = new mongoose.Types.ObjectId()
     const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: sid }])
-    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', VALID_OID, 10)
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 10)
     expect(ids).to.deep.equal([sid])
-    // The cap applies to the searcher's sessions, after the initiator filter.
-    expect(agg.firstCall.args[0][4]).to.deep.equal({ $limit: 10 })
-    // Only the searcher's own turns are searched (no oracle on text others' answers hold);
-    // unstamped rows count for the initiator only.
-    const [match, , , last] = agg.firstCall.args[0] as any[]
-    expect(match.$match.$or.map((c: any) => Object.keys(c)[0])).to.deep.equal(['authorUserId', 'authorUserId'])
-    expect(String(match.$match.$or[0].authorUserId)).to.equal(VALID_OID)
-    expect(String(last.$match.$or[1]['session.initiator'])).to.equal(VALID_OID)
+    expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 10 })
   })
 
   // -----------------------------------------------------------------------

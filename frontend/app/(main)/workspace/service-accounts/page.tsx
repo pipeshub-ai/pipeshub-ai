@@ -9,8 +9,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EntityEmptyState, ConfirmationDialog, EntityRowActionMenu } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '../components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '../components/settings-page-container';
 import { DelegationsApi, ServiceAccountsApi } from './api';
 import type { ServiceAccount } from './types';
 import { CreateServiceAccountPanel } from './components/create-service-account-panel';
@@ -165,7 +165,7 @@ function ServiceAccountsPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(40),
         boxSizing: 'border-box',
         minWidth: 0,
       }}

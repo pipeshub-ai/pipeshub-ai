@@ -542,6 +542,8 @@ class ConfluenceConnector(BaseConnector):
     Authentication: OAuth 2.0 (3LO - 3-legged OAuth)
     """
 
+    user_link_steps = ("_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users")
+
     def __init__(
         self,
         logger: Logger,

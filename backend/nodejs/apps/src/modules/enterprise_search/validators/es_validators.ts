@@ -478,11 +478,7 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  // `accessLevel` defaults to read for a new share and leaves an existing entry's level alone when omitted.
-  body: z.object({
-    userIds: userIdsSchema,
-    accessLevel: z.enum(['read', 'write']).optional(),
-  }),
+  body: z.object({ userIds: userIdsSchema }),
 });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
@@ -1561,28 +1557,4 @@ export const agentAttachmentUploadSchema = z.object({
 
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
-});
-
-// ---------------------------------------------------------------------------
-// Access requests (redacted content in shared chats and searches)
-// ---------------------------------------------------------------------------
-export const createAccessRequestSchema = z.object({
-  body: z
-    .object({
-      recordId: z
-        .string()
-        .min(1)
-        .max(128)
-        .regex(/^[\w.:-]+$/, { message: 'Invalid record ID format' }),
-      // The chat or search in which the record was shown as redacted. Exactly one.
-      conversationId: objectId('conversation ID').optional(),
-      searchId: objectId('search ID').optional(),
-    })
-    .refine((b) => Boolean(b.conversationId) !== Boolean(b.searchId), {
-      message: 'Send either conversationId or searchId',
-    }),
-});
-
-export const accessRequestIdParamsSchema = z.object({
-  params: z.object({ requestId: objectId('access request ID') }),
 });

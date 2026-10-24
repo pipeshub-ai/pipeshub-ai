@@ -2650,6 +2650,7 @@ class TestSyncUserGroupsErrorHandling:
         connector._get_group_members = AsyncMock(side_effect=[Exception("Err"), []])
         connector._transform_group_to_record_group = MagicMock(return_value=None)
         _stub_sync_points(connector)
+        connector.data_entities_processor.note_kept_user_group = AsyncMock()
 
         result = await connector._sync_user_groups()
         assert len(result) >= 1

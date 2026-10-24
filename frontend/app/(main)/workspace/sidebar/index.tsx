@@ -159,7 +159,7 @@ export default function WorkspaceSidebar() {
 
   return (
     <SidebarBase
-      header={<WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} />}
+      header={isMobile ? <WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} /> : undefined}
       isMobile={isMobile}
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobileSidebar}

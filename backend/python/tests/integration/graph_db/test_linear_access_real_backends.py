@@ -30,6 +30,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.sync_runner import (
     _begin_full_sync_run,
     _unlink_what_full_sync_missed,
@@ -270,6 +271,8 @@ async def _remove(graph: IGraphDBProvider, org_id: str, connector_id: str, user_
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Env]:
+    # A full sync owed by one that skipped part of the source is remembered per process.
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             graph = await (connect_neo4j(logger, monkeypatch) if request.param == "neo4j"

@@ -19,7 +19,6 @@ import {
   ConflictError,
   InternalServerError,
   NotFoundError,
-  ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import Citation, { ICitation } from '../schema/citation.schema';
 import { CONVERSATION_STATUS, ONLY_AGENT } from '../constants/constants';
@@ -43,7 +42,6 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import { conversationForAuthorOnly, userDisplayName } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -167,10 +165,8 @@ export const validateAndEscapeSearch = (
 export const findSessionIdsMatchingContent = async (
   orgId: string,
   escapedSearch: string,
-  authorUserId: string,
   limit = 10000,
 ): Promise<mongoose.Types.ObjectId[]> => {
-  const author = new mongoose.Types.ObjectId(authorUserId);
   const rows = await ChatSessionMessage.aggregate<{
     _id: mongoose.Types.ObjectId;
   }>([
@@ -178,30 +174,9 @@ export const findSessionIdsMatchingContent = async (
       $match: {
         orgId: new mongoose.Types.ObjectId(orgId),
         content: { $regex: escapedSearch, $options: 'i' },
-        // Only text the searcher's own turns produced is searched: a match in
-        // someone else's turn would reveal text the searcher may not be allowed
-        // to read. Unstamped rows are the initiator's (checked after the lookup).
-        $or: [{ authorUserId: author }, { authorUserId: { $exists: false } }],
       },
     },
-    {
-      $group: {
-        _id: '$sessionId',
-        hasOwnTurn: {
-          $max: { $cond: [{ $eq: ['$authorUserId', author] }, 1, 0] },
-        },
-      },
-    },
-    {
-      $lookup: {
-        from: ChatSession.collection.name,
-        localField: '_id',
-        foreignField: '_id',
-        as: 'session',
-      },
-    },
-    { $match: { $or: [{ hasOwnTurn: 1 }, { 'session.initiator': author }] } },
-    // After the initiator filter, so other people's sessions never use up the cap.
+    { $group: { _id: '$sessionId' } },
     { $limit: limit },
   ]);
   return rows.map((r) => r._id);
@@ -256,75 +231,25 @@ export const allocateSeq = async (
  * section for why (a crash between the two leaves nothing inconsistent: no
  * message row exists yet). Returns the inserted documents (not `.lean()`)
  * so callers can `.toObject()` them for `attachPopulatedCitations` fallback
- * without a second query. `authorUserId` stamps who the messages were generated
- * for; leave it out for the conversation initiator's own turns on a chat that was
- * never write-shared (readers treat an unstamped message as the initiator's).
+ * without a second query.
  */
-/**
- * The records an answer drew on also include the attachments of the question it
- * answers, read here from the stored question so the list never depends on which
- * page of messages a viewer loads. Answers without a recorded list (older rows,
- * stopped partials) stay without one: viewers treat that as unknown.
- */
-const withTurnAttachments = async (
-  message: IMessage,
-  sessionId: mongoose.Types.ObjectId | string,
-  orgId: mongoose.Types.ObjectId | string,
-  beforeSeq: number,
-  precedingQuestion: IMessage | undefined,
-  mongoSession?: ClientSession | null,
-): Promise<IMessage> => {
-  if (message.messageType !== 'bot_response' || !message.sourceRecordIds) {
-    return message;
-  }
-  const question =
-    precedingQuestion ??
-    (await ChatSessionMessage.findOne(
-      { sessionId, orgId, messageType: 'user_query', seq: { $lt: beforeSeq } },
-      { attachments: 1 },
-      { session: mongoSession || undefined },
-    )
-      .sort({ seq: -1 })
-      .lean());
-  const attached = (question?.attachments ?? []).map((a) => a.recordId);
-  return {
-    ...message,
-    sourceRecordIds: [...new Set([...message.sourceRecordIds, ...attached])],
-  };
-};
-
 export const appendMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   orgId: mongoose.Types.ObjectId | string,
   messages: IMessage[],
   mongoSession?: ClientSession | null,
-  authorUserId?: mongoose.Types.ObjectId | string,
 ): Promise<IChatSessionMessageDocument[]> => {
   if (messages.length === 0) {
     return [];
   }
   const endSeq = await allocateSeq(sessionId, messages.length, mongoSession);
   const startSeq = endSeq - messages.length + 1;
-  let lastQuestion: IMessage | undefined;
-  const toInsert = [];
-  for (const [i, message] of messages.entries()) {
-    if (message.messageType === 'user_query') lastQuestion = message;
-    const stamped = await withTurnAttachments(
-      message,
-      sessionId,
-      orgId,
-      startSeq + i,
-      lastQuestion,
-      mongoSession,
-    );
-    toInsert.push({
-      ...stamped,
-      ...(authorUserId ? { authorUserId } : {}),
-      sessionId,
-      orgId,
-      seq: startSeq + i,
-    });
-  }
+  const toInsert = messages.map((message, i) => ({
+    ...message,
+    sessionId,
+    orgId,
+    seq: startSeq + i,
+  }));
   return ChatSessionMessage.insertMany(toInsert, {
     ordered: true,
     session: mongoSession || undefined,
@@ -353,20 +278,10 @@ export const updateMessageById = async (
   if (!existing) {
     return null;
   }
-  const stamped = await withTurnAttachments(
-    newContent,
-    existing.sessionId,
-    orgId,
-    existing.seq,
-    undefined,
-    mongoSession,
-  );
   return ChatSessionMessage.findOneAndReplace(
     { _id: messageId, orgId },
     {
-      ...stamped,
-      // A regenerated answer is still the same turn's author's.
-      ...(existing.authorUserId ? { authorUserId: existing.authorUserId } : {}),
+      ...newContent,
       sessionId: existing.sessionId,
       orgId: existing.orgId,
       seq: existing.seq,
@@ -758,11 +673,6 @@ export const buildAIResponseMessage = (
     modelInfo: modelInfo,
   };
 
-  // The records the turn drew on, cited or not (absent on older answers).
-  if (Array.isArray(data.sourceRecordIds)) {
-    message.sourceRecordIds = data.sourceRecordIds.map(String);
-  }
-
   // Include referenceData if present (IDs for follow-up queries)
   // This stores technical IDs that were in the response for later reference
   // Filter out invalid items (must have name and at least key or id)
@@ -1069,19 +979,14 @@ export const addComputedFields = <
   },
 >(
   conversation: T,
-  userId: string | { toString(): string },
+  userId: string,
 ) => {
-  // Callers may hand over an ObjectId where a string is typed.
-  const viewerId = String(userId);
-  const isOwner = conversation.initiator.toString() === viewerId;
   return {
-    ...(isOwner
-      ? withoutErrorStacks(conversation)
-      : withoutOwnerOnlyFields(conversation)),
-    isOwner,
+    ...withoutErrorStacks(conversation),
+    isOwner: conversation.initiator.toString() === userId,
     accessLevel:
       conversation.sharedWith?.find(
-        (share) => share.userId.toString() === viewerId,
+        (share) => share.userId.toString() === userId,
       )?.accessLevel || 'read',
   };
 };
@@ -1091,7 +996,21 @@ export type SharedByInfo = {
   name: string;
 };
 
-const sharedByDisplayName = userDisplayName;
+function sharedByDisplayName(user: {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}): string {
+  const fullName = user.fullName?.trim();
+  if (fullName) return fullName;
+  const parts = [user.firstName, user.lastName]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(' ')
+    .trim();
+  if (parts) return parts;
+  return user.email?.trim() || '';
+}
 
 function conversationIsOwnedByCaller(conversation: {
   isOwner?: boolean;
@@ -1669,25 +1588,16 @@ export const buildConversationResponse = (
     isShared: conversation.isShared,
     sharedWith: conversation.sharedWith,
     status: conversation.status,
-    // Written from the owner's runs; not for other viewers.
-    failReason:
-      conversation.initiator.toString() === userId
-        ? conversation.failReason
-        : undefined,
+    failReason: conversation.failReason,
     projectId: conversation.projectId,
     projectVisibility: conversation.projectVisibility,
     messages: messages.map((message) => ({
       ...message,
       citations:
-        message.citations?.map((citation) =>
-          // Already viewer-redacted (viewer-redaction.ts): no citationData.
-          (citation as { redacted?: boolean }).redacted
-            ? citation
-            : {
-                citationId: citation.citationId?._id,
-                citationData: citation.citationId,
-              },
-        ) || [],
+        message.citations?.map((citation) => ({
+          citationId: citation.citationId?._id,
+          citationData: citation.citationId,
+        })) || [],
     })),
     modelInfo: conversation.modelInfo,
     pagination: {
@@ -1719,7 +1629,6 @@ export const saveCompleteConversation = async (
   orgId: string,
   session?: ClientSession | null,
   modelInfo?: IAIModel,
-  authorUserId?: string,
 ): Promise<any> => {
   try {
     // Save citations first
@@ -1753,7 +1662,6 @@ export const saveCompleteConversation = async (
       conversation.orgId,
       [aiResponseMessage],
       session,
-      authorUserId,
     );
 
     if (modelInfo) {
@@ -1840,48 +1748,6 @@ const RUN_HEARTBEAT_MS = 60 * 1000;
 /** Covers Stop followed straight by a new message: the old run is still winding down after the cancel. */
 const ACTIVE_RUN_SETTLE_MS = 15_000;
 const ACTIVE_RUN_POLL_MS = 250;
-
-/**
- * Filter fragment for "may add a message": the owner, or a user the chat is shared
- * with for writing. `$elemMatch` so one entry must carry both the user and the
- * write level (separate dotted paths would match a reader plus someone else's write).
- */
-export const ownerOrWriterFilter = (
-  userId: unknown,
-): FilterQuery<IChatSessionDocument> => ({
-  $or: [
-    { userId },
-    {
-      isShared: true,
-      sharedWith: { $elemMatch: { userId, accessLevel: 'write' } },
-    },
-  ],
-});
-
-/**
- * 403 for a user the chat is shared with read-only who tries to add a message.
- * Anyone without access falls through to the caller's own 404.
- */
-export const assertNotReadOnlyViewer = async (
-  base: FilterQuery<IChatSessionDocument>,
-  userId: unknown,
-  action = 'add messages',
-): Promise<void> => {
-  const session = await ChatSession.findOne({
-    ...base,
-    isShared: true,
-    'sharedWith.userId': userId,
-  });
-  if (!session || String(session.userId) === String(userId)) return;
-  const entry = (session.sharedWith ?? []).find(
-    (s: { userId?: unknown }) => String(s.userId) === String(userId),
-  );
-  if (entry && entry.accessLevel !== 'write') {
-    throw new ForbiddenError(
-      `This conversation is shared with you as read-only, so you cannot ${action}.`,
-    );
-  }
-};
 
 export interface RunReservation {
   sessionId: mongoose.Types.ObjectId;
@@ -2097,8 +1963,6 @@ export const savePartialConversation = async (
   options?: {
     replaceMessageId?: mongoose.Types.ObjectId | string;
     parts?: IMessagePart[];
-    /** Whose turn this was, when it is not the initiator's. */
-    authorUserId?: string;
   },
 ): Promise<void> => {
   try {
@@ -2131,7 +1995,6 @@ export const savePartialConversation = async (
         conversation.orgId,
         [partialMessage],
         session,
-        options?.authorUserId,
       );
     }
 
@@ -2383,7 +2246,7 @@ export const markAgentConversationFailed = async (
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
  *
- * `sharedAccess` adds the "shared with me" branch (at least read, or write). It is off by
+ * `includeShared` adds the read-only "shared with me" branch. It is off by
  * default so owner-only actions built on this filter (fork, cancel, archive
  * list) never widen to a recipient; only the read paths opt in.
  */
@@ -2395,8 +2258,7 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
-  /** Also match chats shared with the user at least at this level (own chats always match). */
-  sharedAccess?: 'read' | 'write',
+  includeShared: boolean = false,
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
@@ -2404,16 +2266,13 @@ export const buildAgentConversationFilter = (
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
-      ...(sharedAccess
+      ...(includeShared
         ? [
             {
-              isShared: true,
-              sharedWith: {
-                $elemMatch: {
-                  userId: new mongoose.Types.ObjectId(userId),
-                  ...(sharedAccess === 'write' && { accessLevel: 'write' }),
-                },
-              },
+              $and: [
+                { isShared: true },
+                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
+              ],
             },
           ]
         : []),
@@ -2494,8 +2353,8 @@ export const buildAgentSharedWithMeFilter = (
   orgId: string,
   userId: string,
   agentKey: string,
-) => {
-  const filter: any = {
+): Record<string, unknown> => {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
@@ -3081,7 +2940,6 @@ export const handleRegenerationError = async (
   requestId: string,
   errorType: string = 'regeneration_error',
   protocol?: SSEProtocol,
-  viewerUserId?: string,
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
 
@@ -3112,8 +2970,7 @@ export const handleRegenerationError = async (
           res,
           errorMessage,
           error.message,
-          // Only the author's client gets the whole conversation back.
-          conversationForAuthorOnly(plainConversation, viewerUserId),
+          plainConversation,
           protocol,
         );
       } else {

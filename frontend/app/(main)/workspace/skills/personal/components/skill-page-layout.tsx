@@ -11,8 +11,8 @@ import { WorkspaceHeaderIconButton } from '../../../components';
 import type { SkillMetadata } from '../types';
 import { SkillCard } from './skill-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
 import { WorkspaceDocsButton } from '@/app/(main)/workspace/components/workspace-docs-button';
 
@@ -74,7 +74,7 @@ export function SkillPageLayout({
         height: '100%',
         paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
@@ -178,7 +178,7 @@ export function SkillPageLayout({
           <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.noResults')}</Text>
         </Flex>
       ) : (
-        <Grid columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }} gap="4" style={{ width: '100%' }}>
+        <Grid columns={{ initial: '1', sm: '2', md: '3', lg: '4' }} gap="4" style={{ width: '100%' }}>
           {filtered.map((skill) => (
             <SkillCard
               key={skill.name}

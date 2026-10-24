@@ -1,36 +1,34 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { EmptyBadge } from './empty-badge';
 import { KbPaginationFooter } from './kb-pagination';
-import { rowRevealDelay } from '../utils/row-reveal';
-import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import { formatSize } from '@/lib/utils/formatters';
-import { CARD_ICONS } from './grid-card-icons';
+import { ItemActionMenu } from './item-action-menu';
 import {
-  canDeleteKbTableItem,
+  getKbItemMenuActions,
+  getKbItemStatusIcon,
+  getKbItemStatusLabel,
+  isAllRecordDisplayRow,
+  ROW_ACTION_BUTTON,
+} from './kb-list-view';
+import { rowRevealDelay } from '../utils/row-reveal';
+import { formatDate, formatSize } from '@/lib/utils/formatters';
+import {
   needsCollectionContext,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
-  shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
-import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { useTranslation } from 'react-i18next';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
-import {
-  getReindexMenuState,
-  getReindexNodeForTableItem,
-  mapReindexOptionsToMenuActions,
-} from '../utils/reindex-label';
-
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
-import type { 
-  KnowledgeBaseItem, 
-  KnowledgeHubNode, 
-  AllRecordItem 
+import type {
+  KnowledgeBaseItem,
+  KnowledgeHubNode,
+  AllRecordItem
 } from '../types';
 
 // Union type for items that can be displayed
@@ -45,10 +43,14 @@ interface GridCardProps {
   item: TableItem;
   isSelected: boolean;
   showCheckbox?: boolean;
+  /** Something is selected: every card shows its checkbox, as in a selection mode. */
+  selectionActive?: boolean;
+  isMobile: boolean;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
   onPreview?: (item: TableItem) => void;
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -62,10 +64,13 @@ function GridCard({
   item,
   isSelected,
   showCheckbox = true,
+  selectionActive = false,
+  isMobile,
   onSelect,
   onClick,
   onOpen,
-  onPreview: _onPreview,
+  onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -97,10 +102,6 @@ function GridCard({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
-  // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
-  const canDeleteItem = canDeleteKbTableItem(item);
-  // Root-level collection/app node — has no parent collection to move within.
-  const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -165,239 +166,36 @@ function GridCard({
     }
   };
 
-  // Determine if item is a folder/container (all navigable container types)
   const isHubNode = isKnowledgeHubNode(item);
-  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
-  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
-    reindexNode,
-    !!onReindex,
-  );
-
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
+  const canPreview =
+    !!onPreview && !isMobile && isHubNode && item.nodeType === 'record' && item.previewRenderable !== false;
+  // The address of a parent needs its type, which only `parent` carries; an App has none.
+  const parentTarget =
+    onGoToParent && isHubNode && item.nodeType !== 'app' && item.parent?.id ? item : null;
 
-  // Status badge component (only shown for files)
-  const getStatusBadge = () => {
-    if (isFolder) return null;
-    if (shouldHideIndexingStatusForHubRecord(item)) {
-      return null;
-    }
+  const hideStatus = shouldHideIndexingStatusForHubRecord(item);
+  const statusIcon = getKbItemStatusIcon(item, isFolder);
+  // The card shows the short label; the reason (often a long sentence) is in the tooltip.
+  const statusLabel = statusIcon ? getKbItemStatusLabel(item, t) : '';
+  const statusShort = statusIcon ? getKbItemStatusLabel(item, t, false) : '';
+  const size = isHubNode ? item.sizeInBytes : item.size;
+  // One line of facts: where it comes from (All Records), how big, when it last changed.
+  const meta = [
+    isAllRecordDisplayRow(item) ? item.sourceName : '',
+    !isFolder && size ? formatSize(size) : '',
+    item.updatedAt ? formatDate(item.updatedAt) : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
-    // For KnowledgeHubNode, use indexingStatus
-    if (isKnowledgeHubNode(item)) {
-      // No status from API — no badge (placeholder "-" is rendered by parent)
-      if (item.indexingStatus == null) {
-        return null;
-      }
-      switch (item.indexingStatus) {
-        case 'COMPLETED':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--accent-2)',
-                border: '1px solid var(--accent-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name="check_circle" size={12} color="var(--accent-a11)" />
-            </Flex>
-          );
-        case 'IN_PROGRESS':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--amber-2)',
-                border: '1px solid var(--amber-7)',
-                borderRadius: 'var(--radius-1)',
-              }}
-            >
-              <LapTimerIcon size={16} color="var(--amber-9)" />
-            </Flex>
-          );
-        case 'FAILED':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--red-2)',
-                border: '1px solid var(--red-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name="error_outline" size={12} color="var(--red-9)" />
-            </Flex>
-          );
-        case 'FILE_TYPE_NOT_SUPPORTED':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--red-2)',
-                border: '1px solid var(--red-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name={getIndexStatusIcon('FILE_TYPE_NOT_SUPPORTED')} size={12} color="var(--red-9)" />
-            </Flex>
-          );
-        case 'NOT_STARTED':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--slate-2)',
-                border: '1px solid var(--slate-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={12} color="var(--slate-11)" />
-            </Flex>
-          );
-        case 'QUEUED':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--blue-2)',
-                border: '1px solid var(--blue-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
-            </Flex>
-          );
-        case 'AUTO_INDEX_OFF':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--olive-2)',
-                border: '1px solid var(--olive-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={12} color="var(--olive-11)" />
-            </Flex>
-          );
-        case 'EMPTY':
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--slate-2)',
-                border: '1px solid var(--slate-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={12} color="var(--slate-11)" />
-            </Flex>
-          );
-        default:
-          return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--blue-2)',
-                border: '1px solid var(--blue-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name="schedule" size={12} color="var(--blue-9)" />
-            </Flex>
-          );
-      }
-    }
-
-    // For KnowledgeBaseItem, use status
-    switch (item.status) {
-      case 'indexed':
-        return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--accent-2)',
-              border: '1px solid var(--accent-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="check_circle" size={12} color="var(--accent-9)" />
-          </Flex>
-        );
-      case 'processing':
-        return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--amber-2)',
-              border: '1px solid var(--amber-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="sync" size={12} color="var(--amber-9)" />
-          </Flex>
-        );
-      case 'pending':
-        return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--blue-2)',
-              border: '1px solid var(--blue-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="schedule" size={12} color="var(--blue-9)" />
-          </Flex>
-        );
-      case 'failed':
-        return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--red-2)',
-              border: '1px solid var(--red-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="error_outline" size={12} color="var(--red-9)" />
-          </Flex>
-        );
-      default:
-        return null;
-    }
-  };
+  const showCheckboxNow = showCheckbox && (isHovered || isFocused || isSelected || selectionActive || !canHover);
 
   // Keyboard event handler
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (isEditing) return;
+    if (isEditing || e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onSelect();
@@ -408,280 +206,220 @@ function GridCard({
     <Flex
       ref={cardRef}
       className="kb-row-in"
-      gap="1"
-      align="start"
+      direction="column"
+      gap="2"
       tabIndex={0}
       role="gridcell"
       aria-selected={isSelected}
       aria-label={item.name}
       style={{
-        // minHeight: a two-line name grows the card instead of pushing the status out of it.
-        minHeight: '156px',
+        minWidth: 0,
         animationDelay: rowRevealDelay(revealIndex),
-        backgroundColor: isSelected
-          ? 'var(--accent-3)'
-          : isHovered
-          ? 'var(--olive-2)'
-          : 'var(--olive-1)',
-        border: isFocused
-          ? '1px solid var(--accent-5)'
-          : '1px solid var(--olive-3)',
-        borderRadius: 'var(--radius-1)',
-        paddingLeft: 'var(--space-2)',
-        paddingRight: 'var(--space-4)',
-        paddingTop: 'var(--space-4)',
-        paddingBottom: 'var(--space-4)',
+        backgroundColor: isSelected ? 'var(--accent-a3)' : isHovered ? 'var(--olive-2)' : 'var(--olive-1)',
+        border: `1px solid ${isSelected ? 'var(--accent-8)' : isHovered ? 'var(--olive-5)' : 'var(--olive-3)'}`,
+        // A ring, not a thicker border, so focusing a card does not shift its content.
+        boxShadow: isFocused ? '0 0 0 2px var(--accent-8)' : undefined,
+        borderRadius: 'var(--radius-2)',
+        padding: 'var(--space-3)',
         cursor: 'pointer',
         userSelect: 'none',
         outline: 'none',
-        // transition: 'all 0.15s ease',
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      onFocus={() => setIsFocused(true)}
+      onFocus={(e) => setIsFocused(e.target === e.currentTarget)}
       onBlur={() => setIsFocused(false)}
       onKeyDown={handleKeyDown}
       onClick={onClick}
     >
-      {/* Checkbox column - only visible on hover or when selected.
-          Kept as a spacer when fully hidden so the card layout doesn't shift. */}
-      <Flex
-        align="center"
-        style={{
-          paddingTop: 'var(--space-1)',
-          paddingBottom: 'var(--space-1)',
-          flexShrink: 0,
-          visibility: showCheckbox && (isHovered || isSelected || !canHover) ? 'visible' : 'hidden',
-        }}
-      >
-        {showCheckbox && (
-          <Checkbox
-            size="1"
-            checked={isSelected}
-            onCheckedChange={() => onSelect()}
-            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-          />
-        )}
-      </Flex>
-
-      {/* Main content column */}
-      <Flex
-        direction="column"
-        gap="5"
-        style={{
-          flex: 1,
-          minWidth: 0, // Allow text truncation
-        }}
-      >
-        {/* Top section: icon, name, size */}
-        <Flex direction="column" gap="3" style={{ flex: 1 }}>
-          {/* Icon and action buttons row */}
-          <Flex align="center" justify="between">
-            {/* File/Folder icon */}
-            <Box style={{ width: 24, height: 24, flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-              <KbNodeNameIcon
-                isKnowledgeHub={isKnowledgeHubNode(item)}
-                nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
-                connector={isKnowledgeHubNode(item) ? item.connector : undefined}
-                subType={isKnowledgeHubNode(item) ? item.subType : undefined}
-                extension={isKnowledgeHubNode(item) ? item.extension : undefined}
-                mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
-                legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}
-                legacyFileType={!isKnowledgeHubNode(item) ? item.fileType : undefined}
-                name={item.name}
-                size={20}
-                isPlaceholder={isKnowledgeHubNode(item) ? item.isPlaceholder : undefined}
-              />
-            </Box>
-
-            {/* Action buttons - always present but styled differently */}
-            <Flex gap="1" style={{ width: '80px' }} justify="end">
-              <DropdownMenu.Root open={isMenuOpen} onOpenChange={setIsMenuOpen}>
-                <DropdownMenu.Trigger>
-                  <IconButton
-                    size="1"
-                    variant="ghost"
-                    color="gray"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <MaterialIcon name={CARD_ICONS.MORE_MENU} size={16} />
-                  </IconButton>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Content onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu.Item onClick={(e) => { e.stopPropagation(); onOpen(); }}>
-                    <MaterialIcon name="folder_open" size={16} />
-                    {t('kb.rowActions.open')}
-                  </DropdownMenu.Item>
-                  {!isFolder && onDownload && shouldShowDownloadForTableItem(item) && (
-                    <DropdownMenu.Item onClick={(e) => { e.stopPropagation(); onDownload(item); }}>
-                      <MaterialIcon name="file_download" size={16} />
-                      {t('action.download')}
-                    </DropdownMenu.Item>
-                  )}
-                  {onRename && canEditItem && (
-                    <DropdownMenu.Item onClick={() => startEditing()}>
-                      <MaterialIcon name="edit" size={16} />
-                      {t('menu.rename')}
-                    </DropdownMenu.Item>
-                  )}
-                  {showReindexMenu &&
-                    mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
-                      onReindex!(item, statusFilters),
-                    ).map((action) => (
-                      <DropdownMenu.Item
-                        key={`${action.labelKey}-${action.statusFilters?.join(',') ?? 'all'}`}
-                        disabled={action.disabled}
-                        onClick={action.onClick}
-                      >
-                        <MaterialIcon name={action.icon} size={16} />
-                        {action.label}
-                      </DropdownMenu.Item>
-                    ))}
-                  {!isFolder && onReplace && canEditItem && (
-                    <DropdownMenu.Item onClick={() => onReplace(item)}>
-                      <MaterialIcon name="swap_horiz" size={16} />
-                      {t('action.replace')}
-                    </DropdownMenu.Item>
-                  )}
-                  {onMove && canEditItem && !isCollectionNode && (
-                    <DropdownMenu.Item onClick={() => onMove(item)}>
-                      <MaterialIcon name="drive_file_move" size={16} />
-                      {t('action.move')}
-                    </DropdownMenu.Item>
-                  )}
-                  {/* Collections can only be deleted by OWNER */}
-                  {onDelete && canDeleteItem && (
-                      <DropdownMenu.Item onClick={() => onDelete(item)} color="red">
-                        <MaterialIcon name="delete" size={16} />
-                        {t('action.delete')}
-                      </DropdownMenu.Item>
-                  )}
-                </DropdownMenu.Content>
-              </DropdownMenu.Root>
-            </Flex>
-          </Flex>
-
-          {/* Name and size */}
-          <Flex direction="column" gap="1" style={{ width: '100%'}}>
-            {isEditing ? (
-              <>
-                {/* Hidden span to measure text width */}
-                <span
-                  ref={measureRef}
-                  style={{
-                    position: 'absolute',
-                    visibility: 'hidden',
-                    whiteSpace: 'pre',
-                    font: 'inherit',
-                    fontSize: '14px',
-                    padding: 'var(--space-1) var(--space-2)',
-                  }}
-                />
-                <input
-                  ref={editInputRef}
-                  value={editValue}
-                  onChange={(e) => {
-                    setEditValue(e.target.value);
-                    const width = measureTextWidth(e.target.value);
-                    if (width !== undefined) {
-                      setInputWidth(width + 24);
-                    }
-                  }}
-                  onBlur={handleRenameSave}
-                  onKeyDown={handleRenameKeyDown}
-                  onClick={(e) => e.stopPropagation()}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                  style={{
-                    font: 'inherit',
-                    fontSize: '14px',
-                    color: 'var(--slate-12)',
-                    backgroundColor: 'var(--slate-1)',
-                    border: '1px solid var(--accent-8)',
-                    borderRadius: 'var(--radius-1)',
-                    padding: 'var(--space-1) var(--space-2)',
-                    outline: 'none',
-                    width: inputWidth ? `${inputWidth}px` : 'auto',
-                    minWidth: '60px',
-                    maxWidth: '100%',
-                  }}
-                />
-              </>
-            ) : (
-              <Text
-                size="2"
-                weight="medium"
-                title={item.name}
-                onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
-                  e.stopPropagation();
-                  startEditing();
-                } : undefined}
-                style={{
-                  color: 'var(--slate-12)',
-                  // Two lines at most, so the status badge stays inside the fixed-height card.
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  lineHeight: 'var(--line-height-2)',
-                  cursor: onRename && canEditItem && canHover ? 'text' : 'default',
-                  // Vertical room only: the name lines up with the icon and the size.
-                  padding: 'var(--space-1) 0',
-                  border: '1px solid transparent',
-                }}
-              >
-                {item.name}
-              </Text>
-            )}
-            {!isEditing && isKnowledgeHubNode(item) && (
-              <DemoSourceBadge connectorId={item.connectorId} style={{ alignSelf: 'flex-start' }} />
-            )}
-            {isFolder && !item.hasChildren && <EmptyBadge style={{ alignSelf: 'flex-start' }} />}
-            <Text
-              size="2"
-              style={{
-                color: 'var(--slate-10)',
-                lineHeight: 'var(--line-height-2)',
-              }}
-            >
-              {isKnowledgeHubNode(item)
-                ? formatSize(item.sizeInBytes ?? undefined)
-                : formatSize(item.size)
-              }
-            </Text>
-          </Flex>
-        </Flex>
-
-        {/* Bottom section: status badge or placeholder */}
-        <Flex align="center" style={{ minHeight: '20px' }}>
-          {isFolder ? null : shouldHideIndexingStatusForHubRecord(item) ? (
-            <Text
-              size="2"
-              weight="medium"
-              style={{
-                color: 'var(--slate-9)',
-                lineHeight: 'var(--line-height-2)',
-              }}
-            >
-              —
-            </Text>
-          ) : (
-            getStatusBadge() || (
-              <Text
-                size="2"
-                weight="medium"
-                style={{
-                  color: 'var(--slate-9)',
-                  lineHeight: 'var(--line-height-2)',
-                }}
-              >
-                -
-              </Text>
-            )
+      {/* Top row: selection, type, then the same actions a list row offers */}
+      <Flex align="center" gap="2" style={{ height: isMobile ? 40 : 24 }}>
+        {/* Kept as a spacer when hidden so the icon doesn't shift */}
+        <Flex
+          align="center"
+          className="touch-hit"
+          style={{ flexShrink: 0, visibility: showCheckboxNow ? 'visible' : 'hidden' }}
+          onClick={(e: React.MouseEvent) => {
+            e.stopPropagation();
+            if (showCheckbox) onSelect();
+          }}
+        >
+          {showCheckbox && (
+            <Checkbox
+              size="1"
+              checked={isSelected}
+              aria-label={t('kb.rowActions.select', { name: item.name })}
+              onCheckedChange={() => onSelect()}
+              onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              style={{ cursor: 'pointer' }}
+            />
           )}
         </Flex>
+        <Box style={{ width: 20, height: 20, flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+          <KbNodeNameIcon
+            isKnowledgeHub={isHubNode}
+            nodeType={isHubNode ? item.nodeType : undefined}
+            connector={isHubNode ? item.connector : undefined}
+            subType={isHubNode ? item.subType : undefined}
+            extension={isHubNode ? item.extension : undefined}
+            mimeType={isHubNode ? item.mimeType ?? undefined : undefined}
+            legacyType={!isHubNode ? item.type : undefined}
+            legacyFileType={!isHubNode ? item.fileType : undefined}
+            name={item.name}
+            size={20}
+            isPlaceholder={isHubNode ? item.isPlaceholder : undefined}
+          />
+        </Box>
+        {isHubNode && <DemoSourceBadge connectorId={item.connectorId} />}
+        <Box style={{ flex: 1 }} />
+        {canPreview && (
+          <Tooltip content={t('kb.rowActions.preview')} side="top" delayDuration={200}>
+            <IconButton
+              variant="ghost"
+              size="1"
+              color="gray"
+              aria-label={t('kb.rowActions.preview')}
+              onClick={(e) => {
+                e.stopPropagation();
+                onPreview!(item);
+              }}
+              style={{ ...ROW_ACTION_BUTTON, margin: 0 }}
+            >
+              <MaterialIcon name="visibility" size={16} color="var(--neutral-11)" />
+            </IconButton>
+          </Tooltip>
+        )}
+        {parentTarget && (
+          <Tooltip
+            content={parentTarget.parent?.name ? t('kb.rowActions.goToNamed', { name: parentTarget.parent.name }) : t('kb.rowActions.goToParent')}
+            side="top"
+            delayDuration={200}
+          >
+            <IconButton
+              variant="ghost"
+              size={isMobile ? '3' : '1'}
+              color="gray"
+              aria-label={t('kb.rowActions.goToParent')}
+              onClick={(e) => {
+                e.stopPropagation();
+                onGoToParent!(parentTarget);
+              }}
+              style={isMobile ? { margin: 0 } : { ...ROW_ACTION_BUTTON, margin: 0 }}
+            >
+              <MaterialIcon name="north_west" size={16} color="var(--neutral-11)" />
+            </IconButton>
+          </Tooltip>
+        )}
+        <ItemActionMenu
+          triggerSize={isMobile ? '3' : '1'}
+          triggerLabel={t('kb.rowActions.moreFor', { name: item.name })}
+          open={isMenuOpen}
+          onOpenChange={setIsMenuOpen}
+          actions={getKbItemMenuActions(item, t, {
+            onOpen,
+            onStartRename: startEditing,
+            onDownload,
+            onRename,
+            onReindex,
+            onReplace,
+            onMove,
+            onDelete,
+          })}
+        />
       </Flex>
+
+      {/* Name: two lines are always reserved, so every card in the grid has the same height */}
+      <Box style={{ minHeight: 'calc(2 * var(--line-height-2))' }}>
+        {isEditing ? (
+          <>
+            {/* Hidden span to measure text width */}
+            <span
+              ref={measureRef}
+              style={{
+                position: 'absolute',
+                visibility: 'hidden',
+                whiteSpace: 'pre',
+                font: 'inherit',
+                fontSize: '14px',
+                padding: 'var(--space-1) var(--space-2)',
+              }}
+            />
+            <input
+              ref={editInputRef}
+              value={editValue}
+              onChange={(e) => {
+                setEditValue(e.target.value);
+                const width = measureTextWidth(e.target.value);
+                if (width !== undefined) {
+                  setInputWidth(width + 24);
+                }
+              }}
+              onBlur={handleRenameSave}
+              onKeyDown={handleRenameKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              style={{
+                font: 'inherit',
+                fontSize: '14px',
+                color: 'var(--slate-12)',
+                backgroundColor: 'var(--slate-1)',
+                border: '1px solid var(--accent-8)',
+                borderRadius: 'var(--radius-1)',
+                padding: 'var(--space-1) var(--space-2)',
+                outline: 'none',
+                width: inputWidth ? `${inputWidth}px` : 'auto',
+                minWidth: '60px',
+                maxWidth: '100%',
+              }}
+            />
+          </>
+        ) : (
+          <Text
+            as="p"
+            size="2"
+            weight="medium"
+            title={item.name}
+            onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
+              e.stopPropagation();
+              startEditing();
+            } : undefined}
+            style={{
+              color: 'var(--slate-12)',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              wordBreak: 'break-word',
+              lineHeight: 'var(--line-height-2)',
+              cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+            }}
+          >
+            {item.name}
+          </Text>
+        )}
+      </Box>
+
+      {/* Indexing status in words (an icon alone did not say what it meant); folders show Empty instead */}
+      <Flex align="center" gap="1" style={{ minHeight: 20, minWidth: 0 }}>
+        {isFolder ? (
+          !item.hasChildren && <EmptyBadge />
+        ) : hideStatus ? (
+          <Text size="1" style={{ color: 'var(--slate-9)' }}>—</Text>
+        ) : statusIcon ? (
+          <Tooltip content={statusLabel} side="top" delayDuration={200}>
+            <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+              <Box style={{ display: 'inline-flex', flexShrink: 0 }}>{statusIcon}</Box>
+              <Text size="1" truncate style={{ color: 'var(--neutral-11)' }}>
+                {statusShort}
+              </Text>
+            </Flex>
+          </Tooltip>
+        ) : null}
+      </Flex>
+
+      <Text size="1" truncate title={meta} style={{ color: 'var(--neutral-9)', minHeight: 16 }}>
+        {meta}
+      </Text>
     </Flex>
   );
 }
@@ -689,6 +427,9 @@ function GridCard({
 interface KbGridViewProps {
   items: TableItem[];
   selectedItems: Set<string>;
+  /** With `onSelectAll`, a "Select all" checkbox sits above the cards, as the list has in its header. */
+  allSelected?: boolean;
+  onSelectAll?: () => void;
   showCheckbox?: boolean;
   pagination?: {
     limit: number;
@@ -705,6 +446,8 @@ interface KbGridViewProps {
   onCursorChange?: (cursor: string | null, direction?: 'next' | 'prev') => void;
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
+  /** Set while the cards are search or filter results: each card then offers its parent. */
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -718,6 +461,8 @@ interface KbGridViewProps {
 export function KbGridView({
   items,
   selectedItems,
+  allSelected = false,
+  onSelectAll,
   showCheckbox = true,
   pagination,
   onSelectItem,
@@ -725,6 +470,7 @@ export function KbGridView({
   onCursorChange,
   onLimitChange,
   onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -733,6 +479,8 @@ export function KbGridView({
   onDownload,
   hasCollectionContext = true,
 }: KbGridViewProps) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const allows = (item: TableItem, action: 'rename' | 'move' | 'delete') =>
     hasCollectionContext || !needsCollectionContext(item, action);
   return (
@@ -746,11 +494,17 @@ export function KbGridView({
           padding: 'var(--space-4)',
         }}
       >
-        {/* Grid container - as many 200px+ columns as fit */}
+        {showCheckbox && onSelectAll && (
+          <Text as="label" size="1" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)', color: 'var(--neutral-11)', cursor: 'pointer' }}>
+            <Checkbox size="1" checked={allSelected} onCheckedChange={onSelectAll} style={{ cursor: 'pointer' }} />
+            {t('table.selectAll')}
+          </Text>
+        )}
+        {/* As many columns as fit; narrower on phones so two cards share a row */}
         <Box
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+            gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? 150 : 200}px, 1fr))`,
             gap: 'var(--space-3)',
           }}
         >
@@ -761,10 +515,13 @@ export function KbGridView({
               item={item}
               isSelected={selectedItems.has(item.id)}
               showCheckbox={showCheckbox}
+              selectionActive={selectedItems.size > 0}
+              isMobile={isMobile}
               onSelect={() => onSelectItem(item.id)}
               onClick={() => onItemClick(item)}
               onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
               onPreview={onPreview}
+              onGoToParent={onGoToParent}
               onRename={allows(item, 'rename') ? onRename : undefined}
               onReindex={onReindex}
               onReplace={onReplace}

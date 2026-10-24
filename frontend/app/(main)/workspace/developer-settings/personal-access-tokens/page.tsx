@@ -11,8 +11,8 @@ import { EntityEmptyState, ConfirmationDialog } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { asArray } from '@/lib/utils/safe';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '../../components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '../../components/settings-page-container';
 import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
@@ -130,7 +130,7 @@ function PersonalAccessTokensPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(40),
         boxSizing: 'border-box',
         minWidth: 0,
       }}

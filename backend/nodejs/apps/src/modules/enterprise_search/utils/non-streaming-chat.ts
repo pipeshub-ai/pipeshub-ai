@@ -18,9 +18,7 @@ import {
   IChatSessionDocument,
   IMessage,
 } from '../types/conversation.interfaces';
-import type { AppConfig } from '../../tokens_manager/config/config';
 import { AiChatRequest, ChatTarget } from './ai-chat-payload';
-import { redactConversationFor, redactMessagesFor } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingAIResponseError,
@@ -99,19 +97,11 @@ export interface ContinuedConversation {
   previousConversations: ReturnType<typeof formatPreviousConversations>;
 }
 
-/** Who is asking, so what they read and write is theirs: history redacted, turns stamped. */
-export interface TurnViewer {
-  appConfig: AppConfig;
-  userId: string;
-  orgId: string;
-}
-
-export const continueConversation = async (
+export const continueConversation = (
   filter: Record<string, unknown>,
   userMessage: IMessage,
-  viewer: TurnViewer,
-): Promise<ContinuedConversation> => {
-  const { conversation, rows } = await inShortTransaction(async (session) => {
+): Promise<ContinuedConversation> =>
+  inShortTransaction(async (session) => {
     const conversation = await ChatSession.findOne(
       filter,
       null,
@@ -120,44 +110,26 @@ export const continueConversation = async (
     if (!conversation) {
       throw new NotFoundError('Conversation not found');
     }
-    // Read before the new question is appended, so the history is this turn's.
-    const rows = (await getMessages(
+    const history = await getMessages(
       conversation._id as mongoose.Types.ObjectId,
-      {
-        orgId: conversation.orgId,
-        populateCitations: !!conversation.isShared,
-      },
+      { orgId: conversation.orgId },
       session,
-    )) as Array<Record<string, unknown>>;
+    );
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
       [userMessage],
       session,
-      viewer.userId,
     );
     conversation.status = CONVERSATION_STATUS.INPROGRESS;
     conversation.failReason = undefined;
     conversation.lastActivityAt = Date.now();
     await conversation.save(withSession(session));
-    return { conversation, rows };
+    return {
+      conversation,
+      previousConversations: formatPreviousConversations(history as IMessage[]),
+    };
   });
-  // Other users' turns reach the model only as this requester may read them. The
-  // access check is a network call, so it runs after the commit: inside, it would
-  // hold the transaction open and be repeated by every retry.
-  const initiator = conversation.initiator as
-    mongoose.Types.ObjectId | undefined;
-  const history = await redactMessagesFor(
-    viewer.appConfig,
-    rows,
-    initiator?.toString(),
-    { userId: viewer.userId, orgId: viewer.orgId },
-  );
-  return {
-    conversation,
-    previousConversations: formatPreviousConversations(history as IMessage[]),
-  };
-};
 
 const STATUS_CODE_NAMES: Record<number, string> = {
   400: 'BAD_REQUEST',
@@ -219,7 +191,6 @@ export interface CompleteTurnOptions {
   headers: Record<string, string>;
   modelInfo: IAIModel;
   requestId?: string;
-  viewer: TurnViewer;
 }
 
 export interface CompletedTurn {
@@ -304,14 +275,9 @@ export const completeTurn = async (
       String(conversation.orgId),
       null,
       options.modelInfo,
-      options.viewer.userId,
     )) as Record<string, unknown>;
     return {
-      conversation: await redactConversationFor(
-        options.viewer.appConfig,
-        saved,
-        { userId: options.viewer.userId, orgId: options.viewer.orgId },
-      ),
+      conversation: saved,
       // Python omits `citations` on some agent answers despite the type.
       recordsUsed: Array.isArray(response.data.citations)
         ? response.data.citations.length

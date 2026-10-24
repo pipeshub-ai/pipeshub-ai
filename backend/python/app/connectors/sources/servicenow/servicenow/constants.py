@@ -31,6 +31,7 @@ class ServiceNowTables:
     SYS_PROPERTIES = "sys_properties"
     SP_PORTAL = "sp_portal"
     KB_UC_CAN_READ_MTOM = "kb_uc_can_read_mtom"
+    KB_UC_CANNOT_READ_MTOM = "kb_uc_cannot_read_mtom"
     KB_UC_CAN_CONTRIBUTE_MTOM = "kb_uc_can_contribute_mtom"
     CORE_COMPANY = "core_company"
     CMN_DEPARTMENT = "cmn_department"
@@ -66,6 +67,9 @@ class ServiceNowFields:
     NUMBER = "number"
     AUTHOR = "author"
     CAN_READ_USER_CRITERIA = "can_read_user_criteria"
+    CANNOT_READ_USER_CRITERIA = "cannot_read_user_criteria"
+    MATCH_ALL = "match_all"
+    ADVANCED = "advanced"
     USER_CRITERIA = "user_criteria"
     USER_NAME = "user_name"
     FIRST_NAME = "first_name"
@@ -172,6 +176,7 @@ class ServiceNowDictKeys:
     SOURCE_SYS_ID = "source_sys_id"
     ROLE = "role"
     READ = "read"
+    CANNOT_READ = "cannot_read"
     WRITE = "write"
     USER_SYS_ID = "user_sys_id"
     ORG_SYS_ID = "org_sys_id"
@@ -252,3 +257,9 @@ ORGANIZATIONAL_ENTITIES: dict[str, OrganizationalEntityConfig] = {
         "sync_point_key": "cost_centers",
     },
 }
+
+
+#: Whether a Can Read group criteria also matches members of child groups. Unverified on a real
+#: instance (see ServiceNowConnector._users_matching_criteria), so off: an allow grants less.
+#: Cannot Read always expands child groups.
+CRITERIA_ALLOW_INCLUDES_CHILD_GROUPS = False

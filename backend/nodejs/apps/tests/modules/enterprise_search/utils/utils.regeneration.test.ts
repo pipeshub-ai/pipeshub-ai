@@ -563,37 +563,19 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       return sinon.stub(ChatSessionMessage, 'find').returns(chain as never)
     }
 
-    it('sends no conversation to a viewer who is not its author', async () => {
-      const res = makeRes()
-      const conversation = makeConversation()
-      const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
-      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
-      sinon.stub(ChatSession, 'findById').resolves({ _id: conversation._id, toObject: () => ({ _id: conversation._id, initiator: 'author-1', title: 'Secret' }) })
-      stubMessagesQuery([{ _id: messageId, messageType: 'bot_response', content: 'author-only answer', seq: 2, orgId: 'o' }])
-
-      await handleRegenerationError(
-        asRes(res), new Error('x'), asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, 'viewer-2',
-      )
-
-      const out = written(res)
-      expect(out).to.not.include('author-only answer')
-      expect(out).to.not.include('Secret')
-    })
-
     it('shows the plain "unavailable" text and the refreshed conversation, never the raw error', async () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
-      const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, initiator: 'author-1', title: 'Reloaded', nextSeq: 3 }) }
+      const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, title: 'Reloaded', nextSeq: 3 }) }
       const findConversation = sinon.stub(ChatSession, 'findById').resolves(reloaded)
       stubMessagesQuery([{ _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o' }])
       const error = Object.assign(new Error('connect ECONNREFUSED 10.0.0.7:8000'), { code: 'ECONNREFUSED' })
 
       await handleRegenerationError(
-        asRes(res), error, asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, 'author-1',
+        asRes(res), error, asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL,
       )
 
       expect(findConversation.calledOnceWithExactly(conversation._id.toString())).to.equal(true)

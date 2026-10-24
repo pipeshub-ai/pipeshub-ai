@@ -38,12 +38,19 @@ export function MobileMenuButton() {
         zIndex: 100,
       }}
     >
+      {/* Its own surface: page content scrolls underneath, and a bare icon tangled with it. */}
       <IconButton
         variant="ghost"
         color="gray"
         size="2"
         onClick={open}
-        style={{ margin: 0, ...touchTarget(true) }}
+        style={{
+          margin: 0,
+          ...touchTarget(true),
+          backgroundColor: 'var(--color-background)',
+          borderRadius: '0 0 var(--radius-3) 0',
+          boxShadow: '0 1px 4px rgba(0, 0, 0, 0.12)',
+        }}
         aria-label={t('sidebar.open')}
       >
         <MaterialIcon name="menu" size={22} color="var(--gray-11)" />

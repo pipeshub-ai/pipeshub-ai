@@ -1,7 +1,5 @@
 'use client';
 
-import type { RequestAccessInfo } from '@/chat/types';
-
 /**
  * Origin type for citations — indicates where the record came from
  */
@@ -70,14 +68,6 @@ export interface CitationMaps {
   sourcesOrder: string[];
   /** Keyed by chunkIndex (the `[N]` number) → citationId */
   citationsOrder: Record<number, string>;
-  /** Shared chat only: sources the viewer cannot read (one per record). */
-  /** Shared chat only: tool results / reasoning were dropped for this viewer. */
-  detailsHidden?: boolean;
-  redaction?: {
-    redacted: boolean;
-    partial: boolean;
-    sources: RequestAccessInfo[];
-  };
 }
 
 /**

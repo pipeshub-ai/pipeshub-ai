@@ -314,23 +314,7 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
-    "accessRequest": {
-      "approve": "Genehmigen",
-      "deny": "Ablehnen",
-      "approved": "Zugriff gewährt",
-      "denied": "Anfrage abgelehnt",
-      "failed": "Ihre Entscheidung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
-      "approveTitle": "Zugriff genehmigen?",
-      "approveBodyCollection": "Damit erhält {{user}} Lesezugriff auf die gesamte Sammlung „{{name}}“.",
-      "approveBodyRecord": "Damit erhält {{user}} Lesezugriff auf diesen Datensatz.",
-      "cancel": "Abbrechen",
-      "alreadyDecided": "Diese Anfrage wurde bereits entschieden.",
-      "someone": "Jemand",
-      "alreadyApproved": "Bereits genehmigt",
-      "alreadyDeclined": "Bereits abgelehnt",
-      "forwarded": "Der Zugriff auf diesen Datensatz wird im Quellsystem gewährt."
-    }
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",
@@ -666,7 +650,9 @@
       "open": "Öffnen",
       "preview": "Vorschau",
       "goToParent": "Zum übergeordneten Ordner",
-      "goToNamed": "Zu {{name}}"
+      "goToNamed": "Zu {{name}}",
+      "moreFor": "Weitere Optionen für {{name}}",
+      "select": "{{name}} auswählen"
     },
     "upload": {
       "title": "Daten hochladen",
@@ -795,8 +781,6 @@
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
     "agentChat": "Agent-Chat",
-    "askedBy": "{{name}} hat gefragt",
-    "askedByUnknown": "Ein anderer Nutzer hat gefragt",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -1298,9 +1282,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche",
-      "deepResearch": "Tiefenrecherche",
-      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
+      "webSearch": "Websuche"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "demoBanner": "Sie sehen Acme Corp, ein kleines fiktives Unternehmen mit geladenen Demodaten. Probieren Sie eine dieser Fragen aus oder",
@@ -1402,20 +1384,7 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
-    "redaction": {
-      "partial": "Diese Antwort basiert teilweise auf Quellen, auf die Sie keinen Zugriff haben.",
-      "hidden": "Diese Antwort basiert auf Quellen, auf die Sie keinen Zugriff haben.",
-      "sourceLabel": "Quelle ohne Zugriff",
-      "requestAccess": "Zugriff anfragen",
-      "requested": "Zugriff angefragt",
-      "requestFailed": "Die Anfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
-      "openInSource": "In der Quelle öffnen",
-      "inlineHidden": "Ausgeblendet: kein Zugriff",
-      "alreadyAccessible": "Sie können diese Quelle bereits öffnen. Laden Sie den Chat neu.",
-      "detailsHidden": "Details wie Tool-Ergebnisse und Begründungen sind für geteilte Ansichten ausgeblendet.",
-      "collectionLabel": "Zugriff auf die Sammlung anfragen, die diese Quelle enthält"
-    }
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -5437,10 +5406,6 @@
         "label": "Kann ansehen",
         "description": "Nur Lesezugriff"
       }
-    },
-    "chatRoles": {
-      "writer": "Kann ansehen und Nachrichten senden. Antworten nutzen den eigenen Zugriff.",
-      "reader": "Kann den Chat nur ansehen."
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",

@@ -398,23 +398,7 @@
     "filterTooltip": "筛选：{{filter}}",
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知",
-    "accessRequest": {
-      "approve": "批准",
-      "deny": "拒绝",
-      "approved": "已授予访问权限",
-      "denied": "已拒绝申请",
-      "failed": "无法保存你的决定，请重试。",
-      "approveTitle": "批准访问？",
-      "approveBodyCollection": "这将授予 {{user}} 对整个集合“{{name}}”的读取权限。",
-      "approveBodyRecord": "这将授予 {{user}} 对此记录的读取权限。",
-      "cancel": "取消",
-      "alreadyDecided": "此申请已处理。",
-      "someone": "有人",
-      "alreadyApproved": "已批准",
-      "alreadyDeclined": "已拒绝",
-      "forwarded": "此记录的访问权限在其源系统中授予。"
-    }
+    "removeFailed": "无法移除通知"
   },
   "action": {
     "find": "查找",
@@ -754,7 +738,9 @@
       "open": "打开",
       "preview": "预览",
       "goToParent": "转到上级",
-      "goToNamed": "转到 {{name}}"
+      "goToNamed": "转到 {{name}}",
+      "moreFor": "{{name}} 的更多选项",
+      "select": "选择 {{name}}"
     },
     "upload": {
       "title": "上传数据",
@@ -884,8 +870,6 @@
     "sharedChats": "共享的聊天",
     "sharedBy": "由 {{name}} 共享",
     "agentChat": "智能体聊天",
-    "askedBy": "{{name}} 提问",
-    "askedByUnknown": "其他用户提问",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -1427,9 +1411,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此智能体未配置",
       "internalSearch": "内部搜索",
-      "webSearch": "网络搜索",
-      "deepResearch": "深度研究",
-      "deepResearchNeedsWebSearch": "开启网页搜索后才能使用深度研究"
+      "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
     "toolApproval": {
@@ -1487,20 +1469,7 @@
       "download": "下载产物",
       "downloading": "正在下载产物"
     },
-    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
-    "redaction": {
-      "partial": "此回答部分基于你无权访问的来源。",
-      "hidden": "此回答基于你无权访问的来源。",
-      "sourceLabel": "你无权访问的来源",
-      "requestAccess": "申请访问",
-      "requested": "已申请访问",
-      "requestFailed": "无法发送申请，请重试。",
-      "openInSource": "在来源中打开",
-      "inlineHidden": "已隐藏：你没有访问权限",
-      "alreadyAccessible": "你现在可以打开此来源，请刷新对话。",
-      "detailsHidden": "工具结果和推理等详情对共享查看者隐藏。",
-      "collectionLabel": "申请访问包含此来源的集合"
-    }
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -5409,10 +5378,6 @@
         "label": "可查看",
         "description": "仅有查看权限"
       }
-    },
-    "chatRoles": {
-      "writer": "可查看并发送消息。其回答使用其自身的访问权限。",
-      "reader": "只能查看聊天。"
     },
     "team": "团队",
     "teamsNoRoles": "团队没有角色",

@@ -516,6 +516,23 @@ async def test_folder_filter_syncs_only_the_selected_subtree(drive: Harness) -> 
     assert drive.names() == {"Picked", "Picked sub", "in-1.txt", "in-2.txt"}
 
 
+
+async def test_a_selected_folder_id_that_does_not_exist_is_reported_to_the_user(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await drive.connector_()).notify = notify
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "in-1.txt"}
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
 async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(drive: Harness) -> None:
     drive.world.hide_unreadable_parents = True
     drive.world.add_user("owner@example.com")

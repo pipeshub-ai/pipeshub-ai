@@ -314,23 +314,7 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification",
-    "accessRequest": {
-      "approve": "Approve",
-      "deny": "Deny",
-      "approved": "Access granted",
-      "denied": "Request declined",
-      "failed": "Couldn't save your decision. Please try again.",
-      "approveTitle": "Approve access?",
-      "approveBodyCollection": "This gives {{user}} read access to the whole collection “{{name}}”.",
-      "approveBodyRecord": "This gives {{user}} read access to this record.",
-      "cancel": "Cancel",
-      "alreadyDecided": "This request was already decided.",
-      "someone": "Someone",
-      "alreadyApproved": "Already approved",
-      "alreadyDeclined": "Already declined",
-      "forwarded": "Access to this record is granted in its source system."
-    }
+    "removeFailed": "Could not remove notification"
   },
   "action": {
     "find": "Find",
@@ -666,7 +650,9 @@
       "open": "Open",
       "preview": "Preview",
       "goToParent": "Go to parent",
-      "goToNamed": "Go to {{name}}"
+      "goToNamed": "Go to {{name}}",
+      "moreFor": "More options for {{name}}",
+      "select": "Select {{name}}"
     },
     "upload": {
       "title": "Upload data",
@@ -796,8 +782,6 @@
     "sharedChats": "Shared chats",
     "sharedBy": "Shared by {{name}}",
     "agentChat": "Agent chat",
-    "askedBy": "{{name}} asked",
-    "askedByUnknown": "Another user asked",
     "noSharedChats": "No shared chats",
     "yourChats": "Your chats",
     "noChatsFound": "No chats found",
@@ -1341,9 +1325,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Not configured on this agent",
       "internalSearch": "Internal search",
-      "webSearch": "Web search",
-      "deepResearch": "Deep research",
-      "deepResearchNeedsWebSearch": "Turn on web search to use deep research"
+      "webSearch": "Web search"
     },
     "resizePanels": "Resize chat and preview panels",
     "toolApproval": {
@@ -1402,20 +1384,7 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
-    "redaction": {
-      "partial": "This answer is partially based on sources you can't access.",
-      "hidden": "This answer is based on sources you can't access.",
-      "sourceLabel": "Source you can't access",
-      "requestAccess": "Request access",
-      "requested": "Access requested",
-      "requestFailed": "Couldn't send the request. Please try again.",
-      "openInSource": "Open in source",
-      "inlineHidden": "Hidden: you don't have access",
-      "alreadyAccessible": "You can already open this source. Refresh the chat.",
-      "detailsHidden": "Details such as tool results and reasoning are hidden for shared viewers.",
-      "collectionLabel": "Request access to the collection that contains this source"
-    }
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -5477,10 +5446,6 @@
         "label": "Can view",
         "description": "Only viewing access"
       }
-    },
-    "chatRoles": {
-      "writer": "Can view and send messages. Their answers use their own access.",
-      "reader": "Can only view the chat."
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",

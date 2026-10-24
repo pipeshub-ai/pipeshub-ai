@@ -19,7 +19,7 @@ const chat = vi.hoisted(() => ({
 const store = vi.hoisted(() => ({
   state: {
     activeSlotId: 'slot-1' as string | null,
-    slots: { 'slot-1': { canWrite: true } } as Record<string, { canWrite?: boolean }>,
+    slots: { 'slot-1': { isOwner: true } } as Record<string, { isOwner?: boolean }>,
     agentContextAccess: null as { agentKey: string; canEdit: boolean } | null,
   },
 }));
@@ -70,7 +70,7 @@ async function signInAndClosePopup(button: string) {
 beforeEach(() => {
   installBrowserShims();
   store.state.activeSlotId = 'slot-1';
-  store.state.slots = { 'slot-1': { canWrite: true } };
+  store.state.slots = { 'slot-1': { isOwner: true } };
   store.state.agentContextAccess = null;
   mcpApi.getOAuthAuthorizationUrl.mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize' });
   mcpApi.getAgentOAuthAuthorizationUrl.mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize' });
@@ -159,7 +159,7 @@ describe('McpSignInCard', () => {
   });
 
   it("offers nothing to do in someone else's conversation", () => {
-    store.state.slots = { 'slot-1': { canWrite: false } };
+    store.state.slots = { 'slot-1': { isOwner: false } };
     renderInTheme(<McpSignInCard servers={[DRIVE]} />);
     expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull();
   });

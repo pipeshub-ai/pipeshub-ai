@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -10,9 +10,18 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { SkillForBuilder } from '../../types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
-import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
+import {
+  filterMcpServerTools,
+  filterPaletteGroup,
+  filterToolsetTools,
+  groupConnectorInstances,
+  matchesPaletteSearch,
+  prepareDragData,
+} from '../sidebar-utils';
 import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
-import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useWebSearchConfig } from '../hooks/use-web-search-config';
 import { AGENT_LLM_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import {
@@ -22,6 +31,7 @@ import {
   selectSkillsEnabled,
 } from '@/lib/store/feature-flags-store';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
+import { visibleWebSearchProviders } from './sidebar-web-search-section';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { AgentBuilderSkillsSection } from './sidebar-skills-section';
@@ -34,7 +44,7 @@ import type { AgentWebSearchAttachment } from '../types';
 
 const PALETTE_ICON_SIZE = 20;
 
-/** Matches `expanded[k] ?? true` for keys not seeded in `useState` (e.g. `knowledge-connector-*`). */
+/** Default open state for accordion keys not seeded up front (e.g. `knowledge-connector-*`). */
 const DEFAULT_KNOWLEDGE_NEST_EXPANDED = true;
 
 const paletteRowLabelStyle: React.CSSProperties = {
@@ -118,7 +128,8 @@ export function AgentBuilderSidebar(props: {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+  const searching = search.trim() !== '';
+  const { isOpen, toggle: toggleKey } = useSearchAwareExpanded(searching, {
     models: false,
     knowledge: true,
     'knowledge-apps': true,
@@ -127,31 +138,78 @@ export function AgentBuilderSidebar(props: {
     mcpServers: true,
     skills: true,
   });
+  const toggle = (key: string) => toggleKey(key, DEFAULT_KNOWLEDGE_NEST_EXPANDED);
+  const isSectionOpen = (key: string) => isOpen(key, DEFAULT_KNOWLEDGE_NEST_EXPANDED);
 
-  const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
-  const groupedConnectors = useMemo(() => groupConnectorInstances(configuredConnectors), [configuredConnectors]);
-  const connectorTypeEntries = useMemo(() => Object.entries(groupedConnectors), [groupedConnectors]);
+  // Every section filters by the palette query; a query that names a section or group shows all of it.
+  const modelsTitle = t('agentBuilder.aiModels');
+  const knowledgeTitle = t('agentBuilder.knowledge');
+  const toolsTitle = t('agentBuilder.tools');
+  const mcpTitle = t('agentBuilder.mcpServersSection');
+  const skillsTitle = t('agentBuilder.skillsSection');
+  const appsLabel = t('agentBuilder.groupApps');
+  const collectionsLabel = t('agentBuilder.groupCollections');
+  const webSearchLabel = t('agentBuilder.webSearch');
+  const isAdmin = useUserStore(selectIsAdmin);
+  // One load for the web search group and the match check below, so both see the same providers.
+  const webSearchConfig = useWebSearchConfig(actionsEnabled);
 
-  const llmTemplates = filtered.filter((t) => t.category === 'llm');
-  // kbGroup/appGroup are looked up from the unfiltered templates so that group section
-  // headers remain visible when the user searches for individual items inside them.
+  const llmTemplates = filterPaletteGroup(
+    search,
+    [modelsTitle],
+    nodeTemplates.filter((tmpl) => tmpl.category === 'llm'),
+    (tmpl) => [tmpl.label, tmpl.description, tmpl.defaultConfig?.provider as string, tmpl.defaultConfig?.modelName as string]
+  );
+  const visibleConnectors = filterPaletteGroup(
+    search,
+    [knowledgeTitle, appsLabel],
+    configuredConnectors,
+    (c) => [c.name, c.type, c.appGroup]
+  );
+  const connectorTypeEntries = Object.entries(groupConnectorInstances(visibleConnectors ?? []));
+
   const kbGroup = nodeTemplates.find((t) => t.type === 'kb-group');
   const appGroup = nodeTemplates.find((t) => t.type === 'app-group');
-  const kbIndividuals = filtered.filter(
-    (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
+  const kbIndividuals = filterPaletteGroup(
+    search,
+    [knowledgeTitle, collectionsLabel],
+    nodeTemplates.filter((t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'),
+    (tmpl) => [tmpl.label, tmpl.description]
   );
-  const skillTemplates = filtered.filter((t) => t.category === 'skills');
+  const skillTemplates = filterPaletteGroup(
+    search,
+    [skillsTitle],
+    nodeTemplates.filter((t) => t.category === 'skills'),
+    (tmpl) => [tmpl.label, tmpl.description, tmpl.defaultConfig?.skillCategory as string]
+  );
+  const toolsSearch = matchesPaletteSearch(search, toolsTitle) ? '' : search;
+  const mcpSearch = matchesPaletteSearch(search, mcpTitle) ? '' : search;
+  const toolsHasMatch =
+    toolsets.some((ts) => filterToolsetTools(ts, toolsSearch) !== null) ||
+    filterPaletteGroup(
+      toolsSearch,
+      [webSearchLabel],
+      visibleWebSearchProviders(Boolean(isAdmin), webSearchConfig.configuredProviders),
+      (meta) => [meta.label, meta.description]
+    ) !== null;
+  const mcpHasMatch = mcpServers.some((entry) => filterMcpServerTools(entry, mcpSearch) !== null);
+  // While searching, sections with nothing to show are hidden (loading keeps them as skeletons).
+  const showSection = (hasMatch: boolean) => !searching || loading || hasMatch;
+  const showModels = showSection(llmTemplates !== null);
+  const showKnowledge = showSection(
+    (appGroup !== undefined && visibleConnectors !== null) || (kbGroup !== undefined && kbIndividuals !== null)
+  );
+  const showTools = actionsEnabled && showSection(toolsHasMatch);
+  const showMcp = mcpEnabled && showSection(mcpHasMatch);
+  const showSkills = skillsEnabled && showSection(skillTemplates !== null);
+  const nothingMatches = !showModels && !showKnowledge && !showTools && !showMcp && !showSkills;
 
   const SHOW_MORE_LIMIT = 5;
-  const [showAllKbCollections, setShowAllKbCollections] = useState(false);
-  const [showAllConnectors, setShowAllConnectors] = useState(false);
-
-  const toggle = useCallback(
-    (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
-      setExpanded((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
-    },
-    []
-  );
+  const [showAllKbCollectionsState, setShowAllKbCollections] = useState(false);
+  const [showAllConnectorsState, setShowAllConnectors] = useState(false);
+  // Matches never hide behind "Show more".
+  const showAllKbCollections = showAllKbCollectionsState || searching;
+  const showAllConnectors = showAllConnectorsState || searching;
 
   if (!open) return null;
 
@@ -248,20 +306,22 @@ export function AgentBuilderSidebar(props: {
             maxWidth: '100%',
           }}
         >
+          {showModels ? (
           <SectionHeader
-            title={t('agentBuilder.aiModels')}
+            title={modelsTitle}
             icon="auto_awesome"
-            open={expanded.models}
+            open={isSectionOpen('models')}
             onToggle={() => toggle('models')}
           />
-          {expanded.models ? (
+          ) : null}
+          {showModels && isSectionOpen('models') ? (
             loading ? (
               <Box className="agent-builder-palette-nest">
                 <AgentBuilderPaletteSkeletonList count={5} />
               </Box>
             ) : (
               <Box className="agent-builder-palette-nest">
-                {llmTemplates.map((t) => {
+                {(llmTemplates ?? []).map((t) => {
                   const provider =
                     typeof t.defaultConfig?.provider === 'string' ? t.defaultConfig.provider : '';
                   const llmIconSrc = resolveLlmProviderIconPath(provider || undefined);
@@ -287,13 +347,15 @@ export function AgentBuilderSidebar(props: {
             )
           ) : null}
 
+          {showKnowledge ? (
           <SectionHeader
-            title={t('agentBuilder.knowledge')}
+            title={knowledgeTitle}
             icon="menu_book"
-            open={expanded.knowledge}
+            open={isSectionOpen('knowledge')}
             onToggle={() => toggle('knowledge')}
           />
-          {expanded.knowledge ? (
+          ) : null}
+          {showKnowledge && isSectionOpen('knowledge') ? (
             loading ? (
               <Box className="agent-builder-palette-nest">
                 <AgentBuilderPaletteSkeletonList count={7} />
@@ -301,16 +363,16 @@ export function AgentBuilderSidebar(props: {
             ) : (
             <Box className="agent-builder-palette-nest">
               {/* Apps group — drag the whole row to drop all connected apps as one node */}
-              {appGroup ? (
+              {appGroup && visibleConnectors !== null ? (
                 <SidebarCategoryRow
-                  groupLabel={t('agentBuilder.groupApps')}
+                  groupLabel={appsLabel}
                   groupMaterialIcon="apps"
-                  itemCount={configuredConnectors.length}
-                  isExpanded={expanded['knowledge-apps'] ?? true}
+                  itemCount={visibleConnectors.length}
+                  isExpanded={isSectionOpen('knowledge-apps')}
                   onToggle={() => toggle('knowledge-apps')}
                   dragType={paletteStructureLocked ? undefined : 'app-group'}
                 >
-                  {configuredConnectors.length === 0 ? (
+                  {visibleConnectors.length === 0 ? (
                     <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
                       {t('agentBuilder.noConnectors')}
                     </Text>
@@ -368,14 +430,14 @@ export function AgentBuilderSidebar(props: {
                           groupConnectorType={groupConnectorType}
                           groupIcon={icon || undefined}
                           itemCount={instances.length}
-                          isExpanded={expanded[expandKey] ?? true}
+                          isExpanded={isSectionOpen(expandKey)}
                           onToggle={() => toggle(expandKey)}
                         >
                           {instances.map((inst, instIdx) => renderInstance(inst, instIdx))}
                         </SidebarCategoryRow>
                       );
                     })}
-                    {connectorTypeEntries.length > SHOW_MORE_LIMIT && (
+                    {!searching && connectorTypeEntries.length > SHOW_MORE_LIMIT && (
                       <button
                         type="button"
                         aria-expanded={showAllConnectors}
@@ -412,12 +474,12 @@ export function AgentBuilderSidebar(props: {
               ) : null}
 
               {/* Collections group — drag the whole row to drop all KBs as one node */}
-              {kbGroup ? (
+              {kbGroup && kbIndividuals !== null ? (
                 <SidebarCategoryRow
-                  groupLabel={t('agentBuilder.groupCollections')}
+                  groupLabel={collectionsLabel}
                   groupMaterialIcon="folder"
                   itemCount={kbIndividuals.length}
-                  isExpanded={expanded['knowledge-collections'] ?? true}
+                  isExpanded={isSectionOpen('knowledge-collections')}
                   onToggle={() => toggle('knowledge-collections')}
                   dragType={paletteStructureLocked ? undefined : 'kb-group'}
                 >
@@ -444,7 +506,7 @@ export function AgentBuilderSidebar(props: {
                         <span style={paletteRowLabelStyle}>{t.label}</span>
                       </DraggableRow>
                     ))}
-                    {kbIndividuals.length > SHOW_MORE_LIMIT && (
+                    {!searching && kbIndividuals.length > SHOW_MORE_LIMIT && (
                       <button
                         type="button"
                         aria-expanded={showAllKbCollections}
@@ -483,18 +545,19 @@ export function AgentBuilderSidebar(props: {
             )
           ) : null}
 
-          {actionsEnabled ? (
+          {showTools ? (
             <>
               <SectionHeader
-                title={t('agentBuilder.tools')}
+                title={toolsTitle}
                 icon="handyman"
-                open={expanded.tools}
+                open={isSectionOpen('tools')}
                 onToggle={() => toggle('tools')}
               />
-              {expanded.tools ? (
+              {isSectionOpen('tools') ? (
                 <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <AgentBuilderToolsetsSection
                     toolsets={toolsets}
+                    search={toolsSearch}
                     loading={loading}
                     refreshToolsets={refreshToolsets}
                     activeToolsetTypeKeys={activeToolsetTypeKeys}
@@ -507,6 +570,7 @@ export function AgentBuilderSidebar(props: {
                     orgCredentialUiLocked={toolsetsOrgCredentialLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                     webSearchAttached={webSearchAttached}
+                    webSearchConfig={webSearchConfig}
                     agentShared={isServiceAccount || shareWithOrg}
                   />
                 </Box>
@@ -514,18 +578,19 @@ export function AgentBuilderSidebar(props: {
             </>
           ) : null}
 
-          {mcpEnabled ? (
+          {showMcp ? (
             <>
               <SectionHeader
-                title={t('agentBuilder.mcpServersSection')}
+                title={mcpTitle}
                 icon="hub"
-                open={expanded.mcpServers}
+                open={isSectionOpen('mcpServers')}
                 onToggle={() => toggle('mcpServers')}
               />
-              {expanded.mcpServers ? (
+              {isSectionOpen('mcpServers') ? (
                 <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <AgentBuilderMcpSection
                     mcpServers={mcpServers}
+                    search={mcpSearch}
                     loading={loading}
                     refreshMcpServers={refreshMcpServers}
                     mcpMergeCheckNodes={mcpMergeCheckNodes}
@@ -541,25 +606,31 @@ export function AgentBuilderSidebar(props: {
             </>
           ) : null}
 
-          {skillsEnabled ? (
+          {showSkills ? (
             <>
               <SectionHeader
-                title={t('agentBuilder.skillsSection')}
+                title={skillsTitle}
                 icon="psychology"
-                open={expanded.skills}
+                open={isSectionOpen('skills')}
                 onToggle={() => toggle('skills')}
                 beta
               />
-              {expanded.skills ? (
+              {isSectionOpen('skills') ? (
                 <AgentBuilderSkillsSection
                   availableSkills={availableSkills}
-                  skillTemplates={skillTemplates}
+                  skillTemplates={skillTemplates ?? []}
                   loading={loading}
                   structureLocked={paletteStructureLocked}
                   onPaletteStructureDragBlocked={onPaletteDragBlocked}
                 />
               ) : null}
             </>
+          ) : null}
+
+          {nothingMatches ? (
+            <Text size="1" role="status" style={{ color: 'var(--olive-11)', fontStyle: 'italic', padding: '4px 8px' }}>
+              {t('message.noResults')}
+            </Text>
           ) : null}
         </Box>
       </ScrollArea>

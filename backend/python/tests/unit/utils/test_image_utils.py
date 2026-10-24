@@ -20,7 +20,10 @@ from app.utils.image_utils import (
     mime_to_extension,
     normalize_image_to_base64,
     supported_mime_types,
-    to_llm_image_format,
+    is_below_content_size,
+    is_extreme_aspect_ratio,
+    is_decorative_image,
+    to_llm_image_format, 
 )
 
 _RASTERIZE = "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64"
@@ -399,3 +402,94 @@ class TestNormalizeImageToBase64DataUri:
 
     def test_charset_is_enforced_inside_a_base64_data_uri(self) -> None:
         assert normalize_image_to_base64("data:image/png;base64,<not base64>") is None
+
+class TestImageBelowContentSize:
+    """Test Image for identifying images that fall below minimum content dimensions."""
+
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [
+            pytest.param(None, None, id="missing-both-dimensions"),
+            pytest.param(None, 100, id="missing-width"),
+            pytest.param(0, 100, id="zero-width"),
+            pytest.param(0, 0, id="zero-dimensions"),
+        ],
+    )
+    def test_missing_or_zero_dimensions_are_not_too_small(
+        self, width: int | None, height: int | None
+    ) -> None:
+        assert is_below_content_size(width, height) is False
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(63, 200, True, id="below-minimum-short-edge"),
+            pytest.param(200, 64, False, id="at-minimum-short-edge"),
+        ],
+    )
+    def test_short_edge_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_below_content_size(width, height) is expected
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(80, 100, True, id="below-minimum-area"),
+            pytest.param(100, 100, False, id="at-minimum-area"),
+            pytest.param(120, 90, False, id="above-minimum-area"),
+        ],
+    )
+    def test_content_area_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_below_content_size(width, height) is expected
+
+class TestImageExtremeAspectRatio:
+    """Tests for extreme image aspect ratios and boundary conditions."""
+
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [
+            pytest.param(None, None, id="missing-both-dimensions"),
+            pytest.param(None, 10, id="missing-width"),
+            pytest.param(0, 90, id="zero-width"),
+            pytest.param(100, 0, id="zero-height"),
+        ],
+    )
+    def test_missing_or_zero_dimensions_are_not_extreme(
+        self, width: int | None, height: int | None
+    ) -> None:
+        assert is_extreme_aspect_ratio(width, height) is False
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(200, 20, False, id="ratio-at-maximum"),
+            pytest.param(201, 20, True, id="ratio-above-maximum"),
+            pytest.param(10, 140, True, id="portrait-ratio-above-maximum"),
+            pytest.param(1000, 50, True, id="landscape-ratio-above-maximum"),
+        ],
+    )
+    def test_aspect_ratio_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_extreme_aspect_ratio(width, height) is expected
+
+class TestDecorativeImage:
+    """Tests for decorative image classification based on size and aspect ratio."""
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(100, 100, False, id="normal-content-image"),
+            pytest.param(10, 10, True, id="image-below-minimum-size"),
+            pytest.param(1000, 50, True, id="decorative-landscape-image"),
+            pytest.param(1100, 100, True, id="extreme-landscape-ratio"),
+            pytest.param(100, 1100, True, id="extreme-portrait-ratio"),
+        ],
+    )
+    def test_decorative_image_classification(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_decorative_image(width, height) is expected

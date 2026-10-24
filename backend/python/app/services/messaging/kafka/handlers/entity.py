@@ -14,6 +14,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import connector_sync_lock
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -32,6 +33,7 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
@@ -40,6 +42,10 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
 
 _REQUEUE_PAGE_SIZE = 100
+# A burst of added users is collected for this long, then linked by one pass per connector.
+_LINK_DEBOUNCE_SEC = 10
+# A pass waits for a running sync (it may be past its user step) for at most this many debounces.
+_LINK_MAX_DEFERRALS = 360
 # Parked by a turn-off, as opposed to AUTO_INDEX_OFF from the connector's own
 # indexing filters, which carries no such reason.
 _PARKED_WHILE_OFF = {
@@ -58,6 +64,7 @@ class EntityEventService(BaseEventService):
         self.logger = logger
         self.graph_provider = graph_provider
         self.graph_data_store = GraphDataStore(logger, graph_provider)
+        self._link_state: dict[str, dict] = {}
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -323,11 +330,70 @@ class EntityEventService(BaseEventService):
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )
+            self._schedule_connector_link(payload["orgId"])
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
+
+    def _schedule_connector_link(self, org_id: str) -> None:
+        """Ask the org's running connectors that link users to do so, without holding up the event.
+
+        At most one pass per connector is in flight; adds that arrive meanwhile are folded
+        into one more pass that starts after the debounce.
+        """
+        for connector_id, connector in list(getattr(self.app_container, "connectors_map", {}).items()):
+            if not getattr(connector, "user_link_steps", ()):
+                continue
+            if getattr(connector.data_entities_processor, "org_id", None) != org_id:
+                continue
+            state = self._link_state.setdefault(connector_id, {"dirty": False, "task": None})
+            state["dirty"] = True
+            if state["task"] is None:
+                state["task"] = asyncio.create_task(self._link_passes(connector_id))
+
+    async def _link_passes(self, connector_id: str) -> None:
+        state = self._link_state[connector_id]
+        deferrals = 0
+        try:
+            while state["dirty"]:
+                await asyncio.sleep(_LINK_DEBOUNCE_SEC)
+                state["dirty"] = False
+                if await self._link_connector(connector_id):
+                    deferrals = 0
+                elif deferrals < _LINK_MAX_DEFERRALS:
+                    deferrals += 1
+                    state["dirty"] = True
+        finally:
+            state["task"] = None
+
+    async def _link_connector(self, connector_id: str) -> bool:
+        """Best effort: a user added after a connector's last user sync has no edge to it
+        until the next sync, so run the connector's own user-link steps (the source alone
+        decides what the user may reach). Holds connector_sync_lock for the whole pass, so a
+        sync that is admitted meanwhile waits for it, and is not run while the connector syncs
+        (the caller retries once it has ended) nor for a connector that is off or being
+        deleted. Returns False only when deferred; never raises.
+        """
+        try:
+            connector = getattr(self.app_container, "connectors_map", {}).get(connector_id)
+            if connector is None:
+                return True
+            lock = connector_sync_lock(connector_id)
+            if lock.locked():
+                return False
+            async with lock:
+                coordinator = get_coordinator()
+                if coordinator is not None and await coordinator.is_running(connector_id):
+                    return False
+                app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+                if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
+                    return True
+                await connector.link_new_users()
+        except Exception as e:
+            self.logger.warning("Could not link new users to connector %s: %s", connector_id, e)
+        return True
 
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""

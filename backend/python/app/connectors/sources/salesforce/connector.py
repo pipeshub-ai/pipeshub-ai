@@ -2262,10 +2262,13 @@ class SalesforceConnector(BaseConnector):
         user_email: str,
         record_ids: List[str],
         api_version: str,
-    ) -> AsyncGenerator[Tuple[str, str, str], None]:
+        incomplete: set | None = None,
+    ) -> AsyncGenerator[tuple[str, str, str], None]:
         """
         Yields (record_id, user_email, access_level) tuples for a given user,
-        streaming results as each composite batch resolves.
+        streaming results as each composite batch resolves. A batch that failed
+        adds the user's email to ``incomplete``: what was yielded is then not the
+        user's full access.
         """
         unique_ids = list(set(rid for rid in record_ids if rid))
         if not unique_ids or not user_id:
@@ -2275,6 +2278,8 @@ class SalesforceConnector(BaseConnector):
             safe_user_id = _sanitize_soql_id(user_id)
         except ValueError:
             self.logger.warning("Invalid Salesforce user ID in access check: %r", user_id)
+            if incomplete is not None:
+                incomplete.add(user_email)
             return
 
         SOQL_BATCH_SIZE = 200
@@ -2309,10 +2314,14 @@ class SalesforceConnector(BaseConnector):
                 )
                 if not response.success or not response.data:
                     self.logger.error(f"Composite access check failed: {response.error}")
+                    if incomplete is not None:
+                        incomplete.add(user_email)
                     continue
 
                 for item in response.data.get("compositeResponse") or []:
                     if item.get("httpStatusCode") != 200:
+                        if incomplete is not None:
+                            incomplete.add(user_email)
                         continue
 
                     for row in (item.get("body") or {}).get("records") or []:
@@ -2335,6 +2344,8 @@ class SalesforceConnector(BaseConnector):
                     f"Error processing access batch {i} for user {user_email}: {e}",
                     exc_info=True
                 )
+                if incomplete is not None:
+                    incomplete.add(user_email)
 
     async def _authenticated_user_id(self) -> Optional[str]:
         """The user id that ends the identity URL Salesforce returns with every token."""
@@ -5917,6 +5928,8 @@ class SalesforceConnector(BaseConnector):
            (API calls only — no DB writes during collection).
         3. Replace all stale permission edges with fresh ones in a single batch
            transaction: O(records + groups) deletes + 2 batch_create_edges calls.
+           Only when every user's access was read in full: if any read failed, the
+           stored edges are kept and the fresh ones are added (unknown is not empty).
         """
         # 1. Fetch all active Salesforce users (streamed; bounded by user count
         #    which is the natural cardinality of this query — capping pages here
@@ -5986,6 +5999,8 @@ class SalesforceConnector(BaseConnector):
         # 4. Collect all permission tuples from Salesforce API concurrently (no DB writes)
         MAX_CONCURRENT_USERS = 5
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
+
+        incomplete_users: set = set()
         tasks = [
             self._sync_permissions_for_user(
                 user=user,
@@ -5993,10 +6008,10 @@ class SalesforceConnector(BaseConnector):
                 salesforce_record_group_external_ids=salesforce_rg_external_ids,
                 api_version=api_version,
                 semaphore=semaphore,
+                incomplete=incomplete_users,
             )
             for user in sf_users
         ]
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
         for i, result in enumerate(results):
@@ -6005,6 +6020,7 @@ class SalesforceConnector(BaseConnector):
                     "Failed to collect permissions for user %s: %s",
                     sf_users[i].get("Email"), result,
                 )
+                incomplete_users.add(sf_users[i].get("Email"))
             else:
                 all_permission_tuples.extend(result)  # type: ignore[arg-type]
 
@@ -6019,6 +6035,16 @@ class SalesforceConnector(BaseConnector):
         ] + [
             (rgid, CollectionNames.RECORD_GROUPS.value) for rgid in ext_id_to_rg_id.values()
         ]
+        if incomplete_users:
+            # The edges are rebuilt from scratch, so a user whose read failed would lose
+            # all access. Add-only this run; access that was revoked stays until a pass
+            # in which every user is read in full.
+            self.logger.warning(
+                "Access of %d user(s) could not be read in full; keeping stored permission "
+                "edges and only adding (revocations wait for a complete pass).",
+                len(incomplete_users),
+            )
+            delete_targets = []
         org_by_node_id: dict[str, str | None] = {
             (n.get("id") or n.get("_key")): n.get("orgId")
             for n in salesforce_records + salesforce_record_groups
@@ -6092,7 +6118,8 @@ class SalesforceConnector(BaseConnector):
         salesforce_record_group_external_ids: List[str],
         api_version: str,
         semaphore: asyncio.Semaphore,
-    ) -> List[Tuple[str, str, str, bool]]:
+        incomplete: set | None = None,
+    ) -> list[tuple[str, str, str, bool]]:
         """
         Collect all permission tuples for one user via the Salesforce UserRecordAccess
         API.  Returns a list of (email, external_id, access_level, is_record_group)
@@ -6111,6 +6138,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rec_id, access_level, False))
 
@@ -6119,6 +6147,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_record_group_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rg_id, access_level, True))
 

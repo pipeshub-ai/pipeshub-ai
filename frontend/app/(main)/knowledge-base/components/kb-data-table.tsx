@@ -430,6 +430,8 @@ export function KbDataTable({
         <KbGridView
           items={items}
           selectedItems={activeSelectedItems}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
           showCheckbox={showCheckbox}
           pagination={pagination}
           onCursorChange={onCursorChange}
@@ -437,6 +439,7 @@ export function KbDataTable({
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}

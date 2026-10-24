@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+import copy
 from logging import Logger
 from typing import Any, Dict, List, Optional
+import weakref
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -72,6 +76,19 @@ class ConnectorSyncSkippedError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+# Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
+# connector. Keyed by id, not instance: a connector can be rebuilt between the two.
+_SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def connector_sync_lock(connector_id: str) -> asyncio.Lock:
+    lock = _SYNC_LOCKS.get(connector_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SYNC_LOCKS[connector_id] = lock
+    return lock
 
 
 class BaseConnector(ABC):
@@ -287,6 +304,31 @@ class BaseConnector(ABC):
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
         NotImplementedError("This method is not supported")
+
+    # Names of the zero-argument steps of this connector's own sync that create the user,
+    # group and app edges. Empty: the connector is not linked after a user is added (see
+    # EntityEventService._link_user_to_connectors).
+    user_link_steps: tuple[str, ...] = ()
+
+    async def link_new_users(self) -> None:
+        """Run the user and group steps of the sync, without touching content.
+
+        Called after a user is added, holding connector_sync_lock, so never while this
+        connector syncs. The steps are the sync's own, so the source alone decides what the
+        new user may reach; they must be idempotent.
+        """
+        for step in self.user_link_steps:
+            await getattr(self, step)()
+
+    @contextmanager
+    def _keep_sync_state(self, *names: str) -> Iterator[None]:
+        """Leave the named sync bookkeeping fields as they were once the block ends."""
+        saved = {name: copy.copy(getattr(self, name)) for name in names}
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
 
     @abstractmethod
     async def cleanup(self) -> None:

@@ -109,57 +109,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     expect(discard.called).to.equal(false)
   })
 
-  it('keeps each turn under its author and copies nothing but what the owner may read of another author', async () => {
-    seed('Done')
-    const chat = store.session(chatId)!
-    const BOB = oid()
-    store.addMessage(chat, {
-      messageType: 'user_query',
-      content: 'bob asks',
-      authorUserId: BOB,
-    })
-    const bobAnswer = store.addMessage(chat, {
-      messageType: 'bot_response',
-      content: 'bob answer',
-      authorUserId: BOB,
-      tools: [{ toolName: 'search' }],
-      reasoning: [{ text: 'private' }],
-      parts: [{ type: 'x' }],
-      referenceData: [{ id: 'r' }],
-    })
-    store.messages[1]!.set('tools', [{ toolName: 'sql' }])
-    botMessageId = String(bobAnswer._id)
-
-    const out = await fork()
-
-    expect(out.status).to.equal(201)
-    const rows = store.messagesOf(out.body?.id) as Array<Record<string, any>>
-    expect(rows.map((r) => (r.authorUserId ? String(r.authorUserId) : undefined))).to.deep.equal([
-      undefined,
-      undefined,
-      String(BOB),
-      String(BOB),
-    ])
-    expect(rows[1]!.tools).to.have.length(1) // the owner's own turn keeps its details
-    for (const row of rows.slice(2)) {
-      for (const field of ['tools', 'reasoning', 'parts', 'referenceData']) {
-        expect(row[field] ?? [], field).to.have.length(0)
-      }
-    }
-  })
-
-  it('answers 404 and copies nothing for an archived chat', async () => {
-    seed('Done')
-    ;(store.session(chatId) as { isArchived?: boolean }).isArchived = true
-    const sessionsBefore = store.sessions.length
-
-    const out = await fork()
-
-    expect((out.error as { statusCode?: number }).statusCode).to.equal(404)
-    expect(store.sessions).to.have.length(sessionsBefore)
-    expect(fetchStub.called).to.equal(false)
-  })
-
   it('creates no chat, and removes the copies already made, when copying fails part way', async () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(500, { detail: 'boom' }))

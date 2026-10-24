@@ -4,8 +4,7 @@ import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
-import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
-import { pageInlinePadding } from '../../components/settings-page-container';
+import { pagePaddingX } from '@/app/components/ui/responsive';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
 import { Oauth2Api } from './api';
@@ -118,7 +117,7 @@ function Oauth2PageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
+        paddingInline: pagePaddingX(40),
         boxSizing: 'border-box',
         minWidth: 0,
       }}

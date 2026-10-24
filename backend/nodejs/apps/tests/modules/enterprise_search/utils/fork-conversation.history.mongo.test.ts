@@ -79,8 +79,6 @@ describeIfMongo(`history after a fork on a real MongoDB (transactions: ${useTran
     const { conversation, previousConversations } = await continueConversation(
       { _id: chat._id, orgId, userId: owner },
       { messageType: 'user_query', content: question, contentFormat: 'MARKDOWN', createdAt: now, updatedAt: now },
-      // Every turn here is the owner's own, so no access check is made.
-      { appConfig: {} as never, userId: String(owner), orgId: String(orgId) },
     )
     const history = previousConversations as unknown as HistoryRow[]
     const reply = answer ?? fakeModel(history, question)

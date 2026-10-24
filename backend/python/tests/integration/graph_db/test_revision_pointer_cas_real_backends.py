@@ -220,3 +220,19 @@ async def test_no_mapping_node_is_left_absent(graph: tuple[IGraphDBProvider, str
         vrid, MAPPING, {"currentRev": REV_1}, {"currentRev": None},
     )
     assert await provider.get_document(vrid, MAPPING) is None
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_record_has_left_does_not_move_the_pointer(graph: tuple[IGraphDBProvider, str]) -> None:
+    """A slower run of an older revision finishing after a newer one must not point back at it."""
+    provider, run = graph
+    vrid = f"{run}-vr"
+    sink = _sink(provider)
+    await _store_mapping(provider, vrid)
+    await _store_record(provider, vrid, REV_2)
+    await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_2))
+
+    await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_1))
+
+    doc = await _mapping(provider, vrid)
+    assert (doc["currentRev"], doc["manifestDocId"]) == (REV_2, "doc-2222")

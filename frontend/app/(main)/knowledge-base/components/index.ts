@@ -7,7 +7,6 @@ export { KbListView } from './kb-list-view';
 export { KbGridView } from './kb-grid-view';
 
 // Constants
-export { CARD_ICONS } from './grid-card-icons';
 
 // chat widget wrapper
 export { ChatWidgetWrapper } from './chat-widget-wrapper';

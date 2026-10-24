@@ -36,8 +36,6 @@ const MESSAGE_COPY_OMIT = new Set([
   'createdAt',
   'updatedAt',
   'feedback',
-  // carried by the copy as the stamp of each turn (see copySessionUpToMessage), not as a field of the message
-  'authorUserId',
 ]);
 
 export function buildForkTitle(originalTitle?: string | null): string {
@@ -48,50 +46,16 @@ export function buildForkTitle(originalTitle?: string | null): string {
     : titled.slice(0, FORK_TITLE_MAX_LENGTH);
 }
 
-/** Fields only the author of a turn may open; a fork does not take them from another author's turn. */
-const AUTHOR_ONLY_FIELDS = new Set([
-  'referenceData',
-  'tools',
-  'reasoning',
-  'parts',
-]);
-
 export function stripMessageForCopy(
   message: Record<string, unknown>,
-  otherAuthor = false,
 ): IMessage {
   const copy: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(message)) {
-    if (
-      MESSAGE_COPY_OMIT.has(key) ||
-      (otherAuthor && AUTHOR_ONLY_FIELDS.has(key))
-    ) {
-      continue;
+    if (!MESSAGE_COPY_OMIT.has(key)) {
+      copy[key] = value;
     }
-    copy[key] = value;
   }
   return copy as unknown as IMessage;
-}
-
-/**
- * Consecutive rows with the same author, in order. `author` is the stamp to write: undefined for the forking user's own turns
- * and for unstamped ones (they belong to the chat's owner), the other author's id otherwise.
- */
-export function runsByAuthor<
-  T extends { authorUserId?: { toString(): string } | null },
->(rows: T[], owner: string): Array<{ author: string | undefined; rows: T[] }> {
-  const runs: Array<{ author: string | undefined; rows: T[] }> = [];
-  for (const row of rows) {
-    const stamp = row.authorUserId?.toString();
-    const author = stamp && stamp !== owner ? stamp : undefined;
-    const last = runs[runs.length - 1];
-    if (last && last.author === author) {
-      last.rows.push(row);
-    } else {
-      runs.push({ author, rows: [row] });
-    }
-  }
-  return runs;
 }
 
 const EXPIRED_APPROVAL_PREVIEW = 'The approval request expired.';
@@ -340,28 +304,19 @@ export async function copySessionUpToMessage(
       if (batch.length === 0) {
         break;
       }
-      // Each turn keeps its author's stamp, so the per-author redaction of the original still applies in the fork. A turn another
-      // author wrote is copied without the details only its author may open (tools, reasoning, parts, reference data), so the
-      // copy never holds more than the forking user could read in the original.
-      for (const run of runsByAuthor(batch, userId)) {
-        await appendMessages(
-          forkId,
-          conversation.orgId,
-          run.rows.map((row) =>
-            pointMessageAtCopies(
-              withExpiredApprovals(
-                stripMessageForCopy(
-                  row as Record<string, unknown>,
-                  run.author !== undefined,
-                ),
-              ),
-              copies,
+      await appendMessages(
+        forkId,
+        conversation.orgId,
+        batch.map((row) =>
+          pointMessageAtCopies(
+            withExpiredApprovals(
+              stripMessageForCopy(row as Record<string, unknown>),
             ),
+            copies,
           ),
-          mongoSession,
-          run.author,
-        );
-      }
+        ),
+        mongoSession,
+      );
       messageCount += batch.length;
       nextSeq = (batch[batch.length - 1] as { seq: number }).seq + 1;
     }

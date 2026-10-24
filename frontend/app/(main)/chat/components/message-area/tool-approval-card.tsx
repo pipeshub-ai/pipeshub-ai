@@ -39,7 +39,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [remember, setRemember] = useState(false);
   const [showAll, setShowAll] = useState(false);
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.canWrite ?? null : null)) !== false;
+  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
 
   const tool = approvalToolLabel(approval);
   const server = approval.serverName;

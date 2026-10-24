@@ -1,7 +1,7 @@
 'use client';
 
 import { Flex, Heading, Text } from '@radix-ui/themes';
-import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
+import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +21,7 @@ export default function GroupsEnterprisePlaceholder() {
       style={{
         height: '100%',
         width: '100%',
-        paddingInline: PAGE_PADDING_X,
+        paddingInline: pagePaddingX(40),
       }}
     >
       <Flex

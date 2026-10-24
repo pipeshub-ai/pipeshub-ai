@@ -7,7 +7,9 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
-import { ItemActionMenu } from './item-action-menu';
+import { ItemActionMenu, type ItemActionMenuProps } from './item-action-menu';
+
+type MenuActionList = ItemActionMenuProps['actions'];
 import { KbPaginationFooter } from './kb-pagination';
 import type {
   KnowledgeBaseItem,
@@ -35,6 +37,7 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 import {
   getReindexMenuState,
@@ -65,8 +68,159 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
 }
 
+/** Indexing status in words, with the reason when it explains something (failures, pauses). Empty when there is none to show. */
+export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason = true): string {
+  if (shouldHideIndexingStatusForHubRecord(item)) {
+    return '';
+  }
+  const appendReason = (base: string, reason?: string | null, showReason = true): string =>
+    withReason && showReason && reason?.trim() ? `${base} - ${reason.trim()}` : base;
+
+  if (isKnowledgeHubNode(item)) {
+    // No status from API — do not imply "Queued"
+    if (item.indexingStatus == null) {
+      return '';
+    }
+    let baseLabel: string;
+    let showReason = true;
+    switch (item.indexingStatus) {
+      case 'COMPLETED': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
+      case 'IN_PROGRESS': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+      case 'FAILED': baseLabel = t('kb.indexingStatus.failed'); break;
+      case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = t('kb.indexingStatus.fileTypeNotSupported'); break;
+      case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;
+      case 'QUEUED': baseLabel = t('kb.indexingStatus.queued'); showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
+      case 'AUTO_INDEX_OFF': baseLabel = t('kb.indexingStatus.manualIndexing'); break;
+      case 'EMPTY': baseLabel = t('kb.indexingStatus.empty'); break;
+      case 'PAUSED': baseLabel = t('kb.indexingStatus.paused'); break;
+      case 'ENABLE_MULTIMODAL_MODELS': baseLabel = t('kb.indexingStatus.needsMultimodalModel'); break;
+      case 'SKIPPED': baseLabel = t('kb.indexingStatus.skipped'); break;
+      // Show an unrecognised status as itself: labelling it "Queued" hid real states.
+      // It has no translation, since the UI does not know it.
+      default: baseLabel = humanizeStatus(item.indexingStatus);
+    }
+    return appendReason(baseLabel, item.reason, showReason);
+  }
+  let baseLabel: string;
+  let showReason = true;
+  switch (item.status) {
+    case 'indexed': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
+    case 'processing': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+    case 'pending': baseLabel = t('kb.indexingStatus.pending'); showReason = false; break;
+    case 'failed': baseLabel = t('kb.indexingStatus.failed'); break;
+    default: baseLabel = t('kb.indexingStatus.queued'); showReason = false;
+  }
+  return appendReason(baseLabel, item.reason, showReason);
+}
+
+/** Indexing status icon for a record; null for folders and records without a status. */
+export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNode {
+  if (isFolder) return null;
+  if (shouldHideIndexingStatusForHubRecord(item)) {
+    return null;
+  }
+
+  // For KnowledgeHubNode, use indexingStatus
+  if (isKnowledgeHubNode(item)) {
+    // Missing status — no icon (avoid looking like "queued" via default branch)
+    if (item.indexingStatus == null) {
+      return null;
+    }
+    switch (item.indexingStatus) {
+      case 'COMPLETED':
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
+      case 'IN_PROGRESS':
+        return <LapTimerIcon size={20} color="var(--amber-9)" />;
+      case 'FAILED':
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+      case 'FILE_TYPE_NOT_SUPPORTED':
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+      case 'NOT_STARTED':
+        return (
+          <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
+        );
+      case 'QUEUED':
+        return (
+          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+        );
+      case 'AUTO_INDEX_OFF':
+        return (
+          <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={16} color="var(--olive-11)" />
+        );
+      case 'EMPTY':
+        return (
+          <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
+        );
+      case 'PAUSED':
+        return <MaterialIcon name="pause_circle" size={16} color="var(--slate-11)" />;
+      case 'ENABLE_MULTIMODAL_MODELS':
+        return <MaterialIcon name="image_not_supported" size={16} color="var(--amber-11)" />;
+      case 'SKIPPED':
+        return <MaterialIcon name="skip_next" size={16} color="var(--slate-11)" />;
+      default:
+        // Neutral, not the "Queued" clock: an unknown status is not a queued one.
+        return <MaterialIcon name="help_outline" size={16} color="var(--slate-11)" />;
+    }
+  }
+
+  // For KnowledgeBaseItem, use status
+  switch (item.status) {
+    case 'indexed':
+      return <MaterialIcon name="check" size={16} color="var(--accent-9)" />;
+    case 'processing':
+      return <MaterialIcon name="sync" size={16} color="var(--amber-9)" />;
+    case 'pending':
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+    case 'failed':
+      return <MaterialIcon name="error" size={16} color="var(--red-9)" />;
+    default:
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+  }
+}
+
+
+export interface KbItemMenuHandlers {
+  onOpen: () => void;
+  /** Starts the inline rename in the row or card that owns the menu. */
+  onStartRename: () => void;
+  onDownload?: (item: TableItem) => void;
+  onRename?: (item: TableItem, newName: string) => Promise<void>;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
+  onReplace?: (item: TableItem) => void;
+  onMove?: (item: TableItem) => void;
+  onDelete?: (item: TableItem) => void;
+}
+
+/** The "…" menu of one item, shared by the list rows and the grid cards so both offer the same actions. */
+export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMenuHandlers): MenuActionList {
+  const isHubNode = isKnowledgeHubNode(item);
+  const isFolder = isHubNode
+    ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
+    : item.type === 'folder';
+  // Per-item permission (Knowledge Hub nodes only): a shared item can have a lower
+  // role than the folder it is listed in.
+  const canEditItem = isHubNode ? (item.permission?.canEdit ?? false) : true;
+  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
+    getReindexNodeForTableItem(item, isHubNode),
+    !!h.onReindex,
+  );
+  return [
+    { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
+    !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
+    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename },
+    ...(showReindexMenu
+      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters))
+      : []),
+    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item) },
+    // Move relocates an item within its collection — a collection itself has nothing to move into.
+    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item) },
+    // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
+    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const },
+  ];
+}
+
 /** All Records rows extended with sourceName/sourceType from getSourceDisplay */
-function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
+export function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
   return 'sourceName' in item && 'sourceType' in item;
 }
 
@@ -76,7 +230,7 @@ const ACTIONS_WIDTH = '104px';
 const actionsWidth = (isMobile: boolean, hasGoToParent: boolean): string =>
   !isMobile ? ACTIONS_WIDTH : hasGoToParent ? '88px' : '56px';
 const ACTION_SLOT: React.CSSProperties = { width: 24, display: 'flex', justifyContent: 'center', flexShrink: 0 };
-const ROW_ACTION_BUTTON: React.CSSProperties = {
+export const ROW_ACTION_BUTTON: React.CSSProperties = {
   cursor: 'pointer',
   width: 24,
   height: 24,
@@ -236,10 +390,6 @@ function TableRow({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
-  // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
-  const canDeleteItem = canDeleteKbTableItem(item);
-  // Root-level collection/app node — has no parent collection to move within.
-  const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -318,12 +468,6 @@ function TableRow({
 
   // Determine if item is a folder/container (all navigable container types)
   const isHubNode = isKnowledgeHubNode(item);
-  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
-  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
-    reindexNode,
-    !!onReindex,
-  );
-
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
@@ -334,120 +478,10 @@ function TableRow({
   const parentTarget =
     onGoToParent && isHubNode && item.nodeType !== 'app' && item.parent?.id ? item : null;
 
-  // Status label for tooltip
-  const getStatusLabel = (): string => {
-    if (shouldHideIndexingStatusForHubRecord(item)) {
-      return '';
-    }
-    const appendReason = (base: string, reason?: string | null, showReason = true): string =>
-      showReason && reason?.trim() ? `${base} - ${reason.trim()}` : base;
-
-    if (isKnowledgeHubNode(item)) {
-      // No status from API — do not imply "Queued"
-      if (item.indexingStatus == null) {
-        return '';
-      }
-      let baseLabel: string;
-      let showReason = true;
-      switch (item.indexingStatus) {
-        case 'COMPLETED': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
-        case 'IN_PROGRESS': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
-        case 'FAILED': baseLabel = t('kb.indexingStatus.failed'); break;
-        case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = t('kb.indexingStatus.fileTypeNotSupported'); break;
-        case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;
-        case 'QUEUED': baseLabel = t('kb.indexingStatus.queued'); showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
-        case 'AUTO_INDEX_OFF': baseLabel = t('kb.indexingStatus.manualIndexing'); break;
-        case 'EMPTY': baseLabel = t('kb.indexingStatus.empty'); break;
-        case 'PAUSED': baseLabel = t('kb.indexingStatus.paused'); break;
-        case 'ENABLE_MULTIMODAL_MODELS': baseLabel = t('kb.indexingStatus.needsMultimodalModel'); break;
-        case 'SKIPPED': baseLabel = t('kb.indexingStatus.skipped'); break;
-        // Show an unrecognised status as itself: labelling it "Queued" hid real states.
-        // It has no translation, since the UI does not know it.
-        default: baseLabel = humanizeStatus(item.indexingStatus);
-      }
-      return appendReason(baseLabel, item.reason, showReason);
-    }
-    let baseLabel: string;
-    let showReason = true;
-    switch (item.status) {
-      case 'indexed': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
-      case 'processing': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
-      case 'pending': baseLabel = t('kb.indexingStatus.pending'); showReason = false; break;
-      case 'failed': baseLabel = t('kb.indexingStatus.failed'); break;
-      default: baseLabel = t('kb.indexingStatus.queued'); showReason = false;
-    }
-    return appendReason(baseLabel, item.reason, showReason);
-  };
-
-  // Status indicator
-  const getStatusIcon = () => {
-    if (isFolder) return null;
-    if (shouldHideIndexingStatusForHubRecord(item)) {
-      return null;
-    }
-
-    // For KnowledgeHubNode, use indexingStatus
-    if (isKnowledgeHubNode(item)) {
-      // Missing status — no icon (avoid looking like "queued" via default branch)
-      if (item.indexingStatus == null) {
-        return null;
-      }
-      switch (item.indexingStatus) {
-        case 'COMPLETED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
-        case 'IN_PROGRESS':
-          return <LapTimerIcon size={20} color="var(--amber-9)" />;
-        case 'FAILED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
-        case 'FILE_TYPE_NOT_SUPPORTED':
-          return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
-        case 'NOT_STARTED':
-          return (
-            <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
-          );
-        case 'QUEUED':
-          return (
-            <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
-          );
-        case 'AUTO_INDEX_OFF':
-          return (
-            <MaterialIcon name={getIndexStatusIcon('AUTO_INDEX_OFF')} size={16} color="var(--olive-11)" />
-          );
-        case 'EMPTY':
-          return (
-            <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
-          );
-        case 'PAUSED':
-          return <MaterialIcon name="pause_circle" size={16} color="var(--slate-11)" />;
-        case 'ENABLE_MULTIMODAL_MODELS':
-          return <MaterialIcon name="image_not_supported" size={16} color="var(--amber-11)" />;
-        case 'SKIPPED':
-          return <MaterialIcon name="skip_next" size={16} color="var(--slate-11)" />;
-        default:
-          // Neutral, not the "Queued" clock: an unknown status is not a queued one.
-          return <MaterialIcon name="help_outline" size={16} color="var(--slate-11)" />;
-      }
-    }
-
-    // For KnowledgeBaseItem, use status
-    switch (item.status) {
-      case 'indexed':
-        return <MaterialIcon name="check" size={16} color="var(--accent-9)" />;
-      case 'processing':
-        return <MaterialIcon name="sync" size={16} color="var(--amber-9)" />;
-      case 'pending':
-        return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
-      case 'failed':
-        return <MaterialIcon name="error" size={16} color="var(--red-9)" />;
-      default:
-        return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
-    }
-  };
-
   // Phones show the status and source as text under the name instead of in their own columns.
   const mobileSubtitle = isMobile
     ? [
-        getStatusLabel(),
+        getKbItemStatusLabel(item, t),
         showSourceColumn && isAllRecordDisplayRow(item) ? item.sourceName : '',
       ]
         .filter(Boolean)
@@ -633,8 +667,8 @@ function TableRow({
               </Text>
             );
           }
-          const statusIcon = getStatusIcon();
-          const statusLabel = getStatusLabel();
+          const statusIcon = getKbItemStatusIcon(item, isFolder);
+          const statusLabel = getKbItemStatusLabel(item, t);
           if (!statusIcon) {
             return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
           }
@@ -754,21 +788,17 @@ function TableRow({
             triggerSize={isMobile ? '3' : '1'}
             open={isMenuOpen}
             onOpenChange={setIsMenuOpen}
-            actions={[
-              { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: onOpen },
-              !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => onDownload(item) },
-              onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: () => startEditing() },
-              ...(showReindexMenu
-                ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
-                    onReindex!(item, statusFilters),
-                  )
-                : []),
-              !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => onReplace(item) },
-              // Move relocates an item within its collection — a collection itself has nothing to move into.
-              onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: t('action.move'), onClick: () => onMove(item) },
-              // Collections can only be deleted by OWNER
-              onDelete && canDeleteItem && { icon: 'delete', label: t('action.delete'), onClick: () => onDelete(item), color: 'red' as const },
-            ]}
+            triggerLabel={t('kb.rowActions.moreFor', { name: item.name })}
+            actions={getKbItemMenuActions(item, t, {
+              onOpen,
+              onStartRename: startEditing,
+              onDownload,
+              onRename,
+              onReindex,
+              onReplace,
+              onMove,
+              onDelete,
+            })}
           />
         </Box>
       </Flex>

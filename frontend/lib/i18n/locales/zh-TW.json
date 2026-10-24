@@ -398,23 +398,7 @@
     "filterTooltip": "篩選：{{filter}}",
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
-    "removeFailed": "無法移除通知",
-    "accessRequest": {
-      "approve": "核准",
-      "deny": "拒絕",
-      "approved": "已授予存取權限",
-      "denied": "已拒絕申請",
-      "failed": "無法儲存你的決定，請重試。",
-      "approveTitle": "核准存取？",
-      "approveBodyCollection": "這將授予 {{user}} 對整個集合「{{name}}」的讀取權限。",
-      "approveBodyRecord": "這將授予 {{user}} 對此記錄的讀取權限。",
-      "cancel": "取消",
-      "alreadyDecided": "此申請已處理。",
-      "someone": "有人",
-      "alreadyApproved": "已核准",
-      "alreadyDeclined": "已拒絕",
-      "forwarded": "此記錄的存取權限在其來源系統中授予。"
-    }
+    "removeFailed": "無法移除通知"
   },
   "action": {
     "find": "尋找",
@@ -754,7 +738,9 @@
       "open": "開啟",
       "preview": "預覽",
       "goToParent": "前往上層",
-      "goToNamed": "前往 {{name}}"
+      "goToNamed": "前往 {{name}}",
+      "moreFor": "{{name}} 的更多選項",
+      "select": "選擇 {{name}}"
     },
     "upload": {
       "title": "上傳資料",
@@ -884,8 +870,6 @@
     "sharedChats": "共享的對話",
     "sharedBy": "由 {{name}} 分享",
     "agentChat": "智能體聊天",
-    "askedBy": "{{name}} 提問",
-    "askedByUnknown": "其他使用者提問",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
@@ -1427,9 +1411,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此代理程式未設定",
       "internalSearch": "內部搜尋",
-      "webSearch": "網路搜尋",
-      "deepResearch": "深度研究",
-      "deepResearchNeedsWebSearch": "開啟網頁搜尋後才能使用深度研究"
+      "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
     "toolApproval": {
@@ -1487,20 +1469,7 @@
       "download": "下載產物",
       "downloading": "正在下載產物"
     },
-    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
-    "redaction": {
-      "partial": "此回答部分根據你無權存取的來源。",
-      "hidden": "此回答根據你無權存取的來源。",
-      "sourceLabel": "你無權存取的來源",
-      "requestAccess": "申請存取",
-      "requested": "已申請存取",
-      "requestFailed": "無法送出申請，請重試。",
-      "openInSource": "在來源中開啟",
-      "inlineHidden": "已隱藏：你沒有存取權限",
-      "alreadyAccessible": "你現在可以開啟此來源，請重新整理對話。",
-      "detailsHidden": "工具結果與推理等詳細資料對共享檢視者隱藏。",
-      "collectionLabel": "申請存取包含此來源的集合"
-    }
+    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -5409,10 +5378,6 @@
         "label": "可檢視",
         "description": "僅有檢視權限"
       }
-    },
-    "chatRoles": {
-      "writer": "可檢視並傳送訊息。其回答使用其自身的存取權限。",
-      "reader": "只能檢視聊天。"
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",

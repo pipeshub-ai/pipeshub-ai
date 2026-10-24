@@ -195,11 +195,7 @@ function apiMessage(overrides: Partial<ConversationMessage>): ConversationMessag
   } as ConversationMessage;
 }
 
-function conversationDetail({
-  isOwner = true,
-  accessLevel,
-  messages,
-}: { isOwner?: boolean; accessLevel?: string; messages?: ConversationMessage[] } = {}) {
+function conversationDetail({ isOwner = true, messages }: { isOwner?: boolean; messages?: ConversationMessage[] } = {}) {
   const msgs = messages ?? [
     apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
     apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
@@ -214,7 +210,7 @@ function conversationDetail({
       modelInfo: undefined,
       isShared: false,
       sharedWith: [],
-      access: { isOwner, accessLevel: accessLevel ?? (isOwner ? 'owner' : 'read') },
+      access: { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
     },
     messages: msgs,
     pagination: PAGINATION,
@@ -565,15 +561,6 @@ describe('Chat page — opening a conversation', () => {
 
     await act(async () => finishLoading(conversationDetail({ isOwner: true })));
     expect(await screen.findByRole('textbox', { name: 'Message composer' })).toBeTruthy();
-  });
-
-  it('shows the composer, but not sharing, on a conversation shared with the user for writing', async () => {
-    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: false, accessLevel: 'write' }));
-    renderPage('conversationId=conv-1');
-
-    await screen.findByText('You get 25 days a year.');
-    expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
   });
 
   it('lets the owner see who it is shared with and open sharing', async () => {

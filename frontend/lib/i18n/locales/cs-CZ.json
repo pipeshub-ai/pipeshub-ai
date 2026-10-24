@@ -434,23 +434,7 @@
     "filterTooltip": "Filtr: {{filter}}",
     "loadFailed": "Nepodařilo se načíst oznámení",
     "updateFailed": "Oznámení se nepodařilo aktualizovat",
-    "removeFailed": "Oznámení se nepodařilo odebrat",
-    "accessRequest": {
-      "approve": "Schválit",
-      "deny": "Zamítnout",
-      "approved": "Přístup udělen",
-      "denied": "Žádost zamítnuta",
-      "failed": "Rozhodnutí se nepodařilo uložit. Zkuste to prosím znovu.",
-      "approveTitle": "Schválit přístup?",
-      "approveBodyCollection": "Uživatel {{user}} tím získá přístup pro čtení k celé kolekci „{{name}}“.",
-      "approveBodyRecord": "Uživatel {{user}} tím získá přístup pro čtení k tomuto záznamu.",
-      "cancel": "Zrušit",
-      "alreadyDecided": "O této žádosti již bylo rozhodnuto.",
-      "someone": "Někdo",
-      "alreadyApproved": "Již schváleno",
-      "alreadyDeclined": "Již zamítnuto",
-      "forwarded": "Přístup k tomuto záznamu se uděluje v jeho zdrojovém systému."
-    }
+    "removeFailed": "Oznámení se nepodařilo odebrat"
   },
   "action": {
     "find": "Najít",
@@ -793,7 +777,9 @@
       "open": "Otevřít",
       "preview": "Náhled",
       "goToParent": "Přejít na nadřazenou složku",
-      "goToNamed": "Přejít do {{name}}"
+      "goToNamed": "Přejít do {{name}}",
+      "moreFor": "Další možnosti pro {{name}}",
+      "select": "Vybrat {{name}}"
     },
     "upload": {
       "title": "Nahrát data",
@@ -928,8 +914,6 @@
     "sharedChats": "Sdílené chaty",
     "sharedBy": "Sdílí {{name}}",
     "agentChat": "Chat s agentem",
-    "askedBy": "{{name}} se zeptal(a)",
-    "askedByUnknown": "Zeptal se jiný uživatel",
     "noSharedChats": "Žádné sdílené chaty",
     "yourChats": "Vaše chaty",
     "noChatsFound": "Nebyly nalezeny žádné chaty",
@@ -1488,9 +1472,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "U tohoto agenta není nakonfigurováno",
       "internalSearch": "Interní vyhledávání",
-      "webSearch": "Vyhledávání na webu",
-      "deepResearch": "Hloubkový průzkum",
-      "deepResearchNeedsWebSearch": "Pro hloubkový průzkum zapněte vyhledávání na webu"
+      "webSearch": "Vyhledávání na webu"
     },
     "resizePanels": "Změnit velikost panelů chatu a náhledu",
     "sendMessage": "Odeslat zprávu",
@@ -1557,20 +1539,7 @@
       "download": "Stáhnout artefakt",
       "downloading": "Stahování artefaktu"
     },
-    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
-    "redaction": {
-      "partial": "Tato odpověď částečně vychází ze zdrojů, ke kterým nemáte přístup.",
-      "hidden": "Tato odpověď vychází ze zdrojů, ke kterým nemáte přístup.",
-      "sourceLabel": "Zdroj, ke kterému nemáte přístup",
-      "requestAccess": "Požádat o přístup",
-      "requested": "O přístup bylo požádáno",
-      "requestFailed": "Žádost se nepodařilo odeslat. Zkuste to prosím znovu.",
-      "openInSource": "Otevřít ve zdroji",
-      "inlineHidden": "Skryto: nemáte přístup",
-      "alreadyAccessible": "Tento zdroj již můžete otevřít. Obnovte chat.",
-      "detailsHidden": "Podrobnosti, jako jsou výsledky nástrojů a uvažování, jsou pro sdílené diváky skryté.",
-      "collectionLabel": "Požádat o přístup ke kolekci, která obsahuje tento zdroj"
-    }
+    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také."
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -5567,10 +5536,6 @@
         "label": "Může zobrazit",
         "description": "Pouze přístup pro zobrazení"
       }
-    },
-    "chatRoles": {
-      "writer": "Může zobrazit chat a posílat zprávy. Odpovědi používají jeho vlastní přístup.",
-      "reader": "Může chat pouze zobrazit."
     },
     "team": "Tým",
     "teamsNoRoles": "Týmy nemají role",

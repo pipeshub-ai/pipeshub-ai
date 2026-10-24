@@ -2096,6 +2096,37 @@ class JiraConnector(BaseConnector):
     # Users, Roles, Groups and Projects Management
     # ============================================================================
 
+    # Bookkeeping a full sync reads at its end; a link pass must leave it as it found it.
+    _SYNC_STATE = (
+        "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
+        "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
+    )
+    user_link_steps = ("_link_users_groups_and_roles",)
+
+    async def _link_users_groups_and_roles(self) -> None:
+        """Sync steps 4-6 without the project grants and issues: users, groups, project and lead roles.
+
+        Edges that come with issues (creator, reporter, assignee) and the project permission
+        schemes are written by the next full sync.
+        """
+        if not self.data_source:
+            return
+        with self._keep_sync_state(*self._SYNC_STATE):
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
+            jira_users = await self._fetch_users()
+            # Same licence filter as a full sync: an account without Jira product access is not linked.
+            self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+            jira_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
+            if jira_users:
+                await self.data_entities_processor.on_new_app_users(jira_users)
+            groups_members_map = await self._sync_user_groups(jira_users)
+            # Only keys and leads are needed: skip the permission scheme read of every project.
+            raw_projects = await self._list_projects_with_filter(*self._project_keys_filter())
+            if groups_members_map is not None:
+                await self._sync_project_roles([p["key"] for p in raw_projects if p.get("key")], jira_users, groups_members_map)
+            await self._sync_project_lead_roles(raw_projects, jira_users)
+
     async def _fetch_users(
         self, active_pipeshub_users: Optional[list[AppUser]] = None
     ) -> list[AppUser]:
@@ -3796,6 +3827,11 @@ class JiraConnector(BaseConnector):
         jira_users: list["AppUser"],
     ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
         """Resolve the project-keys sync filter, then fetch matching projects."""
+        allowed_keys, project_keys_operator = self._project_keys_filter()
+        return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+
+    def _project_keys_filter(self) -> tuple[list[str] | None, FilterOperatorType | None]:
+        """The project-keys sync filter's keys and operator (None, None without one)."""
         allowed_keys = None
         project_keys_operator = None
         if self.sync_filters:
@@ -3813,7 +3849,7 @@ class JiraConnector(BaseConnector):
                     self.logger.info(f"🔍 Project keys filter: {action} projects: {allowed_keys}")
                 else:
                     self.logger.info("🔍 Project keys filter is empty, will fetch all projects")
-        return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+        return allowed_keys, project_keys_operator
 
     async def _fetch_projects(
         self,
