@@ -4,19 +4,35 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_loop_lib.agent.hook_dispatch import dispatch_pre_model
 from app.agent_loop_lib.context.base import ContextBudget
+from app.agent_loop_lib.context.pipeline import (
+    OPTIONAL_LAYERS,
+    ContextProfile,
+    build_context_pipeline,
+)
+from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    Message,
     ToolCall,
     ToolMessage,
     ToolMessageMeta,
     UserMessage,
+)
+from app.agent_loop_lib.core.scope import RunScope, TurnScope
+from app.agent_loop_lib.core.tokens import count_tokens
+from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.hooks.events import HookEvent
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
+    LAYER as ARTIFACT_LAYER,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     LAYER,
     shape_tool_result_clearing,
 )
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+from app.agent_loop_lib.hooks.registry import HookRegistry
 
 
 def _is_compacted(msg) -> bool:
@@ -381,3 +397,89 @@ class TestMultipartToolMessageClearing:
         ]
         result = await _run_clearing(messages, keep_last_n_turns=3)
         assert result[2].content == recent_parts
+
+
+class TestArtifactCompactionAndClearing:
+    """Artifact compaction (L2) runs before clearing (L3) and batches on its
+    own schedule. A batch of L2 can take the context L3 receives back under
+    L3's trigger, so neither layer may undo what the other compacted on an
+    earlier call of the run (#4391)."""
+
+    BUDGET = ContextBudget(max_tokens=100_000)
+    # As in the chat profile: clearing keeps code-graph reads, artifact
+    # compaction still compacts them.
+    KEPT = "codegraph__read_code"
+
+    @classmethod
+    def _history(cls) -> list[Message]:
+        """Six searches (two of them artifacts), then six code reads that are artifacts."""
+        history: list[Message] = [UserMessage(content="Where is the retry policy configured?")]
+        for turn in range(12):
+            search = turn < 6
+            tokens = 6_000 if search else 8_000
+            meta = None
+            if turn in (1, 4) or not search:
+                meta = ToolMessageMeta(
+                    artifact_id=f"a{turn}", summary=f"result {turn}",
+                    original_token_count=tokens, turn_index=turn,
+                )
+            history.append(_assistant_call(f"c{turn}", "search" if search else cls.KEPT, {"q": turn}))
+            history.append(ToolMessage(
+                content=f"result {turn}: " + "row " * tokens, tool_call_id=f"c{turn}", artifact_meta=meta,
+            ))
+        return history
+
+    @classmethod
+    async def _calls(cls, history: list[Message]) -> list[tuple[list[Message], list[Message]]]:
+        """(stored, sent) for each call of one run: the history before every
+        assistant message, and the whole of it."""
+        hooks = HookRegistry()
+        profile = ContextProfile(
+            clearing_kept_tools=frozenset({cls.KEPT}),
+            disabled=OPTIONAL_LAYERS - {"artifact_compaction", "tool_result_clearing"},
+        )
+        for layer in build_context_pipeline(profile):
+            hooks.on(HookEvent.PRE_MODEL).use(layer)
+        run = RunScope(identity=RunContext(role_name="assistant", model="m"), spec=None, runtime=None,
+                       goal=Goal(description="Where is the retry policy configured?"))
+        ends = [i for i, m in enumerate(history) if isinstance(m, AssistantMessage)] + [len(history)]
+        calls: list[tuple[list[Message], list[Message]]] = []
+        for turn, end in enumerate(ends):
+            sent = await dispatch_pre_model(
+                hooks, history[:end], cls.BUDGET, turn_index=turn, scope=TurnScope(run=run, turn_index=turn),
+            )
+            calls.append((history[:end], sent))
+        return calls
+
+    @staticmethod
+    def _by(layer: str, sent: list[Message]) -> set[str | None]:
+        return {m.tool_call_id for m in sent if isinstance(m, ToolMessage) and m.compacted_by == layer}
+
+    @pytest.mark.asyncio
+    async def test_a_batch_of_artifact_compaction_does_not_bring_back_cleared_results(self) -> None:
+        calls = await self._calls(self._history())
+        cleared = [self._by(LAYER, sent) for _, sent in calls]
+        compacted = [self._by(ARTIFACT_LAYER, sent) for _, sent in calls]
+
+        first_compaction = next(k for k, ids in enumerate(compacted) if ids)
+        assert cleared[first_compaction - 1] == {f"c{turn}" for turn in range(6)}
+        # What reached clearing on that call was under its trigger, so only
+        # clearing's own record of the run kept the searches cleared.
+        stored, sent = calls[first_compaction]
+        reaching_clearing = [
+            stored[i] if isinstance(m, ToolMessage) and m.compacted_by == LAYER else m
+            for i, m in enumerate(sent)
+        ]
+        assert count_tokens(reaching_clearing) <= self.BUDGET.trigger_tokens(0.5)
+
+        for earlier, later in zip(cleared, cleared[1:], strict=False):
+            assert earlier <= later, "a later call undid what clearing had cleared"
+        for earlier, later in zip(compacted, compacted[1:], strict=False):
+            assert earlier <= later, "a later call undid what artifact compaction had compacted"
+        assert cleared[-1] == {f"c{turn}" for turn in range(6)}
+        assert compacted[-1] == {f"c{turn}" for turn in range(6, 10)}
+
+        (_, before), (_, after) = calls[first_compaction - 1], calls[first_compaction]
+        first_change = next(b for a, b in zip(before, after, strict=False) if a != b)
+        assert isinstance(first_change, ToolMessage)
+        assert first_change.compacted_by == ARTIFACT_LAYER
