@@ -1259,6 +1259,8 @@ export interface QueuedSend {
   queuedAt: number;
   /** The server refused it when its turn came: the queue waits here until it is retried, edited or removed. */
   failed?: string;
+  /** Sources the question names with `@`: they scope it when it goes. */
+  mentionIds?: string[];
 }
 
 // ── Search types ──────────────────────────────────────────────────────

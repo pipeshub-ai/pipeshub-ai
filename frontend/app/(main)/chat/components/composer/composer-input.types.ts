@@ -2,6 +2,16 @@ import type React from 'react';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import type { MentionParent } from '@/chat/components/mention-composer-field';
 import type { MentionNode } from '@/chat/utils/node-mentions';
+import type { MentionSurface } from '@/chat/chat-extension';
+
+/** What the `@` menu needs to know about the composer it opens in. */
+export interface ComposerMentionContext {
+  surface: MentionSurface;
+  /** Sources the menu lists first: an agent's or a project's own. */
+  preferredSources?: readonly MentionNode[] | null;
+  /** Sources come before the other groups (a page about sources). */
+  sourcesFirst?: boolean;
+}
 
 export interface ComposerValue {
   text: string;
@@ -37,4 +47,5 @@ export interface ComposerInputProps {
   /** The chat's scope: with it, the `@` menu's checkboxes tick nodes into it. */
   mentionSelection?: ChatKnowledgeFilters;
   onMentionSelectionChange?(next: ChatKnowledgeFilters): void;
+  mentionContext?: ComposerMentionContext;
 }

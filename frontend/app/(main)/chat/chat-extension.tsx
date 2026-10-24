@@ -29,6 +29,7 @@ import type { CitationMaps } from './components/message-area/response-tabs/citat
 import type { ComposerInputHandle, ComposerInputProps } from './components/composer/composer-input.types';
 import { ComposerField as TextareaComposerField } from './components/composer/composer-field';
 import type { MentionNode } from './utils/node-mentions';
+import type { MentionGroupView } from './utils/mention-groups';
 import type { QueuedMessage } from './utils/queued-send';
 import { useQueuedSends } from './hooks/use-send-when-free';
 
@@ -403,6 +404,28 @@ export interface ComposerFieldProps extends ComposerInputProps {
   shouldDeferPaste?(data: DataTransfer | null): boolean;
 }
 
+/** Where a composer sits, for its `@` menu. */
+export type MentionSurface = 'chat' | 'widget' | 'projectPage';
+
+export interface MentionGroupsContext {
+  /** What was typed after `@`. */
+  query: string;
+  /** The menu is open: the groups may fetch what they list. */
+  enabled: boolean;
+  /** The field holds chips of other kinds than sources (the rich editor); a plain field takes sources only. */
+  richItems: boolean;
+  surface: MentionSurface;
+}
+
+/** Groups the `@` menu shows besides Sources, in order, already matched to the query. */
+export interface MentionGroupsResult {
+  groups: MentionGroupView[];
+  /** The menu's one footer line; `undefined` leaves the menu its own (the keys, the first time). */
+  footer?: ReactNode | null;
+  /** Sources come before these groups. */
+  sourcesFirst?: boolean;
+}
+
 /** Row layout passed by a list body to `ChatResponse`. */
 export interface ChatResponseLayout {
   [key: string]: unknown;
@@ -529,6 +552,8 @@ export interface ChatSlots {
   useComposerSend(opts: ComposerSendOptions): ComposerSendExtension;
   useQueueList(opts: { slotId: string | null; pairedSlotId: string | null }): QueueListExtension;
   useComposerInput(opts: ComposerInputOptions): ComposerInputExtension;
+  /** The `@` menu's groups besides Sources; the default adds none, so `@` names sources only. */
+  useMentionGroups(ctx: MentionGroupsContext): MentionGroupsResult;
   ComposerField: ForwardRefExoticComponent<ComposerFieldProps & RefAttributes<ComposerInputHandle>>;
   /** The message list of a chat that has messages; `renderDefault` draws the default list. */
   MessageList: ComponentType<{ renderDefault(): ReactNode }>;
@@ -587,6 +612,8 @@ const PLAIN_COMPOSER_INPUT: ComposerInputExtension = {
   overlay: null,
 };
 
+const NO_MENTION_GROUPS: MentionGroupsResult = { groups: [] };
+
 const DEFAULT_RESPONSE: ChatResponseExtension = { hideTabs: false, hideConfidence: false, allowRegenerate: true };
 
 const PlainComposerField = forwardRef<ComposerInputHandle, ComposerFieldProps>(function PlainComposerField(props, ref) {
@@ -615,6 +642,7 @@ export const defaultChatSlots: ChatSlots = {
   useComposerSend: () => NO_COMPOSER_SEND,
   useQueueList: () => PLAIN_QUEUE_LIST,
   useComposerInput: () => PLAIN_COMPOSER_INPUT,
+  useMentionGroups: () => NO_MENTION_GROUPS,
   ComposerField: PlainComposerField,
   MessageList: DefaultMessageList,
   MessageListBody: DefaultMessageListBody,

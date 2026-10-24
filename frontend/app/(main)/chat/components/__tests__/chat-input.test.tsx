@@ -23,13 +23,17 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
-const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+const mentionField = vi.hoisted(() => ({
+  latest: null as null | { onChange: (value: string) => void; onMentionsChange: (nodes: { id: string; name: string; nodeType: string; connector: string }[]) => void },
+  rendered: vi.fn<(mentionsOff: boolean | undefined, context?: { preferredSources?: readonly { id: string; name: string }[] | null }) => void>(),
+}));
 
 vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
   type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
   const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
-    mentionField.rendered(props.mentionsOff);
+    mentionField.rendered(props.mentionsOff, props.context);
+    mentionField.latest = props;
     return <actual.MentionComposerField {...props} ref={ref} />;
   });
   return { ...actual, MentionComposerField: Spy };
@@ -138,6 +142,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '@/chat/hooks/use-composer-draft';
 import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
+import { insertMention } from '@/chat/utils/node-mentions';
 
 const initialChatState = useChatStore.getState();
 
@@ -1147,20 +1152,64 @@ describe('ChatInput — @ in agent and project chats', () => {
     toolCatalogFullNames: [],
   });
 
-  it('turns @ off in a project chat', () => {
-    useChatStore.setState({ projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }) });
+  it('offers @ in a project chat, with the project’s own sources first where their names are known', () => {
+    useChatStore.setState({
+      projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }),
+      collectionNamesCache: { 'app-1': 'Jira' },
+      collectionMetaCache: { 'app-1': { name: 'Jira', nodeType: 'app', connector: 'JIRA' } },
+    });
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBeFalsy();
+    expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'app-1', name: 'Jira', nodeType: 'app' })]);
   });
 
-  it('turns @ off in an agent chat', () => {
+  it('offers @ in an agent chat, with the agent’s knowledge first', () => {
+    useChatStore.setState({
+      agentKnowledgeDefaults: { apps: [], kb: ['kb-9'] },
+      collectionNamesCache: { 'kb-9': 'Handbook' },
+    });
     renderInput({ isAgentChat: true, agentId: 'agent-1' });
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBeFalsy();
+    expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'kb-9', name: 'Handbook' })]);
   });
 
-  it('keeps @ outside agent and project chats', () => {
+  it('keeps @ outside agent and project chats, with every source', () => {
     renderInput();
-    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+    const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
+    expect(off).toBeFalsy();
+    expect(context?.preferredSources).toBeNull();
+  });
+});
+
+describe('ChatInput — sources named with @', () => {
+  const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', connector: 'KB' };
+  const nameSources = (nodes: (typeof report)[], tail = 'what changed') => {
+    const text = nodes.reduce((acc, node) => insertMention(acc, acc.length, acc.length, node), '');
+    act(() => {
+      mentionField.latest?.onChange(`${text}${tail}`);
+      mentionField.latest?.onMentionsChange(nodes);
+    });
+  };
+
+  it('sends the named source with that question only: the chat’s own selection stays as it was', () => {
+    useChatStore.setState({ settings: { ...useChatStore.getState().settings, filters: { apps: ['app-drive'], kb: [] } } });
+    const { onSend } = renderInput();
+    nameSources([report]);
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('Q3 Report what changed', undefined, [expect.objectContaining({ id: 'q3' })]);
+    expect(useChatStore.getState().settings.filters).toEqual({ apps: ['app-drive'], kb: [] });
+    // Its name is kept, so the sent question shows it as a chip.
+    expect(useChatStore.getState().collectionMetaCache.q3).toMatchObject({ name: 'Q3 Report', nodeType: 'record' });
+  });
+
+  it('refuses a message naming more than ten sources, and says why', () => {
+    const { onSend } = renderInput();
+    nameSources(Array.from({ length: 11 }, (_, i) => ({ ...report, id: `r${i}`, name: `Report ${i}` })));
+    fireEvent.click(sendButton());
+    expect(onSend).not.toHaveBeenCalled();
+    expect(toastTitles()[0]).toContain('10 sources');
   });
 });
 

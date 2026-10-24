@@ -1332,6 +1332,17 @@
     "sourceLoading": "Wird geladen…",
     "mentionBack": "Zurück",
     "mentionRemove": "{{name}} entfernen",
+    "atMenu": {
+      "label": "Vorschläge für Erwähnungen",
+      "sources": "Quellen",
+      "browseSources": "Alle Quellen durchsuchen",
+      "allSources": "Alle Quellen",
+      "showMore": "Mehr anzeigen",
+      "nMore": "{{count}} weitere",
+      "noMatches": "Keine Treffer",
+      "keysHint": "↑ ↓ zum Wechseln · Eingabe zum Auswählen · → öffnet eine Quelle · Esc zum Schließen",
+      "tooManySources": "Eine Nachricht kann bis zu {{max}} Quellen nennen. Entfernen Sie einige und senden Sie erneut."
+    },
     "artifactsPanel": {
       "generated_one": "{{count}} Artefakt erstellt",
       "generated_other": "{{count}} Artefakte erstellt",

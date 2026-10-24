@@ -1,5 +1,6 @@
 import type { ChatKnowledgeFilters, CollectionMeta } from '@/chat/types';
 import { bucketFor } from '@/chat/utils/tree-selection';
+import { MENTION_QUERY_MAX } from '@/chat/utils/mention-groups';
 
 /** A knowledge-hub node embedded in a composer via `@`. */
 export interface MentionNode {
@@ -36,8 +37,8 @@ function boundaryAfter(text: string, index: number): boolean {
   return index >= text.length || BOUNDARY.test(text[index] ?? '');
 }
 
-// Longer than any name worth searching for; past it, an `@` is just text.
-const MAX_QUERY_LENGTH = 60;
+// An `@` opens the menu after a space or a pad, and after an opening bracket or quote; after a letter it is an email.
+const OPENS_AFTER = /[\s\u2060("]/;
 
 /**
  * The `@query` the caret is inside, if the user is still typing a mention.
@@ -48,9 +49,9 @@ export function activeMentionQuery(text: string, caret: number): ActiveMention |
   const safeCaret = Math.max(0, Math.min(caret, text.length));
   const upto = text.slice(0, safeCaret);
   const at = upto.lastIndexOf('@');
-  if (at < 0 || !boundaryBefore(text, at)) return null;
+  if (at < 0 || !(at === 0 || OPENS_AFTER.test(text[at - 1] ?? ''))) return null;
   const query = upto.slice(at + 1);
-  if (query.length > MAX_QUERY_LENGTH || /^\s|\s\s|[\n\u2060]/.test(query)) return null;
+  if (query.length > MENTION_QUERY_MAX || /^\s|\s\s|[\n\u2060]/.test(query)) return null;
   return { start: at, query };
 }
 
@@ -248,7 +249,7 @@ export function unembedMention(text: string, mentions: readonly MentionNode[], i
   return text.slice(0, chip.start) + span.node.name + text.slice(chip.end);
 }
 
-/** Add mentioned nodes to the chat filters the next message is sent with. */
+/** The chat filters with mentioned nodes added. */
 export function mergeMentionFilters(
   current: ChatKnowledgeFilters,
   nodes: readonly MentionNode[],
@@ -266,6 +267,21 @@ export function mergeMentionFilters(
     if (!list.includes(node.id)) next[bucket] = [...list, node.id];
   }
   return next;
+}
+
+/**
+ * The filters one question goes with: the chat's own selection plus the nodes it names with `@`, each under its
+ * kind's bucket (`nodeTypeOf` says what a node is; an unknown one is a record). The chat's selection is not changed.
+ */
+export function withMentionedIds(
+  current: ChatKnowledgeFilters,
+  ids: readonly string[],
+  nodeTypeOf: (id: string) => string | undefined,
+): ChatKnowledgeFilters {
+  return mergeMentionFilters(
+    current,
+    ids.map((id) => ({ id, name: id, nodeType: nodeTypeOf(id) ?? '', connector: '' })),
+  );
 }
 
 export function mentionMeta(nodes: readonly MentionNode[]): {

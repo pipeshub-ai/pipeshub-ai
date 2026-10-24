@@ -17,6 +17,7 @@ import {
 } from '@/chat/utils/apply-conversation-model-info';
 import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
 import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
+import { mentionMeta } from '@/chat/utils/node-mentions';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -942,6 +943,16 @@ function ChatContent() {
 
     if (!pending.message.trim() && !pending.attachments?.length) return;
 
+    // The sources the message named scope this question, and show as chips in it: the request reads their kinds and
+    // names from the caches.
+    const named = pending.mentions ?? [];
+    if (named.length > 0) {
+      const { names, meta } = mentionMeta(named);
+      const now = useChatStore.getState();
+      now.setCollectionNamesCache({ ...now.collectionNamesCache, ...names });
+      now.setCollectionMetaCache({ ...now.collectionMetaCache, ...meta });
+    }
+
     // 3. Auto-send the message through the runtime. Attachments arrive
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
@@ -956,6 +967,7 @@ function ChatContent() {
             pending.attachments && pending.attachments.length > 0
               ? pending.attachments
               : undefined,
+          mentionIds: named.length > 0 ? named.map((node) => node.id) : undefined,
           ...chatExtension.send.handoffCustom(pending.extra),
         },
       },

@@ -37,4 +37,14 @@ describe("a collection's chat widget", () => {
     expect(routerPush).toHaveBeenCalledWith('/chat');
     expect(usePendingChatStore.getState().pending).toMatchObject({ message: '<@agent:ag-1> summarise', extra });
   });
+
+  it('hands over the sources the text names, so the sent question shows them as chips; a ticked one is not named', async () => {
+    render(<ChatWidgetWrapper currentTitle="Plans" selectedKbId="kb-1" isAllRecordsMode={false} />);
+    const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', connector: 'KB' };
+    const ticked = { id: 'f1', name: 'Finance', nodeType: 'recordGroup', connector: 'KB' };
+
+    await composer.onSend!('what changed in Q3 Report', undefined, [report, ticked]);
+
+    expect(usePendingChatStore.getState().pending?.mentions).toEqual([report]);
+  });
 });

@@ -11,7 +11,7 @@ import { ChatApi } from '@/chat/api';
 import { useNewChatComposerScope } from '@/chat/hooks/use-new-chat-composer-scope';
 import type { AttachmentRef } from '@/chat/types';
 import type { ComposerSendExtra } from '@/chat/chat-extension';
-import type { MentionNode } from '@/chat/utils/node-mentions';
+import { locateMentionNames, type MentionNode } from '@/chat/utils/node-mentions';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { toast } from '@/lib/store/toast-store';
 import { filterBarChatScope } from '../utils/filter-bar-chat-scope';
@@ -146,10 +146,13 @@ export function ChatWidgetWrapper({
       const selectedRecordIds =
         selectedSet.size > 0 ? Array.from(selectedSet) : undefined;
 
+      // Of the nodes sent, those the text names are its chips; the rest were ticked in the menu.
+      const named = locateMentionNames(message, mentioned).map((span) => span.node);
       const context: PendingChatContext = {
         message,
         attachments,
         extra,
+        ...(named.length > 0 ? { mentions: named } : {}),
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
           selectedNodes,

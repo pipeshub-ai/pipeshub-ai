@@ -96,6 +96,7 @@ export function queueSend(slotId: string, message: QueuedMessage): boolean {
   const item: QueuedSend = {
     query: message.query,
     ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    ...(message.mentionIds?.length ? { mentionIds: [...message.mentionIds] } : {}),
     ...chatExtension.queue.itemFields(message),
     clientMessageId: newQueuedId(),
     queuedAt: Date.now(),

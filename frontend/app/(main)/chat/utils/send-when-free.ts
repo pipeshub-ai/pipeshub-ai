@@ -33,7 +33,7 @@ export function sendNextQueued(slotId: string): boolean {
   const apiQuery = queued.query || (queued.attachments?.length ? ATTACHMENT_ONLY_STREAM_QUERY : '');
   // Nothing to ask (an empty message never queues): it is dropped.
   if (!apiQuery) return false;
-  const request = buildStreamChatRequestForSlot(slotId, apiQuery);
+  const request = buildStreamChatRequestForSlot(slotId, apiQuery, undefined, undefined, queued.mentionIds?.length ? { mentionIds: queued.mentionIds } : undefined);
   if (!request) {
     requeueFirst(slotId, queued);
     return false;

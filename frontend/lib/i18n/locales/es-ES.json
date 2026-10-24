@@ -1350,6 +1350,17 @@
     "sourceLoading": "Cargando…",
     "mentionBack": "Atrás",
     "mentionRemove": "Quitar {{name}}",
+    "atMenu": {
+      "label": "Sugerencias de menciones",
+      "sources": "Fuentes",
+      "browseSources": "Ver todas las fuentes",
+      "allSources": "Todas las fuentes",
+      "showMore": "Mostrar más",
+      "nMore": "{{count}} más",
+      "noMatches": "Sin resultados",
+      "keysHint": "↑ ↓ para moverte · Intro para elegir · → para abrir una fuente · Esc para cerrar",
+      "tooManySources": "Un mensaje puede nombrar hasta {{max}} fuentes. Quita algunas y vuelve a enviarlo."
+    },
     "artifactsPanel": {
       "generated_one": "{{count}} artefacto generado",
       "generated_many": "{{count}} artefactos generados",

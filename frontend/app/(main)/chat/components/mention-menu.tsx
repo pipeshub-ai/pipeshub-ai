@@ -1,6 +1,6 @@
 'use client';
 
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -9,6 +9,22 @@ import { useChatStore } from '@/chat/store';
 import { useAuthStore } from '@/lib/store/auth-store';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import type { MentionNode } from '@/chat/utils/node-mentions';
+import {
+  MENTION_SEARCH_DEBOUNCE_MS,
+  MENTION_SEARCH_GROUP_ROWS,
+  MENTION_SEARCH_MIN_CHARS,
+  MENTION_SOURCE_ROWS,
+  MENTION_SOURCE_ROWS_PER_KIND,
+  filterMentionItems,
+  layoutMentionGroups,
+  rankMentionItems,
+  type MentionGroupStatus,
+  type MentionGroupView,
+  type MentionMenuItem,
+  type MentionMenuRow,
+  type MentionMenuSection,
+} from '@/chat/utils/mention-groups';
+import { readRecentSources, recentSourceTimes, rememberRecentSources } from '@/chat/utils/recent-sources';
 import { CollectionLeadingIcon } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collection-row';
 import {
   NodeCheckbox,
@@ -20,7 +36,6 @@ import {
   type KnowledgeTreeNode,
 } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/knowledge-tree';
 import { KnowledgeHubApi } from '@/knowledge-base/api';
-import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/knowledge-base/utils';
 import { KbNodeNameIcon } from '@/knowledge-base/utils/kb-node-name-icon';
 import type { KnowledgeHubNode, NodeType } from '@/knowledge-base/types';
 import type { MentionParent } from '@/chat/components/mention-composer-field';
@@ -28,24 +43,69 @@ import type { MentionParent } from '@/chat/components/mention-composer-field';
 const ROOTS_PAGE_SIZE = 50;
 const SEARCH_LIMIT = 20;
 const ROW_HEIGHT = 40;
+const ROW_HEIGHT_PHONE = 44;
 const LOAD_MORE_EDGE_PX = 48;
+/** The box holds this height while it shows one list (a source, a group, every source), so Back does not move. */
+const DRILLED_HEIGHT = 300;
+const KEYS_HINT_KEY = 'chat.mentionKeysHintSeen';
+
+const PHONE_QUERY = '(max-width: 768px)';
+
+/** A phone-sized screen: the menu spans it and its rows are 44 px. False where the browser can't say. */
+export function useMentionPhoneLayout(): boolean {
+  const [phone, setPhone] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia(PHONE_QUERY);
+    setPhone(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setPhone(event.matches);
+    query.addEventListener?.('change', onChange);
+    return () => query.removeEventListener?.('change', onChange);
+  }, []);
+  return phone;
+}
+
+/** A key the composer received; a React or a DOM keyboard event. */
+export interface MentionKeyEvent {
+  key: string;
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  isComposing?: boolean;
+  nativeEvent?: { isComposing?: boolean };
+  preventDefault(): void;
+}
 
 export interface MentionMenuHandle {
   /**
    * A key the composer received while the menu is open; true when the menu used it.
    * `caretAtEnd`: the caret is at the end of the `@query`, so ArrowRight has no text to move over.
    */
-  keyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>, caretAtEnd: boolean) => boolean;
+  keyDown: (event: MentionKeyEvent, caretAtEnd: boolean) => boolean;
+}
+
+/** What was picked: a source, or a row of a group the host added. */
+export type MentionPick = { kind: 'source'; node: MentionNode } | { kind: 'item'; item: MentionMenuItem };
+
+/** Where the Sources group starts and where it sits among the host's groups. */
+export interface MentionSourcesOptions {
+  /** These first (an agent's or a project's own sources); every source stays a click away. */
+  preferred?: readonly MentionNode[] | null;
+  /** The Sources group comes before the host's groups. */
+  first?: boolean;
+  /** No Sources group. */
+  hidden?: boolean;
 }
 
 interface MentionMenuProps {
   query: string;
-  /** Lists and searches under this node instead of the hub roots. */
+  /** Lists and searches under this node first, instead of the hub roots. */
   parent?: MentionParent | null;
-  /** With these, each row gets the picker's checkbox. */
+  /** With these, each source row gets the picker's checkbox. */
   selection?: ChatKnowledgeFilters;
   onSelectionChange?: (next: ChatKnowledgeFilters) => void;
-  onPick: (node: MentionNode) => void;
+  onPick: (pick: MentionPick) => void;
   /** A search finished with nothing found. */
   onNoMatches?: () => void;
   /** Drops the typed filter, so a level opened from a filtered list shows all it holds. */
@@ -55,18 +115,17 @@ interface MentionMenuProps {
   listId: string;
   /** The active row's id, for the composer's aria-activedescendant. */
   onActiveChange: (id: string | undefined) => void;
+  /** The host's own groups (already matched to `query`), besides Sources. */
+  groups?: readonly MentionGroupView[];
+  sources?: MentionSourcesOptions;
+  /** One line under the list. `undefined` shows the keys the first time the menu ever opens; `null` shows nothing. */
+  footer?: React.ReactNode | null;
 }
 
 interface Row {
   node: KnowledgeTreeNode;
   subType?: string | null;
   isPlaceholder?: boolean;
-}
-
-interface Section {
-  key: string;
-  label?: string;
-  rows: Row[];
 }
 
 /** A level opened with its chevron. `ancestorIds` is unset while its place is unknown. */
@@ -77,6 +136,9 @@ interface Level {
   connector?: string | null;
   ancestorIds?: string[];
 }
+
+/** What the box shows besides the groups: every source, one group whole, or what a source holds. */
+type View = { kind: 'browse' } | { kind: 'group'; key: string } | { kind: 'level'; level: Level };
 
 function isCollectionRoot(root: KnowledgeBaseForChat): boolean {
   return (root.origin ?? '').toString().trim().toUpperCase() === 'COLLECTION';
@@ -98,10 +160,6 @@ function rootRow(root: KnowledgeBaseForChat): Row {
     },
     subType: root.subType,
   };
-}
-
-function nameMatches(name: string, filter: string): boolean {
-  return !filter || name.toLowerCase().includes(filter.toLowerCase());
 }
 
 // ── Hub roots: connector apps and collections ──
@@ -205,6 +263,7 @@ function appendNamed(kept: KnowledgeHubNode[], more: KnowledgeHubNode[]): Knowle
 
 function useMentionSearch(query: string, level: { id: string; nodeType: string } | null) {
   const [state, setState] = useState<SearchState>(IDLE_SEARCH);
+  const [attempt, setAttempt] = useState(0);
   const levelId = level?.id;
   const levelType = level?.nodeType;
   // A page still in flight for an earlier query or level must not land in this one.
@@ -212,7 +271,7 @@ function useMentionSearch(query: string, level: { id: string; nodeType: string }
 
   useEffect(() => {
     generation.current += 1;
-    if (query.length < KB_MIN_SEARCH_QUERY_LENGTH) {
+    if (query.length < MENTION_SEARCH_MIN_CHARS) {
       setState(IDLE_SEARCH);
       return;
     }
@@ -245,12 +304,12 @@ function useMentionSearch(query: string, level: { id: string; nodeType: string }
         .catch(() => {
           if (!controller.signal.aborted) setState({ ...IDLE_SEARCH, status: 'error' });
         });
-    }, 180);
+    }, MENTION_SEARCH_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query, levelId, levelType]);
+  }, [query, levelId, levelType, attempt]);
 
   const { nextCursor, loadingMore, status } = state;
   const loadMore = useCallback(() => {
@@ -273,7 +332,8 @@ function useMentionSearch(query: string, level: { id: string; nodeType: string }
       });
   }, [nextCursor, loadingMore, status, query, levelId, levelType]);
 
-  return { ...state, loadMore };
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { ...state, loadMore, retry };
 }
 
 // ── Rows ──
@@ -311,27 +371,37 @@ function NodeIcon({ row, size }: { row: Row; size: number }) {
   );
 }
 
-function MenuRow({
+const iconBox: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 20,
+  height: 20,
+  flexShrink: 0,
+  lineHeight: 0,
+};
+
+function ItemRow({
   id,
-  row,
+  item,
   active,
+  height,
   onHover,
   onPick,
   onOpen,
-  selection,
-  onSelectionChange,
+  checkbox,
 }: {
   id: string;
-  row: Row;
+  item: MentionMenuItem;
   active: boolean;
+  height: number;
   onHover: () => void;
   onPick: () => void;
   onOpen: () => void;
-  selection?: ChatKnowledgeFilters;
-  onSelectionChange?: (next: ChatKnowledgeFilters) => void;
+  checkbox?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const { node } = row;
+  const wraps = Boolean(item.wrapDescription && item.description);
   return (
     <Flex
       align="center"
@@ -339,49 +409,74 @@ function MenuRow({
       id={id}
       role="option"
       aria-selected={active}
+      aria-disabled={item.disabled || undefined}
+      aria-label={item.ariaLabel}
       data-mention-active={active ? '' : undefined}
+      data-mention-option={item.key}
       onMouseMove={onHover}
-      onClick={onPick}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={item.disabled ? undefined : onPick}
       style={{
-        height: ROW_HEIGHT,
+        minHeight: height,
+        height: wraps ? undefined : height,
         flexShrink: 0,
         minWidth: 0,
-        padding: '0 6px 0 10px',
+        padding: wraps ? '6px 6px 6px 10px' : '0 6px 0 10px',
         borderRadius: 'var(--radius-2)',
-        cursor: 'pointer',
+        cursor: item.disabled ? 'not-allowed' : 'pointer',
         background: active ? 'var(--olive-3)' : 'transparent',
         transition: 'background-color 0.12s',
       }}
     >
-      {selection && onSelectionChange ? (
-        <RowCheckbox node={node} filters={selection} onSelectionChange={onSelectionChange} />
+      {checkbox}
+      {item.icon ? (
+        <span style={{ ...iconBox, opacity: item.disabled ? 0.5 : 1 }} aria-hidden>
+          {item.icon}
+        </span>
       ) : null}
-      <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', lineHeight: 0 }} aria-hidden>
-        <NodeIcon row={row} size={18} />
-      </span>
-      <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+      <Flex
+        direction={wraps ? 'column' : 'row'}
+        align={wraps ? 'start' : 'center'}
+        gap={wraps ? '0' : '2'}
+        style={{ flex: 1, minWidth: 0 }}
+      >
         <Text
           size="2"
           weight="medium"
           truncate
-          title={node.name}
-          style={{ color: active ? 'var(--slate-12)' : 'var(--slate-11)', flexShrink: node.subtitle ? 0 : 1, maxWidth: node.subtitle ? '65%' : undefined, minWidth: 0 }}
+          title={item.label}
+          data-testid="mention-label"
+          style={{
+            color: item.disabled ? 'var(--slate-10)' : active ? 'var(--slate-12)' : 'var(--slate-11)',
+            flexShrink: item.description && !wraps ? 0 : 1,
+            maxWidth: item.description && !wraps ? '65%' : '100%',
+            minWidth: 0,
+          }}
         >
-          {node.name}
+          {item.label}
         </Text>
-        {node.subtitle ? (
-          <>
-            <Box aria-hidden style={{ width: 3, height: 3, borderRadius: '50%', background: 'var(--slate-8)', flexShrink: 0 }} />
-            <Text size="2" truncate title={node.subtitle} style={{ color: 'var(--slate-9)', minWidth: 0 }}>
-              {node.subtitle}
+        {item.description ? (
+          wraps ? (
+            <Text size="1" data-testid="mention-description" style={{ color: 'var(--slate-11)', minWidth: 0, overflowWrap: 'anywhere', lineHeight: '16px' }}>
+              {item.description}
             </Text>
-          </>
+          ) : (
+            <>
+              <Box aria-hidden style={{ width: 3, height: 3, borderRadius: '50%', background: 'var(--slate-8)', flexShrink: 0 }} />
+              <Text size="2" truncate title={item.description} data-testid="mention-description" style={{ color: 'var(--slate-10)', minWidth: 0 }}>
+                {item.description}
+              </Text>
+            </>
+          )
         ) : null}
       </Flex>
-      {node.hasChildren ? (
+      {item.trailing}
+      {item.canOpen ? (
         <button
           type="button"
-          aria-label={t('chat.treeExpand', { name: node.name })}
+          tabIndex={-1}
+          aria-label={t('chat.treeExpand', { name: item.label })}
+          onMouseDown={(event) => event.preventDefault()}
           onClick={(event) => {
             event.stopPropagation();
             onOpen();
@@ -408,6 +503,51 @@ function MenuRow({
   );
 }
 
+function MoreRow({
+  id,
+  label,
+  active,
+  height,
+  onHover,
+  onPick,
+}: {
+  id: string;
+  label: string;
+  active: boolean;
+  height: number;
+  onHover: () => void;
+  onPick: () => void;
+}) {
+  return (
+    <Flex
+      align="center"
+      gap="2"
+      id={id}
+      role="option"
+      aria-selected={active}
+      data-mention-active={active ? '' : undefined}
+      data-mention-more=""
+      onMouseMove={onHover}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onPick}
+      style={{
+        height,
+        flexShrink: 0,
+        padding: '0 6px 0 10px',
+        borderRadius: 'var(--radius-2)',
+        cursor: 'pointer',
+        background: active ? 'var(--olive-3)' : 'transparent',
+        transition: 'background-color 0.12s',
+      }}
+    >
+      <Text size="2" weight="medium" truncate data-testid="mention-label" style={{ flex: 1, minWidth: 0, color: 'var(--accent-11)' }}>
+        {label}
+      </Text>
+      <MaterialIcon name="chevron_right" size={18} color="var(--slate-10)" />
+    </Flex>
+  );
+}
+
 function Note({ children, tone = 'muted', action }: { children: React.ReactNode; tone?: 'muted' | 'error'; action?: React.ReactNode }) {
   return (
     <Flex align="center" gap="2" role={tone === 'error' ? 'alert' : 'status'} style={{ minHeight: ROW_HEIGHT, padding: '0 10px' }}>
@@ -419,42 +559,123 @@ function Note({ children, tone = 'muted', action }: { children: React.ReactNode;
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function RetryButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--accent-11)', fontSize: 13 }}
+    >
+      {t('chat.treeRetry')}
+    </button>
+  );
+}
+
+function SectionLabel({ id, children, hint }: { id: string; children: React.ReactNode; hint?: string }) {
   return (
     <Text
       as="div"
+      id={id}
       size="1"
-      style={{ color: 'var(--slate-9)', letterSpacing: '0.04px', padding: '10px 10px 6px', flexShrink: 0 }}
+      weight="medium"
+      style={{ color: 'var(--slate-11)', letterSpacing: '0.04px', padding: '10px 10px 6px', flexShrink: 0 }}
     >
       {children}
+      {hint ? <span style={{ color: 'var(--slate-10)', fontWeight: 400 }}>{` · ${hint}`}</span> : null}
     </Text>
   );
 }
 
+function readKeysHintSeen(): boolean {
+  try {
+    return window.localStorage.getItem(KEYS_HINT_KEY) === '1';
+  } catch {
+    return true;
+  }
+}
+
+function markKeysHintSeen(): void {
+  try {
+    window.localStorage.setItem(KEYS_HINT_KEY, '1');
+  } catch {
+    // Shown again next time: harmless.
+  }
+}
+
+function searchRow(item: KnowledgeHubNode, metaCache: Record<string, { name: string; ancestorIds?: string[] }>): Row {
+  const ancestorIds = item.nodeType === 'app' ? [] : metaCache[item.id]?.ancestorIds;
+  const path = (ancestorIds ?? []).map((id) => metaCache[id]?.name).filter(Boolean);
+  const connector = item.connector || (item.origin === 'COLLECTION' ? 'KB' : '');
+  return {
+    node: {
+      id: item.id,
+      name: item.name,
+      nodeType: item.nodeType,
+      connector,
+      hasChildren: item.hasChildren,
+      ancestorIds: ancestorIds ?? [],
+      placeUnknown: !ancestorIds,
+      mimeType: item.mimeType,
+      extension: item.extension,
+      subtitle: path.length > 0 ? path.join(' / ') : item.parent?.name || undefined,
+    },
+    subType: item.subType,
+    isPlaceholder: item.isPlaceholder,
+  };
+}
+
+const rowOfItem = (item: MentionMenuItem): Row | null =>
+  item.key.startsWith('source:') ? (item.value as Row) : null;
+
 // ── The menu ──
 
 /**
- * What `@` opens: the hub's apps and collections, then whatever a chevron
- * opens, or what the typed name matches. A row's name inserts a mention; its
- * checkbox, when the composer passes a selection, scopes the chat as the
- * picker does.
+ * What `@` opens: the host's groups (people, agents) and the Sources group, each a few rows with "N more", or what
+ * the typed name matches in each. A source opens in the same box (Back, or ← and Backspace in an empty query), and
+ * "Browse all sources" lists them all. A source row's checkbox, when the composer passes a selection, scopes the chat
+ * as the picker does; picking the row names it in the message.
  */
 export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(function MentionMenu(
-  { query, parent, selection, onSelectionChange, onPick, onNoMatches, onClearQuery, maxHeight, listId, onActiveChange },
+  {
+    query,
+    parent,
+    selection,
+    onSelectionChange,
+    onPick,
+    onNoMatches,
+    onClearQuery,
+    maxHeight,
+    listId,
+    onActiveChange,
+    groups: hostGroups,
+    sources = {},
+    footer,
+  },
   ref
 ) {
   const { t } = useTranslation();
+  const isMobile = useMentionPhoneLayout();
+  const rowHeight = isMobile ? ROW_HEIGHT_PHONE : ROW_HEIGHT;
   const metaCache = useChatStore((s) => s.collectionMetaCache);
-  const [stack, setStack] = useState<Level[]>([]);
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const [stack, setStack] = useState<View[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [atEnd, setAtEnd] = useState(true);
-  // Kept while a level is open, so the back arrow does not move as levels change size.
-  const [heldHeight, setHeldHeight] = useState<number | null>(null);
-  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [recentTick, setRecentTick] = useState(0);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [showKeysHint] = useState(() => footer === undefined && !readKeysHintSeen());
+  useEffect(() => {
+    if (showKeysHint) markKeysHintSeen();
+  }, [showKeysHint]);
 
-  const opened = stack[stack.length - 1] ?? null;
-  const level: Level | null = opened ?? (parent ? { id: parent.id, name: '', nodeType: parent.nodeType } : null);
+  const top = stack[stack.length - 1] ?? null;
+  const levels = stack.flatMap((view) => (view.kind === 'level' ? [view.level] : []));
+  const opened = top?.kind === 'level' ? top.level : null;
+  const parentLevel: Level | null = parent ? { id: parent.id, name: '', nodeType: parent.nodeType } : null;
+  // Inside a source, or under the composer's own node, unless every source was asked for.
+  const level: Level | null = opened ?? (top?.kind === 'browse' ? null : parentLevel);
   const levelPlace =
     level === null
       ? undefined
@@ -463,119 +684,187 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
         : (level.ancestorIds ?? metaCache[level.id]?.ancestorIds);
 
   const filter = query.trim();
-  const searching = filter.length >= KB_MIN_SEARCH_QUERY_LENGTH;
-  const roots = useHubRoots(level === null);
-  const children = useNodeChildren(level?.nodeType ?? '', level?.id ?? '');
-  const search = useMentionSearch(searching ? filter : '', level);
-  const searchItems = search.items;
+  const searching = filter.length >= MENTION_SEARCH_MIN_CHARS;
+  const preferred = sources.preferred && sources.preferred.length > 0 && top === null ? sources.preferred : null;
+  const sourcesShown = !sources.hidden || top !== null;
+  const roots = useHubRoots(sourcesShown && level === null && (preferred === null || top?.kind === 'browse'));
+  const children = useNodeChildren(sourcesShown ? (level?.nodeType ?? '') : '', sourcesShown ? (level?.id ?? '') : '');
+  const search = useMentionSearch(sourcesShown && searching ? filter : '', level);
 
   const checkable = Boolean(selection && onSelectionChange);
   useSelectionPlaces(selection ?? { apps: [], kb: [] });
   useNodePlaces(checkable && level && levelPlace === undefined ? [{ id: level.id, nodeType: level.nodeType }] : []);
   useNodePlaces(
     checkable && searching
-      ? searchItems.filter((item) => item.nodeType !== 'app').map((item) => ({ id: item.id, nodeType: item.nodeType }))
+      ? search.items.filter((item) => item.nodeType !== 'app').map((item) => ({ id: item.id, nodeType: item.nodeType }))
       : []
   );
 
-  let sections: Section[] = [];
-  let status: 'loading' | 'ready' | 'error' = 'ready';
-  let retry: (() => void) | undefined;
-  let hasMore = false;
-  let loadMore: () => void = () => {};
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `recentTick` re-reads what a pick stored
+  const recent = useMemo(() => recentSourceTimes(readRecentSources(userId)), [userId, recentTick]);
+  const sourceItem = useCallback(
+    (row: Row): MentionMenuItem => ({
+      key: `source:${row.node.id}`,
+      label: row.node.name,
+      description: row.node.subtitle,
+      icon: <NodeIcon row={row} size={18} />,
+      canOpen: Boolean(row.node.hasChildren),
+      recentAt: recent.get(row.node.id),
+      value: row,
+    }),
+    [recent]
+  );
 
-  if (searching) {
-    status = search.status === 'error' ? 'error' : search.status === 'ready' ? 'ready' : 'loading';
-    hasMore = Boolean(search.nextCursor);
-    loadMore = search.loadMore;
-    sections = [
-      {
-        key: 'search',
-        rows: searchItems.map((item) => {
-          const ancestorIds = item.nodeType === 'app' ? [] : metaCache[item.id]?.ancestorIds;
-          const path = (ancestorIds ?? []).map((id) => metaCache[id]?.name).filter(Boolean);
-          const connector = item.connector || (item.origin === 'COLLECTION' ? 'KB' : '');
-          return {
-            node: {
-              id: item.id,
-              name: item.name,
-              nodeType: item.nodeType,
-              connector,
-              hasChildren: item.hasChildren,
-              ancestorIds: ancestorIds ?? [],
-              placeUnknown: !ancestorIds,
-              mimeType: item.mimeType,
-              extension: item.extension,
-              subtitle: path.length > 0 ? path.join(' / ') : item.parent?.name || undefined,
-            },
-            subType: item.subType,
-            isPlaceholder: item.isPlaceholder,
-          };
-        }),
+  const searchStatus: MentionGroupStatus = search.status === 'error' ? 'error' : search.status === 'ready' ? 'ready' : 'loading';
+  const childrenReady = level !== null && children.status === 'ready' && children.loadedFor === level.id;
+  const childrenStatus: MentionGroupStatus =
+    level !== null && (children.loadedFor === level.id || children.status === 'error') ? children.status : 'loading';
+  const ancestorIds = level && levelPlace ? [...levelPlace, level.id] : [];
+  const childRows: Row[] = (childrenReady ? children.items : [])
+    .filter((item) => item.name)
+    .map((item) => ({
+      node: {
+        id: item.id,
+        name: item.name,
+        nodeType: item.nodeType,
+        connector: item.connector ?? level?.connector,
+        hasChildren: item.hasChildren,
+        ancestorIds,
+        placeUnknown: !levelPlace,
+        mimeType: item.mimeType,
+        extension: item.extension,
       },
+      subType: item.subType,
+      isPlaceholder: item.isPlaceholder,
+    }));
+  const searchItems = search.items.map((item) => sourceItem(searchRow(item, metaCache)));
+  const rootItems = roots.items.filter((root) => root.name);
+  const appItems = rootItems.filter((root) => !isCollectionRoot(root)).map((root) => sourceItem(rootRow(root)));
+  const collectionItems = rootItems.filter(isCollectionRoot).map((root) => sourceItem(rootRow(root)));
+  const browse = { label: t('chat.atMenu.browseSources', { defaultValue: 'Browse all sources' }), open: () => push({ kind: 'browse' }) };
+  const sourcesLabel = t('chat.atMenu.sources', { defaultValue: 'Sources' });
+  const searchGroup = (limit: number): MentionGroupView => ({
+    key: 'sources',
+    label: sourcesLabel,
+    items: rankMentionItems(searchItems, filter),
+    limit,
+    status: searchStatus,
+    onRetry: search.retry,
+    hasMore: Boolean(search.nextCursor),
+    loadMore: search.loadMore,
+  });
+
+  // The Sources group as the groups show it: a few rows, and the way to every source.
+  let sourceGroups: MentionGroupView[] = [];
+  if (sources.hidden) {
+    sourceGroups = [];
+  } else if (searching) {
+    sourceGroups = [searchGroup(MENTION_SEARCH_GROUP_ROWS)];
+  } else if (parentLevel) {
+    sourceGroups = [
+      {
+        key: 'sources',
+        label: sourcesLabel,
+        items: filterMentionItems(childRows.map(sourceItem), filter),
+        limit: MENTION_SOURCE_ROWS,
+        status: childrenStatus,
+        onRetry: children.retry,
+        noMore: true,
+      },
+      { key: 'browse', items: [], limit: 0, status: 'ready', browse },
     ];
-  } else if (level) {
-    status = children.loadedFor === level.id || children.status === 'error' ? children.status : 'loading';
-    retry = children.retry;
-    hasMore = Boolean(children.nextCursor);
-    loadMore = children.loadMore;
-    const ancestorIds = levelPlace ? [...levelPlace, level.id] : [];
-    sections = [
-      {
-        key: `level:${level.id}`,
-        // Until the opened level loads, the items held are the previous level's.
-        rows: (children.status === 'ready' && children.loadedFor === level.id ? children.items : [])
-          .filter((item) => item.name && nameMatches(item.name, filter))
-          .map((item) => ({
-            node: {
-              id: item.id,
-              name: item.name,
-              nodeType: item.nodeType,
-              connector: item.connector ?? level.connector,
-              hasChildren: item.hasChildren,
-              ancestorIds,
-              placeUnknown: !levelPlace,
-              mimeType: item.mimeType,
-              extension: item.extension,
-            },
-            subType: item.subType,
-            isPlaceholder: item.isPlaceholder,
-          })),
-      },
+  } else if (preferred) {
+    const rows = preferred.map((node) => sourceItem({ node: { ...node, ancestorIds: [], hasChildren: false } }));
+    sourceGroups = [
+      { key: 'sources', label: sourcesLabel, items: filterMentionItems(rows, filter), limit: MENTION_SOURCE_ROWS, status: 'ready', noMore: true },
+      { key: 'browse', items: [], limit: 0, status: 'ready', browse },
     ];
   } else {
-    status = roots.status;
-    retry = roots.retry;
-    hasMore = Boolean(roots.nextCursor);
-    loadMore = roots.loadMore;
-    const shown = roots.items.filter(
-      (root) => root.name && nameMatches(root.name, filter)
-    );
-    sections = [
+    sourceGroups = [
       {
         key: 'apps',
         label: t('chat.mentionYourApps', { defaultValue: 'Your apps' }),
-        rows: shown.filter((root) => !isCollectionRoot(root)).map(rootRow),
+        items: filterMentionItems(appItems, filter),
+        limit: MENTION_SOURCE_ROWS_PER_KIND,
+        status: roots.status,
+        onRetry: roots.retry,
+        noMore: true,
       },
       {
         key: 'collections',
         label: t('chat.mentionCollections', { defaultValue: 'Collections' }),
-        rows: shown.filter(isCollectionRoot).map(rootRow),
+        items: filterMentionItems(collectionItems, filter),
+        limit: MENTION_SOURCE_ROWS_PER_KIND,
+        // The apps group says the roots are loading or failed; once is enough.
+        status: 'ready',
+        noMore: true,
       },
-    ].filter((section) => section.rows.length > 0);
+      ...(roots.status === 'ready' && rootItems.length > 0 ? [{ key: 'browse', items: [], limit: 0, status: 'ready' as const, browse }] : []),
+    ];
+  }
+  const extra = hostGroups ?? [];
+  const allGroups = sources.first ? [...sourceGroups, ...extra] : [...extra, ...sourceGroups];
+
+  let sections: MentionMenuSection[] = [];
+  let hasMore = false;
+  let loadMore: () => void = () => {};
+  let heading: string | null = null;
+  const unlimited = Number.POSITIVE_INFINITY;
+  if (top === null) {
+    sections = layoutMentionGroups(allGroups);
+  } else if (top.kind === 'group') {
+    const group = top.key === 'sources' && searching ? searchGroup(unlimited) : allGroups.find((g) => g.key === top.key);
+    heading = group?.label ?? null;
+    sections = group ? layoutMentionGroups([group], { expanded: group.key }) : [];
+    hasMore = Boolean(group?.hasMore);
+    loadMore = group?.loadMore ?? (() => {});
+  } else if (top.kind === 'browse') {
+    heading = t('chat.atMenu.allSources', { defaultValue: 'All sources' });
+    if (searching) {
+      sections = layoutMentionGroups([searchGroup(unlimited)], { expanded: 'sources' });
+      hasMore = Boolean(search.nextCursor);
+      loadMore = search.loadMore;
+    } else {
+      sections = layoutMentionGroups(
+        [
+          { key: 'apps', label: t('chat.mentionYourApps', { defaultValue: 'Your apps' }), items: filterMentionItems(appItems, filter), limit: unlimited, status: roots.status, onRetry: roots.retry, noMore: true },
+          { key: 'collections', label: t('chat.mentionCollections', { defaultValue: 'Collections' }), items: filterMentionItems(collectionItems, filter), limit: unlimited, status: 'ready', noMore: true },
+        ],
+        { maxRows: unlimited },
+      );
+      hasMore = Boolean(roots.nextCursor);
+      loadMore = roots.loadMore;
+    }
+  } else {
+    heading = levels.map((l) => l.name).join(' / ');
+    if (searching) {
+      sections = layoutMentionGroups([{ ...searchGroup(unlimited), label: undefined }], { expanded: 'sources' });
+      hasMore = Boolean(search.nextCursor);
+      loadMore = search.loadMore;
+    } else {
+      sections = layoutMentionGroups(
+        [{ key: `level:${top.level.id}`, items: filterMentionItems(childRows.map(sourceItem), filter), limit: unlimited, status: childrenStatus, onRetry: children.retry, noMore: true }],
+        { expanded: `level:${top.level.id}` },
+      );
+      // An empty level that loaded is still a section: it says so.
+      if (sections[0]) sections[0] = { ...sections[0], group: { ...sections[0].group, status: childrenStatus } };
+      hasMore = Boolean(children.nextCursor);
+      loadMore = children.loadMore;
+    }
   }
 
-  const rows = sections.flatMap((section) => section.rows);
-  const viewKey = `${level?.id ?? 'root'}|${searching ? filter : ''}`;
+  const rows: MentionMenuRow[] = sections.flatMap((section) => section.rows);
+  const loading = sections.some((section) => section.group.status === 'loading');
+  const viewKey = `${stack.length}|${top?.kind ?? 'groups'}|${opened?.id ?? ''}|${searching ? filter : ''}`;
   const clampedIndex = Math.min(activeIndex, Math.max(rows.length - 1, 0));
 
   useEffect(() => {
     setActiveIndex(0);
-    listRef.current?.scrollTo({ top: 0 });
+    listRef.current?.scrollTo?.({ top: 0 });
   }, [viewKey]);
 
   useEffect(() => {
-    listRef.current?.querySelector('[data-mention-active]')?.scrollIntoView({ block: 'nearest' });
+    listRef.current?.querySelector('[data-mention-active]')?.scrollIntoView?.({ block: 'nearest' });
   }, [clampedIndex]);
 
   const activeId = rows.length > 0 ? `${listId}-${clampedIndex}` : undefined;
@@ -584,7 +873,8 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
   }, [activeId, onActiveChange]);
   useEffect(() => () => onActiveChange(undefined), [onActiveChange]);
 
-  const noMatches = searching && status === 'ready' && rows.length === 0;
+  const settled = !sections.some((section) => section.group.status === 'loading') && (!searching || search.status === 'ready' || sources.hidden);
+  const noMatches = searching && settled && rows.every((row) => row.type !== 'item');
   const onNoMatchesRef = useRef(onNoMatches);
   useEffect(() => {
     onNoMatchesRef.current = onNoMatches;
@@ -601,47 +891,74 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     if (remaining < LOAD_MORE_EDGE_PX && hasMore) loadMore();
   }, [hasMore, loadMore]);
 
-  useLayoutEffect(measureEnd, [rows.length, status, measureEnd]);
+  useLayoutEffect(measureEnd, [rows.length, loading, measureEnd]);
+
+  function push(view: View) {
+    setStack((views) => [...views, view]);
+  }
 
   const open = useCallback(
     (row: Row) => {
       if (!row.node.hasChildren) return;
-      if (boxRef.current) setHeldHeight((held) => held ?? boxRef.current?.offsetHeight ?? null);
-      setStack((levels) => [
-        ...levels,
-        {
+      push({
+        kind: 'level',
+        level: {
           id: row.node.id,
           name: row.node.name,
           nodeType: row.node.nodeType,
           connector: row.node.connector,
           ancestorIds: row.node.placeUnknown ? undefined : row.node.ancestorIds,
         },
-      ]);
+      });
       if (filter) onClearQuery();
     },
     [filter, onClearQuery]
   );
 
   const back = useCallback(() => {
-    setStack((levels) => {
-      const next = levels.slice(0, -1);
-      if (next.length === 0) setHeldHeight(null);
-      return next;
-    });
+    setStack((views) => views.slice(0, -1));
     if (filter) onClearQuery();
   }, [filter, onClearQuery]);
 
-  const pick = useCallback(
-    (row: Row) =>
-      onPick({
+  const pickItem = useCallback(
+    (item: MentionMenuItem) => {
+      if (item.disabled) return;
+      const row = rowOfItem(item);
+      if (!row) {
+        onPick({ kind: 'item', item });
+        return;
+      }
+      const node: MentionNode = {
         id: row.node.id,
         name: row.node.name,
         nodeType: row.node.nodeType,
         connector: row.node.connector ?? '',
         extension: row.node.extension,
         mimeType: row.node.mimeType,
-      }),
-    [onPick]
+      };
+      rememberRecentSources(userId, [node]);
+      setRecentTick((n) => n + 1);
+      onPick({ kind: 'source', node });
+    },
+    [onPick, userId]
+  );
+
+  const activate = useCallback(
+    (row: MentionMenuRow) => {
+      if (row.type === 'item') {
+        pickItem(row.item);
+        return;
+      }
+      if (row.browse) {
+        row.browse.open();
+        if (filter) onClearQuery();
+        return;
+      }
+      push({ kind: 'group', key: row.groupKey });
+      const group = allGroups.find((g) => g.key === row.groupKey);
+      if (group?.hasMore) group.loadMore?.();
+    },
+    [pickItem, filter, onClearQuery, allGroups]
   );
 
   useImperativeHandle(
@@ -649,82 +966,94 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     () => ({
       keyDown: (event, caretAtEnd) => {
         const row = rows[clampedIndex];
+        const composing = event.isComposing ?? event.nativeEvent?.isComposing ?? false;
         // Selection, word and line moves, and IME input belong to the text.
-        if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return false;
+        if (composing || event.altKey || event.ctrlKey || event.metaKey) return false;
         if (event.shiftKey && event.key !== 'Enter') return false;
         switch (event.key) {
           case 'ArrowDown':
             if (rows.length === 0) return false;
             event.preventDefault();
-            setActiveIndex(Math.min(clampedIndex + 1, rows.length - 1));
+            setActiveIndex((clampedIndex + 1) % rows.length);
             if (clampedIndex + 1 >= rows.length - 1 && hasMore) loadMore();
             return true;
           case 'ArrowUp':
             if (rows.length === 0) return false;
             event.preventDefault();
-            setActiveIndex(Math.max(clampedIndex - 1, 0));
+            setActiveIndex((clampedIndex - 1 + rows.length) % rows.length);
             return true;
-          case 'ArrowRight':
-            if (!caretAtEnd || !row?.node.hasChildren) return false;
+          case 'ArrowRight': {
+            const source = row?.type === 'item' ? rowOfItem(row.item) : null;
+            if (!caretAtEnd || !source?.node.hasChildren) return false;
             event.preventDefault();
-            open(row);
+            open(source);
             return true;
+          }
           case 'ArrowLeft':
-            if (query !== '' || stack.length === 0) return false;
-            event.preventDefault();
-            back();
-            return true;
           case 'Backspace':
             if (query !== '' || stack.length === 0) return false;
             event.preventDefault();
             back();
             return true;
           case 'Enter':
+          case 'Tab': {
             if (event.shiftKey) return false;
+            const group = row ? sections.find((section) => section.group.key === row.groupKey)?.group : undefined;
             // The rows shown are the previous query's until this one's search answers.
-            if (searching && status === 'loading') {
+            if (searching && group?.status === 'loading') {
               event.preventDefault();
               return true;
             }
             if (row) {
               event.preventDefault();
-              pick(row);
+              activate(row);
               return true;
             }
-            // Nothing to pick yet; once nothing matches, Enter sends the message as typed.
-            if (status === 'loading' || (!searching && filter.length > 0) || !filter) {
+            // Nothing to pick yet; once nothing matches, the key does what it does in the text (Enter sends).
+            if (loading) {
               event.preventDefault();
               return true;
             }
             return false;
+          }
           default:
             return false;
         }
       },
     }),
-    [rows, clampedIndex, hasMore, loadMore, open, back, stack.length, query, pick, status, searching, filter]
+    [rows, clampedIndex, hasMore, loadMore, open, back, stack.length, query, sections, searching, activate, loading]
   );
 
   const empty =
     searching || filter
-      ? t('chat.mentionNone', { defaultValue: 'No nodes match' })
-      : level
+      ? t('chat.atMenu.noMatches', { defaultValue: 'No matches' })
+      : opened
         ? t('chat.treeEmpty')
         : t('chat.noCollectionsAvailable');
-  const showShortHint = !searching && filter.length > 0 && rows.length === 0 && status === 'ready';
+  const nothingShown = rows.length === 0 && !loading && !sections.some((section) => section.group.status === 'error');
+  const showShortHint = nothingShown && !searching && filter.length > 0;
+  const drilled = top !== null;
+  const boxHeight = drilled ? Math.min(DRILLED_HEIGHT, maxHeight) : undefined;
+  const footerNode =
+    footer === undefined
+      ? showKeysHint
+        ? t('chat.atMenu.keysHint', { defaultValue: '↑ ↓ to move · Enter to pick · → to open a source · Esc to close' })
+        : null
+      : footer;
+  const backLabel = t('chat.mentionBack', { defaultValue: 'Back' });
   let rowIndex = 0;
 
   return (
     <Flex
-      ref={boxRef}
       direction="column"
-      style={{ maxHeight, minHeight: heldHeight ? Math.min(heldHeight, maxHeight) : undefined, minWidth: 0 }}
+      style={{ maxHeight, height: boxHeight, minWidth: 0 }}
     >
-      {opened ? (
+      {drilled ? (
         <Flex align="center" gap="2" style={{ padding: '6px 6px 8px', flexShrink: 0, minWidth: 0 }}>
           <button
             type="button"
-            aria-label={t('chat.mentionBack', { defaultValue: 'Back' })}
+            aria-label={backLabel}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={back}
             style={{
               width: 24,
@@ -743,11 +1072,13 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
           >
             <MaterialIcon name="arrow_back" size={18} />
           </button>
-          <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', lineHeight: 0 }} aria-hidden>
-            <NodeIcon row={{ node: { ...opened, ancestorIds: [] } }} size={16} />
-          </span>
-          <Text size="2" weight="bold" truncate style={{ color: 'var(--slate-12)', minWidth: 0 }}>
-            {opened.name}
+          {opened ? (
+            <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', lineHeight: 0 }} aria-hidden>
+              <NodeIcon row={{ node: { ...levels[0], ancestorIds: [] } }} size={16} />
+            </span>
+          ) : null}
+          <Text size="2" weight="bold" truncate data-testid="mention-breadcrumb" style={{ color: 'var(--slate-12)', minWidth: 0 }}>
+            {heading}
           </Text>
         </Flex>
       ) : null}
@@ -755,7 +1086,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
         ref={listRef}
         id={listId}
         role="listbox"
-        aria-label={t('chat.mentionNodesLabel', { defaultValue: 'Matching nodes' })}
+        aria-label={t('chat.atMenu.label', { defaultValue: 'Mention suggestions' })}
         className="no-scrollbar"
         onScroll={measureEnd}
         style={{
@@ -769,55 +1100,87 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
           WebkitMaskImage: atEnd ? undefined : 'linear-gradient(to bottom, #000 calc(100% - 48px), transparent)',
         }}
       >
-        {status === 'loading' && rows.length === 0 ? (
-          <Box style={{ padding: '4px 10px' }}>
-            <TreeLoadShimmer />
-          </Box>
-        ) : status === 'error' && rows.length === 0 ? (
-          <Note
-            tone="error"
-            action={
-              retry ? (
-                <button
-                  type="button"
-                  onClick={retry}
-                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--accent-11)', fontSize: 13 }}
-                >
-                  {t('chat.treeRetry')}
-                </button>
-              ) : null
-            }
-          >
-            {searching ? t('chat.treeSearchFailed') : t('chat.treeLoadFailed')}
-          </Note>
-        ) : showShortHint ? (
+        {showShortHint ? (
           <Note>{t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}</Note>
-        ) : rows.length === 0 ? (
+        ) : nothingShown ? (
           <Note>{empty}</Note>
         ) : (
-          sections.map((section) => (
-            <React.Fragment key={section.key}>
-              {section.label ? <SectionLabel>{section.label}</SectionLabel> : null}
-              {section.rows.map((row) => {
-                const index = rowIndex++;
-                return (
-                  <MenuRow
-                    key={row.node.id}
-                    id={`${listId}-${index}`}
-                    row={row}
-                    active={index === clampedIndex}
-                    onHover={() => {
+          sections.map((section) => {
+            const { group } = section;
+            const labelId = `${listId}-g-${group.key}`;
+            const label = drilled ? undefined : group.label;
+            return (
+              <div
+                key={group.key}
+                role="group"
+                aria-labelledby={label ? labelId : undefined}
+                aria-label={label ? undefined : (heading ?? group.label)}
+                style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+              >
+                {label ? (
+                  <SectionLabel id={labelId} hint={group.hint}>
+                    {label}
+                  </SectionLabel>
+                ) : null}
+                {section.rows.length === 0 && group.status === 'loading' ? (
+                  <Box style={{ padding: '4px 10px' }} data-testid={`mention-group-loading-${group.key}`}>
+                    <TreeLoadShimmer />
+                  </Box>
+                ) : section.rows.length === 0 && group.status === 'error' ? (
+                  <Note tone="error" action={group.onRetry ? <RetryButton onClick={group.onRetry} /> : null}>
+                    {searching ? t('chat.treeSearchFailed') : t('chat.treeLoadFailed')}
+                  </Note>
+                ) : section.rows.length === 0 && drilled ? (
+                  <Note>{empty}</Note>
+                ) : (
+                  section.rows.map((row) => {
+                    const index = rowIndex++;
+                    const id = `${listId}-${index}`;
+                    const active = index === clampedIndex;
+                    const hover = () => {
                       if (index !== clampedIndex) setActiveIndex(index);
-                    }}
-                    onPick={() => pick(row)}
-                    onOpen={() => open(row)}
-                    selection={selection}
-                    onSelectionChange={onSelectionChange}
-                  />
-                );
-              })}
-            </React.Fragment>
-          ))
+                    };
+                    if (row.type === 'more') {
+                      const moreLabel = row.browse
+                        ? row.browse.label
+                        : row.count === null
+                          ? t('chat.atMenu.showMore', { defaultValue: 'Show more' })
+                          : t('chat.atMenu.nMore', { count: row.count, defaultValue: '{{count}} more' });
+                      return (
+                        <MoreRow
+                          key={`more:${group.key}`}
+                          id={id}
+                          label={moreLabel}
+                          active={active}
+                          height={rowHeight}
+                          onHover={hover}
+                          onPick={() => activate(row)}
+                        />
+                      );
+                    }
+                    const source = rowOfItem(row.item);
+                    return (
+                      <ItemRow
+                        key={row.item.key}
+                        id={id}
+                        item={row.item}
+                        active={active}
+                        height={rowHeight}
+                        onHover={hover}
+                        onPick={() => pickItem(row.item)}
+                        onOpen={() => (source ? open(source) : undefined)}
+                        checkbox={
+                          source && selection && onSelectionChange ? (
+                            <RowCheckbox node={source.node} filters={selection} onSelectionChange={onSelectionChange} />
+                          ) : undefined
+                        }
+                      />
+                    );
+                  })
+                )}
+              </div>
+            );
+          })
         )}
         {(searching ? search.loadingMore : roots.loadingMore || children.loadingMore) ? (
           <Box style={{ padding: '0 10px' }}>
@@ -825,6 +1188,17 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
           </Box>
         ) : null}
       </Box>
+      {footerNode ? (
+        <Text
+          as="div"
+          size="1"
+          role="note"
+          data-testid="mention-footer"
+          style={{ color: 'var(--slate-11)', padding: '6px 8px 2px', borderTop: '1px solid var(--olive-3)', marginTop: 4, flexShrink: 0 }}
+        >
+          {footerNode}
+        </Text>
+      ) : null}
     </Flex>
   );
 });

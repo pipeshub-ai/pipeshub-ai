@@ -269,12 +269,13 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
 
   // ── Composer: hands the message off to /chat via the pending-chat buffer ──
   const handleSend = useCallback(
-    (message: string, attachments?: AttachmentRef[], _nodes?: MentionNode[], extra?: ComposerSendExtra) => {
+    (message: string, attachments?: AttachmentRef[], nodes?: MentionNode[], extra?: ComposerSendExtra) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return;
       usePendingChatStore.getState().setPending({
         message,
         attachments,
         extra,
+        ...(nodes && nodes.length > 0 ? { mentions: nodes } : {}),
         pageContext: {},
         referrerPage: pathname,
       });

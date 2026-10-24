@@ -1332,6 +1332,17 @@
     "sourceLoading": "Loading…",
     "mentionBack": "Back",
     "mentionRemove": "Remove {{name}}",
+    "atMenu": {
+      "label": "Mention suggestions",
+      "sources": "Sources",
+      "browseSources": "Browse all sources",
+      "allSources": "All sources",
+      "showMore": "Show more",
+      "nMore": "{{count}} more",
+      "noMatches": "No matches",
+      "keysHint": "↑ ↓ to move · Enter to pick · → to open a source · Esc to close",
+      "tooManySources": "A message can name up to {{max}} sources. Remove some and send again."
+    },
     "artifactsPanel": {
       "generated_one": "{{count}} artifact generated",
       "generated_other": "{{count}} artifacts generated",

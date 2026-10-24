@@ -71,12 +71,13 @@ import type {
 } from '@/chat/types';
 import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, buildAssistantApiFilters } from '@/chat/types';
 import type { ChatKnowledgeFilters } from '@/chat/types';
-import { MentionComposerField, type MentionParent } from '@/chat/components/mention-composer-field';
+import { type MentionParent } from '@/chat/components/mention-composer-field';
+import type { ComposerMentionContext } from '@/chat/components/composer/composer-input.types';
+import { MENTION_SOURCES_MAX, sourcesOverCap } from '@/chat/utils/mention-groups';
 import { useQueuedSendComposer } from '@/chat/hooks/use-queued-send-composer';
 import { useSelectionPlaces } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/knowledge-tree';
 import {
   mentionMeta,
-  mergeMentionFilters,
   retainedMentions,
   stripMentionPads,
   unembedMention,
@@ -442,9 +443,8 @@ export function ChatInput({
   const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
-  // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
-  // Editing or regenerating re-asks with the filters the question was first sent with.
-  const mentionsOff = isAgentChat || isProjectChat || isActionMode;
+  // Editing or regenerating re-asks with the filters the question was first sent with, so @ offers nothing then.
+  const mentionsOff = isActionMode;
   /**
    * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
@@ -590,6 +590,20 @@ export function ChatInput({
   // Agent and project chats narrow their own sources; there the menu only inserts mentions.
   const mentionSelection = isAgentChat || isProjectChat ? undefined : composerFilters;
   const onMentionSelectionChange = isAgentChat || isProjectChat ? undefined : variant === 'widget' ? setWidgetFilters : setFilters;
+  // An agent's or a project's own sources come first in the @ menu, where their names are known here; a search
+  // still reaches every source.
+  const mentionScopeDefaults = isAgentChat ? agentKnowledgeDefaults : isProjectChat ? projectScope.knowledgeDefaults : null;
+  const mentionContext = useMemo<ComposerMentionContext>(() => {
+    const preferredSources = mentionScopeDefaults
+      ? selectedIds(mentionScopeDefaults).flatMap((id) => {
+          const meta = collectionMetaCache[id];
+          const name = collectionNamesCache[id] || meta?.name;
+          if (!name) return [];
+          return [{ id, name, nodeType: meta?.nodeType || 'app', connector: meta?.connector ?? '', extension: meta?.extension, mimeType: meta?.mimeType }];
+        })
+      : null;
+    return { surface: variant === 'widget' ? 'widget' : 'chat', preferredSources, sourcesFirst: variant === 'widget' };
+  }, [mentionScopeDefaults, collectionMetaCache, collectionNamesCache, variant]);
   const agentResourcesCustomized =
     isAgentChat &&
     (agentKnowledgeScope !== null ||
@@ -709,7 +723,7 @@ export function ChatInput({
         : composerFilters;
     const hubApps = source?.apps ?? [];
     const groups = source?.kb ?? [];
-    // Nodes embedded with @ join the scope when the message is sent; until then they show here too.
+    // Nodes named with @ scope the message they are sent with; they show here too until then.
     const scoped = new Set(selectedIds(source ?? { apps: [], kb: [] }));
     const embedded = mentions
       .filter((node) => !scoped.has(node.id))
@@ -1149,9 +1163,13 @@ export function ChatInput({
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
+      const kept = retainedMentions(message, mentions);
+      if (sourcesOverCap(kept.length) > 0) {
+        toast.error(t('chat.atMenu.tooManySources', { max: MENTION_SOURCES_MAX, defaultValue: 'A message can name up to {{max}} sources.' }));
+        return;
+      }
       const resolved = composerInput.resolveSend(message, () => submitRef.current?.(e));
       if (!resolved) return;
-      const kept = retainedMentions(message, mentions);
       const sent = variant === 'widget'
         ? [
             ...kept,
@@ -1170,24 +1188,13 @@ export function ChatInput({
               }),
           ]
         : kept;
-      if (variant !== 'widget' && kept.length > 0) {
+      // The sources a message names scope that question only (the request adds them, see `runtime`): the chat's own
+      // selection stays as the "+" panel set it. Their names are kept so the sent question shows them as chips.
+      if (kept.length > 0) {
         const store = useChatStore.getState();
         const { names, meta } = mentionMeta(kept);
         store.setCollectionNamesCache({ ...store.collectionNamesCache, ...names });
         store.setCollectionMetaCache({ ...store.collectionMetaCache, ...meta });
-        if (isAgentChat) {
-          store.setAgentKnowledgeScope(
-            mergeMentionFilters(
-              store.agentKnowledgeScope ?? { apps: [], kb: [] },
-              kept,
-            ),
-          );
-        } else if (isProjectChat) {
-          // A project chat is scoped by its own selection, not the assistant's filters.
-          store.setProjectKnowledgeScope(mergeMentionFilters(store.projectKnowledgeScope ?? { apps: [], kb: [] }, kept));
-        } else {
-          store.setFilters(mergeMentionFilters(store.settings.filters, kept));
-        }
       }
       const clearDraft = () => {
         setMessage('');
@@ -1662,11 +1669,6 @@ export function ChatInput({
   // Stop gives way to Send while there is a question to queue behind the running answer.
   const showStop = runBusy && !(queueDuringRun && hasContent && activeMessageAction === null);
 
-  // Display value combines committed text with interim speech so users see real-time feedback
-  const displayValue = interimTranscript
-    ? message + (message.length > 0 ? ' ' : '') + interimTranscript
-    : message;
-
   const speechTooltip =
     speechUnavailableReason === 'stt-not-configured'
       ? t('chat.voiceSttNotConfigured', {
@@ -1820,30 +1822,28 @@ export function ChatInput({
             </IconButton>
           )}
 
-          {/* Input field */}
-          <MentionComposerField
-            value={displayValue}
-            mentions={mentions}
-            onChange={setMessage}
-            onMentionsChange={setMentions}
-            onKeyDown={handleKeyDown}
-            onFocus={handleExpand}
-            placeholder={resolvedWidgetPlaceholder}
-            parent={mentionParent}
-            selection={mentionSelection}
-            mentionsOff={mentionsOff}
-            onSelectionChange={onMentionSelectionChange}
-            aria-label={resolvedWidgetPlaceholder}
-            style={{
-              flex: 1,
-              fontSize: 'var(--font-size-2)',
-              fontFamily: 'Manrope, sans-serif',
-              lineHeight: '20px',
-              minWidth: 0,
-              height: 20,
-              overflow: 'hidden',
-            }}
-          />
+          {/* Input field: the same field as expanded, one line tall, so the draft and its chips mean the same in both. */}
+          <div style={{ flex: 1, minWidth: 0, height: 20, overflow: 'hidden' }}>
+            <chatSlots.ComposerField
+              rich={composerInput.rich}
+              ref={composerRef}
+              value={message}
+              interim={interimTranscript}
+              onChange={setMessage}
+              mentions={mentions}
+              onMentionsChange={setMentions}
+              onKeyDown={handleKeyDown}
+              onFocus={handleExpand}
+              placeholder={resolvedWidgetPlaceholder}
+              ariaLabel={resolvedWidgetPlaceholder}
+              maxHeightPx={20}
+              mentionParent={mentionParent}
+              mentionSelection={mentionSelection}
+              onMentionSelectionChange={onMentionSelectionChange}
+              mentionsOff={mentionsOff}
+              mentionContext={mentionContext}
+            />
+          </div>
 
           {/* Send / Stop — same contract as full composer */}
           {showStop ? (
@@ -2382,8 +2382,9 @@ export function ChatInput({
           ariaLabel={resolvedPlaceholder}
           mentionParent={mentionParent}
           mentionSelection={mentionSelection}
-          mentionsOff={mentionsOff}
           onMentionSelectionChange={onMentionSelectionChange}
+          mentionsOff={mentionsOff}
+          mentionContext={mentionContext}
           muted
         />
       ) : !showUploadArea || isActionMode ? (
@@ -2408,8 +2409,9 @@ export function ChatInput({
           readOnly={isRegenerateMode}
           mentionParent={mentionParent}
           mentionSelection={mentionSelection}
-          mentionsOff={mentionsOff}
           onMentionSelectionChange={onMentionSelectionChange}
+          mentionsOff={mentionsOff}
+          mentionContext={mentionContext}
         />
       ) : null}
 

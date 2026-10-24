@@ -1332,6 +1332,17 @@
     "sourceLoading": "लोड हो रहा है…",
     "mentionBack": "वापस",
     "mentionRemove": "{{name}} हटाएँ",
+    "atMenu": {
+      "label": "उल्लेख के सुझाव",
+      "sources": "स्रोत",
+      "browseSources": "सभी स्रोत देखें",
+      "allSources": "सभी स्रोत",
+      "showMore": "और दिखाएँ",
+      "nMore": "{{count}} और",
+      "noMatches": "कोई मिलान नहीं",
+      "keysHint": "↑ ↓ से चलें · चुनने के लिए Enter · स्रोत खोलने के लिए → · बंद करने के लिए Esc",
+      "tooManySources": "एक संदेश में अधिकतम {{max}} स्रोतों का नाम हो सकता है। कुछ हटाकर फिर से भेजें।"
+    },
     "artifactsPanel": {
       "generated_one": "{{count}} आर्टिफैक्ट बनाया गया",
       "generated_other": "{{count}} आर्टिफैक्ट बनाए गए",

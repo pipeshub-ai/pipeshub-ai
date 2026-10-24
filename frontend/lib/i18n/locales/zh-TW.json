@@ -1416,6 +1416,17 @@
     "sourceLoading": "載入中…",
     "mentionBack": "返回",
     "mentionRemove": "移除 {{name}}",
+    "atMenu": {
+      "label": "提及建議",
+      "sources": "來源",
+      "browseSources": "瀏覽全部來源",
+      "allSources": "全部來源",
+      "showMore": "顯示更多",
+      "nMore": "還有 {{count}} 個",
+      "noMatches": "無相符項目",
+      "keysHint": "↑ ↓ 移動 · Enter 選取 · → 開啟來源 · Esc 關閉",
+      "tooManySources": "一則訊息最多可指定 {{max}} 個來源。請移除一些後再傳送。"
+    },
     "artifactsPanel": {
       "generated_other": "已產生 {{count}} 個產物",
       "newerVersion": "有較新的版本 (v{{version}})",

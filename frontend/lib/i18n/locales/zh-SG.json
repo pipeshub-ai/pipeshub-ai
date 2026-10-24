@@ -1416,6 +1416,17 @@
     "sourceLoading": "加载中…",
     "mentionBack": "返回",
     "mentionRemove": "移除 {{name}}",
+    "atMenu": {
+      "label": "提及建议",
+      "sources": "来源",
+      "browseSources": "浏览全部来源",
+      "allSources": "全部来源",
+      "showMore": "显示更多",
+      "nMore": "还有 {{count}} 个",
+      "noMatches": "无匹配项",
+      "keysHint": "↑ ↓ 移动 · Enter 选择 · → 打开来源 · Esc 关闭",
+      "tooManySources": "一条消息最多可指定 {{max}} 个来源。请移除一些后再发送。"
+    },
     "artifactsPanel": {
       "generated_other": "已生成 {{count}} 个产物",
       "newerVersion": "有更新的版本 (v{{version}})",

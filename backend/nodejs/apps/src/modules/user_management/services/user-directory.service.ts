@@ -32,8 +32,8 @@ export interface IUserDirectory {
   ): Promise<readonly DirectoryUser[]>;
   /**
    * Active human members of the org whose first, middle or last name, any word of the full name, or
-   * email starts with every whitespace-separated token of `q`. Never another org's, disabled, deleted
-   * or service users.
+   * email starts with every whitespace-separated token of `q`, best match first (`compareSearchHits`).
+   * Never another org's, disabled, deleted or service users.
    */
   searchOrgMembers(
     orgId: string,
@@ -79,6 +79,67 @@ export function matchesSearchTokens(
     ...(user.fullName ?? '').split(/\s+/u),
   ].map((v) => (v ?? '').toLowerCase());
   return tokens.every((t) => prefixes.some((p) => p !== '' && p.startsWith(t)));
+}
+
+/** How the first typed token matches, best first. Later tokens only have to match somewhere. */
+export const SEARCH_RANK = {
+  exactFirstName: 0,
+  firstName: 1,
+  nameWord: 2,
+  other: 3,
+} as const;
+
+const lower = (v: string | undefined): string => (v ?? '').toLowerCase();
+
+/** A first name is `firstName`, or the first word of `fullName` for people without one. */
+export function searchRank(
+  user: NameFields,
+  tokens: readonly string[],
+): number {
+  const token = tokens[0];
+  if (token === undefined) return SEARCH_RANK.other;
+  const words = lower(user.fullName)
+    .split(/\s+/u)
+    .filter((w) => w !== '');
+  const firsts = [lower(user.firstName), words[0] ?? ''].filter(
+    (w) => w !== '',
+  );
+  if (firsts.includes(token)) return SEARCH_RANK.exactFirstName;
+  if (firsts.some((w) => w.startsWith(token))) return SEARCH_RANK.firstName;
+  const names = [lower(user.middleName), lower(user.lastName), ...words];
+  if (names.some((w) => w !== '' && w.startsWith(token))) {
+    return SEARCH_RANK.nameWord;
+  }
+  return SEARCH_RANK.other;
+}
+
+/** First-name matches (exact before prefix), then any other name word, then the rest (an email match), each alphabetical. */
+export function compareSearchHits(
+  tokens: readonly string[],
+): (a: DirectoryUser, b: DirectoryUser) => number {
+  return (a, b) =>
+    searchRank(a, tokens) - searchRank(b, tokens) ||
+    a.displayName.localeCompare(b.displayName) ||
+    a.userId.localeCompare(b.userId);
+}
+
+/**
+ * One filter per rank tier. The search fills `limit` tier by tier, so a weaker match that sorts first
+ * alphabetically never takes the place of a stronger one.
+ */
+function searchTiers(token: string): Record<string, unknown>[] {
+  const prefix = new RegExp(`^${escapeRegex(token)}`, 'i');
+  return [
+    { $or: [{ firstName: prefix }, { fullName: prefix }] },
+    {
+      $or: [
+        { middleName: prefix },
+        { lastName: prefix },
+        { fullName: new RegExp(`\\s${escapeRegex(token)}`, 'i') },
+      ],
+    },
+    {},
+  ];
 }
 
 /** Anchored, escaped regexes only: typed text is never a pattern. */
@@ -207,18 +268,26 @@ export class MongoUserDirectory implements IUserDirectory {
     ) {
       return [];
     }
-    const users = await Users.find({
-      orgId: new mongoose.Types.ObjectId(orgId),
-      isDeleted: false,
-      isDisabled: { $ne: true },
-      kind: { $in: ['human', null] },
-      $and: searchFilter(tokens),
-    })
-      .select(DIRECTORY_FIELDS)
-      .sort({ fullName: 1, _id: 1 })
-      .limit(limit)
-      .lean()
-      .exec();
-    return users.map(toDirectoryUser);
+    const found: DirectoryUser[] = [];
+    for (const tier of searchTiers(tokens[0] as string)) {
+      const seen = found.map((u) => new mongoose.Types.ObjectId(u.userId));
+      const users = await Users.find({
+        orgId: new mongoose.Types.ObjectId(orgId),
+        isDeleted: false,
+        isDisabled: { $ne: true },
+        kind: { $in: ['human', null] },
+        $and: searchFilter(tokens),
+        ...tier,
+        ...(seen.length > 0 && { _id: { $nin: seen } }),
+      })
+        .select(DIRECTORY_FIELDS)
+        .sort({ fullName: 1, _id: 1 })
+        .limit(limit - found.length)
+        .lean()
+        .exec();
+      found.push(...users.map(toDirectoryUser));
+      if (found.length >= limit) break;
+    }
+    return found.sort(compareSearchHits(tokens));
   }
 }

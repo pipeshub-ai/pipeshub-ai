@@ -161,3 +161,18 @@ describe('node mentions', () => {
     expect(withUniqueLabel(sales, [budget])).toBe(sales);
   });
 });
+
+describe('where @ opens the menu', () => {
+  it('at the start, after a space, and after an opening bracket or quote; never inside an email', () => {
+    expect(activeMentionQuery('@bud', 4)).toEqual({ start: 0, query: 'bud' });
+    expect(activeMentionQuery('see (@bud', 9)).toEqual({ start: 5, query: 'bud' });
+    expect(activeMentionQuery('say "@bud', 9)).toEqual({ start: 5, query: 'bud' });
+    expect(activeMentionQuery('mail a@bud', 10)).toBeNull();
+  });
+
+  it('takes a query of up to 64 characters', () => {
+    const long = 'a'.repeat(64);
+    expect(activeMentionQuery(`@${long}`, 65)).toEqual({ start: 0, query: long });
+    expect(activeMentionQuery(`@${long}b`, 66)).toBeNull();
+  });
+});

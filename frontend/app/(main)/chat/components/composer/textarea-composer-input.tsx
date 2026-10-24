@@ -40,6 +40,7 @@ export const TextareaComposerInput = forwardRef<ComposerInputHandle, TextareaCom
       mentionsOff,
       mentionSelection,
       onMentionSelectionChange,
+      mentionContext,
     },
     ref,
   ) {
@@ -87,6 +88,7 @@ export const TextareaComposerInput = forwardRef<ComposerInputHandle, TextareaCom
         parent={mentionParent}
         selection={mentionSelection}
         onSelectionChange={onMentionSelectionChange}
+        context={mentionContext}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
         onBlur={onBlur}

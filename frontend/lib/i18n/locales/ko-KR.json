@@ -1416,6 +1416,17 @@
     "sourceLoading": "로드 중…",
     "mentionBack": "뒤로",
     "mentionRemove": "{{name}} 제거",
+    "atMenu": {
+      "label": "멘션 추천",
+      "sources": "소스",
+      "browseSources": "모든 소스 보기",
+      "allSources": "모든 소스",
+      "showMore": "더 보기",
+      "nMore": "{{count}}개 더",
+      "noMatches": "일치하는 항목 없음",
+      "keysHint": "↑ ↓ 이동 · Enter 선택 · → 소스 열기 · Esc 닫기",
+      "tooManySources": "메시지 하나에 소스를 최대 {{max}}개까지 지정할 수 있습니다. 일부를 제거하고 다시 보내세요."
+    },
     "artifactsPanel": {
       "generated_other": "아티팩트 {{count}}개 생성됨",
       "newerVersion": "최신 버전 사용 가능 (v{{version}})",

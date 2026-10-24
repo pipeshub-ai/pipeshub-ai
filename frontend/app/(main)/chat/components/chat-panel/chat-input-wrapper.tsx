@@ -182,7 +182,8 @@ export function ChatInputWrapper() {
     // waiting, joins the queue above the box; a full queue keeps it in the box.
     const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (queueSends && store.activeSlotId && shouldQueueSend(active)) {
-      return queueSend(store.activeSlotId, { query: message, attachments }) ? undefined : false;
+      const mentionIds = mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined;
+      return queueSend(store.activeSlotId, { query: message, attachments, ...(mentionIds ? { mentionIds } : {}) }) ? undefined : false;
     }
     // Block a second send while a run is in flight, but allow Enter after
     // Stop (`stopping`) so a follow-up can start with a new runId before

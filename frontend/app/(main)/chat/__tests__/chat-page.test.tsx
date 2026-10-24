@@ -388,6 +388,22 @@ describe('Chat page — new chat', () => {
     handoff.mockRestore();
   });
 
+  it('sends a handed-over question with the sources it names, so its bubble shows them as chips', async () => {
+    const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', connector: 'KB' };
+    usePendingChatStore.getState().setPending({
+      message: 'what changed in Q3 Report',
+      mentions: [report],
+      pageContext: {},
+      referrerPage: '/projects',
+    });
+
+    renderPage('projectId=p1');
+
+    await waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+    expect(append.mock.calls[0][0]).toMatchObject({ metadata: { custom: { mentionIds: ['q3'] } } });
+    expect(useChatStore.getState().collectionMetaCache.q3).toMatchObject({ name: 'Q3 Report', nodeType: 'record' });
+  });
+
   it('opens scoped to the rows handed over from All Records, replacing the selection and sending nothing', async () => {
     useChatStore.getState().setFilters({ apps: ['jira-1'], kb: [] });
     usePendingChatStore.getState().setPending({

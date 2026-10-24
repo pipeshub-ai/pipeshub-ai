@@ -1477,6 +1477,17 @@
     "sourceLoading": "Načítání…",
     "mentionBack": "Zpět",
     "mentionRemove": "Odebrat {{name}}",
+    "atMenu": {
+      "label": "Návrhy zmínek",
+      "sources": "Zdroje",
+      "browseSources": "Procházet všechny zdroje",
+      "allSources": "Všechny zdroje",
+      "showMore": "Zobrazit více",
+      "nMore": "Další: {{count}}",
+      "noMatches": "Žádné shody",
+      "keysHint": "↑ ↓ pohyb · Enter výběr · → otevře zdroj · Esc zavře",
+      "tooManySources": "Zpráva může jmenovat nejvýše {{max}} zdrojů. Některé odeberte a odešlete znovu."
+    },
     "artifactsPanel": {
       "generated_one": "{{count}} vygenerovaný artefakt",
       "generated_few": "{{count}} vygenerované artefakty",

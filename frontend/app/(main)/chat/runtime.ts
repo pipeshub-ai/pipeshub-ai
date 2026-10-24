@@ -36,6 +36,7 @@ import {
   type ToolApprovalAnswer,
 } from './types';
 import { hasAnyFilter } from './utils/tree-selection';
+import { withMentionedIds } from './utils/node-mentions';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -217,8 +218,11 @@ export function buildStreamChatRequestForSlot(
   query: string,
   outgoingMessage?: ThreadMessageLike,
   toolApproval?: ToolApprovalAnswer,
-  /** `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is. */
-  options?: { agentMode?: boolean }
+  /**
+   * `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is. `mentionIds`: the
+   * sources the question names, when there is no `outgoingMessage` to say so (a queued question).
+   */
+  options?: { agentMode?: boolean; mentionIds?: readonly string[] }
 ): StreamChatRequest | null {
   const currentState = useChatStore.getState();
   const currentSlot = currentState.slots[slotId];
@@ -285,7 +289,7 @@ export function buildStreamChatRequestForSlot(
       ? (currentState.projectKnowledgeScope ?? projectScope.knowledgeDefaults)
       : null;
 
-  const resolvedFilters: ChatKnowledgeFilters = resolvedScopedKnowledge
+  const chatFilters: ChatKnowledgeFilters = resolvedScopedKnowledge
     ? {
         apps: resolvedScopedKnowledge.apps.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
@@ -306,11 +310,20 @@ export function buildStreamChatRequestForSlot(
       : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
-  // Which nodes the question names with @: those show as chips in it when it is read back.
-  const rawMentionIds = outgoingMessage?.metadata?.custom?.mentionIds;
+  // Which nodes the question names with @: they scope this question, and show as chips in it when it is read back.
+  const rawMentionIds = options?.mentionIds ?? outgoingMessage?.metadata?.custom?.mentionIds;
   const mentionIds = new Set(
     Array.isArray(rawMentionIds) ? rawMentionIds.filter((id): id is string => typeof id === 'string') : []
   );
+  // Named sources join what the chat selected, for this question only. An agent's or a project's own sources that
+  // nobody narrowed are not a selection: the question then asks the named ones alone, as it would have before.
+  const unnarrowed = isAgent
+    ? knowledgeScope === null
+    : Boolean(projectScope && !isWebSearch && currentState.projectKnowledgeScope === null);
+  const resolvedFilters: ChatKnowledgeFilters =
+    mentionIds.size > 0
+      ? withMentionedIds(unnarrowed ? { apps: [], kb: [] } : chatFilters, [...mentionIds], (id) => metaCache[id]?.nodeType)
+      : chatFilters;
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
     ids
       .filter((id) => id.trim().length > 0)
