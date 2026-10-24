@@ -2,8 +2,7 @@
 
 import asyncio
 
-import httpx
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,25 +26,16 @@ from app.models.blocks import (
     DataFormat,
 )
 from app.models.entities import FileRecord, RecordType, WebpageRecord
-from collections import defaultdict
-from unittest.mock import PropertyMock
-import aiohttp
 from fastapi import HTTPException
 from app.models.blocks import (
     BlockComment,
-    BlockContainerIndex,
-    BlockGroupChildren,
     ChildRecord,
     ChildType,
     CommentAttachment,
     GroupSubType,
-    GroupType,
     TableRowMetadata,
 )
 from app.models.entities import (
-    AppUser,
-    Record,
-    RecordGroup,
     RecordGroupType,
 )
 
@@ -1463,7 +1453,7 @@ class TestNotionFetchPageAttachmentsAndComments:
             side_effect=Exception("API error")
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="API error"):
             await connector._fetch_page_attachments_and_comments("page-1")
 
 
@@ -4069,7 +4059,7 @@ class TestResolveTableRowChildren:
     one Notion call per row."""
 
     @staticmethod
-    def _row(source_id="row-1"):
+    def _row(source_id: str = "row-1") -> Block:
         return Block(id="b1", index=0, type=BlockType.TABLE_ROW, format=DataFormat.MARKDOWN, data="x",
                      source_id=source_id)
 
@@ -4670,7 +4660,7 @@ class TestFetchPageAttachmentsAndComments:
     async def test_exception_returns_empty(self):
         conn = _make_connector_fullcov()
         conn._fetch_attachment_blocks_and_block_ids_recursive = AsyncMock(side_effect=Exception("boom"))
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="boom"):
             await conn._fetch_page_attachments_and_comments("page-1", "")
 
 
@@ -6451,7 +6441,7 @@ class TestConvertImageBlocksToBase64:
         assert "uri" in block.data
 
     @staticmethod
-    def _image_block():
+    def _image_block() -> Block:
         return Block(
             id="img-1", index=0, type=BlockType.IMAGE, format=DataFormat.TXT,
             data="caption", source_id="img-block-1",
@@ -6459,7 +6449,7 @@ class TestConvertImageBlocksToBase64:
         )
 
     @staticmethod
-    def _status(code):
+    def _status(code: int) -> AsyncMock:
         return AsyncMock(return_value=PublicFetchResponse(url="u", status_code=code, headers={}, content=b""))
 
     @pytest.mark.asyncio
@@ -6843,7 +6833,7 @@ class TestCheckAndFetchGoneVerdict:
 
 class TestSweepPlaceholderRecords:
     @staticmethod
-    def _conn_with_stubs(stubs, datasource=None):
+    def _conn_with_stubs(stubs: list, datasource: MagicMock | None = None) -> NotionConnector:
         conn = _make_connector_fullcov()
         conn.workspace_id = "ws-1"
         conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=stubs)
@@ -7073,7 +7063,7 @@ class TestSweepIsWiredIntoSync:
 
 class TestRetireDatabaseContainer:
     @staticmethod
-    def _conn(*, children=None, parents=None):
+    def _conn(*, children: list | None = None, parents: dict | None = None) -> NotionConnector:
         conn = _make_connector_fullcov()
         conn.data_entities_processor.get_records_by_parent = AsyncMock(
             return_value=children or []

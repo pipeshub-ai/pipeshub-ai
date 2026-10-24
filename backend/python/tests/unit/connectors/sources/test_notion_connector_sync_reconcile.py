@@ -2,19 +2,25 @@
 revisions and the workspace (sync side)."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.sources.notion.connector import NotionConnector, _DatabaseUnavailable
+from app.connectors.sources.notion.connector import (
+    NotionConnector,
+    _DatabaseUnavailable,
+)
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.models.entities import Record, RecordType
 from app.services.notification.types import NotificationType
 from app.sources.client.notion.notion import NotionRESTClientViaOAuth
-from tests.unit.connectors.sources.test_notion_connector import _make_api_response, _make_connector
+from tests.unit.connectors.sources.test_notion_connector import (
+    _make_api_response,
+    _make_connector,
+)
 
 OLD = "2026-01-01T10:00:00.000Z"
 
@@ -23,14 +29,14 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:00.000Z")
 
 
-def _page(page_id: str, edited: str = OLD, **extra: Any) -> Dict[str, Any]:
+def _page(page_id: str, edited: str = OLD, **extra: object) -> dict[str, Any]:
     return {"object": "page", "id": page_id, "last_edited_time": edited, "created_time": edited,
             "parent": {"type": "workspace", "workspace": True}, "url": f"https://notion.so/{page_id}",
             "properties": {"title": {"type": "title", "title": [{"plain_text": f"Page {page_id}"}]}}, **extra}
 
 
-def _search(results: List[Dict[str, Any]], has_more: bool = False, next_cursor: Optional[str] = None,
-            **extra: Any) -> MagicMock:
+def _search(results: list[dict[str, Any]], has_more: bool = False, next_cursor: Optional[str] = None,
+            **extra: object) -> MagicMock:
     return _make_api_response(success=True, data={"results": results, "has_more": has_more,
                                                   "next_cursor": next_cursor, **extra})
 
@@ -61,11 +67,11 @@ def _connector_with(datasource: MagicMock) -> NotionConnector:
 
 # ---- metadata -----------------------------------------------------------------------------------
 
-def test_manual_indexing_filter_is_declared_once():
+def test_manual_indexing_filter_is_declared_once() -> None:
     name = CommonFields.enable_manual_sync_filter().name
-    found: List[Any] = []
+    found: list[Any] = []
 
-    def walk(node: Any) -> None:
+    def walk(node: object) -> None:
         if isinstance(node, dict):
             if node.get("name") == name:
                 found.append(node)
@@ -79,7 +85,7 @@ def test_manual_indexing_filter_is_declared_once():
     assert len(found) == 1
 
 
-def test_search_and_users_page_at_the_api_maximum():
+def test_search_and_users_page_at_the_api_maximum() -> None:
     assert NotionConnector._SYNC_PAGE_SIZE == 100
 
 
@@ -102,7 +108,7 @@ def _probe_datasource(email: Optional[str] = "a@example.com", users_status: int 
 
 
 @pytest.mark.asyncio
-async def test_api_token_without_email_capability_is_refused():
+async def test_api_token_without_email_capability_is_refused() -> None:
     conn = _make_connector()
     with pytest.raises(ConnectorInitError, match="email addresses"):
         await conn._assert_api_token_capabilities(_probe_datasource(email=None))
@@ -111,14 +117,14 @@ async def test_api_token_without_email_capability_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_api_token_without_read_comments_is_refused():
+async def test_api_token_without_read_comments_is_refused() -> None:
     conn = _make_connector()
     with pytest.raises(ConnectorInitError, match="Read comments"):
         await conn._assert_api_token_capabilities(_probe_datasource(comments_status=403))
 
 
 @pytest.mark.asyncio
-async def test_api_token_with_capabilities_passes_and_probe_errors_pass():
+async def test_api_token_with_capabilities_passes_and_probe_errors_pass() -> None:
     conn = _make_connector()
     await conn._assert_api_token_capabilities(_probe_datasource())
     broken = MagicMock()
@@ -128,7 +134,7 @@ async def test_api_token_with_capabilities_passes_and_probe_errors_pass():
 
 # ---- users: hidden emails --------------------------------------------------------------------------
 
-def _users_datasource(people: List[Dict[str, Any]]) -> MagicMock:
+def _users_datasource(people: list[dict[str, Any]]) -> MagicMock:
     ds = MagicMock()
     ds.list_users = AsyncMock(return_value=_make_api_response(data={
         "results": [{"id": p["id"], "type": "person"} for p in people], "has_more": False, "next_cursor": None}))
@@ -138,7 +144,7 @@ def _users_datasource(people: List[Dict[str, Any]]) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_users_all_without_email_fails_closed_without_removing_anyone():
+async def test_users_all_without_email_fails_closed_without_removing_anyone() -> None:
     conn = _connector_with(_users_datasource([{"id": "u1", "type": "person", "person": {}},
                                               {"id": "u2", "type": "person", "person": {}}]))
     conn._remove_departed_workspace_users = AsyncMock()
@@ -148,7 +154,7 @@ async def test_users_all_without_email_fails_closed_without_removing_anyone():
 
 
 @pytest.mark.asyncio
-async def test_users_some_without_email_keep_only_their_own_access():
+async def test_users_some_without_email_keep_only_their_own_access() -> None:
     conn = _connector_with(_users_datasource([
         {"id": "u1", "type": "person", "name": "A", "person": {"email": "a@example.com"}},
         {"id": "u2", "type": "person", "name": "B", "person": {}}]))
@@ -163,7 +169,7 @@ async def test_users_some_without_email_keep_only_their_own_access():
 # ---- search walk: watermark and checkpoint ------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_watermark_overlap_rereads_ten_minutes_before_the_checkpoint():
+async def test_watermark_overlap_rereads_ten_minutes_before_the_checkpoint() -> None:
     checkpoint = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
     ds = MagicMock()
     ds.search = AsyncMock(return_value=_search([
@@ -178,13 +184,13 @@ async def test_watermark_overlap_rereads_ten_minutes_before_the_checkpoint():
 
 
 @pytest.mark.asyncio
-async def test_failed_page_is_not_saved_and_holds_the_checkpoint():
+async def test_failed_page_is_not_saved_and_holds_the_checkpoint() -> None:
     ds = MagicMock()
     ds.search = AsyncMock(return_value=_search([_page("a", "2026-01-02T10:00:00.000Z"),
                                                 _page("b", "2026-01-01T10:00:00.000Z")]))
     conn = _connector_with(ds)
 
-    async def attachments(page_id: str, url: str = ""):
+    async def attachments(page_id: str, url: str = "") -> tuple[list, dict]:
         if page_id == "b":
             raise RuntimeError("HTTP 429 after retries")
         return [], {}
@@ -203,7 +209,7 @@ async def test_failed_page_is_not_saved_and_holds_the_checkpoint():
     _search([_page("a")], request_status={"type": "incomplete", "incomplete_reason": "query_result_limit_reached"}),
 ])
 @pytest.mark.asyncio
-async def test_incomplete_walk_does_not_move_the_checkpoint(response):
+async def test_incomplete_walk_does_not_move_the_checkpoint(response) -> None:
     ds = MagicMock()
     ds.search = AsyncMock(return_value=response)
     conn = _connector_with(ds)
@@ -214,7 +220,7 @@ async def test_incomplete_walk_does_not_move_the_checkpoint(response):
 
 
 @pytest.mark.asyncio
-async def test_cursor_that_does_not_advance_holds_the_checkpoint():
+async def test_cursor_that_does_not_advance_holds_the_checkpoint() -> None:
     ds = MagicMock()
     ds.search = AsyncMock(side_effect=[_search([_page("a")], has_more=True, next_cursor="c1"),
                                        _search([_page("b")], has_more=True, next_cursor="c1")])
@@ -224,7 +230,7 @@ async def test_cursor_that_does_not_advance_holds_the_checkpoint():
 
 
 @pytest.mark.asyncio
-async def test_unchanged_page_skips_the_block_walk_and_changed_page_prunes_removed_files():
+async def test_unchanged_page_skips_the_block_walk_and_changed_page_prunes_removed_files() -> None:
     ds = MagicMock()
     ds.search = AsyncMock(return_value=_search([_page("same"), _page("changed", "2026-02-01T10:00:00.000Z")]))
     conn = _connector_with(ds)
@@ -243,7 +249,7 @@ async def test_unchanged_page_skips_the_block_walk_and_changed_page_prunes_remov
 
 # ---- reconciliation ---------------------------------------------------------------------------------
 
-def _reconcile_connector(listed: Dict[str, List[Dict[str, Any]]], stored: Dict[RecordType, List[Record]]):
+def _reconcile_connector(listed: dict[str, list[dict[str, Any]]], stored: dict[RecordType, list[Record]]) -> NotionConnector:
     ds = MagicMock()
     ds.search = AsyncMock(side_effect=lambda request_body: _search(listed[request_body["filter"]["value"]]))
     conn = _connector_with(ds)
@@ -253,7 +259,7 @@ def _reconcile_connector(listed: Dict[str, List[Dict[str, Any]]], stored: Dict[R
 
 
 @pytest.mark.asyncio
-async def test_reconcile_deletes_confirmed_gone_with_files_and_detaches_child_pages():
+async def test_reconcile_deletes_confirmed_gone_with_files_and_detaches_child_pages() -> None:
     gone = _stored("gone")
     conn = _reconcile_connector({"data_source": [], "page": [_page("live")]},
                                 {RecordType.WEBPAGE: [_stored("live"), gone]})
@@ -267,7 +273,7 @@ async def test_reconcile_deletes_confirmed_gone_with_files_and_detaches_child_pa
 
 
 @pytest.mark.asyncio
-async def test_reconcile_keeps_unconfirmed_and_search_lagged_records():
+async def test_reconcile_keeps_unconfirmed_and_search_lagged_records() -> None:
     conn = _reconcile_connector({"data_source": [], "page": [_page("live")]},
                                 {RecordType.WEBPAGE: [_stored("live"), _stored("lag"), _stored("rate")]})
     conn._fetch_placeholder_object = AsyncMock(
@@ -278,7 +284,7 @@ async def test_reconcile_keeps_unconfirmed_and_search_lagged_records():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_confirms_by_id_even_when_search_lists_nothing():
+async def test_reconcile_confirms_by_id_even_when_search_lists_nothing() -> None:
     # Everything unshared: each stored page is confirmed gone by id and removed.
     conn = _reconcile_connector({"data_source": [], "page": []}, {RecordType.WEBPAGE: [_stored("p")]})
     conn._fetch_placeholder_object = AsyncMock(return_value=("gone", None))
@@ -292,7 +298,7 @@ async def test_reconcile_confirms_by_id_even_when_search_lists_nothing():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_removes_nothing_on_an_unfinished_listing():
+async def test_reconcile_removes_nothing_on_an_unfinished_listing() -> None:
     conn = _reconcile_connector({"data_source": [], "page": []}, {RecordType.WEBPAGE: [_stored("p")]})
     conn._get_fresh_datasource.return_value.search = AsyncMock(
         return_value=_search([], has_more=True, next_cursor="x"))
@@ -303,7 +309,7 @@ async def test_reconcile_removes_nothing_on_an_unfinished_listing():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_syncs_listed_pages_that_are_not_stored_whatever_their_age():
+async def test_reconcile_syncs_listed_pages_that_are_not_stored_whatever_their_age() -> None:
     conn = _reconcile_connector({"data_source": [], "page": [_page("old-shared", "2020-01-01T00:00:00.000Z")]}, {})
     await conn._reconcile_with_source()
     saved = [r.external_record_id for r, _ in conn.data_entities_processor.on_new_records.await_args.args[0]]
@@ -311,7 +317,7 @@ async def test_reconcile_syncs_listed_pages_that_are_not_stored_whatever_their_a
 
 
 @pytest.mark.asyncio
-async def test_reindex_deletes_a_page_notion_no_longer_shows():
+async def test_reindex_deletes_a_page_notion_no_longer_shows() -> None:
     conn = _connector_with(MagicMock())
     conn._ensure_workspace_from_bot = AsyncMock()
     rec = _stored("p1")
@@ -324,7 +330,7 @@ async def test_reindex_deletes_a_page_notion_no_longer_shows():
 # ---- run_sync: 401 refresh and notifications ------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_401_on_oauth_refreshes_once_and_reruns():
+async def test_401_on_oauth_refreshes_once_and_reruns() -> None:
     conn = _make_connector()
     conn._run_sync_once = AsyncMock(side_effect=[RuntimeError("Notion API error: HTTP 401: unauthorized"), None])
     conn._refresh_after_unauthorized = AsyncMock(return_value=True)
@@ -335,7 +341,7 @@ async def test_401_on_oauth_refreshes_once_and_reruns():
 
 
 @pytest.mark.asyncio
-async def test_failed_sync_is_notified_and_raised():
+async def test_failed_sync_is_notified_and_raised() -> None:
     conn = _make_connector()
     conn._run_sync_once = AsyncMock(side_effect=RuntimeError("Notion API error: HTTP 401: unauthorized"))
     conn._refresh_after_unauthorized = AsyncMock(return_value=False)
@@ -351,7 +357,7 @@ async def test_failed_sync_is_notified_and_raised():
 
 
 @pytest.mark.asyncio
-async def test_refresh_after_unauthorized_uses_the_refresh_service():
+async def test_refresh_after_unauthorized_uses_the_refresh_service() -> None:
     conn = _make_connector()
     client = MagicMock(spec=NotionRESTClientViaOAuth)
     client.access_token = "old"
@@ -371,14 +377,14 @@ async def test_refresh_after_unauthorized_uses_the_refresh_service():
 
 # ---- revisions, parents, workspace ----------------------------------------------------------------------
 
-def test_recent_minute_revision_is_open_and_old_one_is_plain():
+def test_recent_minute_revision_is_open_and_old_one_is_plain() -> None:
     conn = _make_connector()
     now = _iso(datetime.now(timezone.utc))
     assert conn._revision_for(now) == f"{now}#open"
     assert conn._revision_for(OLD) == OLD
 
 
-def test_file_records_carry_the_block_revision_and_let_the_processor_version():
+def test_file_records_carry_the_block_revision_and_let_the_processor_version() -> None:
     conn = _make_connector()
     record = conn._transform_to_file_record({
         "id": "b1", "type": "file", "last_edited_time": OLD, "created_time": OLD,
@@ -387,7 +393,7 @@ def test_file_records_carry_the_block_revision_and_let_the_processor_version():
 
 
 @pytest.mark.asyncio
-async def test_block_parent_rate_limit_is_not_no_parent():
+async def test_block_parent_rate_limit_is_not_no_parent() -> None:
     ds = MagicMock()
     ds.retrieve_block = AsyncMock(return_value=_make_api_response(success=False, status=429, error="HTTP 429"))
     conn = _connector_with(ds)
@@ -398,7 +404,7 @@ async def test_block_parent_rate_limit_is_not_no_parent():
 
 
 @pytest.mark.asyncio
-async def test_page_with_unreadable_parent_is_retried_not_rerooted():
+async def test_page_with_unreadable_parent_is_retried_not_rerooted() -> None:
     ds = MagicMock()
     ds.search = AsyncMock(return_value=_search([_page("p", parent={"type": "block_id", "block_id": "blk"})]))
     ds.retrieve_block = AsyncMock(return_value=_make_api_response(success=False, status=500, error="HTTP 500"))
@@ -409,7 +415,7 @@ async def test_page_with_unreadable_parent_is_retried_not_rerooted():
 
 
 @pytest.mark.asyncio
-async def test_workspace_without_name_gets_a_default_and_a_swapped_token_moves_on():
+async def test_workspace_without_name_gets_a_default_and_a_swapped_token_moves_on() -> None:
     ds = MagicMock()
     ds.retrieve_bot_user = AsyncMock(return_value=_make_api_response(data={
         "type": "bot", "bot": {"workspace_id": "ws-2", "workspace_name": None}}))
@@ -423,7 +429,7 @@ async def test_workspace_without_name_gets_a_default_and_a_swapped_token_moves_o
 
 
 @pytest.mark.asyncio
-async def test_personal_connector_runs_the_shared_finishing_passes():
+async def test_personal_connector_runs_the_shared_finishing_passes() -> None:
     proc = MagicMock()
     proc.org_id = "org-1"
     conn = NotionPersonalConnector(MagicMock(), proc, MagicMock(), AsyncMock(), "c1", "personal", "u1")

@@ -3,6 +3,7 @@ from app.connectors.sources.notion.connector import _DatabaseUnavailable
 
 import asyncio
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
@@ -129,7 +130,7 @@ def _make_file_record(**kwargs):
 # ===================================================================
 
 
-async def _fake_file_stream(*_args, **_kwargs):
+async def _fake_file_stream(*_args: object, **_kwargs: object) -> AsyncIterator[bytes]:
     """Stands in for utils.streaming.stream_content: Notion-hosted file bytes."""
     yield b"part-a"
     yield b"part-b"
@@ -1519,7 +1520,7 @@ class TestResolveTableRowChildren:
     one Notion call per row."""
 
     @staticmethod
-    def _row(source_id="row-1"):
+    def _row(source_id: str = "row-1") -> Block:
         return Block(id="b1", index=0, type=BlockType.TABLE_ROW, format=DataFormat.MARKDOWN, data="x",
                      source_id=source_id)
 
