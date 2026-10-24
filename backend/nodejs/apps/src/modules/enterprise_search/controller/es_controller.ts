@@ -777,9 +777,10 @@ export const streamChat =
       timer.mark('conversation_created');
 
       const { agentMode } = parseChatMode(req.body.chatMode);
+      // A new conversation has no stored history; history is never taken from the client (CE-19).
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId: newConversationId,
-        previousConversations: req.body.previousConversations || [],
+        previousConversations: [],
         isNewConversation: true,
         project: projectLink.project,
       });
@@ -6537,9 +6538,10 @@ export const deleteAgent =
       );
       (res as any).flush?.();
 
+      // A new conversation has no stored history; history is never taken from the client (CE-19).
       const aiRequest = buildAiChatRequest({ kind: 'agent', agentKey: agentKey as string }, req.body, {
         conversationId: newAgentConversationId,
-        previousConversations: req.body.previousConversations || [],
+        previousConversations: [],
         isNewConversation: true,
         project: projectLink.project,
       });

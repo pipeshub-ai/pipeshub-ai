@@ -8467,6 +8467,13 @@ components:
         - Retrieves relevant context from matching documents
         - Generates a response with citations to source materials
         - Suggests follow-up questions based on the conversation
+
+        **History:** a new conversation starts with no history, and
+        history is never accepted from the caller. A body carrying a
+        non-empty `previousConversations` is rejected with 400 (an empty
+        list is ignored). Send follow-up questions to
+        `POST /conversations/{conversationId}/messages`; the server replays
+        the stored conversation.
       required:
         - query
       properties:
@@ -8701,7 +8708,12 @@ components:
         First turn of an agent conversation. Used as-is by the non-streaming
         `POST /agents/{agentKey}/conversations`, where `chatMode` may be
         omitted; `AgentStreamCreateConversationRequest` additionally requires
-        it. Unknown fields are stripped during validation.
+        it. Unknown fields are stripped during validation, except
+        `previousConversations`: history is never accepted from the caller,
+        so a non-empty `previousConversations` is rejected with 400 (an
+        empty list is ignored). Follow-up turns go to
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
+        where the server replays the stored conversation.
       required:
         - query
       properties:
