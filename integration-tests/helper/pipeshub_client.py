@@ -201,7 +201,7 @@ class PipeshubClient:
         admin's own login session instead. Prod keeps its provisioned app.
         """
         return (
-            os.getenv("PIPESHUB_TEST_ENV") == "local"
+            os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() == "local"
             and bool(os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip())
             and bool(os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip())
         )

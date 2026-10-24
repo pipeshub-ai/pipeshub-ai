@@ -340,7 +340,7 @@ def local_oauth_credentials() -> None:
     exercise client_credentials. The app acts as a service account; PipeshubClient itself
     signs in as the admin test user on the local stack.
     """
-    if os.getenv("PIPESHUB_TEST_ENV") != "local":
+    if os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() != "local":
         return
     if os.getenv("CLIENT_ID") and os.getenv("CLIENT_SECRET"):
         return
