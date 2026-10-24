@@ -319,6 +319,44 @@ class TestOpenRouterClaude:
         ]
         assert len(_breakpoints(body)) == 2
 
+    async def test_both_paths_end_on_the_relocated_tool_images(self, endpoint: Any) -> None:  # noqa: ANN401
+        """Chat Completions takes images only in a user message after the tool
+        results; on both paths that message is the last one, and it carries
+        the last breakpoint."""
+        from langchain_openai import ChatOpenAI
+
+        from app.agent_loop_lib.core.messages import (
+            AssistantMessage,
+            ImagePart,
+            ImageSource,
+            TextPart,
+            ToolCall,
+            UserMessage,
+        )
+        from app.agent_loop_lib.core.messages import ToolMessage as LoopToolMessage
+        from app.agent_loop_lib.transport.openai import OpenAITransport
+        from app.agents.agent_loop.langchain_transport import LangChainTransport
+
+        model = "anthropic/claude-sonnet-5.5"
+        plan = OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True, last_message=True)
+        history = [
+            UserMessage(content="Who owns HarborBank?"),
+            AssistantMessage(tool_calls=[ToolCall(id="t1", name="tool_0", arguments={"q": "HarborBank"})]),
+            LoopToolMessage(content=[
+                TextPart(text="[r1]"), ImagePart(source=ImageSource(type="url", data="https://x/1.png")),
+            ], tool_call_id="t1"),
+        ]
+        langchain = LangChainTransport(ChatOpenAI(model=model, api_key="test", base_url=endpoint.url, max_retries=0),
+                                       model_name=model, cache_strategy=OpenAICacheStrategy(plan))
+        direct = OpenAITransport(api_key="test", model=model, base_url=endpoint.url, max_retries=0, cache_plan=plan)
+        for transport in (langchain, direct):
+            await transport.complete(list(history), system=STABLE)
+        via_langchain, via_direct = (body["messages"][-1] for body in endpoint.bodies)
+        assert via_direct == via_langchain
+        assert via_direct["content"][1]["image_url"]["url"] == "https://x/1.png"
+        assert via_direct["content"][-1]["prompt_cache_breakpoint"] == BREAKPOINT
+        assert [len(_breakpoints(body)) for body in endpoint.bodies] == [2, 2]
+
 
 class TestXAIKey:
     async def test_chat_xai_sends_the_key(self, endpoint: Any) -> None:  # noqa: ANN401
