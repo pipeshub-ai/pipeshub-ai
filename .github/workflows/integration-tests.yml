@@ -311,7 +311,7 @@ jobs:
       # "Use the Atlassian simulators" step. CONNSIM_REF pins the simulator commit
       # the image is built from and CONNSIM_PACK_* the content pack it serves;
       # together they fix every fixture value in that env file.
-      CONNSIM_REF: fcfe407746e1ecd254b30731a8d78479c58f59d9
+      CONNSIM_REF: 57517baae6d1b89c7c7a1f53a9eed9b2afa34b0d
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-1.tar.gz
       CONNSIM_PACK_SHA256: d39e021dc029ebd3c6e8af29b7dc8de161020ecc0818411204d6ce585db2d725
