@@ -601,6 +601,24 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(at(history, 3)).to.deep.equal({ role: 'bot_response', content: '', status: 'failed' })
     })
 
+    it('marks a failed turn whose error follows a system row', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'system', content: 'Forked from an earlier conversation' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+        { messageType: 'user_query', content: 'Only the blocked ones' } as IMessage,
+      ])
+
+      const roles = history.map((turn) => turn.role)
+      expect(roles.indexOf('bot_response')).to.be.greaterThan(roles.indexOf('user_query'))
+      expect(roles.indexOf('bot_response')).to.be.lessThan(roles.lastIndexOf('user_query'))
+      expect(history.find((turn) => turn.role === 'bot_response')).to.deep.equal({
+        role: 'bot_response',
+        content: '',
+        status: 'failed',
+      })
+    })
+
     it('keeps dropping an error row that follows an answer', () => {
       const history = formatPreviousConversations([
         { messageType: 'user_query', content: 'Open tickets?' } as IMessage,

@@ -865,20 +865,23 @@ const answerFollows = (messages: IMessage[], index: number): boolean => {
  */
 export const formatPreviousConversations = (messages: IMessage[]) => {
   const result: Array<Record<string, unknown>> = [];
+  // Tracked, not read off the last entry: a fork keeps stored `system` rows,
+  // which can sit between a question and its error.
+  let questionOpen = false;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (!msg || msg.messageType === 'tool_call') {
       continue;
     }
     if (msg.messageType === 'error') {
-      if (
-        result[result.length - 1]?.role === 'user_query' &&
-        !answerFollows(messages, i)
-      ) {
+      if (questionOpen && !answerFollows(messages, i)) {
         result.push({ role: 'bot_response', content: '', status: 'failed' });
+        questionOpen = false;
       }
       continue;
     }
+    if (msg.messageType === 'user_query') questionOpen = true;
+    if (msg.messageType === 'bot_response') questionOpen = false;
     let toolResults: PreviousToolResult[] =
       msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
     if (msg.messageType === 'bot_response') {
