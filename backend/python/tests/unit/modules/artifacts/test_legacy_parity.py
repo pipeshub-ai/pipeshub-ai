@@ -4,30 +4,48 @@ Each golden case is a stored record and the search hits that point into it.
 The baseline serves the record straight from the fixture; every backend in
 ``READERS`` is built from the same records and must produce identical
 flattened results, LLM message content and citations.
+
+The artifact readers store each record with the real ``ArtifactWriter`` over
+HTTP into ``FakeStorage``, point the mapping at the revision, and read it back.
+A case's ``artifacts.index_time_semantic_metadata`` is what indexing stored as
+``metadata.json``; its classification then arrives as the classify stage's
+sidecar, as it does when classification runs after indexing.
 """
 
 from __future__ import annotations
 
 import copy
+import inspect
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.modules.artifacts.reader import RecordArtifactReader, record_artifact_reader
+from app.modules.artifacts.record_backend import (
+    ArtifactRecordBackend,
+    classification_sidecar_path,
+)
+from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.artifacts.writer import ArtifactWriter, canonical_json
+from app.modules.pipeline.stages.record_io import NAMED_ENTITIES_SECTION
+from app.modules.transformers.blob_storage import clean_stored_record
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     get_flattened_results,
 )
 from app.utils.citations import normalize_citations_and_chunks
+from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 GOLDEN = Path(__file__).parent / "golden"
 CASES = sorted(p.stem for p in GOLDEN.glob("*.json"))
 ORG = "org-1"
 FRONTEND = "https://app.test"
+REV = "0123456789abcdef"
 
 
 def _load(case: str) -> dict[str, Any]:
@@ -35,7 +53,12 @@ def _load(case: str) -> dict[str, Any]:
 
 
 class _Config:
+    def __init__(self, flags: dict[str, bool] | None = None) -> None:
+        self._flags = flags or {}
+
     async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
+        if key == "/services/platform/settings":
+            return {"featureFlags": self._flags}
         return {"frontend": {"publicEndpoint": FRONTEND}}
 
 
@@ -85,10 +108,99 @@ class _QueryServices:
         return None
 
 
-ReaderFactory = Callable[[dict[str, dict[str, Any]]], RecordArtifactReader]
+class _Dumped:
+    """A stored-record dict that ``build_revision`` dumps as it dumps the model it came from."""
+
+    def __init__(self, value: dict[str, Any]) -> None:
+        self._value = value
+
+    def model_dump(self, *, exclude: set[str] | None = None, exclude_none: bool = False, **_: Any) -> dict[str, Any]:  # noqa: ANN401
+        return {
+            k: copy.deepcopy(v) for k, v in self._value.items()
+            if k not in (exclude or set()) and not (exclude_none and v is None)
+        }
+
+
+class _Containers(_Dumped):
+    def __init__(self, value: dict[str, Any]) -> None:
+        super().__init__(value)
+        self.blocks = [_Dumped(b) for b in value.get("blocks", [])]
+        self.block_groups = [_Dumped(g) for g in value.get("block_groups", [])]
+
+
+_STORAGES: list[FakeStorage] = []
+
+
+@pytest.fixture(autouse=True)
+async def _stop_storages() -> AsyncIterator[None]:
+    yield
+    while _STORAGES:
+        await _STORAGES.pop().stop()
+
+
+async def _artifact_sets(records: dict[str, dict[str, Any]], cases: dict[str, dict[str, Any]]) -> tuple[FakeStorage, dict[str, dict[str, Any]]]:
+    """Each record stored as an artifact set, and the mapping entries pointing at them."""
+    storage = FakeStorage()
+    await storage.start()
+    _STORAGES.append(storage)
+    store = NodeArtifactStore(storage.blob_storage())
+    writer = ArtifactWriter(store)
+    mappings: dict[str, dict[str, Any]] = {}
+    for vrid, record in records.items():
+        stored = cases[vrid].get("artifacts", {})
+        later = "index_time_semantic_metadata" in stored
+        semantic = stored["index_time_semantic_metadata"] if later else record.get("semantic_metadata")
+        written = await writer.write_revision(
+            _Dumped({k: v for k, v in record.items() if k != "block_containers"}),  # type: ignore[arg-type]
+            ORG, vrid, REV, _Containers(record["block_containers"]),  # type: ignore[arg-type]
+            semantic_metadata=semantic,
+        )
+        assert written is not None
+        if later:
+            path = classification_sidecar_path()
+            plan = await store.presign_revision(ORG, vrid, REV, [(path, "application/json")])
+            classification = {k: v for k, v in record["semantic_metadata"].items() if k != NAMED_ENTITIES_SECTION}
+            await store.put(plan.files[path], canonical_json(classification), "application/json")
+        mappings[vrid] = {
+            "record_doc_id": f"doc-{vrid}", "currentRev": REV, "manifestDocId": written.manifest_ref.document_id,
+        }
+    return storage, mappings
+
+
+def _cases(records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_vrid = {_load(c)["record"]["virtual_record_id"]: _load(c) for c in CASES}
+    return {vrid: by_vrid[vrid] for vrid in records}
+
+
+async def _artifact_backend(records: dict[str, dict[str, Any]]) -> RecordArtifactReader:
+    storage, mappings = await _artifact_sets(records, _cases(records))
+    lookups = _StoredRecords({})
+    lookups.get_document_ids_by_virtual_record_ids = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda vrids: {v: mappings[v] for v in vrids if v in mappings}
+    )
+    lookups.get_document_id_by_virtual_record_id = AsyncMock(side_effect=mappings.get)  # type: ignore[attr-defined]
+    return ArtifactRecordBackend(lookups, NodeArtifactStore(storage.blob_storage()))  # type: ignore[arg-type]
+
+
+async def _artifact_first(records: dict[str, dict[str, Any]]) -> RecordArtifactReader:
+    """Through the factory with ``ENABLE_ARTIFACT_READ`` on, and no stored record to fall back to."""
+    storage, mappings = await _artifact_sets(records, _cases(records))
+    blob = storage.blob_storage()
+    blob.config_service = _Config({"ENABLE_ARTIFACT_READ": True})
+    blob.get_document_ids_by_virtual_record_ids = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda vrids: {v: mappings[v] for v in vrids if v in mappings}
+    )
+    blob.get_document_id_by_virtual_record_id = AsyncMock(side_effect=mappings.get)  # type: ignore[method-assign]
+    blob.get_record_from_storage = AsyncMock(side_effect=AssertionError("fell back to the stored record"))  # type: ignore[method-assign]
+    return record_artifact_reader(blob)
+
+
+ReaderFactory = Callable[[dict[str, dict[str, Any]]], RecordArtifactReader | Awaitable[RecordArtifactReader]]
 
 READERS: list[Any] = [
     pytest.param(lambda records: record_artifact_reader(_StoredRecords(records)), id="legacy"),
+    pytest.param(_artifact_backend, id="artifact"),
+    pytest.param(_artifact_first, id="artifact-first"),
 ]
 
 
@@ -149,7 +261,10 @@ async def test_reader_matches_the_stored_record(
     records = {golden["record"]["virtual_record_id"]: golden["record"]}
 
     expected = await _answer_turn(case, _GoldenReader(records), monkeypatch)
-    actual = await _answer_turn(case, make_reader(copy.deepcopy(records)), monkeypatch)
+    reader = make_reader(copy.deepcopy(records))
+    if inspect.isawaitable(reader):
+        reader = await reader
+    actual = await _answer_turn(case, reader, monkeypatch)
 
     for part in expected:
         assert actual[part] == expected[part], part
@@ -170,3 +285,22 @@ def test_corpus_covers_the_stored_shapes() -> None:
     assert any(b["type"] == "table_row" and b["data"].get("row_natural_language_text") for c in CASES for b in blocks(c))
     assert any(b["type"] == "image" and b["data"].get("uri") for c in CASES for b in blocks(c))
     assert any(_load(c)["record"].get("semantic_metadata") for c in CASES)
+    assert any("index_time_semantic_metadata" in _load(c).get("artifacts", {}) for c in CASES)
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_cases_hold_what_a_stored_record_can(case: str) -> None:
+    """The stored record never keeps an empty value at the top of the record, a block or a group."""
+    record = _load(case)["record"]
+    assert clean_stored_record(copy.deepcopy(record)) == record
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_a_later_classification_is_what_the_stage_writes(case: str) -> None:
+    """The stored record's classification is the sidecar's with the index-time named entities kept."""
+    golden = _load(case)
+    index_time = golden.get("artifacts", {}).get("index_time_semantic_metadata")
+    if index_time is None:
+        return
+    stored = golden["record"]["semantic_metadata"]
+    assert stored[NAMED_ENTITIES_SECTION] == index_time.get(NAMED_ENTITIES_SECTION)

@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 MAX_FILES_PER_CALL = 1000
 
 _ROUTE_MISSING = frozenset({HttpStatusCode.NOT_FOUND.value, HttpStatusCode.METHOD_NOT_ALLOWED.value})
+# S3 answers a signed GET of a missing key with 403 when the signer may not list the bucket.
+_FILE_MISSING = frozenset({HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value})
 
 
 class ArtifactRoutesUnavailable(Exception):
@@ -247,16 +249,31 @@ class NodeArtifactStore:
 
     async def get(self, entry: SignedFileUrl, byte_range: tuple[int, int] | None = None) -> bytes:
         """The file's bytes; ``byte_range`` is inclusive ``(start, end)``."""
+        data = await self._get(entry, byte_range, missing_ok=False)
+        if data is None:
+            raise ArtifactStoreError("artifact download answered no body")
+        return data
+
+    async def get_if_present(self, entry: SignedFileUrl) -> bytes | None:
+        """The file's bytes, or None when the file does not exist."""
+        return await self._get(entry, None, missing_ok=True)
+
+    async def _get(
+        self, entry: SignedFileUrl, byte_range: tuple[int, int] | None, *, missing_ok: bool
+    ) -> bytes | None:
         if entry.method != "GET":
             raise ValueError("not a download URL")
         headers = dict(entry.headers)
         if byte_range is not None:
             headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
 
-        async def attempt() -> bytes:
+        async def attempt() -> bytes | None:
             async with get_shared_session().get(
                 URL(entry.url, encoded=True), headers=headers
             ) as response:
+                if missing_ok and response.status in _FILE_MISSING:
+                    await response.read()
+                    return None
                 if not _is_success(response.status):
                     await response.read()
                     raise _storage_status_error(

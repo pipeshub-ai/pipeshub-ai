@@ -2,10 +2,14 @@
 
 Files of a revision (paths are relative to its root):
 
-- ``record.json``: the record's own fields, without its blocks or classification.
+- ``record.json``: the stored copy's fields (the owner's identity for shared
+  content), without its blocks or classification;
+  ``block_containers`` holds only the container's other fields, when it has any.
 - ``blocks/part-NNNN.jsonl``: one block per line, in block order, cut into
   parts of at most ``PART_MAX_BYTES`` (a single larger block gets a part of its
-  own). Image data URIs are replaced by ``{"asset": "images/<sha256>.<ext>"}``.
+  own). Image data URIs are replaced by ``{"asset": "images/<sha256>.<ext>"}``,
+  plus ``"asset_media_type"`` when the URI spelled its type otherwise
+  (``image/jpg`` for a ``.jpg``), so the reader rebuilds the URI exactly.
 - ``groups.json``: the block groups.
 - ``images/<sha256>.<ext>``: each distinct image, decoded.
 - ``text/part-NNNN.jsonl``: ``{"i", "g", "page", "text"}`` for every block with
@@ -35,6 +39,7 @@ from pydantic import BaseModel
 from app.models.blocks import BlocksContainer, BlockType
 from app.models.entities import Record
 from app.modules.artifacts.models import (
+    ASSET_MEDIA_TYPE,
     MANIFEST_PATH,
     ArtifactEntry,
     ArtifactFile,
@@ -47,6 +52,7 @@ from app.modules.artifacts.store import (
     NodeArtifactStore,
     artifact_writes_available,
 )
+from app.modules.transformers.blob_storage import SHARED_CONTENT_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 PART_MAX_BYTES = 8 * 1024 * 1024
@@ -130,16 +136,23 @@ def _externalise_image(block: dict[str, Any], images: dict[str, bytes]) -> None:
     match = _DATA_URI.match(uri)
     if not match or match.group(1).lower() not in _IMAGE_TYPES:
         return
+    encoded = uri[match.end():]
     try:
-        raw = base64.b64decode(uri[match.end():], validate=False)
+        raw = base64.b64decode(encoded, validate=False)
     except (binascii.Error, ValueError):
         return
-    if not raw:
+    # A reader re-encodes the bytes; a URI that would not come back the same
+    # (unpadded, wrapped) stays inline.
+    if not raw or base64.b64encode(raw).decode("ascii") != encoded:
         return
-    ext, _ = _IMAGE_TYPES[match.group(1).lower()]
+    ext, canonical_type = _IMAGE_TYPES[match.group(1).lower()]
     path = f"images/{_sha256(raw)}.{ext}"
     images.setdefault(path, raw)
-    block["data"] = {**{k: v for k, v in data.items() if k != "uri"}, "asset": path}
+    externalised = {**{k: v for k, v in data.items() if k != "uri"}, "asset": path}
+    media_type = uri[len("data:"):match.end() - len(";base64,")]
+    if media_type != canonical_type:
+        externalised[ASSET_MEDIA_TYPE] = media_type
+    block["data"] = externalised
 
 
 def _block_text(block: dict[str, Any]) -> str:
@@ -179,13 +192,32 @@ def build_revision(
     *,
     semantic_metadata: BaseModel | dict[str, Any] | None = None,
     reconciliation_metadata: dict[str, Any] | None = None,
+    stored_record_fields: dict[str, Any] | None = None,
     part_max_bytes: int = PART_MAX_BYTES,
 ) -> BuiltRevision:
-    """Every file of the revision but the manifest, and the manifest's entries. Pure."""
+    """Every file of the revision but the manifest, and the manifest's entries. Pure.
+
+    ``stored_record_fields``: the stored copy's fields outside the shared content
+    (``BlobStorage.apply``'s ``STORED_RECORD_FIELDS``); record.json then holds
+    them instead of ``record``'s own.
+    """
     built = BuiltRevision()
     snapshot = record.model_dump(
         mode="json", exclude_none=True, exclude={"block_containers", "semantic_metadata"}
     )
+    if stored_record_fields is not None:
+        # The stored copy's identity (its owner's, for shared content) with this
+        # revision's content fields, so the set reads back as the stored copy.
+        snapshot = {
+            **{k: v for k, v in stored_record_fields.items() if k not in SHARED_CONTENT_FIELDS},
+            **{k: v for k, v in snapshot.items() if k in SHARED_CONTENT_FIELDS},
+        }
+    # What the container holds besides its blocks and groups (a code parse's fact version).
+    container_fields = block_containers.model_dump(
+        mode="json", exclude_none=True, exclude={"blocks", "block_groups"}
+    )
+    if container_fields:
+        snapshot["block_containers"] = container_fields
     _add_single(built, "record", "record.json", snapshot, 1)
 
     images: dict[str, bytes] = {}
@@ -255,6 +287,7 @@ class ArtifactWriter:
         block_containers: BlocksContainer,
         semantic_metadata: BaseModel | dict[str, Any] | None = None,
         reconciliation_metadata: dict[str, Any] | None = None,
+        stored_record_fields: dict[str, Any] | None = None,
     ) -> WrittenRevision | None:
         """Store every file of revision ``rev``, the manifest last.
 
@@ -273,6 +306,7 @@ class ArtifactWriter:
             block_containers,
             semantic_metadata=semantic_metadata,
             reconciliation_metadata=reconciliation_metadata,
+            stored_record_fields=stored_record_fields,
             part_max_bytes=self.part_max_bytes,
         )
         paths = sorted(built.files)

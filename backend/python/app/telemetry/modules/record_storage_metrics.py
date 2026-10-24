@@ -27,3 +27,40 @@ ARTIFACT_WRITES = METRICS_BACKEND.counter(
 
 def record_artifact_write(outcome: str) -> None:
     ARTIFACT_WRITES.inc(outcome)
+
+
+# outcome: served, or why the artifact set could not be: no_pointer (no current
+# revision on the mapping), missing (a file or the set is gone), too_large,
+# integrity (a file's size or sha256 is not the manifest's), invalid (a manifest
+# or file this reader cannot use), failed (storage or another error).
+ARTIFACT_READS = METRICS_BACKEND.counter(
+    "pipeshub_record_artifact_reads_total",
+    "Record reads from artifact sets, by outcome",
+    ["outcome"],
+)
+
+# outcome: match, mismatch, unavailable (the artifact read did not serve), legacy_failed,
+# timeout (the artifact read outlasted the served read's grace), skipped (too many in flight).
+ARTIFACT_SHADOW_READS = METRICS_BACKEND.counter(
+    "pipeshub_record_artifact_shadow_reads_total",
+    "Stored-record reads compared with their artifact set, by outcome",
+    ["outcome"],
+)
+
+# reason: the first part that differed: record_field, semantic_metadata,
+# container_field, block_count, block, group_count, group, legacy_missing.
+ARTIFACT_SHADOW_MISMATCHES = METRICS_BACKEND.counter(
+    "pipeshub_record_artifact_shadow_mismatches_total",
+    "Shadow reads whose artifact set differed from the stored record, by first difference",
+    ["reason"],
+)
+
+
+def record_artifact_read(outcome: str) -> None:
+    ARTIFACT_READS.inc(outcome)
+
+
+def record_artifact_shadow_read(outcome: str, reason: str | None = None) -> None:
+    ARTIFACT_SHADOW_READS.inc(outcome)
+    if reason is not None:
+        ARTIFACT_SHADOW_MISMATCHES.inc(reason)

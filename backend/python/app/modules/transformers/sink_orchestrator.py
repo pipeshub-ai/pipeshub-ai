@@ -17,7 +17,7 @@ from app.models.entities import Record, RecordGroupType
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
-from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, BlobStorage
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.image_description import (
@@ -515,6 +515,7 @@ class SinkOrchestrator(Transformer):
                 self._stored_block_containers(record),
                 semantic_metadata=record.semantic_metadata,
                 reconciliation_metadata=reconciliation or None,
+                stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.

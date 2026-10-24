@@ -11,7 +11,11 @@ from pydantic import BaseModel, Field
 
 MANIFEST_PATH = "manifest.json"
 #: Bumped when a file's layout changes in a way a reader must know about.
-WRITER_VERSION = 1
+#: 2: image blocks keep a non-canonical media type; record.json holds the container's
+#: fields and the stored copy's identity (the owner's, for shared content).
+WRITER_VERSION = 2
+#: In an image block's data: the media type its data URI spelled, when not the asset's own.
+ASSET_MEDIA_TYPE = "asset_media_type"
 
 
 class ArtifactRef(BaseModel):

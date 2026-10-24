@@ -27,6 +27,7 @@ from app.modules.artifacts.models import ArtifactRef, Manifest, WrittenRevision
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.transformers import sink_orchestrator as sink_module
+from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
@@ -177,6 +178,26 @@ class TestWhenItWrites:
         args = orch.artifact_writer.write_revision.await_args
         assert args.args[1:4] == ("org-1", "vr-1", REV)
         assert args.kwargs["reconciliation_metadata"] == reconciliation
+
+    async def test_the_stored_copys_identity_goes_to_the_writer(self) -> None:
+        orch = _orchestrator(_graph())
+        owner = {"id": "rec-owner", "record_name": "Owner's name"}
+
+        def store(ctx: TransformContext) -> None:
+            ctx.settings[STORED_RECORD_FIELDS] = owner
+
+        orch.blob_storage.apply = AsyncMock(side_effect=store)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert orch.artifact_writer.write_revision.await_args.kwargs["stored_record_fields"] == owner
+
+    async def test_without_a_report_of_the_stored_copy_record_json_is_the_record(self) -> None:
+        orch = _orchestrator(_graph())
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert orch.artifact_writer.write_revision.await_args.kwargs["stored_record_fields"] is None
 
     async def test_sql_tables_keep_the_same_row_limit_as_the_stored_record(self) -> None:
         rows = [Block(index=i, type=BlockType.TABLE_ROW, data={"row": i}) for i in range(25)]

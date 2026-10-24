@@ -28,9 +28,11 @@ class StoredPut:
 
 @dataclass
 class FakeStorage:
-    """``vendor``: which signed headers presign hands out (azure, s3 or local)."""
+    """``vendor``: which signed headers presign hands out (azure, s3 or local).
+    ``missing_status``: the answer to a GET of a missing file (S3 may say 403)."""
 
     vendor: str = "azure"
+    missing_status: int = 404
     put_status: int = 201
     presign_status: int = 200
     fail_paths: set[str] = field(default_factory=set)
@@ -150,7 +152,7 @@ class FakeStorage:
     async def _get(self, request: web.Request) -> web.Response:
         stored = self.puts.get(request.match_info["tail"])
         if stored is None:
-            return web.Response(status=404)
+            return web.Response(status=self.missing_status)
         range_header = request.headers.get("Range")
         if range_header:
             start, end = (int(x) for x in range_header.removeprefix("bytes=").split("-"))

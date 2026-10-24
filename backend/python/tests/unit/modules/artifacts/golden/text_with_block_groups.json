@@ -45,7 +45,6 @@
         {
           "index": 0,
           "type": "list",
-          "data": "",
           "children": [
             {
               "block_index": 1
@@ -53,8 +52,7 @@
             {
               "block_index": 2
             }
-          ],
-          "parent_index": null
+          ]
         }
       ]
     }

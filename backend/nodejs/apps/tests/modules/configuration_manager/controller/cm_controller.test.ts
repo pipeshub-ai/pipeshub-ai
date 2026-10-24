@@ -834,6 +834,23 @@ describe('ConfigurationManager Controller', () => {
       expect(flag.advanced).to.equal(true)
     })
 
+    for (const key of ['ENABLE_ARTIFACT_READ_SHADOW', 'ENABLE_ARTIFACT_READ']) {
+      it(`should include ${key} as an advanced flag, defaulting to disabled`, async () => {
+        const handler = getAvailablePlatformFeatureFlags()
+        const req = createMockRequest()
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        const flags = res.json.firstCall.args[0].flags
+        const flag = flags.find((f: any) => f.key === key)
+        expect(flag).to.exist
+        expect(flag.defaultEnabled).to.equal(false)
+        expect(flag.advanced).to.equal(true)
+      })
+    }
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()

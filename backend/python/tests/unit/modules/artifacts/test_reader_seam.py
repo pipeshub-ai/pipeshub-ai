@@ -63,8 +63,13 @@ def test_allowlist_has_no_stale_entries() -> None:
     assert not stale, f"No longer call get_record_from_storage; drop from ALLOWED: {stale}"
 
 
-def test_factory_returns_the_legacy_reader() -> None:
-    assert isinstance(record_artifact_reader(MagicMock()), LegacyRecordArtifactReader)
+async def test_factory_reads_the_stored_record_with_the_read_flags_off() -> None:
+    blob = MagicMock()
+    blob.config_service.get_config = AsyncMock(return_value={"featureFlags": {}})
+    blob.get_record_from_storage = AsyncMock(return_value={"block_containers": {}})
+
+    assert await record_artifact_reader(blob).read_record("vr-1", "org-1") == {"block_containers": {}}
+    blob.get_record_from_storage.assert_awaited_once_with("vr-1", "org-1", lookup_result=None)
 
 
 class TestLegacyRecordArtifactReader:

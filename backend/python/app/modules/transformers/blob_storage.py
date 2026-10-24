@@ -195,6 +195,30 @@ def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) ->
     )
 
 
+def clean_top_level_empty_values(obj: dict[str, Any]) -> dict[str, Any]:
+    """``obj`` without top-level keys whose value is None, "", [] or {}."""
+    return {
+        k: v
+        for k, v in obj.items()
+        if v is not None and v != "" and v != [] and v != {}
+    }
+
+
+def clean_stored_record(data: dict[str, Any]) -> dict[str, Any]:
+    """A record dict as it is stored: empty values dropped at the top level of
+    the record, of each block and of each block group."""
+    cleaned = clean_top_level_empty_values(data)
+    block_containers = cleaned.get("block_containers")
+    if isinstance(block_containers, dict):
+        for key in ("blocks", "block_groups"):
+            if isinstance(block_containers.get(key), list):
+                block_containers[key] = [
+                    clean_top_level_empty_values(item) if isinstance(item, dict) else item
+                    for item in block_containers[key]
+                ]
+    return cleaned
+
+
 def compression_threshold_bytes() -> int:
     """Records whose JSON form exceeds this are stored compressed; 0 compresses everything."""
     raw = os.getenv(_COMPRESSION_THRESHOLD_ENV)
@@ -270,10 +294,14 @@ class TransientStorageError(aiohttp.ClientError):
 
 # What a stored record holds that is the same for every record sharing its vrid;
 # everything else (name, link, ids, connector, statuses) belongs to one record.
-_SHARED_CONTENT_FIELDS = (
+SHARED_CONTENT_FIELDS = (
     "block_containers", "semantic_metadata", "md5_hash", "virtual_record_id",
     "is_vlm_ocr_processed",
 )
+#: ``TransformContext.settings`` key: the stored copy's fields outside
+#: ``SHARED_CONTENT_FIELDS``, as ``apply`` wrote them. They are the owner's when
+#: another record stored the shared content first.
+STORED_RECORD_FIELDS = "stored_record_fields"
 
 
 class StorageLookupUnavailableError(Exception):
@@ -1176,43 +1204,10 @@ class BlobStorage(Transformer):
         return file_bytes
 
     def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Remove top-level keys with None, empty strings, empty lists, and empty dicts.
-        Only processes the first level of the given object.
-        """
-        return {
-            k: v
-            for k, v in obj.items()
-            if v is not None and v != "" and v != [] and v != {}
-        }
+        return clean_top_level_empty_values(obj)
 
     def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Clean empty values at the top level of:
-        1. The main record object
-        2. Each block in block_containers.blocks
-        3. Each block group in block_containers.block_groups
-        """
-        # Clean top-level record fields
-        cleaned = self._clean_top_level_empty_values(data)
-
-        # Clean each block's top-level fields
-        if "block_containers" in cleaned and isinstance(cleaned["block_containers"], dict):
-            block_containers = cleaned["block_containers"]
-
-            if "blocks" in block_containers and isinstance(block_containers["blocks"], list):
-                block_containers["blocks"] = [
-                    self._clean_top_level_empty_values(block) if isinstance(block, dict) else block
-                    for block in block_containers["blocks"]
-                ]
-
-            if "block_groups" in block_containers and isinstance(block_containers["block_groups"], list):
-                block_containers["block_groups"] = [
-                    self._clean_top_level_empty_values(bg) if isinstance(bg, dict) else bg
-                    for bg in block_containers["block_groups"]
-                ]
-
-        return cleaned
+        return clean_stored_record(data)
 
     async def _build_hierarchical_storage_path(
         self,
@@ -1387,14 +1382,22 @@ class BlobStorage(Transformer):
             virtual_record_id, storage_path
         )
 
+        written: dict[str, Any] = {}
         actual_storage_path = await self._store_record_dict(
             org_id, record_id, virtual_record_id, record_dict,
             storage_path=storage_path,
             connector_id=getattr(record, "connector_id", None),
             record_group_id=getattr(record, "record_group_id", None),
+            written=written,
         )
 
         ctx.settings["storage_path"] = actual_storage_path
+        if written:
+            ctx.settings[STORED_RECORD_FIELDS] = {
+                k: v for k, v in written.items() if k not in SHARED_CONTENT_FIELDS
+            }
+        else:
+            ctx.settings.pop(STORED_RECORD_FIELDS, None)
         ctx.record = record
         return ctx
 
@@ -1408,10 +1411,13 @@ class BlobStorage(Transformer):
         storage_path: str | None = None,
         connector_id: str | None = None,
         record_group_id: str | None = None,
+        written: dict[str, Any] | None = None,
     ) -> str:
         """Upload a record as the next version of its stored document, or as a new one.
 
-        Returns the path the content is stored at. Without *storage_path* (a rewrite of a
+        Returns the path the content is stored at. *written*, when given, is filled
+        with the record dict actually stored: shared content keeps its owner's
+        identity, so it can differ from *record_dict*. Without *storage_path* (a rewrite of a
         record already stored, which has no Record entity to build a path from), a new
         upload goes where the current document is, else to ``records/<vrid>``; the
         connector and record group default to the ones in *record_dict*.
@@ -1550,6 +1556,9 @@ class BlobStorage(Transformer):
             if mapped and replaced_doc_id and replaced_doc_id != document_id:
                 await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
+        if written is not None and document_id:
+            written.clear()
+            written.update(record_dict)
         return actual_storage_path
 
     async def save_semantic_metadata(
@@ -2151,12 +2160,12 @@ class BlobStorage(Transformer):
         if holders is not None and owner not in holders:
             if min(holders, default=record_id) == record_id:
                 return record_dict
-            stored = {k: v for k, v in stored.items() if k in _SHARED_CONTENT_FIELDS}
+            stored = {k: v for k, v in stored.items() if k in SHARED_CONTENT_FIELDS}
             owner = "a record that no longer holds it"
         elif not owner or owner == record_id:
             return record_dict
         merged = dict(stored)
-        for key in _SHARED_CONTENT_FIELDS:
+        for key in SHARED_CONTENT_FIELDS:
             if key in record_dict:
                 merged[key] = record_dict[key]
             else:
@@ -2254,6 +2263,10 @@ class BlobStorage(Transformer):
         record_metadata_doc_id = doc.get("record_metadata_doc_id")
         if record_metadata_doc_id:
             result["record_metadata_doc_id"] = record_metadata_doc_id
+        # The artifact set of the current content revision, for the artifact reader.
+        for key in ("currentRev", "manifestDocId"):
+            if doc.get(key):
+                result[key] = doc[key]
         return result
 
     async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
