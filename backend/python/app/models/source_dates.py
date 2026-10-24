@@ -68,6 +68,21 @@ def parse_origin(value: object) -> SourceTimestampOrigin | None:
         return None
 
 
+def _inferred_origin(created: int | None, modified: int | None, uploaded: int | None) -> SourceTimestampOrigin:
+    """The origin of an upload stored before it was kept, told apart by clock.
+
+    It describes the latest version's time, the one a header shows, as a stored
+    origin does. Only the first version's upload time is on record
+    (createdAtTimestamp); a later version's time is a file's only if it is older
+    than that, since updatedAtTimestamp also moves on a rename.
+    """
+    if modified is None or modified == created:
+        return upload_origin(created, uploaded)
+    if uploaded is not None and modified < uploaded - UPLOAD_CLOCK_WINDOW_MS:
+        return SourceTimestampOrigin.FILE
+    return SourceTimestampOrigin.UPLOAD
+
+
 @dataclass(frozen=True)
 class RecordDates:
     """A record's two source timestamps and what they are.
@@ -95,8 +110,7 @@ class RecordDates:
         if not is_kb_upload(connector_name, origin):
             return cls(None, created, modified)
         uploaded = epoch_ms(uploaded_ms)
-        # Uploads indexed before the origin was stored are told apart by clock.
-        kind = parse_origin(stored_origin) or upload_origin(created, uploaded)
+        kind = parse_origin(stored_origin) or _inferred_origin(created, modified, uploaded)
         return cls(kind, created, modified, uploaded)
 
     @classmethod
