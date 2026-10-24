@@ -73,7 +73,7 @@ _PHRASE_DOCUMENT_MENTIONS_RE = re.compile(
     r"""
     (?: how \s+ many \s+ times | how \s+ often )
     \s+ does \s+ (?: the \s+ )?
-    (?: document | record | book | file | pdf | text )
+    (?: document | doc | record | book | file | pdf | text | chapter )
     \s+ mention \s+
     (?P<phrase>.+?)
     [\s?.!]* $

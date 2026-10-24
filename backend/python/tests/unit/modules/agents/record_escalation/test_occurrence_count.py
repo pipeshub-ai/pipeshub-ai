@@ -26,6 +26,8 @@ class TestIsOccurrenceCountQuery:
             "number of appearances of foo in the pdf",
             "how many times does the document mention GDPR",
             "how often does the record mention harry potter",
+            "how many times does the doc mention GDPR",
+            "how often does the chapter mention clause 4",
         ],
     )
     def test_positive(self, text: str) -> None:
@@ -87,6 +89,17 @@ class TestParseOccurrencePhrase:
         assert (
             parse_occurrence_phrase("how often does the record mention harry potter")
             == "harry potter"
+        )
+
+    def test_doc_shorthand_mention_wording(self) -> None:
+        """Regression: 'doc' and 'chapter' must be parsed like 'document'."""
+        assert (
+            parse_occurrence_phrase("how many times does the doc mention GDPR?")
+            == "GDPR"
+        )
+        assert (
+            parse_occurrence_phrase("how often does the chapter mention clause 4")
+            == "clause 4"
         )
 
 
@@ -156,6 +169,16 @@ class TestNeedsWholeDocumentOccurrence:
             needs_whole_document(
                 "no",
                 "How many times is harry potter mentioned in the book?",
+            )
+            is True
+        )
+
+    def test_document_mention_form_overrides_marker_no(self) -> None:
+        """Regression: 'no' marker must not prevent whole-doc fetch for doc-mention form."""
+        assert (
+            needs_whole_document(
+                "no",
+                "how many times does the document mention GDPR?",
             )
             is True
         )
