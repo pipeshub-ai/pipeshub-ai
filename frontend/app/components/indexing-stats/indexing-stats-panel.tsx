@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import {
@@ -8,6 +8,8 @@ import {
   deriveEntitiesStatus,
   deriveRecordsStatus,
 } from './derive-records-status';
+import { AiEnrichmentSection } from './ai-enrichment-section';
+import { IndexActionButton } from './index-action-button';
 import { StatCard } from './stat-card';
 import {
   OverviewStatsGridShimmer,
@@ -91,8 +93,8 @@ export function IndexingStatsPanel({
   const byRecordType = stats?.byRecordType ?? [];
   const showReindexFailedAction = Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
   const showManualIndexAction = Boolean(recordsStatus && recordsStatus.autoIndexOff > 0) && !showStatsShimmer;
-  const showRetryClassificationAction = Boolean(classificationStatus && classificationStatus.failed > 0);
-  const showRetryEntitiesAction = Boolean(entitiesStatus && entitiesStatus.failed > 0);
+  // Held here so a Refresh, which unmounts the section while stats reload, keeps it open.
+  const [enrichmentOpen, setEnrichmentOpen] = useState(false);
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -155,34 +157,8 @@ export function IndexingStatsPanel({
                   loading={isRefreshBusy}
                 />
               </Flex>
-              {(showReindexFailedAction ||
-                showManualIndexAction ||
-                showRetryClassificationAction ||
-                showRetryEntitiesAction) &&
-                recordsStatus && (
+              {(showReindexFailedAction || showManualIndexAction) && recordsStatus && (
                 <Flex align="center" gap="1" wrap="wrap" justify="end">
-                  {showRetryClassificationAction && onRetryFailedClassification && classificationStatus && (
-                    <IndexActionButton
-                      label={`${t('workspace.connectors.overview.retryFailedClassification')} (${classificationStatus.failed})`}
-                      icon="replay"
-                      color="orange"
-                      iconColor="var(--orange-11)"
-                      onClick={() => void onRetryFailedClassification()}
-                      disabled={reindexActionsBusy || isSyncBusy}
-                      loading={isRetryClassificationBusy}
-                    />
-                  )}
-                  {showRetryEntitiesAction && onRetryFailedEntities && entitiesStatus && (
-                    <IndexActionButton
-                      label={`${t('workspace.connectors.overview.retryFailedEntities')} (${entitiesStatus.failed})`}
-                      icon="replay"
-                      color="orange"
-                      iconColor="var(--orange-11)"
-                      onClick={() => void onRetryFailedEntities()}
-                      disabled={reindexActionsBusy || isSyncBusy}
-                      loading={isRetryEntitiesBusy}
-                    />
-                  )}
                   {showReindexFailedAction && onReindexFailed && (
                     <IndexActionButton
                       label={`Reindex failed (${recordsStatus.failed})`}
@@ -283,49 +259,23 @@ export function IndexingStatsPanel({
         ) : null}
 
         {classificationStatus ? (
-          <Flex
-            direction="column"
-            gap="2"
-            style={{ borderTop: '1px solid var(--olive-3)', paddingTop: 'var(--space-3)' }}
-          >
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.connectors.overview.classification')}
-            </Text>
-            <Flex gap="4" wrap="wrap">
-              {[
-                {
-                  key: 'completed',
-                  label: t('workspace.connectors.overview.statCompleted'),
-                  value: classificationStatus.completed,
-                },
-                {
-                  key: 'skipped',
-                  label: t('workspace.connectors.overview.classificationSkipped'),
-                  value: classificationStatus.skipped,
-                },
-                {
-                  key: 'failed',
-                  label: t('status.failed'),
-                  value: classificationStatus.failed,
-                  valueColor: classificationStatus.failed > 0 ? 'var(--red-11)' : undefined,
-                },
-                {
-                  key: 'queued',
-                  label: t('workspace.connectors.overview.statQueued'),
-                  value: classificationStatus.queued,
-                },
-              ].map((item) => (
-                <Flex key={item.key} align="baseline" gap="1">
-                  <Text size="2" weight="medium" style={{ color: item.valueColor ?? 'var(--gray-12)' }}>
-                    {item.value}
-                  </Text>
-                  <Text size="1" style={{ color: 'var(--gray-10)' }}>
-                    {item.label}
-                  </Text>
-                </Flex>
-              ))}
-            </Flex>
-          </Flex>
+          <AiEnrichmentSection
+            classification={classificationStatus}
+            entities={entitiesStatus}
+            open={enrichmentOpen}
+            onOpenChange={setEnrichmentOpen}
+            onRetryFailedClassification={
+              showSyncActions && onRetryFailedClassification
+                ? () => void onRetryFailedClassification()
+                : undefined
+            }
+            onRetryFailedEntities={
+              showSyncActions && onRetryFailedEntities ? () => void onRetryFailedEntities() : undefined
+            }
+            isRetryClassificationBusy={isRetryClassificationBusy}
+            isRetryEntitiesBusy={isRetryEntitiesBusy}
+            retryDisabled={reindexActionsBusy || isSyncBusy}
+          />
         ) : null}
       </Flex>
 
@@ -378,75 +328,6 @@ export function IndexingStatsPanel({
 }
 
 // Helper components
-const INDEX_ACTION_ICON_SIZE = 16;
-
-function IndexActionButton({
-  label,
-  icon,
-  color,
-  iconColor,
-  onClick,
-  disabled,
-  loading,
-}: {
-  label: string;
-  icon: string;
-  color: 'orange' | 'gray';
-  iconColor: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  loading?: boolean;
-}) {
-  const [isHovered, setIsHovered] = React.useState(false);
-  const isBusy = disabled || loading;
-  const backgroundColor =
-    color === 'orange'
-      ? isHovered && !isBusy
-        ? 'var(--orange-a4)'
-        : 'var(--orange-a3)'
-      : isHovered && !isBusy
-        ? 'var(--gray-a4)'
-        : 'var(--gray-a3)';
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={isBusy}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        height: 'var(--space-5)',
-        padding: '0 var(--space-2)',
-        borderRadius: 'max(var(--radius-1), var(--radius-full))',
-        border: 'none',
-        backgroundColor,
-        color: iconColor,
-        fontSize: 'var(--font-size-1)',
-        fontWeight: 500,
-        lineHeight: 'var(--line-height-1)',
-        width: 'max-content',
-        maxWidth: '100%',
-        flexShrink: 0,
-        whiteSpace: 'nowrap',
-        cursor: loading ? 'wait' : disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled && !loading ? 0.6 : 1,
-        transition: 'background-color 150ms ease',
-      }}
-    >
-      <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
-      {label}
-    </button>
-  );
-}
-
 function StatusActionButton({
   label,
   icon,
