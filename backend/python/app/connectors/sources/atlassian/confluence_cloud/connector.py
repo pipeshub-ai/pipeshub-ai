@@ -3072,8 +3072,10 @@ class ConfluenceConnector(BaseConnector):
             visited.add(next_cursor)
             cursor = next_cursor
 
-    async def _stored_content(self, space_id: str, record_type: RecordType) -> list[Record]:
-        """Stored records of this type in the space, without placeholder ancestors.
+    async def _stored_content(
+        self, space_id: str, record_type: RecordType, *, with_placeholders: bool = False
+    ) -> list[Record]:
+        """Stored records of this type in the space, without placeholder ancestors unless asked.
 
         Placeholders hold the breadcrumb of in-scope pages and are never listed themselves.
         """
@@ -3085,7 +3087,9 @@ class ConfluenceConnector(BaseConnector):
                 self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
                 visibility=RecordVisibility.ALL,
             )
-            stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
+            stored.extend(
+                r for r in page if r.record_type == record_type and (with_placeholders or not r.is_placeholder)
+            )
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
             after_key = page[-1].id
@@ -3217,6 +3221,14 @@ class ConfluenceConnector(BaseConnector):
                 f"Space {space.short_name}: couldn't check for deleted folders; the next sync tries again", unread=False
             )
             return
+        if self.data_entities_processor.full_sync_running(self.connector_id):
+            # A folder filled in above an in-scope page is not listed when the filters leave it out;
+            # unseen, the full sync would unlink it and hide the pages under it.
+            for folder in stored:
+                if str(folder.external_record_id) in listed and await self.data_entities_processor.get_records_by_parent(
+                    self.connector_id, folder.external_record_id
+                ):
+                    self.data_entities_processor.note_kept_records(self.connector_id, [folder.id])
         gone: list[Record] = []
         for folder in (f for f in stored if str(f.external_record_id) not in listed):
             try:
@@ -3534,10 +3546,10 @@ class ConfluenceConnector(BaseConnector):
             content_titles = await self._fetch_permission_audit_logs(window_start_ms, current_time_ms)
 
             if content_titles is None:
-                if self._audit_log_refused and spaces is not None:
-                    # Only administrators can read the audit log: find restriction changes from the
-                    # listings instead, so they still apply at the next sync.
-                    if await self._recheck_restrictions(spaces):
+                if spaces is not None:
+                    # Find restriction changes from the listings instead, so they still apply, also when
+                    # the audit log keeps failing. Only a refusal moves the window: other failures read it again.
+                    if await self._recheck_restrictions(spaces) and self._audit_log_refused:
                         await self.audit_log_sync_point.update_sync_point(
                             audit_sync_key, {"last_sync_time_ms": current_time_ms}
                         )
@@ -3622,9 +3634,9 @@ class ConfluenceConnector(BaseConnector):
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
-                if response is not None and response.status in (
-                    HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
-                ):
+                # Any 4xx but 429 repeats every run (no permission, a plan or site without the endpoint).
+                refused = response is not None and 400 <= response.status < 500 and response.status != 429
+                if refused:
                     self._audit_log_refused = response.status
                     problem = (
                         f"Couldn't read the Confluence audit log (HTTP {response.status}): it needs a Confluence "
@@ -3636,9 +3648,6 @@ class ConfluenceConnector(BaseConnector):
                         "Couldn't read the Confluence audit log (HTTP %s); restriction changes are read again "
                         "next sync" % (response.status if response else "no response")
                     )
-                refused = response is not None and response.status in (
-                    HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
-                )
                 self._note_problem(problem, unread=False, persistent=refused)
                 return None
 
@@ -3670,9 +3679,10 @@ class ConfluenceConnector(BaseConnector):
         return list(content_titles_set)
 
     async def _recheck_restrictions(self, spaces: list[RecordGroup]) -> bool:
-        """Sync again the stored pages and blog posts whose own read restriction changed.
+        """Sync again the stored pages, blog posts and folders whose own read restriction changed.
 
-        For when the audit log is refused. One listing per space and type carries each
+        For when the audit log is refused. Placeholder ancestors and folders only get their
+        access read again; in-scope pages and blog posts are synced again. One listing per space and type carries each
         item's read restriction. An item is synced again when that restriction differs
         from the one the previous check saw, or when it has none and is stored as
         restricted; the first check therefore syncs every restricted item once. Returns
@@ -3680,13 +3690,17 @@ class ConfluenceConnector(BaseConnector):
         """
         complete = True
         for space in spaces:
-            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
+            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST, RecordType.FILE):
                 listed = await self._list_read_restrictions(space.short_name, record_type)
                 if listed is None:
                     complete = False
                     continue
                 try:
-                    stored = await self._stored_content(space.external_group_id, record_type)
+                    stored = await self._stored_content(
+                        space.external_group_id, record_type, with_placeholders=True
+                    )
+                    if record_type == RecordType.FILE:
+                        stored = [r for r in stored if _is_folder(r)]
                 except Exception as e:
                     self.logger.warning(f"Could not read the stored records of space {space.short_name}: {e}")
                     complete = False
@@ -3704,9 +3718,12 @@ class ConfluenceConnector(BaseConnector):
                         else stored_rule[item_id] == AccessRule.RESTRICTED
                     )
                 )
-                failed: set[str] = set()
-                for start in range(0, len(changed), ID_SEARCH_CHUNK):
-                    chunk = changed[start:start + ID_SEARCH_CHUNK]
+                by_id = {r.external_record_id: r for r in stored}
+                access_only = [i for i in changed if record_type == RecordType.FILE or by_id[i].is_placeholder]
+                failed = await self._refresh_access_by_ids(space.short_name, record_type, access_only, by_id)
+                changed_content = [i for i in changed if i not in set(access_only)]
+                for start in range(0, len(changed_content), ID_SEARCH_CHUNK):
+                    chunk = changed_content[start:start + ID_SEARCH_CHUNK]
                     result = await self._sync_content(
                         space.short_name, record_type, defer_checkpoint=True, within_ids=chunk,
                     )
@@ -3730,10 +3747,108 @@ class ConfluenceConnector(BaseConnector):
             self._note_problem("Couldn't re-check every page's restrictions; the next sync tries again")
         return complete
 
-    async def _list_read_restrictions(self, space_key: str, record_type: RecordType) -> dict[str, str | None] | None:
-        """Read restriction fingerprint by id of every page or blog post in a space; None unless read to the end."""
+    async def _with_current_access(
+        self, item_data: dict[str, Any], record_type: RecordType, existing_record: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """A stored page, blog post or folder with its access read again; None when that could not be read."""
+        item_id = str(item_data.get("id"))
+        # Transform to WebpageRecord (a folder is a FileRecord)
+        record = (
+            self._transform_to_folder_file_record(item_data, existing_record)
+            if record_type == RecordType.FILE
+            else self._transform_to_webpage_record(item_data, record_type, existing_record)
+        )
+        if not record:
+            self.logger.warning(f"Could not read {item_id} to update its access; keeping what is stored")
+            return None
+        # A stub of an item the filters leave out stays a stub: only its access changes.
+        record.is_placeholder = bool(getattr(existing_record, "is_placeholder", False))
+        permissions = await self._fetch_page_permissions(item_id)
+        if permissions is None:
+            self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
+            return None
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
+        record.access_rule = (
+            AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
+        )
+        record.rewrite_permissions = True
+        return record, permissions
+
+    async def _save_with_access(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
+        """Save records whose access was read again, and pass it to their stored files and comments."""
+        await self.data_entities_processor.on_new_records(records_with_permissions)
+        self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
+        await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
+        # Their stored files and comments would otherwise keep the page's old access.
+        for record, permissions in records_with_permissions:
+            await apply_page_access_to_dependents(
+                self.data_entities_processor,
+                self.connector_id,
+                record.external_record_id,
+                permissions,
+                inherits_space=record.inherit_permissions,
+            )
+
+    async def _refresh_access_by_ids(
+        self, space_key: str, record_type: RecordType, ids: list[str], stored: dict[str, Record]
+    ) -> set[str]:
+        """Read again the access of stored folders and placeholder ancestors; returns the ids that failed.
+
+        Their content is not synced: a folder has none, and a placeholder stays one.
+        """
         datasource = await self._get_fresh_datasource()
-        listing = datasource.get_pages_v1 if record_type == RecordType.CONFLUENCE_PAGE else datasource.get_blogposts_v1
+        failed = set(ids)
+        for start in range(0, len(ids), ID_SEARCH_CHUNK):
+            chunk = ids[start:start + ID_SEARCH_CHUNK]
+            if record_type == RecordType.FILE:
+                listing, by_ids = datasource.get_folders_v1, {"folder_ids": chunk, "folder_ids_operator": "in"}
+            elif record_type == RecordType.CONFLUENCE_PAGE:
+                listing, by_ids = datasource.get_pages_v1, {"within_ids": chunk}
+            else:
+                listing, by_ids = datasource.get_blogposts_v1, {"within_ids": chunk}
+            token: str | None = None
+            followed: set[str] = set()
+            while True:
+                offset, cursor = self._split_pagination_token(token)
+                try:
+                    response = await listing(
+                        space_key=space_key, expand="version,space,history.lastUpdated,ancestors",
+                        start=offset, cursor=cursor, limit=ID_SEARCH_CHUNK, **by_ids,
+                    )
+                    data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+                except AtlassianQuotaExhausted:
+                    raise
+                except Exception as e:
+                    self.logger.warning(f"Could not read items of space {space_key} to update their access: {e}")
+                    break
+                results = data.get("results") if isinstance(data, dict) else None
+                if not isinstance(results, list):
+                    break
+                batch: list[tuple[Record, list[Permission]]] = []
+                for item in results:
+                    item_id = str(item.get("id")) if isinstance(item, dict) else None
+                    if item_id in stored:
+                        refreshed = await self._with_current_access(item, record_type, stored[item_id])
+                        if refreshed is not None:
+                            batch.append(refreshed)
+                            failed.discard(item_id)
+                if batch:
+                    await self._save_with_access(batch)
+                next_url = (data.get("_links") or {}).get("next")
+                token = self._extract_cursor_from_next_link(next_url) if next_url else None
+                if not token or not results or token in followed:
+                    break
+                followed.add(token)
+        return failed
+
+    async def _list_read_restrictions(self, space_key: str, record_type: RecordType) -> dict[str, str | None] | None:
+        """Read restriction fingerprint by id of every page, blog post or folder (FILE) in a space; None unless read to the end."""
+        datasource = await self._get_fresh_datasource()
+        listing = {
+            RecordType.CONFLUENCE_PAGE: datasource.get_pages_v1,
+            RecordType.CONFLUENCE_BLOGPOST: datasource.get_blogposts_v1,
+            RecordType.FILE: datasource.get_folders_v1,
+        }[record_type]
         found: dict[str, str | None] = {}
         token: str | None = None
         followed: set[str] = set()
@@ -3898,37 +4013,12 @@ class ConfluenceConnector(BaseConnector):
                                 continue
 
                             self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
-
-                            # Transform to WebpageRecord (a folder is a FileRecord)
-                            webpage_record = (
-                                self._transform_to_folder_file_record(item_data, existing_record)
-                                if record_type == RecordType.FILE
-                                else self._transform_to_webpage_record(item_data, record_type, existing_record)
-                            )
-                            if not webpage_record:
-                                continue
-                            # A stub of an item the filters leave out stays a stub: only its access changes.
-                            webpage_record.is_placeholder = bool(getattr(existing_record, "is_placeholder", False))
-
-                            # Fetch current permissions
-                            permissions = await self._fetch_page_permissions(item_id)
-                            if permissions is None:
-                                self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
+                            refreshed = await self._with_current_access(item_data, record_type, existing_record)
+                            if refreshed is None:
                                 has_failures = True
                                 continue
-                            total_permissions += len(permissions)
-
-                            # A READ restriction keeps inheriting and is recorded as
-                            # RESTRICTED instead; EDIT-only stays STRICT.
-                            webpage_record.access_rule = (
-                                AccessRule.RESTRICTED
-                                if any(p.type == PermissionType.READ for p in permissions)
-                                else AccessRule.STRICT
-                            )
-                            webpage_record.rewrite_permissions = True
-
-                            # Add to batch for update
-                            records_with_permissions.append((webpage_record, permissions))
+                            total_permissions += len(refreshed[1])
+                            records_with_permissions.append(refreshed)
                             total_synced += 1
 
                         except Exception as item_error:
@@ -3938,18 +4028,7 @@ class ConfluenceConnector(BaseConnector):
 
                     # Update batch in database
                     if records_with_permissions:
-                        await self.data_entities_processor.on_new_records(records_with_permissions)
-                        self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
-                        await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
-                        # Their stored files and comments would otherwise keep the page's old access.
-                        for webpage_record, permissions in records_with_permissions:
-                            await apply_page_access_to_dependents(
-                                self.data_entities_processor,
-                                self.connector_id,
-                                webpage_record.external_record_id,
-                                permissions,
-                                inherits_space=webpage_record.inherit_permissions,
-                            )
+                        await self._save_with_access(records_with_permissions)
 
                     next_url = response_data.get("_links", {}).get("next")
                     if not next_url:

@@ -959,6 +959,21 @@ class TestAuditLog:
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
 
+    @pytest.mark.parametrize(("status", "moves"), [(503, False), (404, True)])
+    async def test_a_failing_audit_log_falls_back_to_rechecking_restrictions(
+        self, api, db, checkpoints, status, moves
+    ) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_permission_changes_from_audit_log()
+        checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] = 1_000
+        api.on("GET", f"{V1}/audit", json_response({"message": "no"}, status=status))
+        connector._recheck_restrictions = AsyncMock(return_value=True)
+
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        connector._recheck_restrictions.assert_awaited_once_with([ENG])
+        assert (checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] != 1_000) is moves
+
     async def test_a_page_restricted_later_takes_its_stored_files_with_it(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
         search.by_cursor[None] = search_page([v1_page("10", attachments=[SPEC])])
@@ -2749,3 +2764,64 @@ class TestRestrictionsWithoutTheAuditLog:
         assert db.records["10"].access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
         assert any("audit log (HTTP 403)" in p for p in connector._sync_problems)
+
+    async def _refused_audit_log(self, api, connector) -> None:
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+
+    async def test_a_folder_restricted_without_an_edit_is_applied(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders, search.blogposts = [self._with_read_restriction(folder)], []
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].access_rule == AccessRule.STRICT
+        await self._refused_audit_log(api, connector)
+
+        search.folders = [self._with_read_restriction(folder, "acc-ana")]
+        api.on("GET", f"{V1}/content/500/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["500"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
+
+    async def test_a_stub_restricted_without_an_edit_gets_the_restriction_and_stays_a_stub(
+        self, api, db, checkpoints, search
+    ) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        db.records["5"] = WebpageRecord(
+            org_id="org-1", record_name="Out of scope", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="5",
+            external_record_group_id="77", connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        search.folders, search.blogposts = [], []
+        restricted = self._with_read_restriction(v1_page("5"), "acc-ana")
+        search.by_cursor = {None: search_page([restricted])}
+        search.indexed = {"5": restricted}
+        api.on("GET", f"{V1}/content/5/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await self._refused_audit_log(api, connector)
+
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["5"].is_placeholder is True
+        assert db.records["5"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["5"]] == ["ana@acme.com"]
+
+
+class TestFoldersAboveInScopePages:
+    async def test_a_full_sync_keeps_a_folder_the_filters_leave_out_while_pages_hang_under_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        db.records["10"] = db.records["500"].model_copy(
+            update={"id": "page-10", "external_record_id": "10", "parent_external_record_id": "500"}
+        )
+        db.full_sync = True
+
+        await connector._remove_folders_gone(ENG)
+
+        assert db.records["500"].id in db.kept_records

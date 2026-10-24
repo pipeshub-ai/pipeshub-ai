@@ -158,6 +158,7 @@ class FakeRecordsDb:
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
+        self.full_sync = False
         self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
 
@@ -249,6 +250,9 @@ class FakeRecordsDb:
             key=lambda r: r.id,
         )
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
