@@ -3,12 +3,16 @@ CE-07), and every default system prompt says what a context note is (CE-05)."""
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent_loop_lib.agent import Agent
+from app.agent_loop_lib.agent import goal as goal_module
+from app.agent_loop_lib.agent.goal import GoalBuilder
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.prompt import build_system_prompt
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.messages import UserMessage
-from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.core.types import Goal, Intent
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
@@ -63,3 +67,24 @@ def test_the_default_prompt_says_context_notes_come_from_the_runtime() -> None:
 
     assert '<context_note source="agent">' in prompt
     assert "not written by the user" in prompt
+
+
+async def test_a_goal_built_from_an_intent_keeps_the_raw_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _structured(**_: object) -> dict:
+        return {"description": "Explain the refund audit findings."}
+
+    monkeypatch.setattr(goal_module, "run_structured_single_shot", _structured)
+    intent = Intent(raw_message="What did the audit find?", parsed_intent="Explain the refund audit findings.")
+
+    built = await GoalBuilder(object(), object()).build(intent)  # type: ignore[arg-type]
+
+    assert built.request_text() == "What did the audit find?"
+    assert built.description == "Explain the refund audit findings."
+
+
+async def test_a_goal_built_without_a_model_keeps_the_raw_message() -> None:
+    intent = Intent(raw_message="What did the audit find?", parsed_intent="audit findings")
+
+    built = await GoalBuilder().build(intent)
+
+    assert built.request_text() == "What did the audit find?"

@@ -51,7 +51,8 @@ _WINDOW = 32_000
 # Smaller than the system prompt and tool schemas alone, so no request fits.
 _TINY_WINDOW = 4_000
 _SUMMARY_REQUEST = "Summarize the conversation history below"
-# Loop-written summaries still reach the provider as user turns (CE-05, P1).
+# Loop-written summaries reach the provider as user turns, wrapped as context notes (CE-05, P1).
+_CONTEXT_NOTE = '<context_note source="agent">\n'
 _LOOP_NOTE_PREFIXES = ("[Loop compaction", "[Auto-compacted summary")
 _IMAGE_URL = (
     "data:image/png;base64,"
@@ -189,13 +190,22 @@ def _humans(call: list[BaseMessage]) -> list[BaseMessage]:
     return [m for m in call if isinstance(m, HumanMessage)]
 
 
+def _is_loop_note(text: str) -> bool:
+    return text.startswith(_CONTEXT_NOTE) and text.removeprefix(_CONTEXT_NOTE).startswith(_LOOP_NOTE_PREFIXES)
+
+
+def _person_turns(call: list[BaseMessage]) -> list[str]:
+    """What the person wrote, in order: human turns that are not runtime context notes."""
+    return [t for t in (_text(m) for m in _humans(call)) if not t.startswith(_CONTEXT_NOTE)]
+
+
 def _assert_sends_current_request(n: int, call: list[BaseMessage]) -> BaseMessage:
     """B reaches the call verbatim and nothing the person wrote comes after it."""
     humans = _humans(call)
     texts = [_text(m) for m in humans]
     assert texts.count(_B) == 1, f"call #{n + 1}: the current question is not sent verbatim once: {texts}"
     after = texts[texts.index(_B) + 1:]
-    assert all(t.startswith(_LOOP_NOTE_PREFIXES) for t in after), (
+    assert all(_is_loop_note(t) for t in after), (
         f"call #{n + 1}: a human turn other than a loop note follows the current question: {after}"
     )
     assert texts[-1] != _A, f"call #{n + 1}: the first question is the last human message"
@@ -248,7 +258,7 @@ class TestFollowUpQuestionUnderCompaction:
         assert len(model.calls) == _FETCHES + 1
         # Without compaction this test proves nothing.
         assert model.summary_calls or any(
-            _text(m).startswith(_LOOP_NOTE_PREFIXES) for call in model.calls for m in _humans(call)
+            _is_loop_note(_text(m)) for call in model.calls for m in _humans(call)
         ), "nothing was compacted; raise the fetched page size or lower the window"
         for n, call in enumerate(model.calls):
             _assert_sends_current_request(n, call)
@@ -274,7 +284,7 @@ class TestFollowUpQuestionUnderCompaction:
             await _stream(_body())
 
         for n, call in enumerate(model.calls):
-            assert _text(_humans(call)[-1]) == _B, f"call #{n + 1}: {[_text(m)[:60] for m in _humans(call)]}"
+            assert _person_turns(call)[-1] == _B, f"call #{n + 1}: {[_text(m)[:60] for m in _humans(call)]}"
 
 
 class TestImageOnTheFollowUpQuestion:

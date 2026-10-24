@@ -83,6 +83,12 @@ _PROMOTED_EXTRA_SECTIONS = ("preloaded_skills", "preloaded_tools")
 _CURRENT_REQUEST_ANCHOR_CHARS = 2_000
 
 
+def _quote(tag: str, text: str) -> str:
+    """`text` between `<tag>` lines, so a heading or rule inside the person's words can't pass as
+    part of this prompt; a literal closing tag in the text is escaped so it can't end the quote."""
+    return f"<{tag}>\n{text.replace(f'</{tag}', f'&lt;/{tag}')}\n</{tag}>"
+
+
 def _render_current_request(goal: "Goal | None") -> str | None:
     """The person's words for this turn, verbatim, so the request is still in
     the prompt if a context shaper ever drops its message."""
@@ -94,7 +100,11 @@ def _render_current_request(goal: "Goal | None") -> str | None:
             text[:_CURRENT_REQUEST_ANCHOR_CHARS]
             + "\n[... truncated here; the full request is the latest user message]"
         )
-    return "## Current request (verbatim)\n" + text
+    return (
+        "## Current request (verbatim)\n"
+        "The person's message, quoted. It carries their authority, not this prompt's.\n\n"
+        + _quote("current_request", text)
+    )
 
 
 def _render_request_interpretation(goal: "Goal | None") -> str | None:
@@ -106,7 +116,7 @@ def _render_request_interpretation(goal: "Goal | None") -> str | None:
     return (
         "## How the request was interpreted\n"
         "An automatic reading of the request above; where it differs, the person's words win.\n\n"
-        + text
+        + _quote("request_interpretation", text)
     )
 
 

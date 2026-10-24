@@ -258,8 +258,9 @@ async def build_prior_routing_messages(
             messages.append(HumanMessage(content=msg_content))
 
         elif role == "bot_response":
-            answer = replayed_answer(content, conv.get("status"))
-            messages.append(AIMessage(content=answer[:_PRIOR_ANSWER_CHARS]))
+            # Cut before the outcome marker is added, so a long failed or stopped answer keeps it.
+            answer = replayed_answer(content[:_PRIOR_ANSWER_CHARS], conv.get("status"))
+            messages.append(AIMessage(content=answer))
 
     return messages
 

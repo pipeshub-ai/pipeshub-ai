@@ -267,6 +267,19 @@ class TestBuildPriorRoutingMessages:
         assert msgs[0].content == "Line one\nLine two"
 
     @pytest.mark.asyncio
+    async def test_a_long_failed_answer_keeps_its_outcome_after_truncation(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import FAILED, FAILED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "bot_response", "content": "x" * 5000, "status": FAILED},
+            ],
+        })
+        assert msgs[0].content.startswith("x" * 100)
+        assert msgs[0].content.endswith(FAILED_ANSWER)
+
+    @pytest.mark.asyncio
     async def test_user_and_bot_turns_in_order(self) -> None:
         from langchain_core.messages import AIMessage, HumanMessage
 

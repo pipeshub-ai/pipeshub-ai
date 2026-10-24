@@ -257,11 +257,28 @@ CONTEXT_NOTE_RULE = (
 )
 
 
+def _escape_note_tags(text: str) -> str:
+    # Injected text can quote tool output or a summary of it; a literal tag there would end the
+    # note early and pass the rest off as the person's words.
+    return text.replace("<context_note", "&lt;context_note").replace("</context_note", "&lt;/context_note")
+
+
+def _is_context_note(texts: list[str]) -> bool:
+    """`texts`, joined, are exactly one complete note (already rendered, so not wrapped twice)."""
+    joined = "".join(texts)
+    return (
+        joined.startswith(_CONTEXT_NOTE_OPEN)
+        and joined.endswith(_CONTEXT_NOTE_CLOSE)
+        and joined.count("<context_note") == 1
+        and joined.count("</context_note") == 1
+    )
+
+
 def render_context_note(text: str) -> str:
     """`text` wrapped as a note from the agent runtime."""
-    if text.startswith(_CONTEXT_NOTE_OPEN):
+    if _is_context_note([text]):
         return text
-    return f"{_CONTEXT_NOTE_OPEN}\n{text}\n{_CONTEXT_NOTE_CLOSE}"
+    return f"{_CONTEXT_NOTE_OPEN}\n{_escape_note_tags(text)}\n{_CONTEXT_NOTE_CLOSE}"
 
 
 def as_sent(message: Message) -> Message:
@@ -277,10 +294,10 @@ def as_sent(message: Message) -> Message:
     content = message.content
     if isinstance(content, str):
         return message.model_copy(update={"content": render_context_note(content)})
-    parts = list(content)
+    if _is_context_note([part.text for part in content if isinstance(part, TextPart)]):
+        return message
+    parts = [TextPart(text=_escape_note_tags(part.text)) if isinstance(part, TextPart) else part for part in content]
     if parts and isinstance(parts[0], TextPart):
-        if parts[0].text.startswith(_CONTEXT_NOTE_OPEN):
-            return message
         parts[0] = TextPart(text=f"{_CONTEXT_NOTE_OPEN}\n{parts[0].text}")
     else:
         parts.insert(0, TextPart(text=_CONTEXT_NOTE_OPEN))
