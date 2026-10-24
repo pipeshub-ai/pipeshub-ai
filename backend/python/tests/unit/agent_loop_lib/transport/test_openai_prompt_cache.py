@@ -228,6 +228,38 @@ class TestRejection:
         assert "prompt_cache_key" not in retry
         assert retry["prompt_cache_retention"] == "24h"
 
+    async def test_complete_resends_until_nothing_is_refused(self) -> None:
+        rejected = MagicMock()
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS), on_cache_rejected=rejected)
+        transport._client.chat.completions.create = AsyncMock(side_effect=[
+            _rejected("prompt_cache_retention"), _rejected("prompt_cache_key"), _chat(),
+        ])
+        await transport.complete([UserMessage(content="hi")])
+        sent = [call.kwargs for call in transport._client.chat.completions.create.call_args_list]
+        assert [set(KWARGS) & set(kwargs) for kwargs in sent] == [set(KWARGS), {"prompt_cache_key"}, set()]
+        assert [call.args for call in rejected.call_args_list] == [
+            (frozenset({"prompt_cache_retention"}),), (frozenset({"prompt_cache_key"}),),
+        ]
+
+    async def test_stream_resends_until_nothing_is_refused(self) -> None:
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
+        transport._client.chat.completions.create = AsyncMock(side_effect=[
+            _rejected("prompt_cache_retention"), _rejected("prompt_cache_key"), _chunks(),
+        ])
+        events = [event async for event in transport.stream([UserMessage(content="hi")])]
+        assert isinstance(events[-1], StreamCompleteEvent)
+        assert transport._client.chat.completions.create.call_count == 3
+        assert transport._cache_kwargs == {}
+
+    async def test_a_parameter_refused_again_is_raised(self) -> None:
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
+        transport._client.chat.completions.create = AsyncMock(side_effect=[
+            _rejected("prompt_cache_retention"), _rejected("prompt_cache_retention"),
+        ])
+        with pytest.raises(Exception, match="prompt_cache_retention"):
+            await transport.complete([UserMessage(content="hi")])
+        assert transport._client.chat.completions.create.call_count == 2
+
     async def test_an_unrelated_400_is_raised(self) -> None:
         transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
         transport._client.chat.completions.create = AsyncMock(side_effect=[_rejected("frobnicate")])
