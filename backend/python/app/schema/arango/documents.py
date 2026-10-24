@@ -72,6 +72,10 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
+            "kind": {
+                "type": ["string", "null"],
+                "enum": ["individual", "service", None],
+            },
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -1207,6 +1211,7 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            "serviceAccountId": {"type": ["string", "null"]},
             "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},

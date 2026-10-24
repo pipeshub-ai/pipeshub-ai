@@ -213,6 +213,51 @@ class TestRequiredFields:
         assert rule.get("additionalProperties") is False
 
 
+class TestUserSchemaKind:
+    def test_accepts_valid_kinds_and_none(self):
+        validator = Draft4Validator(adapt_schema(documents.user_schema))
+        validator.validate({"email": "user@example.com", "kind": "individual"})
+        validator.validate({"email": "bot@example.com", "kind": "service"})
+        validator.validate({"email": "user@example.com", "kind": None})
+        validator.validate({"email": "user@example.com"})
+
+    def test_rejects_invalid_kind(self):
+        validator = Draft4Validator(adapt_schema(documents.user_schema))
+        with pytest.raises(ValidationError):
+            validator.validate({"email": "admin@example.com", "kind": "admin"})
+        with pytest.raises(ValidationError):
+            validator.validate({"email": "bot@example.com", "kind": 123})
+
+
+class TestAgentSchemaServiceAccountId:
+    @staticmethod
+    def _valid_agent_doc(**extra: object) -> dict[str, object]:
+        doc = {
+            "name": "Support Bot",
+            "description": "Resolves tickets",
+            "startMessage": "How can I help?",
+            "systemPrompt": "You are a support bot.",
+            "models": ["key_model"],
+            "createdBy": "user-key-1",
+            "createdAtTimestamp": 1000,
+        }
+        doc.update(extra)
+        return doc
+
+    def test_accepts_service_account_id_and_none(self):
+        validator = Draft4Validator(adapt_schema(documents.agent_schema))
+        validator.validate(self._valid_agent_doc(serviceAccountId="sa-user-id"))
+        validator.validate(self._valid_agent_doc(serviceAccountId=None))
+        validator.validate(self._valid_agent_doc())
+
+    def test_rejects_invalid_service_account_id(self):
+        validator = Draft4Validator(adapt_schema(documents.agent_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(self._valid_agent_doc(serviceAccountId=12345))
+        with pytest.raises(ValidationError):
+            validator.validate(self._valid_agent_doc(serviceAccountId=["not", "a", "string"]))
+
+
 def _valid_record_doc(**extra: object) -> dict[str, object]:
     doc = {
         "recordName": "upload.pdf",
