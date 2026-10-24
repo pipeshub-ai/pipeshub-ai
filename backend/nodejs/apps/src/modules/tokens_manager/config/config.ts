@@ -42,6 +42,8 @@ export interface AppConfig {
     apiKey: string;
     host: string;
     grpcPort: number;
+    https?: boolean;
+    preferGrpc?: boolean;
   };
 
   arango: {
