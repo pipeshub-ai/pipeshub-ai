@@ -107,7 +107,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
-from app.sources.client.http.address_guard import AddressNotAllowedError, guarded_async_client
+from app.sources.client.http.address_guard import (
+    AddressNotAllowedError,
+    guarded_async_client,
+)
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.zendesk.zendesk import (
