@@ -237,7 +237,7 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 # eventually consistent ("a few seconds to minutes" behind writes), so an issue indexed
 # late would otherwise have an `updated` older than a cursor that already moved past it.
 # Unchanged issues read again are skipped without a write.
-INCREMENTAL_OVERLAP_MS: int = 10 * 60 * 1000
+INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # When the account's timezone is unknown, a JQL date written in UTC is read by Jira in that
 # unknown zone. Lower bounds are moved this far back (UTC-12 is the furthest west) and upper
 # bounds this far forward (UTC+14 the furthest east), so nothing is cut off.

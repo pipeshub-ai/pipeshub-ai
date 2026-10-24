@@ -180,9 +180,9 @@ class TestIssuePagination:
 
         search.bodies.clear()
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert search.bodies[0]["jql"] == 'project = "ENG" AND updated > "2024-05-02 11:20" ORDER BY updated ASC, id ASC', (
+        assert search.bodies[0]["jql"] == 'project = "ENG" AND updated > "2024-05-02 11:28" ORDER BY updated ASC, id ASC', (
             "the cut is written in the Jira account's timezone (New York), not UTC, "
-            "and reads 10 minutes back for issues the search index returned late"
+            "and reads 2 minutes back for issues the search index returned late"
         )
 
     async def test_an_unchanged_issue_seen_again_is_not_rewritten(self, api, db, checkpoints, search) -> None:
@@ -311,7 +311,7 @@ class TestRateLimits:
         search.bodies.clear()
         search.add("ENG", None, {"issues": []})
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert 'updated > "2024-05-01 05:50"' in search.bodies[0]["jql"], "the saved cursor, less the 10-minute overlap"
+        assert 'updated > "2024-05-01 05:58"' in search.bodies[0]["jql"], "the saved cursor, less the 2-minute overlap"
 
     async def test_network_drops_are_retried(self, api, db, checkpoints, search, backoff_sleeps) -> None:
         calls = {"n": 0}
@@ -2237,7 +2237,7 @@ class TestAccountTimezone:
         search.bodies.clear()
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert 'updated > "2024-05-02 20:50"' in search.bodies[0]["jql"], "15:20 UTC written in Kolkata time"
+        assert 'updated > "2024-05-02 20:58"' in search.bodies[0]["jql"], "15:28 UTC written in Kolkata time"
 
 
 OPS_ONLY = {"values": [{"id": "10001", "key": "OPS", "name": "Operations"}], "isLast": True}
