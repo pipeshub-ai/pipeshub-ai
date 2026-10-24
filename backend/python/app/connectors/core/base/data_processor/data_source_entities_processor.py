@@ -5473,6 +5473,17 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
+    async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """Like ``get_record_by_external_id``, but as its subclass (WebpageRecord, FileRecord, ...).
+
+        The external-id lookup returns a base Record, which cannot be queued for indexing.
+        """
+        record = await self.get_record_by_external_id(connector_id, external_record_id)
+        graph = getattr(self.data_store_provider, "graph_provider", None)
+        if record is None or graph is None:
+            return record
+        return await graph.get_record_by_id(record.id)
+
     async def get_records_by_parent(
         self,
         connector_id: str,

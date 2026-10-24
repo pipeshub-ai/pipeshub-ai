@@ -295,7 +295,15 @@ class FakeRecordsDb:
         self.permission_updates.append((record, permissions))
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
+        # The real one builds the indexing event from each record; a base Record raises here.
+        for record in records:
+            record.to_kafka_record()
         self.reindexed.extend(records)
+
+    async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id in self.fail_lookup_for:
+            raise RuntimeError(f"database unavailable for {external_record_id}")
+        return self.records.get(external_record_id)
 
 
 class FakeCheckpointStore:

@@ -2644,7 +2644,8 @@ class ConfluenceConnector(BaseConnector):
 
         records = []
         for page_id in sorted(page_ids):
-            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, page_id)
+            # Typed: re-indexing needs the WebpageRecord, not the base record the external-id lookup gives.
+            record = await self.data_entities_processor.get_typed_record_by_external_id(self.connector_id, page_id)
             # A page left out of indexing on purpose stays out: a comment is not a request to index it.
             if (
                 record is not None and not record.is_placeholder
