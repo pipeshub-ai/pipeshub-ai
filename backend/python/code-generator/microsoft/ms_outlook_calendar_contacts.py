@@ -758,7 +758,10 @@ def _get_query_param_classes(path: str, method: str) -> Tuple[Optional[str], Opt
     
     # Map paths to their corresponding query parameter classes
     # TODO: Fix these as we integrate the apis with the platform
-    if '/me/messages' in path_lower and method_lower == 'get':
+    # Child folders first: an untyped RequestConfiguration makes Kiota send no query string.
+    if path_lower.endswith('/childfolders') and method_lower == 'get':
+        return "ChildFoldersRequestBuilder.ChildFoldersRequestBuilderGetQueryParameters", "ChildFoldersRequestBuilder.ChildFoldersRequestBuilderGetRequestConfiguration"
+    elif '/me/messages' in path_lower and method_lower == 'get':
         return "MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters", "MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration"
     elif '/me/events' in path_lower and method_lower == 'get':
         return "EventsRequestBuilder.EventsRequestBuilderGetQueryParameters", "EventsRequestBuilder.EventsRequestBuilderGetRequestConfiguration"
@@ -1030,6 +1033,7 @@ from msgraph.generated.users.item.contacts.contacts_request_builder import Conta
 from msgraph.generated.users.item.calendars.calendars_request_builder import CalendarsRequestBuilder # type: ignore
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import MailFoldersRequestBuilder # type: ignore
 from msgraph.generated.users.item.contact_folders.contact_folders_request_builder import ContactFoldersRequestBuilder # type: ignore
+from msgraph.generated.users.item.mail_folders.item.child_folders.child_folders_request_builder import ChildFoldersRequestBuilder # type: ignore
 from kiota_abstractions.base_request_configuration import RequestConfiguration # type: ignore
 
 

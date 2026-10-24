@@ -12,15 +12,22 @@
 Unlike the Jira / Outlook suites, nothing here is pre-provisioned beyond the permanent IT root
 page and the workspace-root database: the tests create every page, database, block, comment and
 attachment they assert on, and trash them at the end.
+
+With ``NOTION_TEST_SEED_MANIFEST`` set (the Notion simulator, ``connectors/notion_sim.env``), the
+fixture tree already exists: the manifest names every id, nothing is seeded, swept or trashed, and
+``NOTION_TEST_RESET_URL`` restores the source before the run so writes of an earlier run are gone.
 """
 
+import asyncio
 import logging
 import os
 import uuid
+import warnings
 from typing import Any, AsyncGenerator
 
 import pytest
 import pytest_asyncio
+import requests
 
 from helper.source_credentials import source_unavailable
 
@@ -31,6 +38,7 @@ from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from connectors.notion.constants import (  # type: ignore[import-not-found]
     ENV_ROOT_DATABASE_ID,
     ENV_ROOT_PAGE_ID,
+    ENV_SEED_MANIFEST,
     ENV_TOKEN,
     GRAPH_CLEANUP_TIMEOUT,
     NOTION_AUTH_TYPE,
@@ -42,6 +50,7 @@ from connectors.notion.notion_seed import (  # type: ignore[import-not-found]
     NotionSeed,
     discover_root_pages,
     discover_workspace_root_database,
+    load_seed_manifest,
     seed_notion_workspace,
     sweep_stale_runs,
     teardown_seed,
@@ -112,13 +121,18 @@ async def notion_connector(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Module-scoped Notion connector over a freshly seeded fixture tree."""
+    """Module-scoped Notion connector over a freshly seeded fixture tree (or a pinned one, see
+    ``ENV_SEED_MANIFEST``)."""
     token = _env(ENV_TOKEN)
+    # A pinned tree: its manifest names every id, so there is nothing to discover or seed.
+    manifest = _env(ENV_SEED_MANIFEST)
+    if manifest and not os.path.isabs(manifest):
+        manifest = os.path.join(os.path.dirname(__file__), manifest)
     # Both ids are optional: in a dedicated workspace they can be discovered from what the
     # integration can see. The env vars stay as overrides for a workspace with several shared
     # roots. Values may be pasted straight from a Notion URL (undashed, possibly a title slug).
     root_page_id = normalize_notion_id(_env(ENV_ROOT_PAGE_ID) or "")
-    if not root_page_id:
+    if not root_page_id and not manifest:
         candidates = await discover_root_pages(notion_source_helper)
         if len(candidates) == 1:
             root_page_id = candidates[0]
@@ -138,7 +152,7 @@ async def notion_connector(
             )
 
     root_database_id = normalize_notion_id(_env(ENV_ROOT_DATABASE_ID) or "") or None
-    if not root_database_id:
+    if not root_database_id and not manifest:
         discovered = await discover_workspace_root_database(notion_source_helper)
         if discovered:
             root_database_id = discovered[0]
@@ -165,18 +179,34 @@ async def notion_connector(
     # Seeding happens inside the try so a failure part-way through still trashes whatever was
     # created — the run root is the first thing made, and trashing it cascades.
     try:
-        swept = await sweep_stale_runs(notion_source_helper, root_page_id)
-        if swept:
-            logger.warning("SETUP: swept %d stale run root(s) before seeding", swept)
-            await wait_for_swept_runs_gone(notion_source_helper, root_page_id)
+        if manifest:
+            logger.info("SETUP: using the pinned fixture tree in %s", manifest)
+            seed = load_seed_manifest(manifest)
+            reset_url = _env("NOTION_TEST_RESET_URL")
+            if reset_url:
+                # Writes of an earlier run (the incremental cases) would otherwise still be in the tree.
+                response = await asyncio.to_thread(requests.post, reset_url, timeout=60)
+                response.raise_for_status()
+            else:
+                warnings.warn(
+                    "NOTION_TEST_SEED_MANIFEST is set without NOTION_TEST_RESET_URL: writes left by an "
+                    "earlier run stay in the pinned tree and the id-set checks may fail",
+                    stacklevel=1,
+                )
+                logger.warning("SETUP: pinned fixture tree used without a reset URL")
+        else:
+            swept = await sweep_stale_runs(notion_source_helper, root_page_id)
+            if swept:
+                logger.warning("SETUP: swept %d stale run root(s) before seeding", swept)
+                await wait_for_swept_runs_gone(notion_source_helper, root_page_id)
 
-        logger.info("SETUP: seeding Notion fixture tree (run=%s)", run_id)
-        seed = await seed_notion_workspace(
-            notion_source_helper,
-            root_page_id=root_page_id,
-            root_database_id=root_database_id,
-            run_id=run_id,
-        )
+            logger.info("SETUP: seeding Notion fixture tree (run=%s)", run_id)
+            seed = await seed_notion_workspace(
+                notion_source_helper,
+                root_page_id=root_page_id,
+                root_database_id=root_database_id,
+                run_id=run_id,
+            )
         state["seed"] = seed
         state["workspace_id"] = seed.workspace_id
         state["workspace_name"] = seed.workspace_name
@@ -263,7 +293,9 @@ async def notion_connector(
             except Exception as e:  # noqa: BLE001
                 logger.warning("TEARDOWN: delete/clean failed for %s: %s", connector_id, e)
 
-        if seed is not None:
+        if manifest:
+            pass  # a pinned tree stays: the next run reads it again
+        elif seed is not None:
             logger.info("TEARDOWN: trashing seeded Notion run root %s", seed.run_root_page_id)
             await teardown_seed(notion_source_helper, seed)
         else:
