@@ -385,7 +385,7 @@ async def test_entities_files_its_sidecar_only_for_a_written_extraction(outcome:
     io, sidecars = _with_sidecars(blob, entities=True, sink=sink)
     extraction = _extraction()
 
-    assert await io.save(_job("entities"), ["rec-1"], extraction) == outcome  # type: ignore[arg-type]
+    assert await io.save(_job("entities"), ["rec-1"], extraction, _BLOCKS) == outcome  # type: ignore[arg-type]
 
     if not filed:
         assert sidecars.calls == []
