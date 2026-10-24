@@ -585,6 +585,8 @@ export function loadHistoricalMessages(
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
   let mergeNextBotIntoId: string | null = null;
+  // A second answer to a card that already had its reply (another tab): the server ran nothing.
+  let skipStaleResumeReply = false;
   const closedCardRowIds = new Set<string>();
 
   for (let i = 0; i < messages.length; i++) {
@@ -669,6 +671,12 @@ export function loadHistoricalMessages(
           },
         },
       });
+      continue;
+    }
+
+    if (msg.messageType === 'bot_response' && skipStaleResumeReply) {
+      skipStaleResumeReply = false;
+      toolPayload = null;
       continue;
     }
 
@@ -802,12 +810,28 @@ export function loadHistoricalMessages(
     if (isAskUserQuestionResumeQuery(msg.content)) {
       const last = findQuestionAssistantRow(result, lastUnansweredAssistantId);
       if (last?.role === 'assistant' && typeof last.id === 'string') {
-        const followUpComplete = hasFollowUpAfterResume(messages, i);
-        mergeNextBotIntoId = nextResumeFollowUpIsBot(messages, i) ? last.id : null;
         const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
         const payload = (
           prevCustom.persistedAskUserQuestion ?? lastUnansweredPayload
         ) as AskUserQuestionPayload | undefined;
+        const settled = prevCustom.persistedAskUserQuestionAnswers as
+          | Record<string, AskUserQuestionAnswer>
+          | undefined;
+        // A reply that was stopped did not finish, so answering again is a retry, not a repeat.
+        if (
+          !lastUnansweredAssistantId &&
+          payload &&
+          settled &&
+          Object.keys(settled).length > 0 &&
+          !hasUnansweredQuestions(payload, settled) &&
+          prevCustom.status !== 'stopped'
+        ) {
+          skipStaleResumeReply = nextResumeFollowUpIsBot(messages, i);
+          toolPayload = null;
+          continue;
+        }
+        const followUpComplete = hasFollowUpAfterResume(messages, i);
+        mergeNextBotIntoId = nextResumeFollowUpIsBot(messages, i) ? last.id : null;
         const parsed = payload ? parseAnswerMessage(msg.content, payload) : {};
         const prevAnswers = (
           (prevCustom.persistedAskUserQuestionAnswers as Record<string, AskUserQuestionAnswer> | undefined)
@@ -819,7 +843,10 @@ export function loadHistoricalMessages(
             ...last.metadata,
             custom: {
               ...prevCustom,
-              ...(payload ? { persistedAskUserQuestion: payload } : {}),
+              // Older threads could still answer a card after chatting past it; the answer wins.
+              ...(payload
+                ? { persistedAskUserQuestion: payload.repliedInChat ? { ...payload, repliedInChat: undefined } : payload }
+                : {}),
               ...(followUpComplete && Object.keys(answers).length
                 ? { persistedAskUserQuestionAnswers: answers }
                 : {}),
@@ -842,6 +869,31 @@ export function loadHistoricalMessages(
 
     mergeNextBotIntoId = null;
     toolPayload = null;
+    // Typed while a card was open, the message answered it (the server treats it so): the card closes.
+    if (lastUnansweredAssistantId && lastUnansweredPayload) {
+      const cardRowId = lastUnansweredAssistantId;
+      const row = result.find((m) => m.role === 'assistant' && m.id === cardRowId);
+      if (row) {
+        const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+        const payload = (prevCustom.persistedAskUserQuestion as AskUserQuestionPayload | undefined)
+          ?? lastUnansweredPayload;
+        Object.assign(row, {
+          metadata: {
+            ...row.metadata,
+            custom: {
+              ...prevCustom,
+              persistedAskUserQuestion: { ...payload, repliedInChat: true },
+              ...(Object.keys(lastUnansweredAnswers).length > 0
+                ? { persistedAskUserQuestionAnswers: lastUnansweredAnswers }
+                : {}),
+            },
+          },
+        });
+      }
+      lastUnansweredAssistantId = null;
+      lastUnansweredPayload = null;
+      lastUnansweredAnswers = {};
+    }
     // A real question: the reply after it is its own row, whatever came before.
     mergeNextBotIntoId = null;
     result.push({

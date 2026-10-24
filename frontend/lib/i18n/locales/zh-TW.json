@@ -5283,7 +5283,12 @@
     "back": "上一步",
     "skip": "略過",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "selectOne": "選擇一項",
+    "selectMany": "選擇所有適用項目",
+    "skipAll": "全部略過",
+    "expired": "此問題已過期。請在聊天中回覆以繼續。",
+    "repliedInChat": "你已在聊天中回覆。"
   },
   "oauthDevice": {
     "title": "連接裝置",

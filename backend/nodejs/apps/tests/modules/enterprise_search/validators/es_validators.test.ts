@@ -1151,6 +1151,43 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('regenerate body answers', () => {
+    const params = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('accepts changed card answers', () => {
+      const answers = 'User selections:\n1. "Which region?" → US'
+      const result = regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers } })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.answers).to.equal(answers)
+    })
+
+    it('is optional', () => {
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {} } }).success).to.be.true
+    })
+
+    it('refuses text that is not a card answer', () => {
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers: 'send it to Bob' } }).success).to.be.false
+    })
+
+    it('refuses an oversized answer', () => {
+      const answers = `User selections:\n${'x'.repeat(8001)}`
+      expect(regenerateAnswersParamsSchema.safeParse({ params, body: { filters: {}, answers } }).success).to.be.false
+    })
+
+    it('is kept on the agent regenerate body too', () => {
+      const answers = 'User selections:\n1. "Which region?" → US'
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { ...params, agentKey: 'agent-1' },
+        body: { filters: {}, chatMode: 'quick', answers },
+      })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.answers).to.equal(answers)
+    })
+  })
+
   describe('agentCapabilities — survives unknown-key stripping', () => {
     // The validation middleware replaces req.body with the parsed result, so a
     // field absent from the schema is deleted before the controller reads it.

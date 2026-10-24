@@ -3539,6 +3539,12 @@ async function regenerateAnswersInternal(
   const { conversationId, messageId, agentKey } = req.params;
   const userId = req.user?.userId;
   const orgId = req.user?.orgId;
+  // Changed answers to the card this reply followed; they take the place of the saved ones.
+  const regenAnswersBody = req.body as { answers?: unknown } | undefined;
+  const replacementAnswers: string | undefined =
+    typeof regenAnswersBody?.answers === 'string'
+      ? regenAnswersBody.answers
+      : undefined;
 
   let existingConversation: IChatSessionDocument | null = null;
   let reservation: RunReservation | null = null;
@@ -3648,6 +3654,12 @@ async function regenerateAnswersInternal(
     const newerQuestion = recentMessages
       .slice(0, lastBotIdx)
       .some((msg) => msg.messageType === 'user_query');
+    // Only a stored card makes these answers: text that starts the same way has no card to re-answer.
+    if (replacementAnswers && !cardEdit) {
+      throw new BadRequestError(
+        'Answers can only replace the answers to a question card.',
+      );
+    }
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
@@ -3747,6 +3759,11 @@ async function regenerateAnswersInternal(
       !sameAttachmentFiles(requestedAttachments, shownQuestion.attachments);
     // An unchanged edit is a plain regenerate; only a real change rewrites the stored question.
     const isEdit = textChanged || attachmentsChanged;
+    if (isEdit && replacementAnswers) {
+      throw new BadRequestError(
+        'An edit cannot also replace the answers to a question card.',
+      );
+    }
     if (isEdit && validationResult.editBlocked) {
       throw new BadRequestError(
         'This question cannot be edited. Ask again instead.',
@@ -3819,6 +3836,7 @@ async function regenerateAnswersInternal(
       editedQuery && cardEdit ? cardEdit.intermediateIds : [];
     const originalTitle = existingConversation.title;
     let editedQuestionSaved = false;
+    let answersReplaced = false;
     const saveEditedQuestion = async (): Promise<void> => {
       if (!editedQuery || !existingConversation) return;
       const editedRow = await updateUserQueryContent(
@@ -3839,6 +3857,22 @@ async function regenerateAnswersInternal(
     // A save that failed after the question was rewritten leaves the question as the reader had it,
     // not edited and without an answer.
     const restoreOriginalQuestion = async (): Promise<void> => {
+      if (answersReplaced && existingConversation) {
+        answersReplaced = false;
+        try {
+          await updateUserQueryContent(
+            (userQuery as IMessage & { _id: mongoose.Types.ObjectId })._id,
+            userQuery.content,
+            existingConversation._id,
+            session,
+          );
+        } catch (err: unknown) {
+          logger.error('Failed to put the original answers back', {
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       if (!editedQuestionSaved || !existingConversation) return;
       editedQuestionSaved = false;
       existingConversation.title = originalTitle;
@@ -3885,7 +3919,7 @@ async function regenerateAnswersInternal(
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
-      query: editedQuery ?? userQuery.content,
+      query: editedQuery ?? replacementAnswers ?? userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
       // The files of the question being asked: the edit's, else those stored with it.
@@ -4044,6 +4078,21 @@ async function regenerateAnswersInternal(
               Boolean(askUserQuestionPayload) ||
               completeData.status === 'waiting_input');
           if (answeredEdit) await saveEditedQuestion();
+          // The answers the new reply is for replace the saved ones, so a reload shows the card as answered now.
+          if (answeredEdit && replacementAnswers) {
+            const answersRow = await updateUserQueryContent(
+              (userQuery as IMessage & { _id: mongoose.Types.ObjectId })._id,
+              replacementAnswers,
+              existingConversation._id,
+              session,
+            );
+            if (!answersRow) {
+              throw new InternalServerError(
+                'Failed to save the replacement answers',
+              );
+            }
+            answersReplaced = true;
+          }
           const { conversation: regeneratedConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,

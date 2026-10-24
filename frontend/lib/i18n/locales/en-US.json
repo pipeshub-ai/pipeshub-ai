@@ -5343,7 +5343,12 @@
     "back": "Back",
     "skip": "Skip",
     "next": "Next",
-    "submit": "Submit"
+    "submit": "Submit",
+    "selectOne": "Select one",
+    "selectMany": "Select all that apply",
+    "skipAll": "Skip all",
+    "expired": "This question has expired. Reply in the chat to continue.",
+    "repliedInChat": "You replied in the chat."
   },
   "errorToast": {
     "accessDenied": "Access denied",

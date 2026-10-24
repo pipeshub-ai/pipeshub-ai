@@ -598,6 +598,29 @@ describe('asking the user a question mid-run', () => {
     await run;
   });
 
+  it('keeps the answer when a card event has no questions (a refused call)', async () => {
+    const slotId = newSlot();
+    respondWith({
+      chunks: [
+        frame('TEXT_MESSAGE_START'),
+        frame('TEXT_MESSAGE_CONTENT', { delta: 'Atlas ships on 15 December' }),
+        frame('CUSTOM', {
+          name: 'ask_user_question',
+          value: { status: 'error', toolData: 'ask_user_question was not shown: give at least 2 options.' },
+        }),
+        frame('TEXT_MESSAGE_CONTENT', { delta: ' 2026.' }),
+      ],
+      hang: true,
+    });
+    const run = streamMessageForSlot(slotId, Q, request());
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Atlas ships on 15 December 2026.'));
+
+    expect(slot(slotId).pendingAskUserQuestion).toBeFalsy();
+
+    slot(slotId).abortController?.abort();
+    await run;
+  });
+
   it('keeps the question card and says so when the resume stream fails', async () => {
     const payload = {
       name: 'ask_user_question',
@@ -1216,6 +1239,51 @@ describe('regenerating an answer', () => {
     expect(texts(slotId)[1]).toEqual(['assistant', 'new answer']);
   });
 
+  it('does not turn the question card the reply followed into an open one again', async () => {
+    const slotId = newSlot('conv-1');
+    const card = {
+      name: 'ask_user_question' as const,
+      questions: [{ uuid: 'q1', question: 'Which ticket?', multiSelect: false, options: [{ id: 'a', label: 'PP-409', isUserInput: false }] }],
+    };
+    const answers = { q1: { questionUuid: 'q1', selectedOptionIds: ['a'], userInputs: {} } };
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+      pendingAskUserQuestion: { assistantMessageId: 'a1', payload: card, answers, sentAnswers: answers, status: 'persisted' },
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: {} })]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+    });
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    // An open card would take the next click as a new answer and add a message after the reply.
+    expect(slot(slotId).pendingAskUserQuestion).toBeFalsy();
+  });
+
+  it('keeps a question card that is still waiting for its answer', async () => {
+    const slotId = newSlot('conv-1');
+    const card = {
+      name: 'ask_user_question' as const,
+      questions: [{ uuid: 'q1', question: 'Which ticket?', multiSelect: false, options: [{ id: 'a', label: 'PP-409', isUserInput: false }] }],
+    };
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+      pendingAskUserQuestion: { assistantMessageId: 'a1', payload: card, answers: {}, status: 'pending' },
+    });
+    respondWith(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ assistantMessageId: 'a1', status: 'pending' });
+  });
+
   it('leaves the previous answer in place when the regenerate request fails', async () => {
     const slotId = newSlot('conv-1');
     useChatStore.getState().updateSlot(slotId, {
@@ -1363,7 +1431,7 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ status: 'submitted', answers });
   });
 
-  it('chatting on without answering leaves the card pending on its own row', async () => {
+  it('typing a message while the card is open answers it: the card closes on its own row', async () => {
     const payload = card(region);
     const slotId = await ask(payload, 'plan the launch');
 
@@ -1377,13 +1445,11 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     await streamMessageForSlot(slotId, 'hello', request({ query: 'hello' }));
 
     expect(texts(slotId)).toEqual([['user', 'plan the launch'], ['assistant', ''], ['user', 'hello'], ['assistant', 'Hi!']]);
-    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({
-      status: 'pending',
-      assistantMessageId: slot(slotId).messages[1].id,
-    });
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+    expect(slot(slotId).messages[1].metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
   });
 
-  it('stopping as the card appears, then chatting, then answering puts the reply under the card', async () => {
+  it('stopping as the card appears, then chatting, closes the card with the chat on its own row', async () => {
     fakeApi({ 'POST /api/v1/conversations/conv-real/cancel': { status: 200, data: { cancelled: true } } });
     const payload = card(region);
     const slotId = newSlot('conv-real');
@@ -1434,29 +1500,15 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     ]);
     await streamMessageForSlot(slotId, 'hiii', request({ query: 'hiii', conversationId: 'conv-real' }));
 
-    const answers = pick('q-region', ['q-region-o0']);
-    submit(slotId, answers);
-    const query = selections('"Which region?" → EU');
-    await resume(slotId, query, 'Planning the EU launch.', [
-      said('u1', 'helpme'), saved('t1', payload),
-      storedMessage({ _id: 'b1', messageType: 'bot_response', content: '', status: 'stopped' }),
-      said('u2', 'hiii'), replied('b2', 'Hi!'),
-      said('sel', query), replied('b3', 'Planning the EU launch.'),
-    ]);
-
     expect(texts(slotId)).toEqual([
-      ['user', 'helpme'], ['assistant', 'Planning the EU launch.'],
+      ['user', 'helpme'], ['assistant', ''],
       ['user', 'hiii'], ['assistant', 'Hi!'],
     ]);
-    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({
-      status: 'submitted',
-      assistantMessageId: slot(slotId).messages[1].id,
-      answers,
-    });
-    expect(slot(slotId).messages.some((m) => m.metadata?.custom?.status === 'stopped')).toBe(false);
+    expect(slot(slotId).messages[1].metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
   });
 
-  it('a later chat does not write its reply onto the unanswered card', async () => {
+  it('a typed reply does not write its reply onto the card it answered', async () => {
     const payload = card(region);
     const slotId = await ask(payload, 'ask me one question');
     const later = 'You asked me to: send an email saying Hello from Pipeshub.';
@@ -1480,51 +1532,40 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
       ['user', 'ask me one question'], ['assistant', ''],
       ['user', 'what are the things i asked u to do'], ['assistant', later],
     ]);
-    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({
-      status: 'pending',
-      assistantMessageId: cardRow.id,
-    });
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
   });
 
-  it('answering the card after chatting on puts the reply under the card', async () => {
+  it('the card closes the moment a typed reply is sent, before its answer arrives', async () => {
     const payload = card(region);
     const slotId = await ask(payload, 'plan the launch');
-    respondWith([
-      frame('TEXT_MESSAGE_START'),
-      frame('TEXT_MESSAGE_CONTENT', { delta: 'Hi!' }),
-      finished('Hi!', [
-        said('u1', 'plan the launch'), saved('t1', payload), replied('b1'), said('u2', 'hello'), replied('b2', 'Hi!'),
-      ]),
-    ]);
-    await streamMessageForSlot(slotId, 'hello', request({ query: 'hello' }));
-    const cardRowId = slot(slotId).messages[1].id;
+    const cardRowId = slot(slotId).pendingAskUserQuestion!.assistantMessageId;
 
-    const answers = pick('q-region', ['q-region-o0']);
-    submit(slotId, answers);
-    const query = selections('"Which region?" → EU');
-    await resume(slotId, query, 'Planning for EU.', [
-      said('u1', 'plan the launch'), saved('t1', payload), replied('b1'), said('u2', 'hello'), replied('b2', 'Hi!'),
-      said('sel', query), replied('b3', 'Planning for EU.'),
-    ]);
+    respondWith({
+      chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Planning for EU' })],
+      hang: true,
+    });
+    const run = streamMessageForSlot(slotId, 'EU, please', request({ query: 'EU, please' }));
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Planning for EU'));
 
-    expect(texts(slotId)).toEqual([
-      ['user', 'plan the launch'], ['assistant', 'Planning for EU.'],
-      ['user', 'hello'], ['assistant', 'Hi!'],
-    ]);
-    expect(slot(slotId).messages[1].id).toBe(cardRowId);
-    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ status: 'submitted', assistantMessageId: cardRowId, answers });
-    expect(getThreadMessagePlainText(slot(slotId).messages[1])).not.toBe('Hi!');
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+    const cardRow = slot(slotId).messages.find((m) => m.id === cardRowId);
+    expect(cardRow?.metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+
+    slot(slotId).abortController?.abort();
+    await run;
   });
 
-  it('does not copy a later chat onto the card when saved history put User selections first', async () => {
+  it('a typed reply after an answer that got no reply keeps that answer on the closed card', async () => {
     const payload = card(region);
     const slotId = await ask(payload, 'ask me one question');
     const later = 'You asked me to: send an email saying Hello from Pipeshub.';
+    const query = selections('"Which region?" → EU');
     respondWith([
       frame('TEXT_MESSAGE_START'),
       frame('TEXT_MESSAGE_CONTENT', { delta: later }),
       finished(later, [
         said('u1', 'ask me one question'), saved('t1', payload), replied('b1'),
+        said('sel', query),
         said('u2', 'what are the things i asked u to do'), replied('b2', later),
       ]),
     ]);
@@ -1533,56 +1574,39 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
       'what are the things i asked u to do',
       request({ query: 'what are the things i asked u to do' }),
     );
-    const cardRowId = slot(slotId).messages[1].id;
-    const answers = pick('q-region', ['q-region-o0']);
-    submit(slotId, answers);
-    const query = selections('"Which region?" → EU');
-    const reply = 'Nice, work or study it is.';
-    await resume(slotId, query, reply, [
-      said('u1', 'ask me one question'), saved('t1', payload), replied('b1'),
-      said('sel', query),
-      said('u2', 'what are the things i asked u to do'), replied('b2', later),
-    ]);
 
-    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe(reply);
     expect(getThreadMessagePlainText(slot(slotId).messages[1])).not.toContain('You asked me to');
-    expect(slot(slotId).messages[1].id).toBe(cardRowId);
     expect(texts(slotId)).toEqual([
-      ['user', 'ask me one question'], ['assistant', reply],
+      ['user', 'ask me one question'], ['assistant', ''],
       ['user', 'what are the things i asked u to do'], ['assistant', later],
     ]);
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+    expect(slot(slotId).messages[1].metadata?.custom?.persistedAskUserQuestionAnswers).toMatchObject(
+      pick('q-region', ['q-region-o0']),
+    );
   });
 
-  it('while the answer streams in after a later chat, it stays on the card row', async () => {
+  it('a typed reply streams on a turn of its own, not onto the card row', async () => {
     const payload = card(region);
     const slotId = await ask(payload, 'plan the launch');
-    respondWith([
-      frame('TEXT_MESSAGE_START'),
-      frame('TEXT_MESSAGE_CONTENT', { delta: 'Hi!' }),
-      finished('Hi!', [
-        said('u1', 'plan the launch'), saved('t1', payload), replied('b1'), said('u2', 'hello'), replied('b2', 'Hi!'),
-      ]),
-    ]);
-    await streamMessageForSlot(slotId, 'hello', request({ query: 'hello' }));
-    const cardRowId = slot(slotId).messages[1].id;
-    submit(slotId, pick('q-region', ['q-region-o0']));
+    const cardRowId = slot(slotId).pendingAskUserQuestion!.assistantMessageId;
 
     respondWith({
       chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Planning for EU' })],
       hang: true,
     });
-    const query = selections('"Which region?" → EU');
-    const run = streamMessageForSlot(slotId, query, request({ query }), { resumeAskUserQuestion: true });
+    const run = streamMessageForSlot(slotId, 'EU, please', request({ query: 'EU, please' }));
     await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Planning for EU'));
 
-    expect(slot(slotId).streamingQuestion).toBe('plan the launch');
+    expect(slot(slotId).streamingQuestion).toBe('EU, please');
     expect(slot(slotId).messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(slot(slotId).messages[1].id).toBe(cardRowId);
-    expect(slot(slotId).messages.some((m) => getThreadMessagePlainText(m).startsWith('User selections:'))).toBe(false);
+    expect(slot(slotId).messages[3].id).not.toBe(cardRowId);
 
     slot(slotId).abortController?.abort();
     await run;
   });
+
   it('marks the answers that went with a submit as sent when the agent asks more', async () => {
     const slotId = await ask(card(region));
     const sent = pick('q-region', ['q-region-o0']);
@@ -1674,28 +1698,17 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     expect(texts(slotId).some(([, text]) => String(text).startsWith('User selections:'))).toBe(false);
   });
 
-  it('Stop during a late resume writes the partial onto the card, not the later chat', async () => {
+  it('Stop during a typed reply writes the partial onto its own turn and leaves the card closed', async () => {
     fakeApi({ 'POST /api/v1/conversations/conv-real/cancel': { status: 200, data: { cancelled: true } } });
     const payload = card(region);
     const slotId = await ask(payload, 'plan the launch');
-    respondWith([
-      frame('TEXT_MESSAGE_START'),
-      frame('TEXT_MESSAGE_CONTENT', { delta: 'Hi!' }),
-      finished('Hi!', [
-        said('u1', 'plan the launch'), saved('t1', payload), replied('b1'),
-        said('u2', 'hello'), replied('b2', 'Hi!'),
-      ]),
-    ]);
-    await streamMessageForSlot(slotId, 'hello', request({ query: 'hello' }));
-    const cardRowId = slot(slotId).messages[1].id;
-    submit(slotId, pick('q-region', ['q-region-o0']));
+    const cardRowId = slot(slotId).pendingAskUserQuestion!.assistantMessageId;
 
     respondWith({
       chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Working on EU' })],
       hang: true,
     });
-    const query = selections('"Which region?" → EU');
-    const run = streamMessageForSlot(slotId, query, request({ query }), { resumeAskUserQuestion: true });
+    const run = streamMessageForSlot(slotId, 'EU, please', request({ query: 'EU, please' }));
     await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Working on EU'));
 
     vi.useFakeTimers();
@@ -1706,9 +1719,9 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     await run;
 
     expect(slot(slotId).messages[1].id).toBe(cardRowId);
-    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('Working on EU');
-    expect(getThreadMessagePlainText(slot(slotId).messages[3])).toBe('Hi!');
-    expect((slot(slotId).messages[3].metadata?.custom as { status?: string } | undefined)?.status).toBeUndefined();
+    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('');
+    expect(getThreadMessagePlainText(slot(slotId).messages[3])).toBe('Working on EU');
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
   });
 
   it('a retried answer after a stopped resume closes the card once', async () => {

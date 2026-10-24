@@ -25,6 +25,7 @@ import type {
 const SOMETHING_ELSE_ID = '__something_else__';
 const NO_PREFERENCE_ID = '__no_preference__';
 const NO_PREFERENCE_LABEL = '[No preference]';
+const MAX_TYPED_ANSWER_CHARS = 1000;
 
 const SOMETHING_ELSE_OPTION: AskUserQuestionOption = {
   id: SOMETHING_ELSE_ID,
@@ -71,24 +72,36 @@ export function normalizeAskUserQuestionPayload(
         return { id: stableId('opt', opt, oi), label: opt, isUserInput: false };
       }
       const label = typeof opt.label === 'string' ? opt.label : String(opt.label ?? '');
+      const description = typeof opt.description === 'string' ? opt.description.trim() : '';
       return {
         id: opt.id || stableId('opt', label, oi),
         label,
         isUserInput: Boolean(opt.isUserInput),
+        ...(description ? { description } : {}),
       };
     });
+    const header = typeof q.header === 'string' ? q.header.trim() : '';
     return {
       uuid: q.uuid || stableId('q', question, qi),
       question,
       options,
       multiSelect: Boolean(q.multiSelect),
+      ...(header ? { header } : {}),
     };
   });
   return {
     name: 'ask_user_question',
     ...(raw.userIntent ? { userIntent: raw.userIntent } : {}),
+    ...(raw.expiresAt ? { expiresAt: raw.expiresAt } : {}),
+    ...(raw.repliedInChat ? { repliedInChat: true } : {}),
     questions,
   };
+}
+
+/** Past `expiresAt` the paused turn is gone: the card is read-only and the user replies in the chat. */
+export function isAskUserQuestionExpired(payload: AskUserQuestionPayload, now = Date.now()): boolean {
+  const expiresAt = payload.expiresAt ? Date.parse(payload.expiresAt) : NaN;
+  return Number.isFinite(expiresAt) && now >= expiresAt;
 }
 
 /** Two askings of one question differ in case, spacing or the closing mark. */
@@ -104,9 +117,11 @@ export function mergeAskUserQuestionPayloads(
   const b = normalizeAskUserQuestionPayload(incoming);
   const seen = new Set(a.questions.map((q) => normalizeQuestionText(q.question)));
   const extra = b.questions.filter((q) => !seen.has(normalizeQuestionText(q.question)));
+  const expiresAt = b.expiresAt ?? a.expiresAt;
   return {
     name: 'ask_user_question',
     userIntent: a.userIntent || b.userIntent,
+    ...(expiresAt ? { expiresAt } : {}),
     questions: [...a.questions, ...extra],
   };
 }
@@ -429,6 +444,8 @@ export interface AskUserQuestionCardProps {
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /** Question to open on. Defaults to the first one without an answer. */
+  initialStep?: number;
 }
 
 export function AskUserQuestionCard({
@@ -438,6 +455,7 @@ export function AskUserQuestionCard({
   sentAnswers,
   onAnswersChange,
   onSubmit,
+  initialStep,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
@@ -446,7 +464,7 @@ export function AskUserQuestionCard({
     ...initialAnswers,
   }));
   const [step, setStep] = useState(() =>
-    firstUnansweredStep(questions, initialAnswers),
+    initialStep ?? firstUnansweredStep(questions, initialAnswers),
   );
   const settled = status === 'submitted' || status === 'persisted';
   const allAnswered = settled && !hasUnansweredQuestions(normalized, answers);
@@ -484,7 +502,11 @@ export function AskUserQuestionCard({
       ) {
         return current;
       }
-      return firstUnansweredStep(questions, answers);
+      // Every question answered (a card opened to change its answers): stay where it opened.
+      const unanswered = questions.findIndex(
+        (q) => !validateQuestion(q, answerForQuestion(q, answers, questions), [SOMETHING_ELSE_OPTION]),
+      );
+      return unanswered >= 0 ? unanswered : current;
     });
   }, [questionKey, status]);
 
@@ -616,7 +638,26 @@ export function AskUserQuestionCard({
     }
   }, [currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
 
-  if (status === 'submitted' || status === 'persisted') {
+  // Every question still without an answer gets "[No preference]", and the card is sent.
+  const handleSkipAll = useCallback(() => {
+    if (status !== 'pending') return;
+    const next = { ...answers };
+    for (const q of questions) {
+      if (validateQuestion(q, answerForQuestion(q, next, questions), [SOMETHING_ELSE_OPTION])) continue;
+      next[q.uuid] = { questionUuid: q.uuid, selectedOptionIds: [NO_PREFERENCE_ID], userInputs: {} };
+    }
+    syncAnswers(next);
+    onSubmit?.(buildResumeMessage(normalized, next, sentAnswers), next);
+  }, [status, answers, questions, syncAnswers, onSubmit, normalized, sentAnswers]);
+
+  const expired = status === 'pending' && isAskUserQuestionExpired(normalized);
+  const closedNote = normalized.repliedInChat
+    ? t('askUserQuestion.repliedInChat')
+    : expired
+      ? t('askUserQuestion.expired')
+      : null;
+
+  if (status === 'submitted' || status === 'persisted' || expired) {
     const heading =
       status === 'submitted'
         ? questions.length === 1
@@ -644,7 +685,7 @@ export function AskUserQuestionCard({
                 wrap="nowrap"
                 style={{ flexShrink: 0 }}
               >
-                {showAnswers && hasVisibleSelections(questions, answers) ? (
+                {showAnswers && !expired && hasVisibleSelections(questions, answers) ? (
                   <Badge color="jade" size="1">
                     {t('askUserQuestion.answered')}
                   </Badge>
@@ -667,6 +708,11 @@ export function AskUserQuestionCard({
               </Flex>
             </Flex>
           </Flex>
+          {closedNote ? (
+            <Text size="2" color="gray" role="status">
+              {closedNote}
+            </Text>
+          ) : null}
           {showAnswers ? (
             <Flex direction="column" gap="4">
               {questions.map((q, i) => {
@@ -729,6 +775,20 @@ export function AskUserQuestionCard({
   const somethingElseText =
     (currentAnswer?.userInputs?.[SOMETHING_ELSE_ID] ?? '').trim();
   const isSomethingElseSelected = somethingElseChosen && somethingElseText.length > 0;
+  const questionHeadingId = `ask-user-question-${currentQ.uuid}`;
+
+  const optionText = (opt: AskUserQuestionOption) => (
+    <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+      <Text weight="medium">
+        {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
+      </Text>
+      {opt.description ? (
+        <Text size="1" color="gray">
+          {opt.description}
+        </Text>
+      ) : null}
+    </Flex>
+  );
 
   return (
     <Card
@@ -761,13 +821,18 @@ export function AskUserQuestionCard({
         </Flex>
 
         <Flex direction="column" gap="1">
-          <Heading as="h3" size="3" style={{ margin: 0 }}>
+          {currentQ.header ? (
+            <Badge size="1" variant="soft" color="gray" style={{ alignSelf: 'flex-start' }}>
+              {currentQ.header}
+            </Badge>
+          ) : null}
+          <Heading as="h3" size="3" id={questionHeadingId} style={{ margin: 0 }}>
             {step + 1}. {currentQ.question}
           </Heading>
           <Flex align="center" gap="2">
-            {/* <Text size="1" color="gray">
-              {currentQ.multiSelect ? 'Select all that apply' : 'Select one'}
-            </Text> */}
+            <Text size="1" color="gray">
+              {currentQ.multiSelect ? t('askUserQuestion.selectMany') : t('askUserQuestion.selectOne')}
+            </Text>
             {currentQ.multiSelect && selectedIds.length > 0 ? (
               <Badge size="1" color="jade" variant="soft">
                 {t('askUserQuestion.selectedCount', { count: selectedIds.length })}
@@ -777,8 +842,7 @@ export function AskUserQuestionCard({
         </Flex>
 
         {currentQ.multiSelect ? (
-          <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
-          <Flex direction="column" gap="3">
+          <Flex direction="column" gap="3" role="group" aria-labelledby={questionHeadingId}>
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
@@ -799,11 +863,7 @@ export function AskUserQuestionCard({
                           toggleMulti(currentQ, opt.id, v === true)
                         }
                       />
-                      <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                        <Text weight="medium">
-                          {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
-                        </Text>
-                      </Flex>
+                      {optionText(opt)}
                     </Flex>
                   </label>
                   {checked && opt.isUserInput ? (
@@ -813,6 +873,7 @@ export function AskUserQuestionCard({
                       onChange={(e) =>
                         setUserInput(currentQ, opt.id, e.target.value)
                       }
+                      maxLength={MAX_TYPED_ANSWER_CHARS}
                       rows={3}
                       style={{ marginLeft: '28px' }}
                     />
@@ -821,13 +882,12 @@ export function AskUserQuestionCard({
               );
             })}
           </Flex>
-          </div>
         ) : (
           <RadioGroup.Root
             value={singleValue}
             onValueChange={(v) => handleRadioChange(currentQ, v)}
+            aria-labelledby={questionHeadingId}
           >
-            <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
@@ -852,11 +912,7 @@ export function AskUserQuestionCard({
                           disabled={isDisabled}
                           style={{ marginTop: 2 }}
                         />
-                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                          <Text weight="medium">
-                            {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
-                          </Text>
-                        </Flex>
+                        {optionText(opt)}
                       </Flex>
                     </label>
                     {isSelected && opt.isUserInput ? (
@@ -866,6 +922,7 @@ export function AskUserQuestionCard({
                         onChange={(e) =>
                           setUserInput(currentQ, opt.id, e.target.value)
                         }
+                        maxLength={MAX_TYPED_ANSWER_CHARS}
                         rows={3}
                         style={{ marginLeft: '28px' }}
                       />
@@ -874,7 +931,6 @@ export function AskUserQuestionCard({
                 );
               })}
             </Flex>
-            </div>
           </RadioGroup.Root>
         )}
 
@@ -882,7 +938,12 @@ export function AskUserQuestionCard({
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
             {t('askUserQuestion.back')}
           </Button>
-          <Flex gap="2">
+          <Flex gap="2" wrap="wrap">
+            {total > 1 ? (
+              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll}>
+                {t('askUserQuestion.skipAll')}
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"

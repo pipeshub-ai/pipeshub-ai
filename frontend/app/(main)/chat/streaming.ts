@@ -279,9 +279,11 @@ function buildStoppedMessages(
   return messages;
 }
 
+/** `repliedInChat`: the message being sent answers this open card, so it shows as closed. */
 function stampPendingCardOnMessages(
   messages: ThreadMessageLike[],
   pending: PendingAskUserQuestion | null | undefined,
+  repliedInChat = false,
 ): ThreadMessageLike[] {
   if (!pending?.payload || !pending.assistantMessageId) return messages;
   const idx = messages.findIndex(
@@ -290,13 +292,18 @@ function stampPendingCardOnMessages(
   if (idx < 0) return messages;
   const row = messages[idx];
   const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
-  if (prevCustom.persistedAskUserQuestion) return messages;
+  const stamped = prevCustom.persistedAskUserQuestion as PendingAskUserQuestion['payload'] | undefined;
+  if (stamped && !repliedInChat) return messages;
+  const payload = stamped ?? pending.payload;
   const next = messages.slice();
   next[idx] = {
     ...row,
     metadata: {
       ...row.metadata,
-      custom: { ...prevCustom, persistedAskUserQuestion: pending.payload },
+      custom: {
+        ...prevCustom,
+        persistedAskUserQuestion: repliedInChat ? { ...payload, repliedInChat: true } : payload,
+      },
     },
   };
   return next;
@@ -409,20 +416,25 @@ function sentAnswersAfterAsk(
   return sent && Object.keys(sent).length > 0 ? { sentAnswers: sent } : {};
 }
 
+/** A card event that has questions to show. Anything else (e.g. a refused call's error text) must not
+ * cost the user the answer that is streaming in. */
+export function isShowableAskUserQuestion(data: SSEAskUserQuestionEvent | undefined): boolean {
+  const toolData = data?.toolData;
+  return Boolean(
+    toolData &&
+      toolData.name === 'ask_user_question' &&
+      Array.isArray(toolData.questions) &&
+      toolData.questions.length > 0
+  );
+}
+
 function applyAskUserQuestionSse(
   slotId: string,
   data: SSEAskUserQuestionEvent,
   assistantRowId: string
 ): void {
-  const toolData = data?.toolData;
-  if (
-    !toolData ||
-    toolData.name !== 'ask_user_question' ||
-    !Array.isArray(toolData.questions) ||
-    toolData.questions.length === 0
-  ) {
-    return;
-  }
+  if (!isShowableAskUserQuestion(data)) return;
+  const toolData = data.toolData;
   const slot = useChatStore.getState().slots[slotId];
   const previous = slot?.pendingAskUserQuestion;
   const messages =
@@ -802,9 +814,12 @@ export async function streamMessageForSlot(
     }
   }
   const reuseExistingAssistant = (resumeAskUserQuestion || Boolean(reuseRowId)) && Boolean(lastAssistantId);
+  // Typing while a card is open answers it, as the server reads it: the card closes.
+  const repliedToOpenCard =
+    !resumeAskUserQuestion && !reuseRowId && slot.pendingAskUserQuestion?.status === 'pending';
   const messagesWithPreviousCard = reuseExistingAssistant
     ? baseMessages
-    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion);
+    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion, repliedToOpenCard);
   const pendingAssistantId = reuseExistingAssistant
     ? lastAssistantId!
     : createPendingAssistantId();
@@ -879,6 +894,7 @@ export async function streamMessageForSlot(
     ...(request.agentId
       ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
+    ...(repliedToOpenCard ? { pendingAskUserQuestion: null } : {}),
     messages: resumeMessages,
   });
 
@@ -1123,7 +1139,7 @@ export async function streamMessageForSlot(
       },
 
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
         // above the question card.
         ignoreChunks = true;
@@ -1565,7 +1581,9 @@ export async function streamRegenerateForSlot(
    * Set when the user edited the question: its text, and its files when they changed, replace
    * the stored ones and the answer is rebuilt for them.
    */
-  edit?: { query: string; attachments?: AttachmentRef[] }
+  edit?: { query: string; attachments?: AttachmentRef[] },
+  /** Changed answers to the question card the reply followed: the turn is re-run with them. */
+  answers?: string,
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -1589,7 +1607,7 @@ export async function streamRegenerateForSlot(
   }> =>
     questionWasEdited
       ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
-      : {};
+      : { pendingAskUserQuestion: preEditPending };
 
   slot.abortController?.abort();
 
@@ -1623,6 +1641,11 @@ export async function streamRegenerateForSlot(
   const streamRunId = runId ?? null;
 
   store.updateSlot(slotId, {
+    // An answered card is not this run's: left in the slot it would be opened again when the run ends,
+    // and the next click on it would add an answer message after the reply.
+    ...(slot.pendingAskUserQuestion && slot.pendingAskUserQuestion.status !== 'pending'
+      ? { pendingAskUserQuestion: null }
+      : {}),
     isStreaming: true,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
@@ -1768,7 +1791,7 @@ export async function streamRegenerateForSlot(
     },
 
     onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-      if (!slotIsOnRun(slotId, streamRunId)) return;
+      if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
       ignoreChunks = true;
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       accumulatedContent = '';
@@ -1964,6 +1987,7 @@ export async function streamRegenerateForSlot(
           runId,
           ...(edit ? { query: edit.query } : {}),
           ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+          ...(answers ? { answers } : {}),
         }
       );
     } else {
@@ -1971,14 +1995,13 @@ export async function streamRegenerateForSlot(
       // Universal agent mode: read current tool selection at regen time
       const isUniversalAgent = store.settings.queryMode === 'agent';
       const universalToolsSel = useChatStore.getState().universalAgentStreamTools;
-      const universalToolCatalog = useChatStore.getState().universalAgentToolCatalogFullNames;
-      // null → "all tools" (send full catalog), array → explicit subset, undefined → not an agent turn
+      // null → "all tools": left out, as a normal send does. A list without a web_search entry turns
+      // web search off, and the catalog has none. Array → explicit subset.
       // Strip instanceId prefix from internal keys before putting on the wire.
-      const regenStreamTools = isUniversalAgent
-        ? [...new Set(
-            (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
-          )]
-        : undefined;
+      const regenStreamTools =
+        isUniversalAgent && universalToolsSel !== null
+          ? [...new Set([...universalToolsSel].map(stripInstancePrefix))]
+          : undefined;
       // Left unset when the user chose nothing, so the backend applies the model's default.
       const assistantRegenReasoningEffort =
         useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
@@ -1994,6 +2017,7 @@ export async function streamRegenerateForSlot(
         runId,
         ...(edit ? { query: edit.query } : {}),
         ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+        ...(answers ? { answers } : {}),
       });
     }
   } catch (error) {

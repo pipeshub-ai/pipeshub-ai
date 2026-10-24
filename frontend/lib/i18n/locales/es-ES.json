@@ -5267,7 +5267,12 @@
     "back": "Atrás",
     "skip": "Omitir",
     "next": "Siguiente",
-    "submit": "Enviar"
+    "submit": "Enviar",
+    "selectOne": "Elige una",
+    "selectMany": "Elige todas las que correspondan",
+    "skipAll": "Omitir todas",
+    "expired": "Esta pregunta ha caducado. Responde en el chat para continuar.",
+    "repliedInChat": "Respondiste en el chat."
   },
   "collections": {
     "stats": {

@@ -8973,6 +8973,8 @@ components:
         - `protocol` — optional inert compatibility field; when present it must
           be `agui`, which is also the protocol used when the field is omitted
         - `agentCapabilities` — optional per-request agent capability toggles
+        - `answers` — optional changed answers to the question card the reply
+          followed; the turn is re-run with them and they replace the saved ones
       properties:
         query:
           type: string
@@ -9004,6 +9006,19 @@ components:
             of the chat may still refer to them.
         filters:
           $ref: '#/components/schemas/Filters'
+        answers:
+          type: string
+          maxLength: 8000
+          pattern: '^\s*User selections:'
+          description: |
+            The answers to the question card this reply followed, in the form
+            the app sends them (`User selections:` followed by one
+            `N. "question" → answer` line each). When present, the turn is
+            re-run with these answers instead of the saved ones, and they are
+            saved in their place. Rejected with 400 when the reply being
+            regenerated did not follow a question card, or when the request
+            also edits the question (`query` or `attachments`).
+          example: "User selections:\n1. \"Which region?\" → EU"
         modelKey:
           type: string
           minLength: 1

@@ -552,6 +552,18 @@ describe('Saving chat answers (enterprise search utils)', () => {
       ])
     })
 
+    it('marks a reply the user stopped, and only that one', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'plan it' } as IMessage,
+        { messageType: 'bot_response', content: 'Working on EU', status: 'stopped' } as IMessage,
+        { messageType: 'bot_response', content: 'Done.' } as IMessage,
+      ])
+
+      expect(history[0]).to.not.have.property('status')
+      expect(at(history, 1).status).to.equal('stopped')
+      expect(history[2]).to.not.have.property('status')
+    })
+
     it('adds no tool history for an answer without tool calls', () => {
       const [turn] = formatPreviousConversations([
         { messageType: 'bot_response', content: 'Hi', parts: [{ type: 'text', content: 'Hi' }] } as IMessage,

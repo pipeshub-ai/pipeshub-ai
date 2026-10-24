@@ -13,7 +13,12 @@ import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
-import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
+import {
+  AskUserQuestionCard,
+  askUserQuestionOwnsRow,
+  buildResumeMessage,
+  isAskUserQuestionExpired,
+} from './ask-user-question-card';
 import { McpConnectRequiredCard } from './mcp-connect-required-card';
 import { McpSignInCard } from './mcp-sign-in-card';
 import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
@@ -579,6 +584,71 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => hasApprovedCall(effectiveParts) || answeredToolApproval(effectiveParts),
     [effectiveParts],
   );
+  // While the composer's Regenerate bar is open for the latest reply to a tapped answer, its card can
+  // be answered again: the bar re-runs the reply with the answers it has, or with the ones picked here.
+  // A typed reply, an expired card and a reply that ran an approved call regenerate as usual (the
+  // server refuses changed answers for them).
+  const regenTargetMessageId = useChatStore((s) => s.regenTargetMessageId);
+  const regenAnswers = useChatStore((s) => s.regenAnswers);
+  // Right after an answer the card is the live one (read-only once sent); after a reload it is the saved one.
+  const liveAnsweredCard =
+    askQuestionMatchesRow && pendingAskUserQuestion && pendingAskUserQuestion.status !== 'pending'
+      ? pendingAskUserQuestion
+      : null;
+  const changeablePayload = liveAnsweredCard?.payload ?? persistedAskUserQuestion;
+  const changeableAnswers = liveAnsweredCard?.answers ?? persistedAskUserQuestionAnswers ?? {};
+  const canChangeAnswers = Boolean(
+    isLastMessage &&
+      !isStreaming &&
+      messageId &&
+      activeSlotId &&
+      changeablePayload &&
+      !changeablePayload.repliedInChat &&
+      !isAskUserQuestionExpired(changeablePayload) &&
+      !ranApprovedCall &&
+      Object.keys(changeableAnswers).length > 0 &&
+      (liveAnsweredCard || (persistedAskUserQuestion && !askQuestionMatchesRow)),
+  );
+  const changingAnswers = canChangeAnswers && regenTargetMessageId === messageId;
+  const pickAnswers = (answers: Record<string, AskUserQuestionAnswer>) => {
+    if (!messageId || !changeablePayload) return;
+    useChatStore.getState().setRegenAnswers({
+      messageId,
+      payload: changeablePayload,
+      message: buildResumeMessage(changeablePayload, answers),
+      answers,
+    });
+  };
+  const changeAnswersEditor = changeablePayload ? (
+    <AskUserQuestionCard
+      // Its own mount, so it opens at the first question rather than where the read-only card was.
+      key="change-answers"
+      payload={changeablePayload}
+      initialAnswers={changeableAnswers}
+      status="pending"
+      initialStep={0}
+      onAnswersChange={pickAnswers}
+      onSubmit={(_message, answers) => {
+        pickAnswers(answers);
+        useCommandStore.getState().dispatch('runRegenerate');
+      }}
+    />
+  ) : null;
+  // During the re-run the card shows the answers it is running with, until the saved reply replaces it.
+  const rerunAnswers = isStreaming && regenAnswers?.messageId === messageId ? regenAnswers : null;
+  useEffect(() => {
+    if (isStreaming || !messageId || useChatStore.getState().regenAnswers?.messageId !== messageId) return;
+    if (useChatStore.getState().regenTargetMessageId === messageId) return;
+    useChatStore.getState().setRegenAnswers(null);
+  }, [isStreaming, messageId]);
+  const rerunCard = rerunAnswers ? (
+    <AskUserQuestionCard
+      key="rerun"
+      payload={rerunAnswers.payload}
+      initialAnswers={rerunAnswers.answers}
+      status="persisted"
+    />
+  ) : null;
   // Servers that refused for missing permission: signed in to again from the latest, settled reply.
   const signInServers = useMemo(
     () => (isStreaming || !isLastMessage ? [] : mcpSignInServers(effectiveParts)),
@@ -690,16 +760,24 @@ export const ChatResponse = React.memo(function ChatResponse({
             )}
 
             {/* Persisted ask_user_question from historical tool_call — read-only display */}
-            {persistedAskUserQuestion && !askQuestionMatchesRow ? (
-              <AskUserQuestionCard
-                payload={persistedAskUserQuestion}
-                initialAnswers={persistedAskUserQuestionAnswers ?? {}}
-                status="persisted"
-              />
+            {rerunCard ? (
+              rerunCard
+            ) : persistedAskUserQuestion && !askQuestionMatchesRow ? (
+              changingAnswers ? (
+                changeAnswersEditor
+              ) : (
+                <AskUserQuestionCard
+                  payload={persistedAskUserQuestion}
+                  initialAnswers={persistedAskUserQuestionAnswers ?? {}}
+                  status="persisted"
+                />
+              )
             ) : null}
 
             {/* Active (streaming/pending) ask_user_question card */}
-            {askQuestionMatchesRow && pendingAskUserQuestion ? (
+            {rerunCard ? null : askQuestionMatchesRow && pendingAskUserQuestion && changingAnswers ? (
+              changeAnswersEditor
+            ) : askQuestionMatchesRow && pendingAskUserQuestion ? (
               <AskUserQuestionCard
                 payload={pendingAskUserQuestion.payload}
                 initialAnswers={pendingAskUserQuestion.answers}

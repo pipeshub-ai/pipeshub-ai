@@ -125,6 +125,8 @@ from app.agents.agent_loop.hooks import (
     RepeatedReadGuard,
     ToolErrorTracker,
     artifact_context_reminder,
+    ask_in_text_recovery,
+    ask_user_question_gate,
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
@@ -672,10 +674,17 @@ class PipesHubAgentFactory:
         )
 
         resume_answers = query if is_ask_user_question_resume_query(query) else None
+        # Typing instead of tapping answers the open card, as when a chat asks in text. A message
+        # that carries files answers it too: every later reader of the history counts it so.
+        typed_reply = resume_answers is None and is_open_card_reply(context.previous_conversations, query)
+        if typed_reply:
+            resume_answers = query
         # An answer to a tool approval card carries on the turn that stopped on it.
         approval_resume = bool(context.previous_conversations) and begin_resume(context, query)
         goal_query = (
-            last_real_user_query(context.previous_conversations, query, answers=resume_answers)
+            last_real_user_query(
+                context.previous_conversations, query, answers="" if typed_reply else resume_answers,
+            )
             if resume_answers or approval_resume
             else query
         )
@@ -696,11 +705,15 @@ class PipesHubAgentFactory:
         )
 
         _mark("f:select_loop_and_goal")
+        if resume_answers:
+            # The card is answered: no new clarification, and this message's files still count.
+            clarifying_questions = []
         # Stash model_name on context so ensure_fetch_full_record_available()
         # (called from attachment_resolver outside _build_hooks) and the
         # fetch-tool block cap can both reach it without the TransportRegistry.
         context.model_name = model_name
 
+        attachment_text = ""
         if not clarifying_questions:
             attachment_text, image_blocks = await resolve_attachments_for_goal(
                 context, logger,
@@ -1027,11 +1040,12 @@ class PipesHubAgentFactory:
             hold_history(context, agent)
 
         if resume_answers:
-            # User already answered the card — do not re-emit clarification.
-            clarifying_questions = []
             # The turn that asked, as the model had it (its history copy has only result summaries).
             await parked_turn.restore_question(context, agent.context)
-            await inject_ask_user_question_resume(agent, resume_answers)
+            # A resumed run adds no goal message (`_skip_start`), so files sent with the reply ride on it.
+            await inject_ask_user_question_resume(
+                agent, resume_answers, typed=typed_reply, files=attachment_text if typed_reply else "",
+            )
 
         return agent, runtime, goal, clarifying_questions
 
@@ -1194,6 +1208,7 @@ class PipesHubAgentFactory:
             # request pays nothing for it.
             hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
+        hooks.on(HookEvent.PRE_TOOL_USE).use(ask_user_question_gate(context))
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
         # Answers an approval card: settles the stopped call before the loop starts.
@@ -1210,6 +1225,8 @@ class PipesHubAgentFactory:
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
+        # Last: a reply the gates above already sent back is not checked for a text question.
+        hooks.on(HookEvent.POST_MODEL).use(ask_in_text_recovery(context))
 
         # This adapter path builds its own HookRegistry directly (never
         # goes through ControlPlane.start()), so the coding_sandbox_safety
@@ -1444,6 +1461,101 @@ def _turn_asked_questions(turn: dict[str, Any]) -> set[str] | None:
     return _asked_questions(*(v for row in rows for v in (row.get("args"), row.get("result"))))
 
 
+def _turn_showed_card(turn: Any) -> bool:  # noqa: ANN401
+    """A saved bot turn that put a question card in front of the user; a failed call showed none."""
+    return isinstance(turn, dict) and turn.get("role") == "bot_response" and any(
+        isinstance(row, dict)
+        and "ask_user_question" in str(row.get("tool_name") or "")
+        and row.get("status") != "error"
+        for row in turn.get("tool_results") or []
+    )
+
+
+def _is_card_reply(turns: list[dict[str, Any]], index: int) -> bool:
+    """A user message that answers a card: tapped answers, or text typed while the card was open."""
+    content = str(turns[index].get("content") or "")
+    return is_ask_user_question_resume_query(content) or (index > 0 and _turn_showed_card(turns[index - 1]))
+
+
+def is_open_card_reply(previous_conversations: list[dict[str, Any]] | None, query: str | None) -> bool:
+    """Whether `query`, typed rather than tapped, answers the card the last reply ended on."""
+    if not isinstance(query, str) or not query.strip():
+        return False
+    if is_ask_user_question_resume_query(query) or is_tool_approval_resume_query(query):
+        return False
+    return bool(previous_conversations) and _turn_showed_card(previous_conversations[-1])
+
+
+def _request_cards(previous_conversations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """The cards shown since the person's last request: the one this run answers, and any before it."""
+    turns = previous_conversations or []
+    cards: list[dict[str, Any]] = []
+    for index in range(len(turns) - 1, -1, -1):
+        turn = turns[index]
+        if turn.get("role") == "bot_response":
+            if _turn_showed_card(turn):
+                cards.append(turn)
+        elif turn.get("role") == "user_query" and not _is_card_reply(turns, index):
+            content = str(turn.get("content") or "")
+            if not is_tool_approval_resume_query(content):
+                break
+    return cards
+
+
+def cards_in_request(previous_conversations: list[dict[str, Any]] | None) -> int:
+    """How many cards the person's current request has shown."""
+    return len(_request_cards(previous_conversations))
+
+
+def questions_asked_in_request(previous_conversations: list[dict[str, Any]] | None) -> set[str]:
+    """The questions the current request's cards already put to the user (`_question_key` form).
+    A later request may need the same kind of answer again (a second bug, a new project), so only
+    the current request's questions are off limits, as a form's slots are scoped to its intent."""
+    asked: set[str] = set()
+    for turn in _request_cards(previous_conversations):
+        asked |= _turn_asked_questions(turn) or set()
+    return asked
+
+
+def card_already_answered(previous_conversations: list[dict[str, Any]] | None, answers: str | None) -> bool:
+    """Whether the card these `User selections:` answers are for has already had its reply, so
+    running them would repeat that work: a second tab, or a stale one. A failed answer leaves no
+    reply (errors are not in the history) and a stopped one did not finish, so either can be
+    sent again."""
+    if not is_ask_user_question_resume_query(answers):
+        return False
+    turns = previous_conversations or []
+    answered = _answered_questions(answers)
+    card_at: int | None = None
+    latest_card: int | None = None
+    for index, turn in enumerate(turns):
+        if not _turn_showed_card(turn):
+            continue
+        latest_card = index
+        if answered & (_turn_asked_questions(turn) or set()):
+            card_at = index
+    card_at = card_at if card_at is not None else latest_card
+    if card_at is None:
+        return False
+    card_questions = _turn_asked_questions(turns[card_at]) or set()
+    replied = False
+    for index in range(card_at + 1, len(turns)):
+        turn = turns[index]
+        if turn.get("role") == "user_query":
+            content = str(turn.get("content") or "")
+            # Only this card's own answers count, or text typed while it was the open card: the
+            # answers to another card, or a later request, leave it unanswered.
+            if is_ask_user_question_resume_query(content):
+                replied = bool(_answered_questions(content) & card_questions)
+            elif not is_tool_approval_resume_query(content):
+                replied = index == card_at + 1
+        elif turn.get("role") == "bot_response" and replied and turn.get("status") != "stopped" and (
+            str(turn.get("content") or "").strip() or _turn_showed_card(turn)
+        ):
+            return True
+    return False
+
+
 def last_real_user_query(
     previous_conversations: list[dict[str, Any]] | None,
     fallback: str,
@@ -1457,16 +1569,17 @@ def last_real_user_query(
     onto the card. A card is matched by its question text, so an older card left open while a newer
     one was answered keeps its own goal; without a match the latest card is the one.
     """
+    turns = previous_conversations or []
     if answers is not None:
         answered = _answered_questions(answers)
         latest_card: str | None = None
         matching_card: str | None = None
         last_user: str | None = None
-        for turn in previous_conversations or []:
+        for index, turn in enumerate(turns):
             role = turn.get("role")
             content = str(turn.get("content") or "").strip()
             if role == "user_query":
-                if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
+                if content and not _is_card_reply(turns, index) and not is_tool_approval_resume_query(content):
                     last_user = content
             elif role == "bot_response" and last_user:
                 asked = _turn_asked_questions(turn)
@@ -1478,11 +1591,12 @@ def last_real_user_query(
         goal = matching_card or latest_card
         if goal:
             return goal
-    for turn in reversed(previous_conversations or []):
+    for index in range(len(turns) - 1, -1, -1):
+        turn = turns[index]
         if turn.get("role") != "user_query":
             continue
         content = str(turn.get("content") or "").strip()
-        if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
+        if content and not _is_card_reply(turns, index) and not is_tool_approval_resume_query(content):
             return content
     return fallback
 
@@ -1562,7 +1676,37 @@ def _append_turn(history: list[Message], messages: list[Message], tool_results_a
         history.append(kept)
 
 
-async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
+_NO_PREFERENCE = "[No preference]"
+
+
+def _resume_result(answers: str, *, typed: bool, files: str = "") -> dict[str, str]:
+    """The paused call's result. "next" is said plainly: without it a model may reply
+    "Got it, I'll create it" and stop there."""
+    if typed:
+        result = {"status": "replied", "reply": answers}
+        if files.strip():
+            result["files"] = files.strip()
+        attached = " They attached files with it, in \"files\"." if "files" in result else ""
+        result["next"] = (
+            f"The user typed this in the chat instead of choosing an option.{attached} If it answers your "
+            "question, carry on with the request now. If it asks for something else, do that instead."
+        )
+        return result
+    next_step = (
+        "Carry on with the request using these answers: do the next step now instead of saying what you'll do. "
+        "Ask any further question with internaltools__ask_user_question, not in your reply."
+    )
+    if _NO_PREFERENCE in answers:
+        next_step += (
+            f" Where the answer is {_NO_PREFERENCE}, the user skipped it: use your best guess "
+            "and say in one line which you chose."
+        )
+    return {"status": "answered", "answers": answers, "next": next_step}
+
+
+async def inject_ask_user_question_resume(
+    agent: Agent, answers: str, *, typed: bool = False, files: str = "",
+) -> None:
     """Bind the user's card answers to the parked ask_user_question tool call.
 
     Web workers cannot keep the first HTTP request blocked (no hil_store).
@@ -1590,8 +1734,8 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
         if isinstance(msg, UserMessage):
             turn_start = i
     # The card is the one whose questions these answers name, wherever it is: an older card answered
-    # after a newer one must not take the newer call's place.
-    answered = _answered_questions(answers)
+    # after a newer one must not take the newer call's place. Typed text names none: it is the last card.
+    answered = set() if typed else _answered_questions(answers)
     keep_through, tool_call_id = (
         _find_ask_user_question_call(messages, 0, len(messages), answered) if answered else (None, None)
     )
@@ -1631,15 +1775,8 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
         for msg in messages[keep_through + 1 : tool_block_end]:
             if msg.tool_call_id in alongside:
                 await ctx.add(msg)
-    # "next" is said plainly: without it a model may reply "Got it, I'll create it" and stop there.
     await ctx.add(ToolMessage(
-        content=json.dumps({
-            "status": "answered", "answers": answers,
-            "next": (
-                "Carry on with the request using these answers: do the next step now instead of saying what you'll do. "
-                "Ask any further question with internaltools__ask_user_question, not in your reply."
-            ),
-        }, ensure_ascii=False),
+        content=json.dumps(_resume_result(answers, typed=typed, files=files), ensure_ascii=False),
         tool_call_id=tool_call_id,
     ))
 

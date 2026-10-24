@@ -577,6 +577,85 @@ describe('es_controller streaming answers', () => {
     expect(controllerModule.isToolApprovalAnswer(undefined)).to.equal(false)
   })
 
+  describe('regenerating a reply with changed question-card answers', () => {
+    const OLD = 'User selections:\n1. "What email address should I send it to?" → Cancel sending'
+    const NEW = 'User selections:\n1. "What email address should I send it to?" → bob@example.com'
+    const regenerateFlow = flows.find((f) => f.name === 'regenerateAnswers') as Flow
+
+    const cardFlow = (lastUserText: string, answers: string | undefined, withCard = true): Flow => ({
+      ...regenerateFlow,
+      prepare: (store) => {
+        const session = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Mail', sessionType: 'chat' })
+        store.addMessage(session, { messageType: 'user_query', content: 'send the mail' })
+        store.addMessage(session, {
+          messageType: 'bot_response',
+          content: '',
+          ...(withCard ? { tools: [{ toolName: 'internaltools__ask_user_question' }] } : {}),
+        })
+        store.addMessage(session, { messageType: 'user_query', content: lastUserText })
+        const bot = store.addMessage(session, { messageType: 'bot_response', content: 'Canceled.' })
+        store.writes.length = 0
+        return {
+          params: { conversationId: String(session._id), messageId: String(bot._id) },
+          body: answers === undefined ? {} : { answers },
+          existing: session,
+          replacedMessageId: String(bot._id),
+        }
+      },
+    })
+
+    it('runs the turn with the new answers and saves them in place of the old ones', async () => {
+      const run = await startStream(cardFlow(OLD, NEW), controllerModule, undefined, { wait: false })
+      await settle()
+      run.ai.send('RUN_FINISHED', finalAnswer('Sent to bob@example.com.'))
+      run.ai.finish()
+      await run.res.ended
+      await settle()
+
+      expect(run.ai.streamCalls).to.have.length(1)
+      expect(run.ai.streamCalls[0]?.body.query).to.equal(NEW)
+      const userRows = run.messages().filter((m) => m.messageType === 'user_query')
+      expect(userRows.at(-1)?.content).to.equal(NEW)
+      expect(userRows[0]?.content, 'the original request is untouched').to.equal('send the mail')
+      expect(run.answer()?.content).to.equal('Sent to bob@example.com.')
+    })
+
+    it('without answers, runs the saved ones as before', async () => {
+      const run = await startStream(cardFlow(OLD, undefined), controllerModule, undefined, { wait: false })
+      await settle()
+      run.ai.send('RUN_FINISHED', finalAnswer('Canceled.'))
+      run.ai.finish()
+      await run.res.ended
+      await settle()
+
+      expect(run.ai.streamCalls[0]?.body.query).to.equal(OLD)
+      expect(run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content).to.equal(OLD)
+    })
+
+    it('refuses answers when the saved text only looks like card answers, with no card behind it', async () => {
+      const run = await startStream(cardFlow(OLD, NEW, false))
+
+      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/only replace the answers to a question card/)
+      expect(run.ai.streamCalls).to.deep.equal([])
+      expect(run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content).to.equal(OLD)
+    })
+
+    it('refuses answers for a reply that did not follow a question card, and starts nothing', async () => {
+      const run = await startStream(cardFlow('What changed in the release?', NEW))
+
+      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/only replace the answers to a question card/)
+      expect(run.ai.streamCalls).to.deep.equal([])
+      expect(run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content).to.equal('What changed in the release?')
+    })
+  })
+
+  it('isAskUserQuestionAnswer knows the app\'s answers to a question card and nothing else', () => {
+    expect(controllerModule.isAskUserQuestionAnswer('User selections:\n1. "Q" → A')).to.equal(true)
+    expect(controllerModule.isAskUserQuestionAnswer('  User selections: x')).to.equal(true)
+    expect(controllerModule.isAskUserQuestionAnswer('Tool approval: allow')).to.equal(false)
+    expect(controllerModule.isAskUserQuestionAnswer(undefined)).to.equal(false)
+  })
+
   it('ranApprovedCall finds the mark at any depth, and only that', () => {
     expect(controllerModule.ranApprovedCall([{ type: 'tool_call', approved: true } as never])).to.equal(true)
     expect(controllerModule.ranApprovedCall([{ type: 'text', parts: [{ type: 'tool_call', approved: true }] } as never])).to.equal(true)

@@ -626,6 +626,55 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(screen.queryByText('Regenerate response')).toBeNull();
   });
 
+  it("re-runs a question card's reply with the answers picked again on the card", () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+    expect(useChatStore.getState().regenTargetMessageId).toBe('msg-7');
+
+    const message = 'User selections:\n1. "Which region?" → US';
+    act(() => useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message, answers: {} }));
+    fireEvent.click(sendButton());
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-7', undefined, undefined, undefined, message);
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
+  it('regenerates when the reopened card is submitted', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+
+    act(() => {
+      useCommandStore.getState().dispatch('runRegenerate');
+    });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot.mock.calls[0][1]).toBe('msg-7');
+  });
+
+  it('forgets answers picked on the card when the bar is closed', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+      useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message: 'User selections:', answers: {} });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+
+    expect(useChatStore.getState().regenAnswers).toBeNull();
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
   it('leaves regenerate mode on Escape without regenerating', () => {
     renderInput();
     act(() => {

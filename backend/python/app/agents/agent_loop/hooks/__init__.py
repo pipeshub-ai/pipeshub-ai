@@ -13,7 +13,11 @@ requests.
 """
 
 from app.agents.agent_loop.hooks.artifact_context import artifact_context_reminder
-from app.agents.agent_loop.hooks.ask_user_question import ask_user_question_sse
+from app.agents.agent_loop.hooks.ask_user_question import (
+    ask_in_text_recovery,
+    ask_user_question_gate,
+    ask_user_question_sse,
+)
 from app.agents.agent_loop.hooks.attachment_resolver import (
     attachment_rehydration,
     resolve_attachments_for_goal,
@@ -60,6 +64,8 @@ __all__ = [
     "RepeatedReadGuard",
     "ToolErrorTracker",
     "artifact_context_reminder",
+    "ask_in_text_recovery",
+    "ask_user_question_gate",
     "ask_user_question_sse",
     "attachment_rehydration",
     "citation_tracking",

@@ -73,6 +73,7 @@ from app.agents.agent_loop.error_classification import (
     classify_error,
     redact_error_for_log,
 )
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
 from app.agents.agent_loop.source_ids import source_record_ids
@@ -592,8 +593,12 @@ class AnswerFinalizer:
                 payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
             except (json.JSONDecodeError, TypeError):
                 payload = raw_result
+            # A refused call showed no card; an event for it would make the client drop the
+            # answer it is streaming in favour of a card with nothing to show.
+            if row.get("status") == "error":
+                continue
             for evt in self._context.formatter.ask_user_question(
-                self._context, status=row.get("status"), tool_data=payload,
+                self._context, status=row.get("status"), tool_data=parked_turn.with_expiry(payload),
             ):
                 await event_sink.write(evt)
             state["ask_user_question_emitted"] = True

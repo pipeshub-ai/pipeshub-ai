@@ -510,7 +510,7 @@ describe('skipping a card', () => {
 });
 
 describe('leaving a card unanswered and chatting on', () => {
-  it('keeps the card pending on its own row while the chat carries on', () => {
+  it('chatting on closes the card on its own row: the next message answered it', () => {
     const loaded = loadHistoricalMessages([
       user('u1', 'plan the launch'), savedCard('t1', card(region)), bot('b1'),
       user('u2', 'hello there'), bot('b2', 'Hi!'),
@@ -520,7 +520,8 @@ describe('leaving a card unanswered and chatting on', () => {
     expect(shape(loaded)).toEqual([
       ['user', 'u1'], ['assistant', 'b1'], ['user', 'u2'], ['assistant', 'b2'], ['user', 'u3'], ['assistant', 'b3'],
     ]);
-    expect(loaded.unansweredAskUserQuestion).toMatchObject({ assistantMessageId: 'b1', status: 'pending' });
+    expect(loaded.unansweredAskUserQuestion).toBeNull();
+    expect(custom(loaded, 'b1').persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
     expect(textOf(loaded, 'b2')).toBe('Hi!');
     expect(textOf(loaded, 'b3')).toBe('4.');
     expect(noResumeBubble(loaded)).toBe(true);
@@ -569,7 +570,7 @@ describe('leaving a card unanswered and chatting on', () => {
     expect(noResumeBubble(loaded)).toBe(true);
   });
 
-  it('does not copy a later chat onto the card when User selections was saved before that chat', () => {
+  it('does not copy a later chat onto the card when User selections was saved before that chat, and the chat closes it', () => {
     const later = 'You asked me to: send an email saying Hello from Pipeshub.';
     const loaded = loadHistoricalMessages([
       user('u1', 'ask me one question'), savedCard('t1', card(region)), bot('b1'),
@@ -584,7 +585,10 @@ describe('leaving a card unanswered and chatting on', () => {
     expect(textOf(loaded, 'b1')).not.toBe(later);
     expect(textOf(loaded, 'b1')).not.toContain('You asked me to');
     expect(textOf(loaded, 'b2')).toBe(later);
-    expect(loaded.unansweredAskUserQuestion?.answers['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
+    // That answer got no reply; the chat typed after it answered the card, which keeps the pick.
+    expect(loaded.unansweredAskUserQuestion).toBeNull();
+    expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
+    expect(custom(loaded, 'b1').persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
   });
 
   it('a follow-up after User selections does not pull a later chat onto the card', () => {
@@ -698,11 +702,10 @@ describe('leaving a card unanswered and chatting on', () => {
     expect(textOf(loaded, 'hello')).toBe('Hi, Pranjal!');
     expect(custom(loaded, 'hello').status).toBeUndefined();
     expect(custom(loaded, 'b1').status).toBeUndefined();
-    expect(loaded.unansweredAskUserQuestion).toMatchObject({
-      assistantMessageId: 'b1',
-      status: 'pending',
-      answers: { 'q-region': { selectedOptionIds: ['q-region-o0'] } },
-    });
+    // The answer was stopped, so the card was open again; "hi" typed then answered it.
+    expect(loaded.unansweredAskUserQuestion).toBeNull();
+    expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
+    expect(custom(loaded, 'b1').persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
   });
 
   it('clears Stopped when a later greeting lands on the same card row', () => {
@@ -827,6 +830,20 @@ describe('a resume that does not go through', () => {
     expect(textOf(loaded, 'b1')).toBe('Working on EU');
     expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
     expect(noResumeBubble(loaded)).toBe(true);
+  });
+
+  it('a second answer for a card that already had its reply (another tab) changes nothing on reload', () => {
+    const loaded = loadHistoricalMessages([
+      user('u1', 'plan the launch'), savedCard('t1', card(region)), bot('b1'),
+      answerQuery('sel', '"Which region?" → EU'), bot('b2', 'Planning for EU.'),
+      answerQuery('sel2', '"Which region?" → US'),
+      bot('b3', "This question was already answered, maybe in another tab or window, so I haven't run it again."),
+    ]);
+
+    expect(shape(loaded)).toEqual([['user', 'u1'], ['assistant', 'b1']]);
+    expect(textOf(loaded, 'b1')).toBe('Planning for EU.');
+    expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
+    expect(loaded.unansweredAskUserQuestion).toBeNull();
   });
 
   it('a retry after a stopped resume closes the card on the first row', () => {

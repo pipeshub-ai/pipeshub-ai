@@ -21,6 +21,7 @@ import {
   SearchResultItem,
   type ModelInfo,
   type PendingAskUserQuestion,
+  type RegenAnswers,
   type AgentCapabilities,
   DEFAULT_AGENT_CAPABILITIES,
   normalizeReasoningEffort,
@@ -454,6 +455,11 @@ interface ChatState {
   /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
   projectStreamTools: string[] | null;
 
+  /** The reply the composer's Regenerate bar is open for; its question card can be answered again meanwhile. */
+  regenTargetMessageId: string | null;
+  /** Answers picked again on that card. `null` re-runs the reply with the answers it already has. */
+  regenAnswers: RegenAnswers | null;
+
   // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
   /**
    * Selected tool `fullName`s for universal agent streams. `null` = all tools; `[]` = none; explicit
@@ -664,6 +670,9 @@ interface ChatState {
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
+  setRegenTargetMessageId: (messageId: string | null) => void;
+  setRegenAnswers: (answers: RegenAnswers | null) => void;
+
   // ── Universal agent actions ──
   setUniversalAgentStreamTools: (tools: string[] | null) => void;
   /** Populate universal agent tool groups from my-toolsets. Pass null to clear. */
@@ -828,6 +837,9 @@ const initialState = {
   projectKnowledgeScope: null as ChatKnowledgeFilters | null,
   projectKnowledgeScopeRestoredFor: null as string | null,
   projectStreamTools: null as string[] | null,
+
+  regenTargetMessageId: null as string | null,
+  regenAnswers: null as RegenAnswers | null,
 
   universalAgentStreamTools: null as string[] | null,
   universalAgentToolCatalogFullNames: [] as string[],
@@ -1327,6 +1339,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setAgentContextCreatedBy: (mongoUserId) => set({ agentContextCreatedBy: mongoUserId }),
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
+
+  setRegenTargetMessageId: (messageId) => set({ regenTargetMessageId: messageId }),
+  setRegenAnswers: (answers) => set({ regenAnswers: answers }),
 
   setUniversalAgentStreamTools: (tools) => set({ universalAgentStreamTools: tools }),
 

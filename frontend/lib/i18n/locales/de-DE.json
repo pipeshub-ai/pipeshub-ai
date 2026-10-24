@@ -5218,7 +5218,12 @@
     "back": "Zurück",
     "skip": "Überspringen",
     "next": "Weiter",
-    "submit": "Absenden"
+    "submit": "Absenden",
+    "selectOne": "Eine auswählen",
+    "selectMany": "Alle zutreffenden auswählen",
+    "skipAll": "Alle überspringen",
+    "expired": "Diese Frage ist abgelaufen. Antworten Sie im Chat, um fortzufahren.",
+    "repliedInChat": "Sie haben im Chat geantwortet."
   },
   "oauthDevice": {
     "title": "Gerät verbinden",

@@ -5283,7 +5283,12 @@
     "back": "뒤로",
     "skip": "건너뛰기",
     "next": "다음",
-    "submit": "제출"
+    "submit": "제출",
+    "selectOne": "하나 선택",
+    "selectMany": "해당하는 항목 모두 선택",
+    "skipAll": "모두 건너뛰기",
+    "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
+    "repliedInChat": "채팅에서 답장했습니다."
   },
   "oauthDevice": {
     "title": "기기 연결",

@@ -882,6 +882,7 @@ export function ChatInput({
     dismissExpansionPanels();
     setRegenModelOverride(null);
     leaveEditFiles(false);
+    useChatStore.getState().setRegenAnswers(null);
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
@@ -903,6 +904,7 @@ export function ChatInput({
     };
     dismissExpansionPanels();
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     // Populate the textarea with the original question so the user can edit it
@@ -915,8 +917,16 @@ export function ChatInput({
     leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     setMessage('');
   }, [leaveEditFiles]);
+
+  // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
+  const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
+  useEffect(() => {
+    useChatStore.getState().setRegenTargetMessageId(regenTargetMessageId);
+    return () => useChatStore.getState().setRegenTargetMessageId(null);
+  }, [regenTargetMessageId]);
 
   // Register showRegenBar / showEditQuery commands
   useEffect(() => {
@@ -972,10 +982,22 @@ export function ChatInput({
     setMessage('');
     if (activeSlotId) {
       const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+      // Kept until the re-run ends, so the card shows the answers it is running with.
+      const regenAnswers = useChatStore.getState().regenAnswers;
+      const answers =
+        !isEdit && regenAnswers?.messageId === activeMessageAction.messageId ? regenAnswers.message : undefined;
       if (edit) streamRegenerateForSlot(...target, edit);
+      else if (answers) streamRegenerateForSlot(...target, undefined, answers);
       else streamRegenerateForSlot(...target);
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles]);
+
+  // Submitting the reopened question card regenerates as the bar's button does, with the bar's model.
+  useEffect(() => {
+    const { register, unregister } = useCommandStore.getState();
+    register('runRegenerate', () => executeMessageAction());
+    return () => unregister('runRegenerate');
+  }, [executeMessageAction]);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();

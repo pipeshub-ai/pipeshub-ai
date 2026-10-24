@@ -5469,7 +5469,12 @@
     "back": "Zpět",
     "skip": "Přeskočit",
     "next": "Další",
-    "submit": "Odeslat"
+    "submit": "Odeslat",
+    "selectOne": "Vyberte jednu možnost",
+    "selectMany": "Vyberte všechny, které platí",
+    "skipAll": "Přeskočit vše",
+    "expired": "Platnost této otázky vypršela. Pokračujte odpovědí v chatu.",
+    "repliedInChat": "Odpověděli jste v chatu."
   },
   "errorToast": {
     "accessDenied": "Přístup odepřen",

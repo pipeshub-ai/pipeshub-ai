@@ -1116,6 +1116,14 @@ const regenerateBodySchema = z.object({
     })
     .optional(),
   filters: filtersSchema,
+  // New answers to the question card this reply followed: regenerating then re-runs the turn with them.
+  answers: z
+    .string()
+    .max(8000, { message: 'Answers are too long' })
+    .refine((value) => value.trimStart().startsWith('User selections:'), {
+      message: 'Answers must be the card answers ("User selections: ...")',
+    })
+    .optional(),
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
   ...contextFieldsSchema,

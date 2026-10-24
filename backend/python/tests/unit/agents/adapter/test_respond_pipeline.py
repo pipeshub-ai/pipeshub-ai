@@ -437,7 +437,9 @@ class TestAskUserQuestionFallback:
 
         ask_events = [e for e in sink.events if e["event"] == "ask_user_question"]
         assert len(ask_events) == 1
-        assert ask_events[0]["data"]["toolData"] == {"question": "which one?"}
+        tool_data = dict(ask_events[0]["data"]["toolData"])
+        assert tool_data.pop("expiresAt").endswith("Z")
+        assert tool_data == {"question": "which one?"}
         assert context.tool_state["ask_user_question_emitted"] is True
 
     async def test_skips_when_already_emitted(self) -> None:
@@ -459,6 +461,26 @@ class TestAskUserQuestionFallback:
         )
 
         assert not [e for e in sink.events if e["event"] == "ask_user_question"]
+
+    async def test_a_refused_question_sends_no_card(self) -> None:
+        """Seen live: a call refused by validation came back as a card event carrying the error text,
+        and the web app drops the answer it is streaming when a card event arrives."""
+        context = make_context(has_ui_client=True)
+        context.tool_state["all_tool_results"] = [{
+            "tool_name": "internaltools__ask_user_question", "status": "error",
+            "result": "ask_user_question was not shown: give at least 2 concrete options.",
+        }]
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="Atlas ships on 15 December 2026.",
+            event_sink=sink, streamed_answer="Atlas ships on 15 December 2026.",
+        )
+
+        assert not [e for e in sink.events if e["event"] == "ask_user_question"]
+        assert result["answer"] == "Atlas ships on 15 December 2026."
+        assert not context.tool_state.get("ask_user_question_emitted")
 
 
 class TestCancelledPath:

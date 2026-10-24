@@ -42,7 +42,11 @@ from app.agent_loop_lib.agent.spec import ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput, asked_questions
+from app.agents.actions.internal_tools.intrim_tools import (
+    ASK_USER_QUESTION_MAX_QUESTIONS,
+    AskUserQuestionItemInput,
+    asked_questions,
+)
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.modules.agents.qna.router import (
@@ -141,8 +145,8 @@ _CLARIFY_INSTRUCTIONS = (
     '"options": [{"label": "<option 1>"}, {"label": "<option 2>"}, '
     '{"label": "<option 3>"}]}]}\n'
     "```\n"
-    "1-3 questions max, each with 3-7 concrete tappable options — expand "
-    "the example's 3 options up to 7 if more concrete choices apply; never "
+    "1-3 questions max, each with 2-4 concrete tappable options that lead "
+    "to different results; never "
     "an 'Other'/'Something else' catch-all (the UI adds one automatically). "
     "Use this exception RARELY — only when there is truly nothing to work "
     "with."
@@ -171,7 +175,8 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         questions = payload.get("questions") if isinstance(payload, dict) else None
         if not questions:
             return None
-        return asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions]) or None
+        asked = asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions])
+        return asked[:ASK_USER_QUESTION_MAX_QUESTIONS] or None
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
         logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
         return None

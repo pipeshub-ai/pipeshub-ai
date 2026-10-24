@@ -68,12 +68,13 @@ async def emit_pre_run_clarification(
         asked_questions,
         question_payload,
     )
+    from app.agents.agent_loop.parked_turn import with_expiry
 
     questions = asked_questions(questions)
     # With no question there is no card to show, and the event would make
     # the client drop the clarifying text that follows.
     if context.has_ui_client and questions:
-        tool_data = question_payload(user_intent, questions)
+        tool_data = with_expiry(question_payload(user_intent, questions))
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 
@@ -85,23 +86,10 @@ async def emit_pre_run_clarification(
     attachments = context.tool_state.get("attachments") or []
     attached = sorted({str(a["recordId"]) for a in attachments if isinstance(a, dict) and a.get("recordId")})
     unnamed = any(not (isinstance(a, dict) and a.get("recordId")) for a in attachments)
-    completion_data: dict[str, Any] = {
-        "answer": clarifying_text,
-        "citations": [],
-        "confidence": "Medium",
-        "answerMatchType": "Clarification Needed",
-        "sourceRecordIds": [*attached, OPAQUE_SOURCE] if unnamed else attached,
-    }
-    for evt in context.formatter.answer_delta(
-        context, chunk=clarifying_text, accumulated=clarifying_text, citations=[],
-        raw_length=len(clarifying_text),
-    ):
-        await event_sink.write(evt)
-    for evt in context.formatter.answer_final(context, completion_data=completion_data):
-        await event_sink.write(evt)
-
-    context.tool_state["response"] = clarifying_text
-    context.tool_state["completion_data"] = completion_data
+    completion_data = await _emit_text_answer(
+        context, clarifying_text, "Clarification Needed", event_sink=event_sink,
+        source_record_ids=[*attached, OPAQUE_SOURCE] if unnamed else attached,
+    )
     context.tool_state["ask_user_question_emitted"] = True
     logger.info(
         "Pre-run clarification: asked %d question(s) instead of running the agent (org_id=%s conversation_id=%s)",
@@ -110,4 +98,42 @@ async def emit_pre_run_clarification(
     return completion_data
 
 
-__all__ = ["emit_pre_run_clarification"]
+_ALREADY_ANSWERED = (
+    "This question was already answered, maybe in another tab or window, so I haven't run it again. "
+    "Reload the chat to see the reply."
+)
+
+
+async def emit_already_answered(context: "AgentContext", *, event_sink: "EventSink") -> dict[str, Any]:
+    """Ends a turn whose answers are for a card that already got its reply, without running the
+    agent: running it again would repeat that reply's work (a second ticket, a second message)."""
+    logger.info(
+        "Question card already answered; not running it again (org_id=%s conversation_id=%s)",
+        context.org_id, context.conversation_id,
+    )
+    return await _emit_text_answer(context, _ALREADY_ANSWERED, "Already Answered", event_sink=event_sink)
+
+
+async def _emit_text_answer(
+    context: "AgentContext", text: str, match_type: str, *, event_sink: "EventSink",
+    source_record_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    completion_data: dict[str, Any] = {
+        "answer": text,
+        "citations": [],
+        "confidence": "Medium",
+        "answerMatchType": match_type,
+        **({"sourceRecordIds": source_record_ids} if source_record_ids is not None else {}),
+    }
+    for evt in context.formatter.answer_delta(
+        context, chunk=text, accumulated=text, citations=[], raw_length=len(text),
+    ):
+        await event_sink.write(evt)
+    for evt in context.formatter.answer_final(context, completion_data=completion_data):
+        await event_sink.write(evt)
+    context.tool_state["response"] = text
+    context.tool_state["completion_data"] = completion_data
+    return completion_data
+
+
+__all__ = ["emit_already_answered", "emit_pre_run_clarification"]

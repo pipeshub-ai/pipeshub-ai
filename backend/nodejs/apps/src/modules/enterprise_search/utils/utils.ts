@@ -1011,6 +1011,7 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
       // see HOW a past answer was produced instead of text-only history
       // (see `_convert_conversation_turn`, factory.py).
       ...(toolResults.length > 0 && { tool_results: toolResults }),
+      // A reply the user stopped did not finish its card's work, so the card can be answered again.
       ...(msg.messageType === 'bot_response' &&
         msg.status === 'stopped' && { status: 'stopped' }),
     });
