@@ -314,7 +314,7 @@ class GitHubExpected:
         repo: dict[str, Any],
         path: str,
         sha: str,
-        size: Optional[int],
+        size: int | None,
         commit_sha: str,
         connector_id: str,
     ) -> CodeFileRecord:

@@ -65,6 +65,9 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from app.sources.external.github.github_async import (  # type: ignore[import-not-found]  # noqa: E402
+    GitHubAsyncRESTClient,
+)
 from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
@@ -1026,7 +1029,7 @@ class TestGitHubTeamsCodeFiles:
         self,
         github_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
-        github_rest: Any,
+        github_rest: GitHubAsyncRESTClient,
     ) -> None:
         """TC-GH-CODE-001: CodeFileRecord and folder FileRecord properties."""
         connector_id = github_connector["connector_id"]
