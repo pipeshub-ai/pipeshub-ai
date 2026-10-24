@@ -1,4 +1,4 @@
-"""The simulated Workspace the Gmail Workspace suite syncs: the Drive suite's users, and mail a reader can count.
+"""The simulated Workspace the Gmail Workspace suite syncs: gmail_sim.env's users, and mail a reader can count.
 
 Mailbox of the test user ("owner"), after the scenario loads:
   kickoff        INBOX, from admin, 2 attachments (plan.pdf, notes.txt), thread with reply
