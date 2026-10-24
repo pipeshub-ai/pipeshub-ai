@@ -10,8 +10,8 @@
   order 5  TC-GMAIL-WS-006 — trash removes a message and its attachments; untrash restores it
   order 6  TC-GMAIL-WS-007 — permanent delete and spam remove a message
   order 7  TC-GMAIL-WS-008 — expired history: the mailbox is read again and deleted mail removed
-  order 8  TC-GMAIL-WS-009 — narrowing the Received Date filter removes old mail; widening adds it back
-  order 9  TC-GMAIL-WS-010 — a message streams its body; an attachment its exact bytes
+  order 8  TC-GMAIL-WS-009 — narrowing the Received Date filter takes old mail out of scope; widening puts it back
+  order 9  TC-GMAIL-WS-010 — a message streams its body to its owner; an attachment its exact bytes
   order 10 TC-GMAIL-WS-011 — suspending a user takes their mailbox grant away; reinstating restores it
   order 11 TC-GMAIL-WS-012 — delegation removed: the sync fails and removes nothing; restored, it succeeds
 TC-GMAIL-WS-013 (connector deletion removes its data) is the fixture's teardown.
@@ -23,19 +23,25 @@ import time
 from typing import Any
 
 import pytest
+import requests
 
 from connectors.gmail_workspace.gmail_workspace_scenario import OWNER_NOT_SYNCED, OWNER_SYNCED
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     connector_filters,
     sync_and_wait,
 )
+from connectors.outlook.outlook_test_utils import run_sync_and_wait  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import (  # type: ignore[import-not-found]
     async_poll_until,
     wait_for_sync_completion,
 )
 from helper.record_access import wait_for_record_access  # type: ignore[import-not-found]
-from helper.second_user import log_in_existing_user, log_out_existing_user  # type: ignore[import-not-found]
+from helper.second_user import (  # type: ignore[import-not-found]
+    SecondUser,
+    log_in_existing_user,
+    log_out_existing_user,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 pytestmark = [
@@ -59,6 +65,28 @@ async def _wait_present(graph: GraphProviderProtocol, connector_id: str, externa
 
     await async_poll_until(check, timeout=_GRAPH_WAIT_SEC, interval=3,
                            description=f"{what} {'present' if present else 'absent'}")
+
+
+async def _wait_in_group(graph: GraphProviderProtocol, connector_id: str, external_id: str, group: str, what: str,
+                         member: bool = True) -> None:
+    async def check() -> bool | None:
+        return (await graph.record_belongs_to_external_group(connector_id, external_id, group)) is member or None
+
+    await async_poll_until(check, timeout=_GRAPH_WAIT_SEC, interval=3,
+                           description=f"{what} {'in' if member else 'out of'} {group}")
+
+
+async def _filter_sync(client: PipeshubClient, graph: GraphProviderProtocol, connector_id: str,
+                       filters: dict[str, Any], what: str) -> None:
+    await run_sync_and_wait(client, graph, connector_id,
+                            lambda: client.update_connector_filters_sync_safe(connector_id, filters=filters),
+                            description=what)
+
+
+def _stream_as(client: PipeshubClient, user: SecondUser, record_id: str) -> requests.Response:
+    """Stream with the mailbox owner's own session: in a Workspace only they can open their mail."""
+    return requests.get(f"{client.base_url}{client._stream_record_path(record_id)}", headers=user.headers,
+                        timeout=120)
 
 
 class TestGmailWorkspace:
@@ -189,16 +217,20 @@ class TestGmailWorkspace:
                                                         pipeshub_client: PipeshubClient) -> None:
         sim, env, cid = gmail_ws["sim"], gmail_ws["env"], gmail_ws["connector_id"]
         old = sim.message(env.test_user, "old")["id"]
+        inbox = f"{env.test_user}:INBOX"
         start = int(time.time() * 1000) - 90 * DAY_MS
         narrowed = connector_filters(sync_values={"received_date": {
             "operator": "is_after", "type": "datetime", "value": {"start": start, "end": None}}})
-        pipeshub_client.update_connector_filters_sync_safe(cid, filters=narrowed)
-        await sync_and_wait(pipeshub_client, graph_provider, cid)
-        await _wait_present(graph_provider, cid, old, "mail older than the filter", present=False)
-        await _wait_present(graph_provider, cid, sim.message(env.test_user, "vendor")["id"], "recent mail")
-        pipeshub_client.update_connector_filters_sync_safe(cid, filters=connector_filters())
-        await sync_and_wait(pipeshub_client, graph_provider, cid)
-        await _wait_present(graph_provider, cid, old, "old mail once the filter is cleared")
+        # A filter change starts a full sync itself; restarting the connector on top of it would cancel that
+        # sync or be refused while it runs. The full sync unlinks the mail it no longer reads and keeps the node,
+        # so out of scope is out of its group.
+        await _filter_sync(pipeshub_client, graph_provider, cid, narrowed, "narrowed Received Date filter")
+        await _wait_in_group(graph_provider, cid, old, inbox, "mail older than the filter", member=False)
+        await _wait_in_group(graph_provider, cid, sim.message(env.test_user, "vendor")["id"], inbox, "recent mail")
+        # The save merges filters per section, so a body without "sync" would keep the narrowed filter.
+        cleared = {**connector_filters(), "sync": {"values": {}}}
+        await _filter_sync(pipeshub_client, graph_provider, cid, cleared, "cleared Received Date filter")
+        await _wait_in_group(graph_provider, cid, old, inbox, "old mail once the filter is cleared")
 
     @pytest.mark.order(9)
     async def test_tc_gmail_ws_010_streaming(self, gmail_ws: dict[str, Any], graph_provider: GraphProviderProtocol,
@@ -207,13 +239,19 @@ class TestGmailWorkspace:
         msg = sim.message(env.test_user, "vendor")
         mail = await graph_provider.get_record_by_external_id(cid, msg["id"])
         assert mail is not None
-        resp = pipeshub_client.stream_record(mail.id)
-        assert resp.status_code == 200 and b"Body of vendor" in resp.content, "a message streams its body"
         attachment = await graph_provider.get_record_by_external_id(cid, f"{msg['id']}~1")
         assert attachment is not None
-        resp = pipeshub_client.stream_record(attachment.id)
-        want = sim.attachment_bytes(msg["owner_id"], msg["id"], "1")
-        assert resp.status_code == 200 and resp.content == want, "an attachment streams its exact bytes"
+        owner = log_in_existing_user(pipeshub_client, gmail_ws["user_ids"][env.test_user], env.test_user)
+        try:
+            resp = _stream_as(pipeshub_client, owner, mail.id)
+            assert resp.status_code == 200 and b"Body of vendor" in resp.content, \
+                f"a message streams its body: HTTP {resp.status_code}"
+            resp = _stream_as(pipeshub_client, owner, attachment.id)
+            want = sim.attachment_bytes(msg["owner_id"], msg["id"], "1")
+            assert resp.status_code == 200 and resp.content == want, \
+                f"an attachment streams its exact bytes: HTTP {resp.status_code}"
+        finally:
+            log_out_existing_user(pipeshub_client, owner)
 
     @pytest.mark.order(10)
     async def test_tc_gmail_ws_011_suspended_user(self, gmail_ws: dict[str, Any],

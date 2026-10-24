@@ -96,8 +96,8 @@ Each class gets its own connector instance; teardown disables and deletes it and
 | TC-GMAIL-WS-006 | Trash removes the message and its attachments; untrash brings it back | deletion, restore (7.1) |
 | TC-GMAIL-WS-007 | Permanent delete and spam remove the message | deletion (7.1) |
 | TC-GMAIL-WS-008 | Expired history (404): the mailbox is read again and mail deleted meanwhile is removed | expired cursor (6.6) |
-| TC-GMAIL-WS-009 | Narrowing the Received Date filter removes older mail on the next (full) sync; widening adds it back | filter change (8.2) |
-| TC-GMAIL-WS-010 | Stream: a message streams its body; an attachment streams its exact bytes | streaming (3.8) |
+| TC-GMAIL-WS-009 | Narrowing the Received Date filter takes older mail out of its mailbox group on the next (full) sync, which unlinks what it no longer reads; widening puts it back | filter change (8.2) |
+| TC-GMAIL-WS-010 | Stream, as the mailbox owner: a message streams its body; an attachment streams its exact bytes | streaming (3.8) |
 | TC-GMAIL-WS-011 | Suspending the second user takes their mailbox grant away; reinstating gives it back | deactivated users (5.13) |
 | TC-GMAIL-WS-012 | Delegation removed: the sync fails, nothing is removed, and the next sync after it is restored succeeds | failure safety (5.7, 6.10) |
 | TC-GMAIL-WS-013 | Deleting the connector removes all its records, groups and sync points | lifecycle (7.6) |
