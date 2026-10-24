@@ -160,6 +160,11 @@ def bootstrap_guard(logger, config_service, **kwargs):
     return _single_process()
 
 
+async def bootstrap_leased_ids(connector_ids: list[str]) -> set[str]:
+    """One process, so a restart has no live peer whose flag must stay."""
+    return set()
+
+
 def build_sync_dispatcher(logger, producer):
     """Syncs always run in this process."""
     from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher

@@ -49,6 +49,11 @@ def test_a_failing_classifier_is_skipped(monkeypatch) -> None:
     assert error_classification.classify_error("rate limit exceeded")[0] == "rate_limit"
 
 
+async def test_bootstrap_leased_ids_keeps_nothing() -> None:
+    """A restart has no live peer, so every leftover flag may be cleared."""
+    assert await edition_services.bootstrap_leased_ids(["a", "b"]) == set()
+
+
 async def test_web_access_gate_allows_searches_and_public_urls_only() -> None:
     from app.web.models import CallerContext
     from app.web.ports import AccessRequest

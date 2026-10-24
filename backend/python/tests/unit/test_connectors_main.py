@@ -1532,8 +1532,8 @@ class TestRun:
     def test_run_defaults_to_the_edition_worker_count(self):
         """workers=None asks the edition seam, not the env var directly.
 
-        The open-source build pins to one worker whatever is set, because
-        multi-worker sync needs a cross-process lease it does not have.
+        The seam may pin the count at one whatever is set, because more than
+        one worker needs a cross-process lease the process may not have.
         """
         from app.connectors_main import run
         from app.edition_services import max_connector_workers
@@ -1543,6 +1543,10 @@ class TestRun:
             patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "3"}),
         ):
             run(reload=False)
+            # Asked inside the patch: the seam may read CONNECTOR_UVICORN_WORKERS,
+            # and reading it afterwards would see the restored environment
+            # instead of the value run() just used.
+            workers = max_connector_workers()
 
         mock_uvicorn.assert_called_once_with(
             "app.connectors_main:app",
@@ -1550,7 +1554,7 @@ class TestRun:
             port=8088,
             log_level="info",
             reload=False,
-            workers=max_connector_workers(),
+            workers=workers,
             timeout_worker_healthcheck=60,
         )
 
