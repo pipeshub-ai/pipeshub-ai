@@ -44,6 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 ARANGO_DB = "revision_pointer_it"
 MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 LABEL = collection_to_label(MAPPING)
+RECORDS = CollectionNames.RECORDS.value
 REV_1 = "1111111111111111"
 REV_2 = "2222222222222222"
 REV_3 = "3333333333333333"
@@ -68,14 +69,16 @@ async def graph(
             cleanup.push_async_callback(disconnect)
         run = uuid.uuid4().hex[:10]
         yield provider, run
-        if isinstance(provider, Neo4jProvider):
-            await provider.client.execute_query(
-                f"MATCH (n:{LABEL}) WHERE n.id STARTS WITH $p DETACH DELETE n", parameters={"p": f"{run}-"},
-            )
-        else:
-            await provider.http_client.execute_aql(
-                f"FOR n IN {MAPPING} FILTER STARTS_WITH(n._key, @p) REMOVE n IN {MAPPING}", {"p": f"{run}-"},
-            )
+        for collection, prefix in ((MAPPING, f"{run}-"), (RECORDS, f"rec-{run}-")):
+            if isinstance(provider, Neo4jProvider):
+                await provider.client.execute_query(
+                    f"MATCH (n:{collection_to_label(collection)}) WHERE n.id STARTS WITH $p DETACH DELETE n",
+                    parameters={"p": prefix},
+                )
+            else:
+                await provider.http_client.execute_aql(
+                    f"FOR n IN {collection} FILTER STARTS_WITH(n._key, @p) REMOVE n IN {collection}", {"p": prefix},
+                )
 
 
 async def _store_mapping(provider: IGraphDBProvider, vrid: str, doc_id: str = "doc-record") -> None:
@@ -97,6 +100,11 @@ def _record(vrid: str) -> Record:
         record_type=RecordType.FILE, external_record_id="ext", version=1, origin="UPLOAD",
         connector_id="conn", connector_name=Connectors.KNOWLEDGE_BASE,
     )
+
+
+async def _index_record_at(provider: IGraphDBProvider, vrid: str, rev: str) -> None:
+    """The record as indexing has written it by the time the pointer moves: on ``rev``."""
+    assert await provider.batch_upsert_nodes([{**_record(vrid).to_arango_base_record(), "contentRev": rev}], RECORDS)
 
 
 def _written(vrid: str, rev: str) -> WrittenRevision:
@@ -123,6 +131,7 @@ async def test_first_flip_then_next_and_the_stored_record_write_keeps_it(
     await _store_mapping(provider, vrid)
     assert "currentRev" not in await _mapping(provider, vrid)
 
+    await _index_record_at(provider, vrid, REV_1)
     await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_1))
     first = await _mapping(provider, vrid)
     assert first["currentRev"] == REV_1
@@ -135,6 +144,7 @@ async def test_first_flip_then_next_and_the_stored_record_write_keeps_it(
     kept = await _mapping(provider, vrid)
     assert kept["currentRev"] == REV_1 and kept["record_doc_id"] == "doc-record-2"
 
+    await _index_record_at(provider, vrid, REV_2)
     await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_2))
     second = await _mapping(provider, vrid)
     assert (second["currentRev"], second["previousRev"], second["manifestDocId"]) == (REV_2, REV_1, "doc-2222")
@@ -209,3 +219,19 @@ async def test_no_mapping_node_is_left_absent(graph: tuple[IGraphDBProvider, str
         vrid, MAPPING, {"currentRev": REV_1}, {"currentRev": None},
     )
     assert await provider.get_document(vrid, MAPPING) is None
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_record_has_left_does_not_move_the_pointer(graph: tuple[IGraphDBProvider, str]) -> None:
+    """A slower run of an older revision finishing after a newer one must not point back at it."""
+    provider, run = graph
+    vrid = f"{run}-vr"
+    sink = _sink(provider)
+    await _store_mapping(provider, vrid)
+    await _index_record_at(provider, vrid, REV_2)
+    await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_2))
+
+    await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_1))
+
+    doc = await _mapping(provider, vrid)
+    assert (doc["currentRev"], doc["manifestDocId"]) == (REV_2, "doc-2222")
