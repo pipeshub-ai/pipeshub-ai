@@ -269,8 +269,10 @@ export class OAuthAppService {
    *
    * Clearing it (`serviceAccountId: null`) is refused while the app allows
    * the grant, since that would put the tokens back on the creator — the
-   * thing this exists to prevent. An app that does not allow the grant, or
-   * one that predates the requirement, can still be cleared.
+   * thing this exists to prevent. Only an app that does not allow the grant
+   * can be cleared. An app that predates the requirement and still allows it
+   * is refused too, even though it has no binding to remove — the carve-out
+   * for those lives on `updateApp`, which lets them be edited, and not here.
    *
    * Revokes the tokens the app has already issued. They are not carried over
    * to the new identity: the middleware reads this field per request, and a
