@@ -8,10 +8,14 @@ date check follow the same rule.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
+from app.models.source_dates import DATED_ONLY_TIME_RANGE_KEY
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.pattern_match import _graph_record_in_time_range
@@ -101,6 +105,26 @@ class TestDateFilters:
         assert _graph_record_in_time_range(drive, SINCE_2026) is True
         assert _graph_record_in_time_range(drive, FEBRUARY_2025) is False
 
+    @pytest.mark.usefixtures("content_dates_on")
+    def test_on_a_dated_only_range_leaves_upload_dated_records_out(self) -> None:
+        dated_only = {**FEBRUARY_2025, DATED_ONLY_TIME_RANGE_KEY: 1}
+        assert _neo4j_clause(dated_only) == (
+            "AND r.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs\n"
+            "AND r.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs\n"
+            "AND coalesce(r.sourceTimestampOrigin, '') <> 'upload'"
+        )
+        assert _arango_clause(dated_only).endswith('FILTER record.sourceTimestampOrigin != "upload"')
+        assert " OR " not in _arango_clause(dated_only)
+        upload = {"sourceCreatedAtTimestamp": UPLOADED, "sourceTimestampOrigin": "upload"}
+        email = {"sourceCreatedAtTimestamp": EMAIL_DAY, "sourceTimestampOrigin": "content"}
+        assert _graph_record_in_time_range(upload, dated_only) is False
+        assert _graph_record_in_time_range(email, dated_only) is True
+
+    def test_off_a_dated_only_range_is_a_plain_one(self) -> None:
+        dated_only = {**FEBRUARY_2025, DATED_ONLY_TIME_RANGE_KEY: 1}
+        assert _neo4j_clause(dated_only) == _neo4j_clause(FEBRUARY_2025)
+        assert _arango_clause(dated_only) == _arango_clause(FEBRUARY_2025)
+
     def test_off_keyword_hits_match_upload_times(self) -> None:
         upload = {"sourceCreatedAtTimestamp": UPLOADED, "sourceTimestampOrigin": "upload"}
         assert _graph_record_in_time_range(upload, SINCE_2026) is True
@@ -143,3 +167,65 @@ class TestTimeline:
         email = {"sourceCreatedAtTimestamp": EMAIL_DAY, "sourceTimestampOrigin": "content"}
         assert record_date_ms(upload, "created") is None
         assert record_date_ms(email, "created") == EMAIL_DAY
+
+
+def _day(year: int, month: int, day: int) -> int:
+    return int(datetime(year, month, day, tzinfo=UTC).timestamp() * 1000)
+
+
+class TestTimelineSearches:
+    """A timeline places records by date, so an upload dated only by a later upload
+    fills no period and does not hide the dated records that place its span."""
+
+    # Uploaded in 2026 and dated by nothing else: listed first, as the best matches.
+    UPLOADS: dict[str, dict[str, Any]] = {
+        f"upload-{i}": {"sourceCreatedAtTimestamp": UPLOADED, "sourceTimestampOrigin": "upload"} for i in range(12)
+    }
+    MEMO = {"sourceCreatedAtTimestamp": _day(2025, 3, 12), "sourceTimestampOrigin": "content"}
+    OLD_MEMO = {"sourceCreatedAtTimestamp": _day(2023, 6, 5)}
+
+    @staticmethod
+    def _search(records: dict[str, dict[str, Any]], calls: list[dict[str, int] | None]):  # noqa: ANN205
+        async def search(time_range: dict[str, int] | None, limit: int) -> dict[str, Any]:
+            calls.append(time_range)
+            found = [vrid for vrid, doc in records.items() if _graph_record_in_time_range(doc, time_range)][:limit]
+            return {
+                "status_code": 200 if found else 404,
+                "searchResults": [{"virtual_record_id": vrid, "score": 0.5} for vrid in found],
+                "virtual_to_record_map": {vrid: records[vrid] for vrid in found},
+            }
+        return search
+
+    @pytest.mark.usefixtures("content_dates_on")
+    @pytest.mark.asyncio
+    async def test_a_period_lists_only_what_is_dated_in_it(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.timeline import _collect
+
+        calls: list[dict[str, int] | None] = []
+        search = self._search({**self.UPLOADS, "memo": self.MEMO}, calls)
+        collected = await _collect(search, _day(2025, 3, 1), _day(2025, 5, 31), "created", logging.getLogger("t"))
+
+        assert not isinstance(collected, str)
+        march, april, may, undated = collected.hits
+        assert {hit["virtual_record_id"] for hit in march.results} == {"memo"}
+        assert april.results == may.results == []
+        # The whole-span search still finds them, under no date.
+        assert undated.period is None
+        assert {hit["virtual_record_id"] for hit in undated.results} == set(self.UPLOADS)
+        whole, *periods = calls
+        assert whole is not None and DATED_ONLY_TIME_RANGE_KEY not in whole
+        assert all(period and period[DATED_ONLY_TIME_RANGE_KEY] for period in periods)
+
+    @pytest.mark.usefixtures("content_dates_on")
+    @pytest.mark.asyncio
+    async def test_without_a_start_the_span_reaches_back_to_the_oldest_dated_match(self) -> None:
+        from app.agents.actions.knowledge_graph.ops import timeline
+
+        calls: list[dict[str, int] | None] = []
+        search = self._search({**self.UPLOADS, "memo": self.MEMO, "old-memo": self.OLD_MEMO}, calls)
+        with patch.object(timeline, "SPAN_SEARCH_LIMIT", 5):
+            collected = await timeline._collect(search, None, _day(2025, 5, 31), "created", logging.getLogger("t"))
+
+        assert not isinstance(collected, str)
+        assert collected.start_ms == self.OLD_MEMO["sourceCreatedAtTimestamp"]
+        assert calls[0] == {"source_created_before_ms": _day(2025, 5, 31), DATED_ONLY_TIME_RANGE_KEY: 1}

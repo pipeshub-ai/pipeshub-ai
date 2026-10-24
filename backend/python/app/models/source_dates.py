@@ -35,6 +35,10 @@ UPLOAD_SOURCE_MODIFIED_FIELD = "uploadSourceLastModifiedTimestamp"
 UPLOAD_SOURCE_ORIGIN_FIELD = "uploadSourceTimestampOrigin"
 
 CONTENT_DOCUMENT_DATES_ENV_VAR = "CONTENT_DOCUMENT_DATES"
+# A time_range flag: leave out an upload dated only by its upload instead of
+# bounding it by that upload (upload_times_undated). A timeline places records
+# by date, so its period and span searches set it.
+DATED_ONLY_TIME_RANGE_KEY = "dated_only"
 
 # Node stamps a file sent without a last-modified time while it receives the
 # upload, a moment before it stamps the record's createdAtTimestamp.

@@ -84,7 +84,11 @@ from app.models.entities import (
     substitute_user_email,
 )
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
-from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, upload_times_undated
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.schema.arango.documents import (
     agent_schema,
@@ -23744,10 +23748,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         time_filter_lines: list[str] = []
         if time_range:
+            dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
             # An upload dated only by its upload was written at or before that
             # time: an after-bound still rules it out, a before-bound cannot.
             undated = (
-                f' OR record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload"' if upload_times_undated() else ""
+                f' OR record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload"'
+                if upload_times_undated() and not dated_only
+                else ""
             )
 
             def before(condition: str) -> str:
@@ -23781,6 +23788,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
                 )
                 bind_vars["sourceUpdatedBeforeMs"] = u_before
+            if dated_only:
+                time_filter_lines.append(f'FILTER record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} != "upload"')
 
         if not time_filter_lines:
             return metadata_filter_clause

@@ -104,7 +104,11 @@ from app.models.permission import (
     RETIRED_ROLES,
     read_role,
 )
-from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, upload_times_undated
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.modules.code_graph.build_state import (
     SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
 )
@@ -7536,11 +7540,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if not time_range:
             return ""
+        dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
         # An upload dated only by its upload was written at or before that
         # time: an after-bound still rules it out, a before-bound cannot.
         undated = (
             f" OR coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') = 'upload'"
-            if upload_times_undated()
+            if upload_times_undated() and not dated_only
             else ""
         )
 
@@ -7560,6 +7565,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if "source_updated_before_ms" in time_range:
             parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
             conditions.append(before(f"{record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"))
+        if dated_only:
+            conditions.append(f"AND coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') <> 'upload'")
         return "\n".join(conditions)
 
     @staticmethod

@@ -1446,7 +1446,8 @@ class KnowledgeGraph:
                     "'created' (default) places each record by when it was created at its source: "
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
                     "places it by its last update, for tickets or pages that changed over the span. "
-                    "A knowledge-base upload has only what the upload gave it for both: its file's "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found; otherwise it has only what the upload gave it for both: its file's "
                     "last-modified time, or else its upload time."
                 ),
                 required=False,
