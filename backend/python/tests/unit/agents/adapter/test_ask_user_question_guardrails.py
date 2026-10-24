@@ -372,7 +372,7 @@ class TestTypedReplyThroughTheFactory:
         not (PR #355 review), so the server resumes the card too, with the files in the request."""
         import app.agents.agent_loop.factory as factory
 
-        async def _files(_context: Any, _logger: Any) -> tuple[str, list[Any]]:  # noqa: ANN401
+        async def _files(_context: Any, _logger: Any, **_budget: Any) -> tuple[str, list[Any]]:  # noqa: ANN401
             return "\n\nAttached files from the user:\nlog.txt: connection pool exhausted", []
 
         monkeypatch.setattr(factory, "resolve_attachments_for_goal", _files)
@@ -399,7 +399,7 @@ class TestTypedReplyThroughTheFactory:
             loop, goal, _questions, mode = await real_select(*args, **kwargs)
             return loop, goal, [{"question": "Which project?"}], mode
 
-        async def _files(_context: Any, _logger: Any) -> tuple[str, list[Any]]:  # noqa: ANN401
+        async def _files(_context: Any, _logger: Any, **_budget: Any) -> tuple[str, list[Any]]:  # noqa: ANN401
             return "\n\nAttached files from the user:\nlog.txt", []
 
         monkeypatch.setattr(factory, "select_loop_and_goal", _clarifying)
