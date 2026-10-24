@@ -128,9 +128,5 @@ neo4j:
 ingress:
   enabled: false
 
-# ----- Quiet the monitoring extras for local -----
-monitoring:
-  serviceMonitor:
-    enabled: false
 networkPolicy:
   enabled: false

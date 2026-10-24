@@ -160,6 +160,8 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
       # (one auto-commit per query while that is off)
+      # NEO4J_EXPLICIT_TRANSACTIONS defaults to true: a failed multi-statement write rolls back.
+      # Set it to false for one auto-commit per query.
       - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
@@ -173,6 +175,7 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.

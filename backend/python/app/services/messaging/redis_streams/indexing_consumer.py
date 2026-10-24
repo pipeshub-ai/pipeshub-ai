@@ -47,6 +47,13 @@ from app.services.messaging.lanes.assignment import read_lane_map, write_lane_co
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
+from app.services.messaging.redis_streams.retention import (
+    DEFAULT_INTERVAL_SECONDS,
+    LEADER_KEY,
+    StreamRetention,
+    retained_streams,
+    run_retention_loop,
+)
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -192,6 +199,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.redis: Redis | None = None
         self.running = False
         self.consume_task: asyncio.Task | None = None
+        self._retention_task: asyncio.Task | None = None
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()
@@ -536,6 +544,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 await self.initialize()
 
             self.consume_task = asyncio.create_task(self._consume_loop())
+            if self.config.retention_mode == "after_ack":
+                self._retention_task = asyncio.create_task(self.__run_retention())
             self.logger.info(
                 "Started Redis Streams consumer task with parsing_ceiling=%d, "
                 "light_parsing_ceiling=%d, indexing_ceiling=%d",
@@ -547,6 +557,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
             raise
 
+    async def __run_retention(self) -> None:
+        # Imported here: the leader lock lives with the indexing sweeps.
+        from app.modules.indexing.vector_membership_backfill import (
+            VectorMembershipBackfillLeaderLock,
+        )
+
+        lock = VectorMembershipBackfillLeaderLock(
+            self.logger, self.config, f"stream-retention:{uuid.uuid4().hex}",
+            ttl_seconds=int(DEFAULT_INTERVAL_SECONDS) * 3, key=LEADER_KEY,
+        )
+        try:
+            await run_retention_loop(
+                StreamRetention(self.redis, self.logger, lock, no_group_maxlen=self.config.max_len),  # type: ignore[arg-type]
+                retained_streams(),
+            )
+        finally:
+            await lock.release()
+            await lock.close()
+
     async def stop(  # type: ignore[override]
         self,
         message_handler: IndexingMessageHandler | None = None,
@@ -554,6 +583,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.logger.info("Stopping Redis Streams consumer...")
         self.running = False
 
+        if self._retention_task:
+            self._retention_task.cancel()
+            self._retention_task = None
         if self.consume_task:
             self.consume_task.cancel()
             try:

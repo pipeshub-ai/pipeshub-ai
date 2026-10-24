@@ -1,10 +1,10 @@
 """What the record stages share: the records still on a job's revision, the stored record,
 and section writes into the stored record under the record's lease.
 
-Two stages write the stored record's ``semantic_metadata`` and may finish in either order:
-classify owns every field but ``named_entities``, the entities stage owns ``named_entities``.
-Each write re-reads the stored record under the record's lease and replaces only its own
-section, so neither overwrites the other.
+Classification is the stored record's only stage writer: it re-reads the record under the
+lease and replaces ``semantic_metadata``, keeping the ``named_entities`` section a record
+indexed before the entities stage existed may carry (``app.modules.named_entities.kept``
+reads it for such a record). The entities stage keeps its extraction in its stage state.
 """
 
 from collections.abc import Awaitable, Callable
@@ -37,19 +37,10 @@ class StoredRecordMissing(LookupError):
 
 
 def with_classification(current: StoredMetadata | None, classification: StoredMetadata) -> StoredMetadata:
-    """``classification`` with the stored named-entity section kept."""
+    """``classification`` with the stored named-entity section kept: a record indexed before
+    the entities stage has its extraction there, and a rollback reads it there too."""
     merged = {key: value for key, value in classification.items() if key != NAMED_ENTITIES_SECTION}
     merged[NAMED_ENTITIES_SECTION] = (current or {}).get(NAMED_ENTITIES_SECTION)
-    return merged
-
-
-def with_named_entities(current: StoredMetadata | None, extraction: StoredMetadata | None) -> StoredMetadata:
-    """The stored metadata with its named-entity section replaced; every other field kept.
-
-    With no metadata stored yet (classification has not finished, or produced none) the
-    section alone is stored, as ``extraction_blob_holder`` stores it."""
-    merged = dict(current or {})
-    merged[NAMED_ENTITIES_SECTION] = extraction
     return merged
 
 

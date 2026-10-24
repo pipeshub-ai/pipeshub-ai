@@ -64,7 +64,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
-from app.services.vector_db.qdrant.utils import QdrantUtils
+from app.services.vector_db.qdrant.utils import MAX_HNSW_EF_CONSTRUCT, QdrantUtils, env_number
 from app.utils.logger import create_logger
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
@@ -74,6 +74,9 @@ logger = create_logger("qdrant_service")
 # the deployment states it here; compose and Helm set it from the same value
 # they give Qdrant's memory limit.
 QDRANT_MEMORY_LIMIT_ENV = "QDRANT_MEMORY_LIMIT"
+# Applies to collections created after it is set; an existing graph keeps the value it was built with.
+QDRANT_HNSW_EF_CONSTRUCT_ENV = "QDRANT_HNSW_EF_CONSTRUCT"
+DEFAULT_HNSW_EF_CONSTRUCT = 256
 _MEMORY_REPORT_CONCURRENCY = 8
 
 
@@ -368,6 +371,7 @@ class QdrantService(IVectorDBService):
             client_kwargs: dict = dict(
                 host=cfg.host,
                 port=cfg.port,
+                grpc_port=cfg.grpc_port,
                 # api_key may be empty string — only pass it when truthy
                 api_key=cfg.api_key or None,
                 prefer_grpc=cfg.prefer_grpc,
@@ -561,7 +565,10 @@ class QdrantService(IVectorDBService):
         )
         optimizers_config = OptimizersConfigDiff(default_segment_number=8)
 
-        hnsw_kwargs: dict = {"on_disk": config.on_disk_hnsw}
+        hnsw_kwargs: dict = {
+            "on_disk": config.on_disk_hnsw,
+            "ef_construct": int(env_number(QDRANT_HNSW_EF_CONSTRUCT_ENV, DEFAULT_HNSW_EF_CONSTRUCT, 4, MAX_HNSW_EF_CONSTRUCT, int)),
+        }
         if config.hnsw is not None:
             if config.hnsw.m is not None:
                 hnsw_kwargs["m"] = config.hnsw.m
@@ -817,11 +824,11 @@ class QdrantService(IVectorDBService):
             requests=qdrant_requests,
         )
         results: List[List[SearchResult]] = []
-        for batch_result in raw_results:
+        for req, batch_result in zip(requests, raw_results):
             results.append(
                 [
                     QdrantUtils.qdrant_result_to_search_result(p)
-                    for p in batch_result.points
+                    for p in QdrantUtils.stable_top(batch_result.points, req.limit)
                 ]
             )
         return results

@@ -343,6 +343,15 @@ class TestGetEnvFallback:
         assert result["grpcPort"] == 6334
         assert result["apiKey"] == "qdrant"
 
+    def test_qdrant_fallback_blank_grpc_port_is_unset(self) -> None:
+        svc = _build_service()
+
+        env = {"QDRANT_HOST": "q", "QDRANT_GRPC_PORT": ""}
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/qdrant")
+
+        assert result["grpcPort"] == 6334
+
     def test_qdrant_fallback_no_host_returns_none(self):
         svc = _build_service()
 

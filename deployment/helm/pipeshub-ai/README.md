@@ -7,7 +7,6 @@ Production-ready Helm chart for deploying PipesHub-AI with optional enterprise f
 - Kubernetes 1.24+
 - Helm 3.11+
 - (Optional) External Secrets Operator for `secretManagement.externalSecrets`
-- (Optional) Prometheus Operator for `monitoring.serviceMonitor`
 
 ## Configuration presets
 
@@ -289,9 +288,12 @@ image.
 - Optional startup/readiness/liveness probe tuning
 - Optional extra volumes and mounts
 - Optional service account creation
-- Optional PDB, NetworkPolicy, ServiceMonitor
-- Optional OTLP telemetry env wiring
+- Optional PDB, NetworkPolicy
 - Product telemetry switch: `telemetry.collection.enabled: false` sets `TELEMETRY_COLLECTION_FLAG=false`
+
+## Metrics
+
+The chart exposes no scrape port: the services push product telemetry to the collector (see `telemetry.collection.enabled`) and do not serve `/metrics`. The earlier `metrics`, `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
 
 ## Validation
 
@@ -328,5 +330,4 @@ SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 - Configure ingress/TLS
 - Enable `podDisruptionBudget` for HA
 - Enable `networkPolicy` with cluster-specific rules
-- Enable `monitoring.serviceMonitor` when Prometheus Operator exists
 - Validate upgrade path in non-production first

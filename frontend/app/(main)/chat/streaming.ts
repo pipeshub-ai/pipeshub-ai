@@ -52,13 +52,15 @@ import {
   type PendingAskUserQuestion,
   type MessagePart,
   type ChatKnowledgeFilters,
+  type AttachmentRef,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { StreamError } from '@/lib/api/stream-errors';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -313,6 +315,70 @@ function assistantRowIdForBackendMessage(
   if (row && typeof row.id === 'string') return row.id;
   const last = [...messages].reverse().find((m) => m.role === 'assistant');
   return last && typeof last.id === 'string' ? last.id : backendMessageId;
+}
+
+/**
+ * The user row before an assistant row, with its text swapped for an edited question and, when
+ * the edit replaced them, its files (an empty list clears them).
+ */
+export function withEditedQuestion(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+  text: string,
+  attachments?: AttachmentRef[],
+): ThreadMessageLike[] {
+  const idx = messages.findIndex((m) => {
+    if (m.role !== 'assistant') return false;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    return m.id === backendMessageId || custom?.messageId === backendMessageId;
+  });
+  if (idx <= 0 || messages[idx - 1].role !== 'user') return messages;
+  return messages.map((m, i) => {
+    if (i !== idx - 1) return m;
+    const custom = (m.metadata?.custom ?? {}) as Record<string, unknown>;
+    return {
+      ...m,
+      content: [{ type: 'text' as const, text }],
+      ...(attachments === undefined
+        ? {}
+        : {
+            metadata: {
+              ...m.metadata,
+              custom: { ...custom, attachments: attachments.length > 0 ? attachments : undefined },
+            },
+          }),
+    };
+  });
+}
+
+/**
+ * Whether a failure says the server did not take an edit: its own error (a run that failed) or a
+ * request it refused before streaming. A connection that dropped says nothing, the run goes on there
+ * and may save the edit, so what it did is read back from the server instead of guessed.
+ */
+export function editWasNotTaken(error: unknown): boolean {
+  return (
+    error instanceof ChatStreamError ||
+    (error instanceof StreamError && error.status !== undefined)
+  );
+}
+
+/** The answer row without the question card it asked, for a turn that is being asked again. */
+export function withoutQuestionCard(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+): ThreadMessageLike[] {
+  return messages.map((m) => {
+    if (m.role !== 'assistant') return m;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    if (m.id !== backendMessageId && custom?.messageId !== backendMessageId) return m;
+    const {
+      persistedAskUserQuestion: _card,
+      persistedAskUserQuestionAnswers: _answers,
+      ...rest
+    } = (m.metadata?.custom ?? {}) as Record<string, unknown>;
+    return { ...m, metadata: { ...m.metadata, custom: rest } };
+  });
 }
 
 function pendingFromUnansweredPersistedCard(
@@ -1422,12 +1488,36 @@ export async function streamRegenerateForSlot(
   slotId: string,
   messageId: string,
   modelOverride?: ModelOverride,
-  originalFilters?: ChatKnowledgeFilters
+  originalFilters?: ChatKnowledgeFilters,
+  /**
+   * Set when the user edited the question: its text, and its files when they changed, replace
+   * the stored ones and the answer is rebuilt for them.
+   */
+  edit?: { query: string; attachments?: AttachmentRef[] }
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
+
+  const editConvId = slot.convId;
+  const preEditMessages = slot.messages;
+  const preEditPending = slot.pendingAskUserQuestion;
+  const editedMessages = edit
+    ? withoutQuestionCard(
+        withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments),
+        messageId,
+      )
+    : slot.messages;
+  const questionWasEdited = Boolean(edit);
+  /** A run that fails keeps the stored question and its card, so the screen must too. */
+  const undoEditedQuestion = (): Partial<{
+    messages: ThreadMessageLike[];
+    pendingAskUserQuestion: PendingAskUserQuestion | null;
+  }> =>
+    questionWasEdited
+      ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
+      : {};
 
   slot.abortController?.abort();
 
@@ -1471,6 +1561,8 @@ export async function streamRegenerateForSlot(
     abortController,
     runId: streamRunId,
     stopping: false,
+    // The old card belongs to the old question; keeping it would stamp it on the new answer.
+    ...(questionWasEdited ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -1689,6 +1781,14 @@ export async function streamRegenerateForSlot(
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
+        // Editing the first question moves the chat's title; keep the sidebar in step.
+        const reloadedTitle = detail.conversation.title;
+        if (
+          reloadedTitle &&
+          useChatStore.getState().conversations.some((c) => c.id === slot.convId && c.title !== reloadedTitle)
+        ) {
+          useChatStore.getState().renameConversation(slot.convId!, reloadedTitle);
+        }
         notifyAnswerFinishedInBackground(slotId, wasStopped);
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {
@@ -1723,7 +1823,9 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
+      const dropped = questionWasEdited && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
+        ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
         regenerateMessageId: null,
         streamingAssistantId: null,
@@ -1735,6 +1837,7 @@ export async function streamRegenerateForSlot(
         runId: null,
         stopping: false,
       });
+      if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });
     },
 
@@ -1787,6 +1890,8 @@ export async function streamRegenerateForSlot(
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
           runId,
+          ...(edit ? { query: edit.query } : {}),
+          ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
         }
       );
     } else {
@@ -1815,6 +1920,8 @@ export async function streamRegenerateForSlot(
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
         runId,
+        ...(edit ? { query: edit.query } : {}),
+        ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
       });
     }
   } catch (error) {
@@ -1827,7 +1934,9 @@ export async function streamRegenerateForSlot(
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
+    const dropped = questionWasEdited && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {
+      ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
@@ -1839,6 +1948,7 @@ export async function streamRegenerateForSlot(
       runId: null,
       stopping: false,
     });
+    if (dropped) followRemoteRun(slotId, editConvId);
     debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
 }

@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import concurrent.futures
 import contextlib
 import errno
 import json
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
 import msgspec
+import zstandard as zstd
 from yarl import URL
 
 from app.config.constants.arangodb import CollectionNames
@@ -21,7 +24,10 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.exceptions.storage_exceptions import (
+    StorageRequestRejectedError,
+    StoredRecordTooLargeError,
+)
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -43,7 +49,29 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
+# Decks repeat the same base64 image on every slide, further apart than the
+# default 4 MiB window at this level, so they barely compressed (112 -> 84 MiB).
+# A 128 MiB window with long-distance matching finds them (-> 13 MiB). 2^27 is
+# the default decoder's window limit; a bigger one would fail to decode. Level 6
+# matched level 10 on decks and was within 8% on text, at 2-3x the speed.
+COMPRESSION_LEVEL = 6
+COMPRESSION_WINDOW_LOG = 27
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
+
+# Decoding a large record holds ~2.4x its msgpack size as Python objects and,
+# inline, freezes the event loop for the whole decode. Records over
+# LARGE_DECODE_BYTES (msgpack, read from the zstd header) decode in a thread,
+# LARGE_DECODE_SLOTS at a time per event loop. Independent of the compression
+# threshold: that is a JSON size that steers writes, and at 0 it would send
+# every record of a chat turn through the one slot. A record whose *stored*
+# size is over it also downloads inside the slot: otherwise readers queued for
+# the decode each hold their whole download while they wait.
+LARGE_DECODE_BYTES = 20 * 1024 * 1024
+LARGE_DECODE_SLOTS = 1
+# Optional hard cap on one record's decoded (msgpack) bytes, for a deployment
+# whose pods can't afford a single huge decode. Off by default: a refused record
+# drops out of every answer and re-index without telling anyone.
+_MAX_DECODED_BYTES_ENV = "PIPESHUB_RECORD_MAX_DECODED_BYTES"
 
 
 def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records are free-form
@@ -175,6 +203,15 @@ def compression_threshold_bytes() -> int:
         return max(int(raw), 0)
     except ValueError:
         return COMPRESSION_THRESHOLD_BYTES_DEFAULT
+
+
+def max_decoded_record_bytes() -> int | None:
+    """Largest record (msgpack bytes) a reader will decode, or None for no limit (the default)."""
+    try:
+        value = int(os.getenv(_MAX_DECODED_BYTES_ENV) or 0)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 _SIGNED_URL_CACHE_ENV = "PIPESHUB_SIGNED_URL_CACHE_SECONDS"
@@ -422,6 +459,67 @@ def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
         return lock
 
 
+# Per loop for the same reason as _shared_redis_locks: a semaphore shared
+# across loops hangs instead of failing.
+_decode_slots: "dict[asyncio.AbstractEventLoop, asyncio.Semaphore]" = {}
+_decode_slots_guard = threading.Lock()
+
+
+def _decode_slot_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Semaphore:
+    with _decode_slots_guard:
+        for stale in [lp for lp in _decode_slots if lp.is_closed()]:
+            del _decode_slots[stale]
+        slot = _decode_slots.get(loop)
+        if slot is None:
+            slot = _decode_slots[loop] = asyncio.Semaphore(LARGE_DECODE_SLOTS)
+        return slot
+
+
+# One thread for every large decode in the process, not the default executor's
+# many: glibc gives each thread its own malloc arena, which the rest of the
+# process can't reuse, so decodes spread over N threads kept N arenas' worth of
+# record memory (+40% peak on a text-heavy record, and growing with N).
+_DECODE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="record-decode")
+
+
+class _DecodeSlotLease:
+    """A held decode slot. Its holder releases it, unless a decode thread was started
+    on it: then the thread releases it when it finishes, even if the holder is cancelled."""
+
+    def __init__(self, slot: asyncio.Semaphore) -> None:
+        self._slot = slot
+        self.handed_off = False
+
+    def hand_off(self) -> asyncio.Semaphore:
+        self.handed_off = True
+        return self._slot
+
+    def release(self) -> None:
+        if not self.handed_off:
+            self.handed_off = True
+            self._slot.release()
+
+
+async def _acquire_decode_slot() -> asyncio.Semaphore:
+    # No time limit: a reader waits its turn rather than drop the record from an
+    # answer, and a cancelled reader leaves the queue at once.
+    slot = _decode_slot_for(asyncio.get_running_loop())
+    await slot.acquire()
+    return slot
+
+
+def _compressed_content_size(data: dict[str, Any]) -> int | None:
+    """Decoded size from the zstd frame header; None if not compressed or unreadable."""
+    encoded: object = data.get("record")
+    if not data.get("isCompressed") or not isinstance(encoded, str):
+        return None
+    try:
+        # A zstd frame header is at most 18 bytes = 24 base64 chars.
+        return zstd.get_frame_parameters(base64.b64decode(encoded[:24])).content_size
+    except Exception:
+        return None
+
+
 async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISignedUrlCache:  # noqa: ANN401
     """Process-wide `ISignedUrlCache`, one per event loop.
 
@@ -517,7 +615,7 @@ def _versioned_json_form(
     if compressed:
         form_data.add_field(f'customMetadata[{idx}][key]', 'compression')
         form_data.add_field(f'customMetadata[{idx}][value][algorithm]', 'zstd')
-        form_data.add_field(f'customMetadata[{idx}][value][level]', '10')
+        form_data.add_field(f'customMetadata[{idx}][value][level]', str(COMPRESSION_LEVEL))
         form_data.add_field(f'customMetadata[{idx}][value][format]', 'msgspec')
         form_data.add_field(f'customMetadata[{idx}][value][version]', 'v1')
         form_data.add_field(f'customMetadata[{idx}][value][compressed]', 'true')
@@ -575,6 +673,7 @@ class BlobStorage(Transformer):
         signed_url: str,
         file_size_bytes: int | None,
         virtual_record_id: str,
+        lease: _DecodeSlotLease | None = None,
     ) -> dict | None:
         """Download and decode a record from an already-signed storage URL.
 
@@ -594,10 +693,11 @@ class BlobStorage(Transformer):
 
         try:
             if use_parallel:
-                file_bytes = await self._download_with_range_requests(
+                # Not kept in a local: a reader waiting for a decode slot would hold
+                # the raw download alongside the parsed envelope it was parsed into.
+                data = _decode_json(await self._download_with_range_requests(
                     session, signed_url, chunk_size_mb=2, max_connections=6
-                )
-                data = _decode_json(file_bytes)
+                ))
             else:
                 data = await _single()
         except Exception as e:
@@ -617,7 +717,7 @@ class BlobStorage(Transformer):
 
         if not data.get("record"):
             return None
-        record = self._process_downloaded_record(data)
+        record = await self._decode_record(data, lease)
         self.logger.debug(
             "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
             record.get("record_name"), virtual_record_id,
@@ -754,18 +854,17 @@ class BlobStorage(Transformer):
         Compress record data using msgspec (C-based) + zstd.
         Returns: base64_encoded_compressed_data
         """
-        import base64
-
-        import msgspec
-        import zstandard as zstd
-
         # Serialize directly to bytes using msgspec (high-performance msgpack encoder)
         msgpack_bytes = msgspec.msgpack.encode(record)
         original_size = len(msgpack_bytes)
 
-        # Compression level 10: maximum compression
-        compressor = zstd.ZstdCompressor(level=10)
-        compressed = compressor.compress(msgpack_bytes)
+        # level goes in from_level: ZstdCompressor ignores level= when given compression_params.
+        params = zstd.ZstdCompressionParameters.from_level(
+            COMPRESSION_LEVEL, window_log=COMPRESSION_WINDOW_LOG, enable_ldm=True,
+        )
+        # One-shot compress() writes the content size the reader's decode guard needs.
+        # A compressor per call: they are not thread-safe.
+        compressed = zstd.ZstdCompressor(compression_params=params).compress(msgpack_bytes)
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
@@ -781,8 +880,6 @@ class BlobStorage(Transformer):
         Decompress raw bytes using zstd.
         Returns decompressed bytes.
         """
-        import zstandard as zstd
-
         decompressor = zstd.ZstdDecompressor()
         return decompressor.decompress(compressed_bytes)
 
@@ -791,26 +888,9 @@ class BlobStorage(Transformer):
         Process downloaded record data, handling decompression if needed.
         Supports new isCompressed flag format and backward compatibility with uncompressed records.
         """
-        import base64
-
-        import msgspec
-
         # NEW FORMAT: Check for isCompressed flag
         if data.get("isCompressed"):
-            compressed_base64 = data.get("record")
-            if not compressed_base64:
-                self.logger.error("❌ isCompressed is true but no record found")
-                raise Exception("Missing record in compressed record")
-
-            try:
-                compressed_bytes = base64.b64decode(compressed_base64)
-                decompressed_bytes = self._decompress_bytes(compressed_bytes)
-                record = msgspec.msgpack.decode(decompressed_bytes)
-                return record
-
-            except Exception as e:
-                self.logger.error("❌ Failed to decompress record: %s", str(e))
-                raise Exception(f"Decompression failed: {str(e)}")
+            return self._unpack_payload(self._decompressed_payload(data))
 
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
@@ -820,6 +900,78 @@ class BlobStorage(Transformer):
             # Unknown format
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
+
+    def _decompressed_payload(self, data: dict) -> bytes:
+        """The msgpack bytes of a compressed envelope: base64 and zstd decode."""
+        compressed_base64 = data.get("record")
+        if not compressed_base64:
+            self.logger.error("❌ isCompressed is true but no record found")
+            raise Exception("Missing record in compressed record")
+        try:
+            return self._decompress_bytes(base64.b64decode(compressed_base64))
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
+
+    def _unpack_payload(self, payload: bytes) -> dict:
+        try:
+            return msgspec.msgpack.decode(payload)
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
+
+    async def _decode_record(
+        self, data: dict[str, Any], lease: _DecodeSlotLease | None = None
+    ) -> dict[str, Any]:
+        """``_process_downloaded_record`` with large records gated and taken off the event loop.
+
+        *lease* is a slot the caller already holds for this record; a large decode uses
+        it instead of queueing for another.
+        """
+        size = _compressed_content_size(data)
+        if size is None:
+            return self._process_downloaded_record(data)
+        # Unknown size (a streamed frame) still takes the gate, but has no size to check.
+        ceiling = max_decoded_record_bytes()
+        if ceiling is not None and size != zstd.CONTENTSIZE_UNKNOWN and size > ceiling:
+            raise StoredRecordTooLargeError(
+                f"record decodes to {size} bytes, over the {ceiling}-byte limit ({_MAX_DECODED_BYTES_ENV})"
+            )
+        if size <= LARGE_DECODE_BYTES:
+            return self._process_downloaded_record(data)
+        if lease is not None and not lease.handed_off:
+            slot = lease.hand_off()
+        else:
+            slot = await _acquire_decode_slot()
+        # Only zstd runs in the thread: it releases the GIL. msgpack holds it, so it
+        # would stall the loop from a thread too, and there it would allocate the
+        # record from the thread's malloc arena, which the process can't reuse.
+        work = asyncio.get_running_loop().run_in_executor(
+            _DECODE_EXECUTOR, self._decompressed_payload, data
+        )
+        released = abandoned = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                slot.release()
+
+        # A cancelled caller must not free the slot mid-decode: the thread does, when it ends.
+        work.add_done_callback(lambda _: abandoned and release())
+        # Read the exception so a cancelled caller doesn't leave "exception never retrieved" noise.
+        work.add_done_callback(lambda f: f.cancelled() or f.exception())
+        try:
+            payload = await asyncio.shield(work)
+        except BaseException:
+            abandoned = True
+            if work.done():
+                release()
+            raise
+        try:
+            return self._unpack_payload(payload)
+        finally:
+            release()
 
     async def _get_content_length(self, session: aiohttp.ClientSession, url: str) -> int:
         """
@@ -1637,7 +1789,7 @@ class BlobStorage(Transformer):
                         "key": "compression",
                         "value": {
                             "algorithm": "zstd",
-                            "level": 10,
+                            "level": COMPRESSION_LEVEL,
                             "format": "msgspec",
                             "version": "v1",
                             "compressed": True
@@ -2147,45 +2299,62 @@ class BlobStorage(Transformer):
             download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             session = get_shared_session()
 
-            # A cached signed URL skips the gateway hop entirely. On any failure
-            # reading it back, fall through to the gateway and re-sign.
-            cached_url = await self._cached_signed_url(org_id, document_id)
-            if cached_url:
-                try:
+            lease = (
+                _DecodeSlotLease(await _acquire_decode_slot())
+                if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
+                else None
+            )
+            try:
+                # A cached signed URL skips the gateway hop entirely. On any failure
+                # reading it back, fall through to the gateway and re-sign.
+                cached_url = await self._cached_signed_url(org_id, document_id)
+                if cached_url:
+                    try:
+                        record = await self._record_from_signed_url(
+                            session, cached_url, file_size_bytes, virtual_record_id, lease
+                        )
+                        if record is not None:
+                            return record
+                    except StoredRecordTooLargeError:
+                        # Refused after the download, not because of the URL: re-signing
+                        # would only download the same record again.
+                        raise
+                    except Exception as e:
+                        self.logger.debug(
+                            "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
+                        )
+
+                data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+                if data.get("signedUrl"):
+                    await self._store_signed_url(org_id, document_id, data["signedUrl"])
+
+                if data.get("record"):
+                    record = await self._decode_record(data, lease)
+                    record_name = record.get("record_name")
+                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                    return record
+                elif data.get("signedUrl"):
                     record = await self._record_from_signed_url(
-                        session, cached_url, file_size_bytes, virtual_record_id
+                        session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
                     )
                     if record is not None:
                         return record
-                except Exception as e:
-                    self.logger.debug(
-                        "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
-                    )
-
-            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-            if data.get("signedUrl"):
-                await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-            if data.get("record"):
-                record = self._process_downloaded_record(data)
-                record_name = record.get("record_name")
-                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                return record
-            elif data.get("signedUrl"):
-                record = await self._record_from_signed_url(
-                    session, data["signedUrl"], file_size_bytes, virtual_record_id
-                )
-                if record is not None:
-                    return record
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
-            else:
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+                else:
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+            finally:
+                if lease is not None:
+                    lease.release()
         except StorageDocumentNotFoundError:
             self.logger.warning(
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
             )
+            raise
+        except StoredRecordTooLargeError as e:
+            # The reader skips this record; an expected refusal, not a fault worth a traceback.
+            self.logger.warning("⚠️ Skipping stored record %s: %s", virtual_record_id, str(e))
             raise
         except Exception as e:
             self.logger.exception(

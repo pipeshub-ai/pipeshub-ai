@@ -755,28 +755,32 @@ export class UserAccountController {
         }
       }
 
-      try {
-        const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
-        const user = await this.iamService.getUserByEmail(email, authToken);
-
-        if (user.statusCode === 200 && user.data) {
-          await this.sendForgotPasswordEmail(user.data);
-        }
-      } catch (lookupOrSendError) {
-        this.logger.warn('forgotPasswordEmail: suppressing internal error', {
-          error:
-            lookupOrSendError instanceof Error
-              ? lookupOrSendError.message
-              : lookupOrSendError,
-        });
-      }
-
       res.status(200).send(genericResponse);
+      // Lookup and mail run after the reply so latency does not reveal whether the account exists.
+      void this.sendResetIfAccountExists(email);
       return;
     } catch (error) {
       next(error);
     }
   };
+
+  private async sendResetIfAccountExists(email: string): Promise<void> {
+    try {
+      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const user = await this.iamService.getUserByEmail(email, authToken);
+
+      if (user.statusCode === 200 && user.data) {
+        await this.sendForgotPasswordEmail(user.data);
+      }
+    } catch (lookupOrSendError) {
+      this.logger.warn('forgotPasswordEmail: suppressing internal error', {
+        error:
+          lookupOrSendError instanceof Error
+            ? lookupOrSendError.message
+            : lookupOrSendError,
+      });
+    }
+  }
   async setUpAuthConfig(req: AuthSessionRequest, res: Response): Promise<void> {
     try {
       // Check if an org auth config already exists (excluding deleted ones)

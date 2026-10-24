@@ -42,9 +42,12 @@ class HeadlineField(StrEnum):
     EXTRACTION = "extractionStatus"
 
 
-# Stages an API caller may re-run, and the record field that reports each. The registry
+# Stages an API caller may re-run, and the record field that reports each; None for a stage
+# with no record field, whose records are selected by its own stage state. The registry
 # refuses a stage whose headline disagrees, so the two cannot drift.
-RETRYABLE_STAGES: Mapping[str, HeadlineField] = MappingProxyType({"classify": HeadlineField.EXTRACTION})
+RETRYABLE_STAGES: Mapping[str, HeadlineField | None] = MappingProxyType(
+    {"classify": HeadlineField.EXTRACTION, "entities": None}
+)
 
 
 class StageOutcome(StrEnum):
@@ -60,6 +63,11 @@ class StageOutcome(StrEnum):
 
 def stage_state_key(virtual_record_id: str, rev: str, stage: str) -> str:
     return f"{virtual_record_id}:{rev}:{stage}"
+
+
+def stage_state_rev(key: str) -> str:
+    """The revision in a ``stage_state_key``; a revision and a stage name hold no colon."""
+    return key.rsplit(":", 2)[1]
 
 
 class StageJob(BaseModel):

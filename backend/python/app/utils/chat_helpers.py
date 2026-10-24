@@ -258,7 +258,27 @@ def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
 
 
 
+# Verdicts by (length, str hash): the same multi-megabyte image strings are
+# checked from several render paths on every turn, and each check strips and
+# regex-scans the whole string. A str caches its own hash, so a repeat costs
+# nothing, and the key holds no reference to the image.
+_base64_image_verdicts: dict[tuple[int, int], bool] = {}
+
+
 def is_base64_image(s: str) -> bool:
+    if not isinstance(s, str):
+        return False
+    key = (len(s), hash(s))
+    verdict = _base64_image_verdicts.get(key)
+    if verdict is None:
+        verdict = _is_base64_image_uncached(s)
+        if len(_base64_image_verdicts) >= 20000:
+            _base64_image_verdicts.clear()
+        _base64_image_verdicts[key] = verdict
+    return verdict
+
+
+def _is_base64_image_uncached(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
 
@@ -876,6 +896,10 @@ NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
 
 # Related records listed (id + name) per hit, after the permission check.
 MAX_RELATED_RECORDS_PER_HIT = 50
+# Edges read per hit and direction, before the permission check: a hit with
+# thousands of attachments costs a bounded read. 3x oversamples so that
+# unreadable neighbours do not starve the kept 50.
+RELATION_FETCH_LIMIT_PER_DIRECTION = 3 * MAX_RELATED_RECORDS_PER_HIT
 # Of those, how many also get full graph metadata + summary (one blob fetch each).
 MAX_FULL_METADATA_RELATED_PER_HIT = 15
 
@@ -1442,7 +1466,7 @@ async def _relations_per_record(
             if outgoing
             else graph_provider.get_child_record_ids_by_relation_type
         )
-        return await fetch(record_id, relation_type)
+        return await fetch(record_id, relation_type, limit=RELATION_FETCH_LIMIT_PER_DIRECTION)
 
     jobs = [
         (record_id, relation_type, outgoing)
@@ -1467,6 +1491,8 @@ async def _relations_per_record(
             continue
         bucket = "parents" if outgoing else "children"
         for edge in result or []:
+            if len(out[record_id][bucket]) >= RELATION_FETCH_LIMIT_PER_DIRECTION:
+                break
             out[record_id][bucket].append({**edge, "relationType": relation_type})
     return out
 
@@ -1490,7 +1516,7 @@ async def _fetch_edges_for_records(
     by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
         relations = await graph_provider.get_node_relations_batch(
-            record_ids, list(by_value),
+            record_ids, list(by_value), limit_per_direction=RELATION_FETCH_LIMIT_PER_DIRECTION,
         )
     except Exception as e:
         # Returning {} here drops linked-record context for every hit in the

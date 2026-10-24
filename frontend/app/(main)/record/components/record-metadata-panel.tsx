@@ -9,7 +9,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
-import { parsedStepStatus } from './parsed-step-status';
+import { buildStageTrackSteps } from './stage-track-steps';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -190,8 +190,6 @@ function ReasonHintButton({ content, ariaLabel }: { content: string; ariaLabel: 
     </Tooltip>
   );
 }
-
-const CLASSIFY_STAGE = 'classify';
 
 function StageStep({
   label,
@@ -408,13 +406,6 @@ function MetadataSection({
   );
 }
 
-interface StageTrackStep {
-  key: string;
-  label: string;
-  status: string | null | undefined;
-  hint?: string;
-}
-
 function StageTrack({
   record,
   stageStates,
@@ -423,24 +414,7 @@ function StageTrack({
   stageStates: RecordDetailsResponse['stageStates'];
 }) {
   const { t } = useTranslation();
-  const classify = stageStates?.find((s) => s.stage === CLASSIFY_STAGE);
-  const classifyHint = classify
-    ? [t('recordView.stageAttempt', { n: classify.attempt }), classify.reason?.trim()]
-        .filter(Boolean)
-        .join(' · ')
-    : undefined;
-
-  const parsedStatus = parsedStepStatus(record.parsingStatus, record.indexingStatus);
-  const steps: StageTrackStep[] = [
-    ...(parsedStatus ? [{ key: 'parsed', label: t('recordView.stageParsed'), status: parsedStatus }] : []),
-    { key: 'searchable', label: t('recordView.stageSearchable'), status: record.indexingStatus },
-    {
-      key: 'classified',
-      label: t('recordView.stageClassified'),
-      status: record.extractionStatus,
-      hint: classifyHint,
-    },
-  ];
+  const steps = buildStageTrackSteps(record, stageStates, t);
 
   return (
     <Flex style={{ ...ROW_STYLE, alignItems: 'center' }}>

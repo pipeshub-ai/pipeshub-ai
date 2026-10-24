@@ -1,7 +1,7 @@
 // Knowledge Base API - Action Operations (CRUD)
 
 import type { AxiosRequestConfig } from 'axios';
-import { apiClient } from '@/lib/api';
+import { apiClient, type ProcessedError } from '@/lib/api';
 import { streamSSEUpload, type SSEEvent } from '@/lib/api/streaming';
 import type {
   KnowledgeHubApiResponse,
@@ -19,6 +19,12 @@ import { ConnectorsApi } from '../workspace/connectors/api';
 import type { ReindexStage } from '../workspace/connectors/types';
 
 const BASE_URL = '/api/v1/knowledgeBase';
+
+/** A 422 (view too large to list) and a 503 (busy, retried by the page) are explained in the All Records table, not in a toast. */
+function quietListingRefusals(cursor: string | null | undefined) {
+  const quietCursor = quietRejectedCursor(cursor);
+  return (error: ProcessedError) => error.statusCode === 422 || error.statusCode === 503 || quietCursor(error);
+}
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
 
@@ -139,7 +145,7 @@ export const KnowledgeHubApi = {
     nodeType: NodeType,
     nodeId: string,
     params?: Partial<KnowledgeHubQueryParams>,
-    options?: { suppressErrorToast?: boolean; signal?: AbortSignal }
+    options?: { suppressErrorToast?: boolean; quietRefusals?: boolean; signal?: AbortSignal }
   ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
@@ -151,7 +157,9 @@ export const KnowledgeHubApi = {
           ...params,
         },
         signal: options?.signal,
-        suppressErrorToast: options?.suppressErrorToast || quietRejectedCursor(params?.cursor),
+        suppressErrorToast:
+          options?.suppressErrorToast ||
+          (options?.quietRefusals ? quietListingRefusals : quietRejectedCursor)(params?.cursor),
       }
     );
     return data;
@@ -336,7 +344,7 @@ export const KnowledgeHubApi = {
           ...params,
         },
         signal: options?.signal,
-        suppressErrorToast: quietRejectedCursor(params?.cursor),
+        suppressErrorToast: quietListingRefusals(params?.cursor),
       }
     );
     return data;

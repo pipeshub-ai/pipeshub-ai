@@ -15,6 +15,9 @@ import { toast } from '@/lib/store/toast-store';
 import { filterBarChatScope } from '../utils/filter-bar-chat-scope';
 import { allCollectionsChatScope } from '../utils/root-app-list';
 
+// The widget is a single fixed-width line, so a long title pushes the placeholder under the send button.
+const MAX_WIDGET_TITLE_LENGTH = 30;
+
 interface ChatWidgetWrapperProps {
   /** Currently displayed title (collection name, folder name, etc.) */
   currentTitle: string;
@@ -56,7 +59,11 @@ export function ChatWidgetWrapper({
 
   // Dynamic placeholder — comes from the parent page
   const widgetPlaceholder = useMemo(() => {
-    const title = currentTitle || (isAllRecordsMode ? t('nav.allRecords') : t('nav.collections'));
+    const fullTitle = currentTitle || (isAllRecordsMode ? t('nav.allRecords') : t('nav.collections'));
+    const title =
+      fullTitle.length > MAX_WIDGET_TITLE_LENGTH
+        ? `${fullTitle.slice(0, MAX_WIDGET_TITLE_LENGTH).trimEnd()}…`
+        : fullTitle;
     return t('chat.askInContext', { title });
   }, [currentTitle, isAllRecordsMode, t]);
 

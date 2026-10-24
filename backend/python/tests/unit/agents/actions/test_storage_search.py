@@ -1765,6 +1765,24 @@ class TestRankingIsBounded:
         assert len(_grep_search_regexes(f'grep -rci "{many}" .')) == 32
         assert _grep_search_regexes(f'grep -rci "{"a" * 600}" .') == []
 
+    def test_a_file_is_parsed_once_until_it_changes(self, tmp_path) -> None:
+        import json
+
+        import regex
+
+        from app.agents.actions.storage_search import storage_search as mod
+
+        path = tmp_path / "record_cached.json"
+        path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": "alpha beta"}]}}}))
+        rx = [regex.compile("alpha", regex.IGNORECASE)]
+        with patch.object(mod.json_mod, "loads", wraps=mod.json_mod.loads) as parse:
+            first = mod._score_record_file(str(path), rx)
+            assert mod._score_record_file(str(path), rx) == first
+            assert parse.call_count == 1
+            path.write_text(json.dumps({"record": {"block_containers": {"blocks": [{"data": "gamma delta"}]}}}) + " ")
+            assert mod._score_record_file(str(path), rx)[:2] == (0, 0)
+            assert parse.call_count == 2
+
 
 class TestLogging:
     """Record content stays out of the INFO log and search terms out of every log;

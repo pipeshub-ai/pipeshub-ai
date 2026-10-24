@@ -121,7 +121,7 @@ export async function fetchModelsForContext(
     if (ctxKey === ASSISTANT_CTX) {
       models = await ChatApi.fetchAvailableLlms();
     } else {
-      const { agent } = await AgentsApi.getAgent(ctxKey);
+      const { agent } = await AgentsApi.getAgent(ctxKey, { quiet: true });
       const agentModels = agent?.models ?? [];
       if (agentModels.length > 0) {
         models = agentModels.map(mapAgentModelToAvailable);

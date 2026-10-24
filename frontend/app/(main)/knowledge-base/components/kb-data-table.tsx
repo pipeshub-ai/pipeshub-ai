@@ -36,6 +36,8 @@ interface KbDataTableProps {
   isLoading?: boolean;
   isRefreshing?: boolean;
   error?: string | null;
+  /** False when repeating the request cannot help (the view is too large to list), so no retry button. */
+  errorRetryable?: boolean;
   pagination?: {
     limit: number;
     totalItems: number;
@@ -80,6 +82,7 @@ export function KbDataTable({
   isLoading = false,
   isRefreshing = false,
   error = null,
+  errorRetryable = true,
   pagination,
   permissions,
   currentNodeName,
@@ -233,10 +236,16 @@ export function KbDataTable({
   // Show error state
   if (error && !showSkeleton) {
     return (
-      <Flex align="center" justify="center" direction="column" gap="3" style={{ flex: 1 }}>
+      <Flex
+        align="center"
+        justify="center"
+        direction="column"
+        gap="3"
+        style={{ flex: 1, padding: '0 var(--space-4)', textAlign: 'center' }}
+      >
         <AlertSquareIcon size={56} color="var(--red-11)" />
-        <Text size="2" color="red">{error}</Text>
-        {onRefresh && (
+        <Text size="2" color="red" role="alert">{error}</Text>
+        {onRefresh && errorRetryable && (
           <Button onClick={onRefresh} variant="soft" size="2">
             <MaterialIcon name="refresh" size={16} />
             {t('action.tryAgain')}

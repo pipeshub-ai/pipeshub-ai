@@ -14,6 +14,10 @@ import pytest
 
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.connectors.sources.localKB.handlers.kh_search import search_page
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+)
 from app.utils.kh_cursor import CursorError
 
 if TYPE_CHECKING:
@@ -443,3 +447,21 @@ def test_a_search_matching_nothing_returns_an_empty_page() -> None:
     assert page.rows == [] and page.total == 0 and page.counts_by_type == {}
     assert page.next_cursor is None and page.prev_cursor is None
     assert (page.start_index, page.end_index) == (0, 0)
+
+
+class RefusingProvider(FakeProvider):
+    def __init__(self, rows, error) -> None:
+        super().__init__(rows)
+        self.error = error
+
+    async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+        if app_id == "big":
+            raise self.error
+        return await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+
+
+@pytest.mark.parametrize("error", [KnowledgeHubListingTooLarge(), KnowledgeHubListingBusy()])
+def test_one_connector_refusing_fails_the_page_as_itself_not_as_a_group(error) -> None:
+    provider = RefusingProvider({"big": [row("b1", "B")], "small": [row("s1", "S")]}, error)
+    with pytest.raises(type(error)):
+        asyncio.run(_search(provider, limit=10))

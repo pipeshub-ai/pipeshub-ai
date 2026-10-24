@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
 
     from app.connectors.sources.localKB.api.knowledge_hub_models import (
         KnowledgeHubNodesResponse,
@@ -128,10 +129,21 @@ class BoundedCursor:
     #: The listing's parameters (``CARRIED_TEXT`` and ``CARRIED_FLAGS``);
     #: one left out was not sent.
     params: dict[str, str | bool] = field(default_factory=dict)
+    #: ``bound_key`` of the limit the listing was read under.
+    bound: str | None = None
+
+
+def bound_key(sources: Mapping[str, Iterable[str]] | None) -> str:
+    """A short, stable name for a connection's limit. A cursor carries it, so a
+    page read under one limit is not resumed under another: its offset and
+    position count rows of the first."""
+    canonical = {key: sorted(set(values or ())) for key, values in sorted((sources or {}).items())}
+    return hashlib.sha256(json.dumps(canonical, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
 def encode_bounded_cursor(
     mode: str, seen: int, position: Position | None = None, params: Mapping[str, object] | None = None,
+    *, bound: str | None = None,
 ) -> str:
     """A next-page cursor for a listing read inside a bound. Not signed, and
     need not be: every row it leads to is checked against the bound again, so
@@ -143,6 +155,8 @@ def encode_bounded_cursor(
     carried = {k: v for k, v in (params or {}).items() if k in (*CARRIED_TEXT, *CARRIED_FLAGS) and v is not None}
     if carried:
         payload["f"] = carried
+    if bound is not None:
+        payload["b"] = bound
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -176,7 +190,9 @@ def decode_bounded_cursor(token: str) -> BoundedCursor:
     mode, seen = payload.get("m"), payload.get("n")
     cursor, page, skip = payload.get("c"), payload.get("p", 1), payload.get("s", 0)
     params = payload.get("f", {})
+    bound = payload.get("b")
     valid = (
+        (bound is None or isinstance(bound, str)) and
         mode in ("browse", "search")
         and all(isinstance(v, int) and not isinstance(v, bool) for v in (seen, page, skip))
         and seen >= 0 and page >= 1 and skip >= 0
@@ -185,4 +201,4 @@ def decode_bounded_cursor(token: str) -> BoundedCursor:
     )
     if not valid:
         raise ValueError("unreadable cursor")
-    return BoundedCursor(mode, seen, Position(cursor=cursor, page=page, skip=skip), params)
+    return BoundedCursor(mode, seen, Position(cursor=cursor, page=page, skip=skip), params, bound)

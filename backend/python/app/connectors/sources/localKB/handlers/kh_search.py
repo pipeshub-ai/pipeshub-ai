@@ -22,6 +22,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_merge import PartitionFeed, merge_pages
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+)
 from app.utils.kh_cursor import (
     Boundary,
     KnowledgeHubCursor,
@@ -302,8 +306,15 @@ async def _run(
 
     # A TaskGroup cancels its siblings when one raises, so a failed connector
     # does not leave the rest querying for a page nobody will return.
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(run(app_id)) for app_id in targets]
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(run(app_id)) for app_id in targets]
+    except ExceptionGroup as failures:
+        # A connector too large to list (or busy) fails the page as itself, not as a group nobody maps to a message.
+        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy)))
+        if refused is not None:
+            raise refused.exceptions[0] from None
+        raise
     return [task.result() for task in tasks]
 
 

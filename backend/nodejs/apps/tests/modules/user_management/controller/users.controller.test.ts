@@ -1005,6 +1005,22 @@ describe('UserController', () => {
     });
   });
 
+  describe('checkUserExistsByEmail org scoping', () => {
+    it('confines the lookup to the token org when the token carries one', async () => {
+      req.body = { email: 'me@test.com' }
+      req.tokenPayload = { email: 'me@test.com', orgId: 'org-a' }
+      const find = sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: () => Promise.resolve([]) }) }),
+      } as any)
+
+      await controller.checkUserExistsByEmail(req, res, next)
+
+      expect(find.firstCall.args[0]).to.deep.equal({
+        email: 'me@test.com', isDeleted: false, orgId: 'org-a',
+      })
+    })
+  })
+
   describe('createUser', () => {
     it('should create a user and publish event', async () => {
       req.body = {

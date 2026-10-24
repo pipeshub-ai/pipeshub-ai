@@ -70,6 +70,8 @@ export interface CreateOAuthClientPayload {
   termsOfServiceUrl?: string;
   isConfidential: boolean;
   knowledgeLimit?: KnowledgeLimit;
+  /** Required when allowedGrantTypes includes client_credentials. */
+  tokenIdentityUserId?: string;
 }
 
 /** POST /api/v1/oauth-clients ΓÇö response includes clientSecret only at creation time */

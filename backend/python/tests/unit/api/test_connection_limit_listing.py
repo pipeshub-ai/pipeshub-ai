@@ -24,6 +24,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_
 from app.connectors.sources.localKB.handlers.kh_bounded import (
     BoundedCursor,
     Position,
+    bound_key,
     decode_bounded_cursor,
     encode_bounded_cursor,
 )
@@ -62,6 +63,7 @@ CORPUS = {
 
 
 # Upload order is the reverse of the files' own modification order.
+APP_DATES = {"createdAtTimestamp": 1_700_000_000_000, "updatedAtTimestamp": 1_700_000_000_000}
 DATES = {
     "zz-a": {"createdAtTimestamp": 2_000, "updatedAtTimestamp": 2_000,
              "sourceCreatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 100},
@@ -107,9 +109,13 @@ def _graph() -> MagicMock:
             node_ids_in_scope=frozenset(i for i in seen if all(s.admits(row[i]) for s in scopes or ())),
         )
 
-    def by_ids(collection: str, _field: str, ids: list[str], **_: object) -> list[dict[str, Any]]:
+    def by_ids(
+        collection: str, _field: str, ids: list[str], return_fields: list[str] | None = None, **_: object,
+    ) -> list[dict[str, Any]]:
         if collection == "apps":
-            return [{"id": i, "name": i, "type": "KB"} for i in ids if i in CORPUS]
+            # Only the fields asked for, as both stores project them.
+            docs = [{"id": i, "name": i, "type": "KB", **APP_DATES} for i in ids if i in CORPUS]
+            return [{k: v for k, v in d.items() if return_fields is None or k in return_fields} for d in docs]
         # As a collection stores them: origin UPLOAD, and the file's own dates
         # beside when it was added.
         return [
@@ -219,6 +225,21 @@ class TestASearchInsideAFolderLimit:
 
         assert [item.id for item in result.items] == ["other-1", "zz-a", "zz-b", "zz-c"]
         assert result.pagination.totalItems == 4 and result.pagination.hasNext is False
+
+    @pytest.mark.parametrize(("q", "issued_under"), [("budget", "folder"), (None, "files")])
+    async def test_a_cursor_read_under_another_limit_is_refused(self, q, issued_under) -> None:
+        """Its offset counts rows of the first limit's listing, so resuming it
+        under the second would skip or repeat rows and miscount the total."""
+        graph = _graph()
+        limit = {"folder": FOLDER_LIMIT, "files": FILES_LIMIT}[issued_under]
+        first = await _nodes(graph, limit, q=q, limit=1)
+        assert first.pagination.nextCursor
+
+        with pytest.raises(HTTPException) as exc:
+            await _nodes(graph, MIXED_LIMIT, q=q, limit=1, cursor=first.pagination.nextCursor)
+        assert exc.value.status_code == 400
+        resumed = await _nodes(graph, limit, q=q, limit=1, cursor=first.pagination.nextCursor)
+        assert resumed.success
 
     async def test_a_cursor_the_service_issued_elsewhere_is_refused(self) -> None:
         graph = _graph()
@@ -350,6 +371,23 @@ class TestTheNavigateRoot:
                 modified_after=None, modified_before=None,
             )
 
+    async def test_a_date_filter_keeps_a_named_app_dated_inside_it(self) -> None:
+        catalog = MagicMock(connector_ids=MagicMock(return_value=list(CORPUS)), connectors=[])
+        with patch("app.connectors.api.router.ConnectorCatalog.build", AsyncMock(return_value=catalog)):
+            kept = await knowledge_graph_navigate(
+                request=_request(_graph(), MIXED_LIMIT), graph_provider=_graph(), node_id=None, page=1, limit=50,
+                depth=1, node_types=None, created_after="2020-01-01T00:00:00Z", created_before=None,
+                modified_after=None, modified_before=None,
+            )
+            dropped = await knowledge_graph_navigate(
+                request=_request(_graph(), MIXED_LIMIT), graph_provider=_graph(), node_id=None, page=1, limit=50,
+                depth=1, node_types=None, created_after="2024-01-01T00:00:00Z", created_before=None,
+                modified_after=None, modified_before=None,
+            )
+
+        assert "kb-other" in [row["id"] for row in kept["rows"]]
+        assert "kb-other" not in [row["id"] for row in dropped["rows"]]
+
     async def test_a_folder_limit_lists_its_folder(self) -> None:
         result = await self._navigate(_graph(), FOLDER_LIMIT)
 
@@ -459,6 +497,13 @@ class TestTheBoundedCursor:
         assert decode_bounded_cursor(token) == BoundedCursor(
             "search", 4, Position(cursor="abc", page=2, skip=3), {"q": "budget", "sort_by": "name", "only_containers": False},
         )
+
+    def test_it_carries_the_limit_it_was_read_under(self) -> None:
+        folder = bound_key({"apps": [], "recordGroups": [], "records": ["f", "g"]})
+
+        assert folder == bound_key({"records": ["g", "f"], "recordGroups": [], "apps": []})
+        assert folder != bound_key({"apps": [], "recordGroups": [], "records": ["f"]})
+        assert decode_bounded_cursor(encode_bounded_cursor("browse", 1, bound=folder)).bound == folder
 
     @pytest.mark.parametrize("token", [
         "abc", "lim1.!!!", "lim1.e30", encode_bounded_cursor("other", 1),

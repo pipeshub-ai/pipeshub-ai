@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
@@ -4088,7 +4088,12 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _reindex_event_payload(
-        record: Record, *, vector_db_only: bool, stages: list[str] | None = None
+        record: Record,
+        *,
+        vector_db_only: bool,
+        stages: list[str] | None = None,
+        stage_rev: str | None = None,
+        selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
@@ -4097,11 +4102,19 @@ class DataSourceEntitiesProcessor:
             payload["vectorDbOnly"] = True
         if stages:
             payload["stages"] = list(stages)
+            if selected:
+                # Null for a record selected with no revision: it has moved on once it has one.
+                payload["stageRev"] = stage_rev or None
         return payload
 
     @retry_on_deadlock()
     async def reindex_existing_records(
-        self, records: list[Record], *, vector_db_only: bool = False, stages: list[str] | None = None
+        self,
+        records: list[Record],
+        *,
+        vector_db_only: bool = False,
+        stages: list[str] | None = None,
+        stage_revisions: Mapping[str, str | None] | None = None,
     ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
@@ -4114,6 +4127,9 @@ class DataSourceEntitiesProcessor:
                 without re-parsing the source.
             stages: When given, indexing re-runs only these pipeline stages for each
                 record's current revision; the record stays searchable.
+            stage_revisions: Record id -> the revision its stages were selected on (None
+                when it had none). A record that has moved to another revision by the time
+                indexing reads the event is left to that revision's own stages.
 
         Returns:
             The ids whose reindex event reached the broker.
@@ -4164,7 +4180,11 @@ class DataSourceEntitiesProcessor:
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
                             "payload": self._reindex_event_payload(
-                                record, vector_db_only=vector_db_only, stages=stages
+                                record,
+                                vector_db_only=vector_db_only,
+                                stages=stages,
+                                stage_rev=(stage_revisions or {}).get(record.id),
+                                selected=record.id in (stage_revisions or {}),
                             ),
                         },
                     )
@@ -4735,6 +4755,7 @@ class DataSourceEntitiesProcessor:
             )
         return bool(edges)
 
+    @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
@@ -5203,6 +5224,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_groups(connector_id, self.org_id, raise_on_error=raise_on_error)
 
+    @retry_on_deadlock()
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         """Write user groups without their members, one node per external id.
 
@@ -5235,6 +5257,7 @@ class DataSourceEntitiesProcessor:
         for ug in user_groups:
             self._note_full_sync_seen(ug.connector_id, GROUP_WRITTEN_WITHOUT_MEMBERS, ug.source_user_group_id)
 
+    @retry_on_deadlock()
     async def delete_edges_between_collections(
         self,
         from_id: str,
@@ -5263,6 +5286,7 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id, external_id=external_id
             )
 
+    @retry_on_deadlock()
     async def upsert_permission_edge(
         self,
         from_id: str,
@@ -5722,6 +5746,7 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
+    @retry_on_deadlock()
     async def update_user_group_name(
         self,
         external_group_id: str,
@@ -6298,6 +6323,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_creator_user(connector_id)
 
+    @retry_on_deadlock()
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
@@ -6317,10 +6343,12 @@ class DataSourceEntitiesProcessor:
                 raise_on_error=raise_on_error,
             )
 
+    @retry_on_deadlock()
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
 
+    @retry_on_deadlock()
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.delete_parent_child_edge_to_record(record_id)
@@ -6353,6 +6381,7 @@ class DataSourceEntitiesProcessor:
                 connector_id, conversation_index, thread_id, self.org_id, user_id
             )
 
+    @retry_on_deadlock()
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str
     ) -> None:
@@ -6376,6 +6405,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_weburl(weburl, self.org_id)
 
+    @retry_on_deadlock()
     async def create_record_relation(
         self, from_record_id: str, to_record_id: str, relation_type: str
     ) -> None:
@@ -6404,6 +6434,7 @@ class DataSourceEntitiesProcessor:
             # were gone would never come back to it.
             raise RuntimeError(f"Deletion failed: {(result or {}).get('reason')}")
 
+    @retry_on_deadlock()
     async def delete_records_and_relations(
         self, record_key: str, hard_delete: bool = False
     ) -> None:
@@ -6412,6 +6443,7 @@ class DataSourceEntitiesProcessor:
                 record_key, hard_delete=hard_delete
             )
 
+    @retry_on_deadlock()
     async def batch_upsert_records(self, records: list[Record]) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_records(records)

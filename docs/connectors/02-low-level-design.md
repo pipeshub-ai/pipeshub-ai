@@ -208,6 +208,8 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `get_records_in_record_group(connector_id, external_group_id, limit, after_key)` | Page this connector's stored records in one group. Pass the last record's id as `after_key`. An id-diff of that group uses this after a listing that finished with no error (`03-decisions.md`). `get_records_by_record_type` returns every record of one type in one list. It takes no `limit` or `after_key`. |
 | `reindex_existing_records(records)` | Re-publish for indexing without changing the record. |
 
+Retry on deadlock: the write methods are wrapped in `@retry_on_deadlock()` (`connectors/core/base/data_store/graph_data_store.py`). A deadlock, write conflict or other transient error re-runs the **whole method call** from the start in a new transaction, up to 6 attempts with backoff (about 11.5 s in all). In an explicit transaction a failed attempt has rolled back, so nothing it wrote is left; with `NEO4J_EXPLICIT_TRANSACTIONS=false` each statement commits on its own, so earlier writes of a failed attempt stay and are repeated by the retry. Calls into the processor must therefore be safe to repeat, and anything done outside the transaction (a lookup, a callback) can run more than once.
+
 How `on_new_records` decides between insert and update:
 
 - It matches on `(connector_id, external_record_id)`. A match is updated in place and keeps its PipesHub id.

@@ -166,10 +166,12 @@ from app.services.featureflag.platform_settings import (
     is_soft_delete_enabled,
     read_platform_feature_flag,
 )
+from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
-from app.utils.chat_helpers import keep_context_blocks_inside_connection, record_to_text
+from app.utils.chat_helpers import accessible_node_ids, keep_context_blocks_inside_connection, record_to_text
+from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.not_indexed import not_indexed_note
@@ -1867,6 +1869,8 @@ async def get_record_by_id(
             )
             hide_source_paths(request, has_access, (doc or {}).get("connectorId"))
             record: object = cast("dict[str, object]", has_access).get("record")
+            if isinstance(record, dict):
+                has_access["record"] = api_record(record)
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
@@ -1898,12 +1902,10 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        access_check = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
-        if not access_check:
+        # The one access check, `check_access` as the agent's fetch_record runs it;
+        # the fetch below reuses its answer.
+        accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
+        if record_id not in accessible:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
@@ -1927,6 +1929,7 @@ async def get_record_content(
             org_id=org_id,
             user_id=user_id,
             connection_sources=connection_limit(request.state.user),
+            accessible=accessible,
         )
     except Exception as e:
         logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
@@ -1947,6 +1950,16 @@ async def get_record_content(
         logger.error(f"Error formatting record content for {record_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to format record content") from e
 
+    if len(content) > FETCH_MAX_CHARS:
+        total = len(content)
+        notice = (
+            "\n[Content truncated: showed {shown} of {total} characters. "
+            "Request the record again with startBlock and maxChars to read it in parts.]\n"
+        )
+        # The notice counts toward the cap; it is longest with the cap itself as `shown`.
+        shown = FETCH_MAX_CHARS - len(notice.format(shown=FETCH_MAX_CHARS, total=total))
+        content = content[:shown] + notice.format(shown=shown, total=total)
+        return {"content": content, "truncated": True, "totalChars": total}
     return {"content": content}
 
 
@@ -2561,7 +2574,10 @@ def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
             status_code=400, detail=f"unknown stages {unknown}; stages that can be re-run: {sorted(RETRYABLE_STAGES)}"
         )
     if len({RETRYABLE_STAGES[s] for s in names}) > 1:
-        raise HTTPException(status_code=400, detail="stages re-run together must report the same status field")
+        raise HTTPException(
+            status_code=400,
+            detail="stages re-run together must be selected the same way: by the same record status, or each on its own",
+        )
     return list(dict.fromkeys(names))
 
 
@@ -2972,8 +2988,9 @@ async def reindex_connector(
     Request Body (optional):
         statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
                        Omit to reindex everything.
-        stages: list[str] - re-run only these pipeline stages (e.g. ["classify"]) on
-                records whose stage status matches statusFilters (default FAILED);
+        stages: list[str] - re-run only these pipeline stages (["classify"] or ["entities"]) on
+                records whose stage status matches statusFilters (default FAILED):
+                extractionStatus for classify, the entities stage state for entities;
                 nothing is re-parsed or re-embedded.
     """
     try:

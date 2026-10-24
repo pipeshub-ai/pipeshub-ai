@@ -53,6 +53,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
@@ -159,6 +160,7 @@ class ChatQuery(BaseModel):
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_filters = field_validator("filters")(validate_request_filters)
     _validate_run_id = field_validator("runId")(validate_run_id)
 
 

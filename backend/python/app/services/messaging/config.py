@@ -1,6 +1,7 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -122,6 +123,10 @@ class MessagingEnvConfig:
             raise ValueError(  # noqa: B904
                 f"Unsupported MESSAGE_BROKER type: {raw}. Must be one of {valid}."
             )
+
+    @property
+    def redis_streams_retention_mode(self) -> str:
+        return os.getenv("REDIS_STREAMS_RETENTION_MODE", "after_ack").strip().lower()
 
     @property
     def redis_streams_maxlen(self) -> int:
@@ -681,7 +686,15 @@ class RedisConfig(BaseModel):
 class RedisStreamsConfig(RedisConfig):
     """Redis Streams configuration (extends RedisConfig)."""
 
-    max_len: int = Field(default=500000, description="Max stream length for XADD")
+    retention_mode: Literal["after_ack", "maxlen"] = Field(
+        default="after_ack",
+        description=(
+            "after_ack: streams are only trimmed below what every consumer group has "
+            "finished with (see redis_streams/retention.py). maxlen: legacy producer-side "
+            "XADD MAXLEN, which drops unconsumed events once a stream exceeds max_len."
+        ),
+    )
+    max_len: int = Field(default=500000, description="Max stream length: caps streams with no consumer group; with retention_mode maxlen it caps every stream via XADD and drops unconsumed events")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
     batch_size: int = Field(
         default=1,

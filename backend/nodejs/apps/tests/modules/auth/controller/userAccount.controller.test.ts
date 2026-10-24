@@ -904,6 +904,7 @@ describe('UserAccountController', () => {
       mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
 
       await controller.forgotPasswordEmail(req, res, next);
+      await settle();
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.send.calledOnce).to.be.true;
@@ -920,6 +921,7 @@ describe('UserAccountController', () => {
       };
 
       await controller.forgotPasswordEmail(req, res, next);
+      await settle();
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
@@ -938,6 +940,7 @@ describe('UserAccountController', () => {
       });
 
       await controller.forgotPasswordEmail(req, res, next);
+      await settle();
 
       expect(next.called).to.be.false;
       expect(res.status.calledWith(200)).to.be.true;
@@ -956,6 +959,7 @@ describe('UserAccountController', () => {
       mockIamService.getUserByEmail.rejects(new Error('iam down'));
 
       await controller.forgotPasswordEmail(req, res, next);
+      await settle();
 
       expect(next.called).to.be.false;
       expect(res.status.calledWith(200)).to.be.true;
@@ -985,12 +989,69 @@ describe('UserAccountController', () => {
       mockMailService.sendMail.rejects(new Error('smtp unavailable'));
 
       await controller.forgotPasswordEmail(req, res, next);
+      await settle();
 
       expect(next.called).to.be.false;
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.send.firstCall.args[0].data).to.equal(
         'If an account exists for this email, a password reset link has been sent.',
       );
+    });
+
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const knownUser = {
+      _id: 'u1',
+      email: 'user@example.com',
+      orgId: 'o1',
+      fullName: 'Test User',
+    };
+    const delayed = <T>(ms: number, value: T) =>
+      new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
+    it('replies without waiting for the lookup or the mail send', async () => {
+      const req: any = { body: { email: 'user@example.com' }, ip: '127.0.0.1' };
+      mockIamService.getUserByEmail.returns(new Promise(() => {}));
+
+      await controller.forgotPasswordEmail(req, res, next);
+      expect(res.send.calledOnce).to.be.true;
+
+      mockIamService.getUserByEmail.resolves({ statusCode: 200, data: knownUser });
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockMailService.sendMail.returns(new Promise(() => {}));
+      res.send.resetHistory();
+
+      await controller.forgotPasswordEmail(req, res, next);
+      await settle();
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(res.send.calledOnce).to.be.true;
+    });
+
+    it('takes the same time for a known and an unknown address', async function () {
+      this.timeout(30000);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserByEmail.callsFake(async (email: string) =>
+        delayed(email.startsWith('known') ? 25 : 2, {
+          statusCode: email.startsWith('known') ? 200 : 404,
+          data: email.startsWith('known') ? { ...knownUser, email } : {},
+        }),
+      );
+      mockMailService.sendMail.callsFake(() => delayed(25, { statusCode: 200 }));
+
+      const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
+      const time = async (email: string) => {
+        const start = process.hrtime.bigint();
+        await controller.forgotPasswordEmail({ body: { email }, ip: '127.0.0.1' } as any, res, next);
+        return Number(process.hrtime.bigint() - start) / 1e6;
+      };
+      const known: number[] = [];
+      const unknown: number[] = [];
+      for (let i = 0; i < 50; i++) {
+        known.push(await time(`known${i}@example.com`));
+        unknown.push(await time(`unknown${i}@example.com`));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(Math.abs(median(known) - median(unknown))).to.be.lessThan(3);
     });
   });
 
