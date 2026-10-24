@@ -25,8 +25,9 @@ services:
       CONNSIM_WORKERS: "1"
     volumes:
       - sharepoint_sim_data:/data
+    # Not 8101-8103 or 8106: the Atlassian, Notion and Gmail simulators publish those in the same stack.
     ports:
-      - "127.0.0.1:8103:80"
+      - "127.0.0.1:8107:80"
     mem_limit: 1g
 
   sharepoint-tls:
