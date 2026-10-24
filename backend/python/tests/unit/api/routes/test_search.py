@@ -1082,3 +1082,26 @@ class TestSearchWithoutQueryRewrite:
         assert lines[0].startswith("⏱ search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
+
+
+class TestSearchLogsNoQueryText:
+    @pytest.mark.asyncio
+    async def test_rewritten_and_expanded_queries_are_not_logged(self) -> None:
+        request = TestSearchEndpoint()._build_request()
+        logger = request.app.container.logger.return_value
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [], "status_code": 200})
+        chain = TestSearchEndpoint()._make_chain
+
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            setup.return_value = (chain("rewritten nightjar merger"), chain("nightjar terms\nnightjar price"))
+            await search(
+                request=request, body=SearchQuery(query="nightjar merger", filters={}, timeline="off"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "rewritten nightjar merger", "nightjar terms", "nightjar price",
+        ]
+        logged = " ".join(str(c) for c in logger.mock_calls)
+        assert "nightjar" not in logged

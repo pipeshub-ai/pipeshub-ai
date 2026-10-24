@@ -272,10 +272,12 @@ async def _rewritten_queries(
         _transform_query(expansion_chain, query, "expansion", logger, invoke_config),
     )
 
-    logger.debug(f"Rewritten query: {rewritten_query}")
-    logger.debug(f"Expanded queries: {expanded_queries}")
-
-    return _queries_for_search(query, rewritten_query, expanded_queries)
+    queries = _queries_for_search(query, rewritten_query, expanded_queries)
+    logger.debug(
+        "Query transformed: rewritten_len=%d queries=%d",
+        len(rewritten_query or ""), len(queries),
+    )
+    return queries
 
 
 def _timeline_choice(requested: str | None, time_range: dict[str, int] | None) -> tuple[str | None, bool]:
