@@ -10,6 +10,7 @@ const chat = vi.hoisted(() => ({
   buildStreamChatRequestForSlot: vi.fn((slotId: string, query: string) => ({ slotId, query })),
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
 }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
@@ -59,7 +60,7 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByText(/^Needs your approval · expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
     expect(screen.getByText('["bug"]')).toBeTruthy();
-    expect(screen.queryByText('Deletes data')).toBeNull();
+    expect(screen.queryByText("Can't be undone")).toBeNull();
   });
 
   it('names a tool without a title readably', () => {
@@ -69,7 +70,7 @@ describe('ToolApprovalCard', () => {
 
   it('marks a tool that deletes data', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ kind: 'destructive' })} isLatest />);
-    expect(screen.getByText('Deletes data')).toBeTruthy();
+    expect(screen.getByText("Can't be undone")).toBeTruthy();
   });
 
   it.each([

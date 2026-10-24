@@ -30,6 +30,13 @@ _PNG = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _targeted_retrieval_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These pin the fit to the shared tool-result cap, which TARGETED_RETRIEVAL
+    replaces with its own; that path is covered in test_targeted_retrieval.py."""
+    monkeypatch.setenv("TARGETED_RETRIEVAL", "false")
+
+
 def _record(vrid: str, blocks: int = 4) -> dict[str, Any]:
     return {
         "id": f"rec-{vrid}",
@@ -362,8 +369,9 @@ class TestGrepHitOnARecordTheFitDrops:
         from tests.support.hash_seeds import outputs_across_hash_seeds
 
         outputs = outputs_across_hash_seeds(
-            "import asyncio\n"
+            "import asyncio, os\n"
             "from unittest.mock import MagicMock\n"
+            "os.environ['TARGETED_RETRIEVAL'] = 'false'\n"
             "from tests.unit.agents.actions.knowledge_graph.test_search_context import "
             "TestGrepHitOnARecordTheFitDrops as T, _state\n"
             "grep = [{'virtual_record_id': v, 'match_count': 2} for v in ('v4', 'v3', 'v2')]\n"
@@ -711,3 +719,29 @@ class TestEmpty:
         result = await _search(_state(), {"v1": None}, [_unit("v1", 0, "lost", 0.9)])
 
         assert json.loads(result)["result_count"] == 0
+
+
+class TestAConnectedAppsLimit:
+    """The search tool hands the turn's connection limit to the graph context."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "sources"), [
+        ({"apps": ["app-1"], "kb": []}, None),
+        ({"apps": ["app-1"], "kb": [], "records": ["f"], "connectionApps": [], "connectionRecordGroups": [],
+             "connectionRecords": ["f"]}, {"apps": [], "recordGroups": [], "records": ["f"]}),
+    ])
+    async def test_the_turns_limit_reaches_the_graph_context(self, filters, sources) -> None:
+        records, units = _five_records()
+        graph_context = AsyncMock()
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update(records)
+            return [dict(unit) for unit in units]
+
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", graph_context), \
+                patch(f"{_SEARCH}.BlobStorage"):
+            await execute_search(_state(filters=filters), "annual fee")
+
+        graph_context.assert_awaited()
+        assert graph_context.await_args.kwargs["connection_sources"] == sources

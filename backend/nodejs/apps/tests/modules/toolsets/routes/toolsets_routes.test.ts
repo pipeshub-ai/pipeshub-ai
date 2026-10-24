@@ -68,6 +68,29 @@ describe('toolsets/routes/toolsets_routes', () => {
     })
   })
 
+  describe('POST /instances', () => {
+    async function validated(body: Record<string, unknown>) {
+      const route = findRoute(createToolsetsRouter(makeContainer().container), '/instances', 'post')
+      // [authenticate, validate, controller]: the body the controller gets is the validator's.
+      const validate = route!.handlers[1].handle
+      const req: any = { body, query: {}, params: {}, headers: {} }
+      const next = sinon.spy()
+      await validate(req, {}, next)
+      return { req, next }
+    }
+
+    it('keeps the scope a personal instance is asked for', async () => {
+      const { req, next } = await validated({ instanceName: 'Mine', toolsetType: 'jira', authType: 'API_TOKEN', scope: 'personal' })
+      expect(next.calledOnceWithExactly()).to.equal(true)
+      expect(req.body.scope).to.equal('personal')
+    })
+
+    it('refuses a scope that is not one', async () => {
+      const { next } = await validated({ instanceName: 'Mine', toolsetType: 'jira', authType: 'API_TOKEN', scope: 'team' })
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+    })
+  })
+
   describe('tool approval routes', () => {
     it('should register GET and PUT /instances/:instanceId/tool-rules', () => {
       const { container } = makeContainer()

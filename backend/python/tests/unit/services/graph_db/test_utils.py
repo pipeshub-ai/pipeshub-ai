@@ -421,3 +421,18 @@ class TestDedupeAgentsByIdReturnShape:
         ]
         for name in dedupe_agents_by_id(rows):
             assert isinstance(name, str)
+
+
+class TestBuildConnectorStatsResponseExtraction:
+    def test_extraction_statuses_are_counted_beside_indexing(self) -> None:
+        rows = [
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "cnt": 3},
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "extractionStatus": "FAILED", "cnt": 2},
+            {"recordType": "MAIL", "indexingStatus": "FAILED", "extractionStatus": None, "cnt": 1},
+        ]
+        result = build_connector_stats_response(rows=rows, statuses=STATUSES, org_id="o", connector_id="c")
+        assert result["stats"]["indexingStatus"]["COMPLETED"] == 5
+        assert result["stats"]["extractionStatus"] == {"PENDING": 0, "IN_PROGRESS": 0, "COMPLETED": 3, "FAILED": 2}
+        by_type = {r["recordType"]: r for r in result["byRecordType"]}
+        assert by_type["FILE"]["extractionStatus"]["FAILED"] == 2
+        assert sum(by_type["MAIL"]["extractionStatus"].values()) == 0

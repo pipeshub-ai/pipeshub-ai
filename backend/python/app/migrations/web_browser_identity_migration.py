@@ -103,7 +103,7 @@ class WebBrowserIdentityBackfill:
     async def _backfill(self, connector_id: str, org_id: str | None) -> bool:
         """Backfill one connector; True when its stored settings changed."""
         config_service = resolve_config_service(self.container, org_id)
-        path = ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_id)
+        path = ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_id)
         config = await config_service.get_config(path, use_cache=False, raise_on_error=True)
         sync = config.get("sync") if isinstance(config, dict) else None
         if not isinstance(sync, dict) or not backfill_sync_settings(sync):

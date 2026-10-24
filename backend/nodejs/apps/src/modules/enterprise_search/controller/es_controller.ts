@@ -13,6 +13,10 @@ import {
   sendSSECompleteEvent,
   handleRegenerationStreamData,
   handleRegenerationSuccess,
+  updateUserQueryContent,
+  deleteMessagesById,
+  hasAskUserQuestionTool,
+  isClassifiedFailureAnswer,
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
@@ -44,6 +48,7 @@ import {
   IAgentConversation,
   IAIModel,
   IAIResponse,
+  IChatAttachmentRef,
   IChatSession,
   IChatSessionDocument,
   IMessage,
@@ -59,6 +64,7 @@ import {
   addComputedFields,
   attachSharedBy,
   attachSharedByIfRecipient,
+  findOrgUserIds,
   assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -130,6 +136,15 @@ import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
 } from '../utils/chat-error-messages';
+import {
+  copyArtifactsForFork,
+  copySessionUpToMessage,
+  ForkChatSessionResult,
+  ForkSessionFields,
+  resolveForkProjectId,
+} from '../utils/fork-conversation';
+import { ArtifactCopier, ArtifactCopyOutcome } from '../utils/fork-artifacts';
+import { executeConnectorCommand } from '../../tokens_manager/utils/connector.utils';
 import { ProjectService } from '../../projects/services/project.service';
 import {
   assignAgentCapabilitiesToPayload,
@@ -658,7 +673,7 @@ export const streamChat =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -1263,7 +1278,9 @@ export const streamChat =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
       logger.error('Error in streamChat', {
         requestId,
@@ -1404,7 +1421,7 @@ export const addMessageStream =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -1459,7 +1476,7 @@ export const addMessageStream =
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(
         confirmedConversation._id as mongoose.Types.ObjectId,
-        {},
+        { orgId: confirmedConversation.orgId },
         session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
@@ -2019,7 +2036,9 @@ export const addMessageStream =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)
@@ -2085,9 +2104,10 @@ export const getAllConversations = async (
     }
 
     const { skip, limit, page } = getPaginationParams(req);
-    const sortOptions = buildSortOptions(req);
-
     const isOwned = source === 'owned';
+    // A pin belongs to its owner, so only the owner's own list is pinned-first.
+    const sortOptions = buildSortOptions(req, { pinnedFirst: isOwned });
+
     let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
     if (req.query.search) {
       const escapedSearch = validateAndEscapeSearch(req.query.search);
@@ -2110,7 +2130,12 @@ export const getAllConversations = async (
         contentMatchIds,
         accessibleProjectIds,
       ),
-      ...EXCLUDE_AGENT,
+      // Chats shared with the user include agent chats, so the recipient can open them
+      // from the sidebar without first finding the agent. Owned chats stay plain-chat only:
+      // agent chats are listed per agent.
+      sessionType: isOwned
+        ? EXCLUDE_AGENT.sessionType
+        : { $in: [EXCLUDE_AGENT.sessionType, ONLY_AGENT.sessionType] },
     };
     let selection = ChatSession.find(filter)
       .sort(sortOptions as any)
@@ -2118,7 +2143,7 @@ export const getAllConversations = async (
       .limit(limit)
       .select('-__v');
     if (!isOwned) {
-      selection = selection.select('-sharedWith') as typeof selection;
+      selection = selection.select('-sharedWith -isPinned') as typeof selection;
     }
 
     const [conversations, totalCount] = await Promise.all([
@@ -2352,6 +2377,7 @@ export const getConversationById =
       ...EXCLUDE_AGENT,
     })
       .select({
+          orgId: 1,
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -2394,6 +2420,7 @@ export const getConversationById =
 
     const totalMessages = await ChatSessionMessage.countDocuments({
       sessionId,
+        orgId: session.orgId,
     });
 
     const { skip, limit: effectiveLimit } = olderMessagesWindow(
@@ -2403,6 +2430,7 @@ export const getConversationById =
     );
 
     const messages = await getMessages(sessionId, {
+        orgId: session.orgId,
       skip,
       limit: effectiveLimit,
       populateCitations: true,
@@ -2561,7 +2589,7 @@ const deleteConversation = async (
 
       // Perform soft delete on the conversation
       const updatedConversation = await ChatSession.findOneAndUpdate(
-        { _id: conversationId, ...EXCLUDE_AGENT },
+        { _id: conversationId, orgId, ...EXCLUDE_AGENT },
         {
           $set: {
             isDeleted: true,
@@ -2671,14 +2699,38 @@ const deleteConversation = async (
   }
 };
 
-export const shareConversationById =
-  (appConfig: AppConfig) =>
+/**
+ * Which sessions a share/unshare handler may touch. Plain chats and agent
+ * chats live in one collection, so the scope is what keeps
+ * `/conversations/:id/share` from sharing an agent chat and vice versa.
+ */
+type ShareScope = (req: AuthenticatedUserRequest) => Record<string, unknown>;
+
+const plainChatShareScope: ShareScope = () => EXCLUDE_AGENT;
+const agentChatShareScope: ShareScope = (req) => ({
+  ...ONLY_AGENT,
+  agentKey: req.params.agentKey,
+});
+
+/**
+ * Shared by the plain-chat and agent-chat share routes. `readOnlyShares`
+ * (agent chats) refuses any access level but 'read' and refuses sharing with
+ * oneself: a recipient can open the transcript but never continue, regenerate,
+ * rename, archive or delete it.
+ */
+const createShareConversationHandler =
+  (
+    appConfig: AppConfig,
+    scopeFor: ShareScope,
+    { readOnlyShares = false }: { readOnlyShares?: boolean } = {},
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let session: ClientSession | null = null;
     const { conversationId } = req.params;
     let { userIds, accessLevel } = req.body;
+    const scope = scopeFor(req);
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
@@ -2691,69 +2743,76 @@ export const shareConversationById =
         timestamp: new Date().toISOString(),
       });
 
-      async function performShareConversation(session?: ClientSession | null) {
-        // Validate request body
-        if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-          throw new BadRequestError('userIds is required and must be an array');
-        }
+      // Validate request body
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be an array');
+      }
 
-        if (accessLevel && !['read', 'write'].includes(accessLevel)) {
+      if (accessLevel && !['read', 'write'].includes(accessLevel)) {
+        throw new BadRequestError(
+          "Invalid access level. Must be 'read' or 'write'",
+        );
+      }
+
+      // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user. Compare and de-duplicate on one form.
+      userIds = (userIds as unknown[]).map((id) => String(id).toLowerCase());
+
+      if (readOnlyShares) {
+        if (accessLevel && accessLevel !== 'read') {
           throw new BadRequestError(
-            "Invalid access level. Must be 'read' or 'write'",
+            "Agent conversations can only be shared with 'read' access",
           );
         }
-
-        // Get conversation with access control
-        const conversation = await ChatSession.findOne({
-          _id: conversationId,
-          orgId,
-          userId,
-          isDeleted: false,
-          initiator: userId, // Only initiator can share
-          ...EXCLUDE_AGENT,
-        });
-
-        if (!conversation) {
-          throw new NotFoundError('Conversation not found or unauthorized');
+        if ((userIds as string[]).includes(String(userId).toLowerCase())) {
+          throw new BadRequestError(
+            'You cannot share a conversation with yourself',
+          );
         }
+        userIds = [...new Set(userIds as string[])];
+      }
 
+      const recipientIds = userIds as string[];
+
+      // Get conversation with access control
+      const conversation = await ChatSession.findOne({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+        initiator: userId, // Only initiator can share
+        ...scope,
+      });
+
+      if (!conversation) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
+      const ownedConversation: IChatSessionDocument = conversation;
+
+      // The recipients are checked before the transaction opens: one query, and no network call
+      // while the transaction is held.
+      recipientIds.forEach((id) => {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+          throw new BadRequestError(`Invalid user ID format: ${id}`);
+        }
+      });
+      const orgUserIds = await findOrgUserIds(orgId as string, recipientIds);
+      const unknownId = recipientIds.find((id) => !orgUserIds.has(id));
+      if (unknownId) {
+        throw new BadRequestError(`User not found: ${unknownId}`);
+      }
+      const validUsers = recipientIds.map((id) => ({
+        userId: new mongoose.Types.ObjectId(id),
+        accessLevel: accessLevel || 'read',
+      }));
+
+      async function performShareConversation(session?: ClientSession | null) {
         // Update object for conversation
         const updateObject: Partial<IConversation> = {
           isShared: true,
         };
 
-        // Handle user-specific sharing
-        // Validate all user IDs
-        const validUsers = await Promise.all(
-          userIds.map(async (id) => {
-            if (!mongoose.Types.ObjectId.isValid(id)) {
-              throw new BadRequestError(`Invalid user ID format: ${id}`);
-            }
-            try {
-              const iamCommand = new IAMServiceCommand({
-                uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(String(id))}`,
-                method: HttpMethod.GET,
-                headers: req.headers as Record<string, string>,
-              });
-              const userResponse = await iamCommand.execute();
-              if (userResponse && userResponse.statusCode !== 200) {
-                throw new BadRequestError(`User not found: ${id}`);
-              }
-            } catch (exception) {
-              logger.debug(`User does not exist: ${id}`, {
-                requestId,
-              });
-              throw new BadRequestError(`User not found: ${id}`);
-            }
-            return {
-              userId: id,
-              accessLevel: accessLevel || 'read',
-            };
-          }),
-        );
-
         // Get existing shared users
-        const existingSharedWith = conversation.sharedWith || [];
+        const existingSharedWith = ownedConversation.sharedWith || [];
 
         // Create a map of existing users for quick lookup
         const existingUserMap = new Map(
@@ -2782,7 +2841,7 @@ export const shareConversationById =
 
         // Update the conversation
         const updatedConversation = await ChatSession.findOneAndUpdate(
-          { _id: conversationId, ...EXCLUDE_AGENT },
+          { _id: conversationId, ...scope },
           updateObject,
           {
             new: true,
@@ -2810,8 +2869,9 @@ export const shareConversationById =
       }
 
       // Grant READER on chat attachments (message chips and ATTACHMENTS citations).
-      const attachmentRecordIds =
-        await loadConversationChatAttachmentRecordIds(String(conversationId));
+      const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
+        String(conversationId),
+      );
 
       const grantor = {
         appConfig,
@@ -2876,165 +2936,202 @@ export const shareConversationById =
     }
   };
 
-export const unshareConversationById =
-  (appConfig: AppConfig) =>
+type ConversationHandler = (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => Promise<void>;
+
+export const shareConversationById = (
+  appConfig: AppConfig,
+): ConversationHandler =>
+  createShareConversationHandler(appConfig, plainChatShareScope);
+
+/** Owner-only, read-only share of an agent conversation. */
+export const shareAgentConversation = (
+  appConfig: AppConfig,
+): ConversationHandler =>
+  createShareConversationHandler(appConfig, agentChatShareScope, {
+    readOnlyShares: true,
+  });
+
+const createUnshareConversationHandler =
+  (appConfig: AppConfig, scopeFor: ShareScope) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  let session: ClientSession | null = null;
-  const { conversationId } = req.params;
-  try {
-    const { userIds } = req.body;
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    let session: ClientSession | null = null;
+    const { conversationId } = req.params;
+    const scope = scopeFor(req);
+    try {
+      const { userIds } = req.body;
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
 
-    logger.debug('Attempting to unshare conversation', {
-      requestId,
-      conversationId,
-      userId,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Validate request body
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      throw new BadRequestError('userIds is required and must be an array');
-    }
-
-    // Validate all user IDs format
-    userIds.forEach((id) => {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new BadRequestError(`Invalid user ID format: ${id}`);
-      }
-    });
-
-    async function performUnshareConversation(session?: ClientSession | null) {
-      // Get conversation with access control
-      const conversation = await ChatSession.findOne({
-        _id: conversationId,
-        orgId,
-        isDeleted: false,
-        initiator: userId, // Only initiator can unshare
-        ...EXCLUDE_AGENT,
+      logger.debug('Attempting to unshare conversation', {
+        requestId,
+        conversationId,
+        userId,
+        timestamp: new Date().toISOString(),
       });
 
-      if (!conversation) {
-        throw new NotFoundError('Conversation not found or unauthorized');
+      // Validate request body
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be an array');
       }
 
-      // Get existing shared users
-      const existingSharedWith = conversation.sharedWith || [];
-
-      // Remove specified users from sharedWith array
-      const updatedSharedWith = existingSharedWith.filter(
-        (share) => !userIds.includes(share.userId.toString()),
+      // Validate all user IDs format
+      userIds.forEach((id) => {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+          throw new BadRequestError(`Invalid user ID format: ${id}`);
+        }
+      });
+      // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user.
+      const removedIds = (userIds as unknown[]).map((id) =>
+        String(id).toLowerCase(),
       );
 
-      // Prepare update object
-      const updateObject: Partial<IConversation> = {
-        sharedWith: updatedSharedWith,
-      };
+      async function performUnshareConversation(
+        session?: ClientSession | null,
+      ) {
+        // Get conversation with access control
+        const conversation = await ChatSession.findOne({
+          _id: conversationId,
+          orgId,
+          isDeleted: false,
+          initiator: userId, // Only initiator can unshare
+          ...scope,
+        });
 
-      // If no more shares exist, update isShared and remove shareLink
-      if (updatedSharedWith.length === 0) {
-        updateObject.isShared = false;
-        updateObject.shareLink = undefined;
-      }
+        if (!conversation) {
+          throw new NotFoundError('Conversation not found or unauthorized');
+        }
 
-      // Update the conversation
-      const updatedConversation = await ChatSession.findOneAndUpdate(
-        { _id: conversationId, ...EXCLUDE_AGENT },
-        updateObject,
-        {
-          new: true,
-          session,
-          runValidators: true,
-        },
-      );
+        // Get existing shared users
+        const existingSharedWith = conversation.sharedWith || [];
 
-      if (!updatedConversation) {
-        throw new InternalServerError(
-          'Failed to update conversation sharing settings',
+        // Remove specified users from sharedWith array
+        const updatedSharedWith = existingSharedWith.filter(
+          (share) => !removedIds.includes(share.userId.toString()),
         );
+
+        // Prepare update object
+        const updateObject: Partial<IConversation> = {
+          sharedWith: updatedSharedWith,
+        };
+
+        // If no more shares exist, update isShared and remove shareLink
+        if (updatedSharedWith.length === 0) {
+          updateObject.isShared = false;
+          updateObject.shareLink = undefined;
+        }
+
+        // Update the conversation
+        const updatedConversation = await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...scope },
+          updateObject,
+          {
+            new: true,
+            session,
+            runValidators: true,
+          },
+        );
+
+        if (!updatedConversation) {
+          throw new InternalServerError(
+            'Failed to update conversation sharing settings',
+          );
+        }
+        return updatedConversation;
       }
-      return updatedConversation;
-    }
 
-    let updatedConversation: IChatSessionDocument | null = null;
-    if (rsAvailable) {
-      session = await mongoose.startSession();
-      session.startTransaction();
-      updatedConversation = await performUnshareConversation(session);
-      await session.commitTransaction();
-    } else {
-      updatedConversation = await performUnshareConversation();
-    }
+      let updatedConversation: IChatSessionDocument | null = null;
+      if (rsAvailable) {
+        session = await mongoose.startSession();
+        session.startTransaction();
+        updatedConversation = await performUnshareConversation(session);
+        await session.commitTransaction();
+      } else {
+        updatedConversation = await performUnshareConversation();
+      }
 
-    // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
-    const attachmentRecordIds =
-      await loadConversationChatAttachmentRecordIds(String(conversationId));
+      // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
+      const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
+        String(conversationId),
+      );
 
-    const grantor = {
-      appConfig,
-      method: HttpMethod.DELETE,
-      grantorUserId: String(userId),
-      orgId: String(orgId),
-      requestId,
-      conversationId,
-    } as const;
-    if (attachmentRecordIds.length > 0) {
+      const grantor = {
+        appConfig,
+        method: HttpMethod.DELETE,
+        grantorUserId: String(userId),
+        orgId: String(orgId),
+        requestId,
+        conversationId,
+      } as const;
+      if (attachmentRecordIds.length > 0) {
+        await syncConversationRecordPermissions({
+          ...grantor,
+          records: 'attachments',
+          body: { userIds: removedIds, recordIds: attachmentRecordIds },
+        });
+      }
       await syncConversationRecordPermissions({
         ...grantor,
-        records: 'attachments',
-        body: { userIds, recordIds: attachmentRecordIds },
+        records: 'artifacts',
+        body: { conversationId, userIds: removedIds },
       });
-    }
-    await syncConversationRecordPermissions({
-      ...grantor,
-      records: 'artifacts',
-      body: { conversationId, userIds },
-    });
 
-    logger.debug('Conversation unshared successfully', {
-      requestId,
-      conversationId,
-      duration: Date.now() - startTime,
-    });
-
-    // Prepare response
-    const response = {
-      id: updatedConversation._id,
-      isShared: updatedConversation.isShared,
-      shareLink: updatedConversation.shareLink,
-      sharedWith: updatedConversation.sharedWith,
-      unsharedUsers: userIds,
-      meta: {
+      logger.debug('Conversation unshared successfully', {
         requestId,
-        timestamp: new Date().toISOString(),
+        conversationId,
         duration: Date.now() - startTime,
-      },
-    };
+      });
 
-    res.status(200).json(response);
-  } catch (error: any) {
-    logger.error('Error un-sharing conversation', {
-      requestId,
-      conversationId,
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
+      // Prepare response
+      const response = {
+        id: updatedConversation._id,
+        isShared: updatedConversation.isShared,
+        shareLink: updatedConversation.shareLink,
+        sharedWith: updatedConversation.sharedWith,
+        unsharedUsers: removedIds,
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      };
 
-    if (session?.inTransaction()) {
-      await session.abortTransaction();
+      res.status(200).json(response);
+    } catch (error: any) {
+      logger.error('Error un-sharing conversation', {
+        requestId,
+        conversationId,
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+      });
+
+      if (session?.inTransaction()) {
+        await session.abortTransaction();
+      }
+      next(error);
+    } finally {
+      if (session) {
+        session.endSession();
+        session = null;
+      }
     }
-    next(error);
-  } finally {
-    if (session) {
-      session.endSession();
-      session = null;
-    }
-  }
-};
+  };
+
+export const unshareConversationById = (
+  appConfig: AppConfig,
+): ConversationHandler =>
+  createUnshareConversationHandler(appConfig, plainChatShareScope);
+
+export const unshareAgentConversation = (
+  appConfig: AppConfig,
+): ConversationHandler =>
+  createUnshareConversationHandler(appConfig, agentChatShareScope);
 
 /**
  * PUT /api/v1/conversations/:conversationId/project
@@ -3203,6 +3300,103 @@ export function isToolApprovalAnswer(
   );
 }
 
+/** The answers to a question card (Python `ASK_USER_QUESTION_RESUME_PREFIX`): saved as a question of their own, shown on the card's row. */
+export function isAskUserQuestionAnswer(
+  query: string | undefined | null,
+): boolean {
+  return (
+    typeof query === 'string' &&
+    query.trimStart().startsWith('User selections:')
+  );
+}
+
+/** The question a turn was first asked, and what the turn saved after it, when it went through a question card. */
+interface CardTurnQuestion {
+  question: IMessage & { _id: mongoose.Types.ObjectId };
+  /** Rows between that question and the turn's last answer: the card, its answers, earlier replies. */
+  intermediateIds: mongoose.Types.ObjectId[];
+  /** Whether the turn's answers each follow a stored question card. Text alone does not make a card turn. */
+  hasCard: boolean;
+}
+
+/** Whether a row holds the questions of a card: stamped on a reply, or saved as a `tool_call` row. */
+const rowHoldsQuestionCard = (row: IMessage): boolean =>
+  hasAskUserQuestionTool(row) ||
+  (row.parts ?? []).some(
+    (part) =>
+      part.type === 'tool_call' &&
+      Boolean(part.toolName?.includes('ask_user_question')),
+  );
+
+/**
+ * A card turn is saved as several rows: the question, a reply holding the card, the card's answers
+ * (a `user_query` of their own) and the reply to them. The chat shows them as one question, so an
+ * edit must reach the first row, not the answers.
+ *
+ * @param older the rows before the turn's last answer, newest first
+ * @returns null when no question of the turn is found, or the turn answered an approval card
+ */
+export function findQuestionBehindCard(
+  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+): CardTurnQuestion | null {
+  const intermediateIds: mongoose.Types.ObjectId[] = [];
+  let hasCard = false;
+  for (const [i, row] of older.entries()) {
+    if (row.messageType === 'user_query') {
+      if (isAskUserQuestionAnswer(row.content) && answersCardBefore(older, i)) {
+        intermediateIds.push(row._id);
+        hasCard = true;
+        continue;
+      }
+      if (isToolApprovalAnswer(row.content)) return null;
+      return { question: row, intermediateIds, hasCard };
+    }
+    intermediateIds.push(row._id);
+  }
+  return null;
+}
+
+/**
+ * Whether the row of answers at `older[i]` answers a card: the reply just before it holds one, or the
+ * `tool_call` rows beside that reply do. A card an earlier turn asked does not make a question the
+ * reader typed with the same first words into answers.
+ */
+function answersCardBefore(
+  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+  i: number,
+): boolean {
+  for (const row of older.slice(i + 1)) {
+    if (rowHoldsQuestionCard(row)) return true;
+    if (row.messageType !== 'tool_call') return false;
+  }
+  return false;
+}
+
+/** Whether two lists name the same files, whatever their order. */
+export function sameAttachmentFiles(
+  a: Array<{ recordId: string }> | undefined | null,
+  b: Array<{ recordId: string }> | undefined | null,
+): boolean {
+  const key = (list: Array<{ recordId: string }> | undefined | null): string =>
+    (list ?? [])
+      .map((file) => file.recordId)
+      .sort()
+      .join('\n');
+  return key(a) === key(b);
+}
+
+/** The files of a request once each file appears only once, in the order first named. */
+export function uniqueAttachmentFiles<T extends { recordId: string }>(
+  files: T[],
+): T[] {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    if (seen.has(file.recordId)) return false;
+    seen.add(file.recordId);
+    return true;
+  });
+}
+
 /** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
 export function ranApprovedCall(
   parts: IMessagePart[] | undefined | null,
@@ -3246,6 +3440,9 @@ async function regenerateAnswersInternal(
     conversation: IChatSessionDocument;
     userQuery: IMessage;
     staleAskToolCallIds: mongoose.Types.ObjectId[];
+    cardEdit: CardTurnQuestion | null;
+    editBlocked: boolean;
+    newerQuestion: boolean;
   }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
@@ -3274,7 +3471,7 @@ async function regenerateAnswersInternal(
     // regenerated is not necessarily the newest message.
     const recentMessages = (await getMessages(
       conversation._id as mongoose.Types.ObjectId,
-      { limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
+      { orgId: conversation.orgId, limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
       session,
     )) as Array<IMessage & { _id: mongoose.Types.ObjectId }>;
 
@@ -3310,6 +3507,21 @@ async function regenerateAnswersInternal(
         'This reply came from your answer to an approval request, so it cannot be regenerated. Ask again instead.',
       );
     }
+    // The stored question here is the card's answers, which the chat shows as part of the question
+    // before it, so an edit goes to that question and the whole card turn is asked again.
+    // Whether the request is an edit is decided by the caller; a missing question only matters then.
+    const looksLikeCardAnswer = isAskUserQuestionAnswer(userQuery.content);
+    const behindCard = looksLikeCardAnswer
+      ? findQuestionBehindCard(recentMessages.slice(lastBotIdx + 1))
+      : null;
+    // Only a stored card makes a card turn: a question the reader typed with the same first words has none.
+    const cardEdit = behindCard?.hasCard ? behindCard : null;
+    const editBlocked = looksLikeCardAnswer && behindCard === null;
+    // A question after the newest answer has none of its own (a run that never got to answer), so
+    // the answer found here belongs to an older question than the last one.
+    const newerQuestion = recentMessages
+      .slice(0, lastBotIdx)
+      .some((msg) => msg.messageType === 'user_query');
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
@@ -3325,7 +3537,14 @@ async function regenerateAnswersInternal(
       lastBot._id,
     );
 
-    return { conversation, userQuery, staleAskToolCallIds };
+    return {
+      conversation,
+      userQuery,
+      staleAskToolCallIds,
+      cardEdit,
+      editBlocked,
+      newerQuestion,
+    };
   }
 
   try {
@@ -3356,6 +3575,9 @@ async function regenerateAnswersInternal(
       conversation: IChatSessionDocument;
       userQuery: IMessage;
       staleAskToolCallIds: mongoose.Types.ObjectId[];
+      cardEdit: CardTurnQuestion | null;
+      editBlocked: boolean;
+      newerQuestion: boolean;
     } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
@@ -3372,15 +3594,57 @@ async function regenerateAnswersInternal(
     if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
-    existingConversation = validationResult.conversation;
     const userQuery = validationResult.userQuery;
+    // Only an edit carries these two; their types are not trusted until read.
+    const editBody = req.body as { query?: unknown; attachments?: unknown };
+    const requestedQuery =
+      typeof editBody.query === 'string' ? editBody.query.trim() : '';
+    if (
+      requestedQuery &&
+      (isToolApprovalAnswer(requestedQuery) ||
+        isAskUserQuestionAnswer(requestedQuery))
+    ) {
+      throw new BadRequestError('This question cannot be used as an edit.');
+    }
+    // The question the chat shows: for a card turn, the first one, not the card's answers.
+    const cardEdit = validationResult.cardEdit;
+    const shownQuestion = cardEdit?.question ?? userQuery;
+    const requestedAttachments: IChatAttachmentRef[] | undefined =
+      Array.isArray(editBody.attachments)
+        ? uniqueAttachmentFiles(editBody.attachments as IChatAttachmentRef[])
+        : undefined;
+    const textChanged =
+      Boolean(requestedQuery) &&
+      requestedQuery !== shownQuestion.content.trim();
+    const attachmentsChanged =
+      requestedAttachments !== undefined &&
+      !sameAttachmentFiles(requestedAttachments, shownQuestion.attachments);
+    // An unchanged edit is a plain regenerate; only a real change rewrites the stored question.
+    const isEdit = textChanged || attachmentsChanged;
+    if (isEdit && validationResult.editBlocked) {
+      throw new BadRequestError(
+        'This question cannot be edited. Ask again instead.',
+      );
+    }
+    if (isEdit && validationResult.newerQuestion) {
+      throw new BadRequestError(
+        'Can only edit the last question in the conversation',
+      );
+    }
+    const editedQuery = isEdit ? requestedQuery || shownQuestion.content : null;
+    const editedAttachments = attachmentsChanged
+      ? requestedAttachments
+      : undefined;
     const staleAskToolCallIds = validationResult.staleAskToolCallIds;
+    // Set only once the request is accepted: an error that reaches the catch below with a
+    // conversation in hand replaces the stored answer, which a refused edit must not do.
+    existingConversation = validationResult.conversation;
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
     const allMessagesForRegen = (await getMessages(
       existingConversation._id as mongoose.Types.ObjectId,
-      {},
+      { orgId: existingConversation.orgId },
       session,
     )) as Array<IMessage & { _id?: mongoose.Types.ObjectId }>;
     // The turn being regenerated (its user query, its answer, and any
@@ -3396,11 +3660,87 @@ async function regenerateAnswersInternal(
     ) {
       regenUserIdx -= 1;
     }
+    if (editedQuery && cardEdit) {
+      const questionIdx = allMessagesForRegen.findIndex(
+        (msg) => msg._id?.toString() === cardEdit.question._id.toString(),
+      );
+      if (questionIdx >= 0) regenUserIdx = questionIdx;
+    }
     const previousConversations = formatPreviousConversations(
       regenUserIdx >= 0
         ? allMessagesForRegen.slice(0, regenUserIdx)
         : allMessagesForRegen.slice(0, -2),
     );
+
+    // The title of a chat is its first question, so editing that question moves the title too,
+    // unless the user already renamed the chat.
+    const titleFollowsEdit =
+      regenUserIdx === 0 &&
+      existingConversation.title === shownQuestion.content.slice(0, 100);
+    // The rows an edited card turn leaves behind: its card, the card's answers, earlier replies.
+    // They go only after the new answer is saved, so a failed save loses nothing but the old answer.
+    const replacedTurnIds =
+      editedQuery && cardEdit ? cardEdit.intermediateIds : [];
+    const originalTitle = existingConversation.title;
+    let editedQuestionSaved = false;
+    const saveEditedQuestion = async (): Promise<void> => {
+      if (!editedQuery || !existingConversation) return;
+      const editedRow = await updateUserQueryContent(
+        (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
+        editedQuery,
+        existingConversation._id,
+        session,
+        editedAttachments,
+      );
+      if (!editedRow) {
+        throw new InternalServerError('Failed to save the edited question');
+      }
+      editedQuestionSaved = true;
+      if (titleFollowsEdit) {
+        existingConversation.title = editedQuery.slice(0, 100);
+      }
+    };
+    // A save that failed after the question was rewritten leaves the question as the reader had it,
+    // not edited and without an answer.
+    const restoreOriginalQuestion = async (): Promise<void> => {
+      if (!editedQuestionSaved || !existingConversation) return;
+      editedQuestionSaved = false;
+      existingConversation.title = originalTitle;
+      try {
+        await updateUserQueryContent(
+          (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
+          shownQuestion.content,
+          existingConversation._id,
+          session,
+          editedAttachments ? (shownQuestion.attachments ?? []) : undefined,
+        );
+      } catch (err: unknown) {
+        logger.error('Failed to put the original question back', {
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    // The rows the new answer replaced go once it is saved, and never fail it.
+    const dropReplacedTurn = async (): Promise<boolean> => {
+      if (!editedQuestionSaved || !existingConversation) return false;
+      if (replacedTurnIds.length === 0) return false;
+      try {
+        await deleteMessagesById(
+          replacedTurnIds,
+          existingConversation.orgId,
+          session,
+          existingConversation._id,
+        );
+        return true;
+      } catch (err: unknown) {
+        logger.warn('Failed to drop the rows an edited turn replaced', {
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
+    };
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
     // so the regenerate request is routed to the correct backend endpoint and carries tools.
@@ -3408,10 +3748,14 @@ async function regenerateAnswersInternal(
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
-      query: userQuery.content,
+      query: editedQuery ?? userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
-      attachments: userQuery.attachments || [],
+      // The files of the question being asked: the edit's, else those stored with it.
+      attachments:
+        editedAttachments ??
+        (editedQuery !== null ? shownQuestion : userQuery).attachments ??
+        [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
@@ -3472,15 +3816,25 @@ async function regenerateAnswersInternal(
         return;
       }
       streamSettled = true;
-      void savePartialConversation(
-        existingConversation,
-        contentAccumulator.getText(),
-        null,
-        {
-          replaceMessageId: messageId || undefined,
-          parts: contentAccumulator.getParts(),
-        },
-      )
+      const abandoned = existingConversation;
+      const partialText = contentAccumulator.getText();
+      // A partial answer was shown for the edited question, so the question is saved with it.
+      void (partialText ? saveEditedQuestion() : Promise.resolve())
+        .catch((err: unknown) => {
+          logger.error('Failed to save the edited question on disconnect', {
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .then(() =>
+          savePartialConversation(abandoned, partialText, null, {
+            replaceMessageId: messageId || undefined,
+            parts: contentAccumulator.getParts(),
+          }),
+        )
+        .then(async () => {
+          await dropReplacedTurn();
+        })
         .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -3540,6 +3894,14 @@ async function regenerateAnswersInternal(
         // Save the AI response to the conversation, replacing the existing message
         // A failed save is handled once, by the catch below: one error frame, one saved reason.
         if (completeData && existingConversation) {
+          // A run that ended in an error answer, or in none, did not answer the edited question: it
+          // stays as it was, with the rows of its card turn, and only the answer is replaced.
+          const answeredEdit =
+            !isClassifiedFailureAnswer(completeData) &&
+            (Boolean(completeData.answer.trim()) ||
+              Boolean(askUserQuestionPayload) ||
+              completeData.status === 'waiting_input');
+          if (answeredEdit) await saveEditedQuestion();
           const { conversation: responseConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,
@@ -3551,6 +3913,15 @@ async function regenerateAnswersInternal(
               askUserQuestionPayload,
               staleAskToolCallIds,
             );
+          if (await dropReplacedTurn()) {
+            const shown = responseConversation as {
+              messages: Array<{ _id?: unknown }>;
+            };
+            const gone = new Set(replacedTurnIds.map(String));
+            shown.messages = shown.messages.filter(
+              (row) => !gone.has(String(row._id)),
+            );
+          }
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -3591,7 +3962,7 @@ async function regenerateAnswersInternal(
             if (updatedConversation) {
               const messages = await getMessages(
                 updatedConversation._id as mongoose.Types.ObjectId,
-                {},
+                { orgId: updatedConversation.orgId },
                 session,
               );
               const plainConversation = attachMessages(
@@ -3627,6 +3998,7 @@ async function regenerateAnswersInternal(
             error: dbError.message,
           },
         );
+        await restoreOriginalQuestion();
 
         const errorMessage =
           causeCode(dbError) === 'ECONNREFUSED'
@@ -3652,7 +4024,7 @@ async function regenerateAnswersInternal(
             if (updatedConversation) {
               const messages = await getMessages(
                 updatedConversation._id as mongoose.Types.ObjectId,
-                {},
+                { orgId: updatedConversation.orgId },
                 session,
               );
               const plainConversation = attachMessages(
@@ -3754,7 +4126,9 @@ async function regenerateAnswersInternal(
     });
 
     if (!res.headersSent) {
-      res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      res.writeHead(500, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+      });
     }
 
     try {
@@ -3971,6 +4345,265 @@ export const updateTitle = async (
   }
 };
 
+interface ForkConversationBody {
+  id: string;
+  title: string | undefined;
+  projectId: string | undefined;
+  forkedFrom: { conversationId: string; messageId: string };
+  messageCount: number;
+  meta: { requestId: string | undefined; timestamp: string; duration: number };
+}
+
+const forkConversationResponse = (
+  { conversation, messageCount }: ForkChatSessionResult,
+  conversationId: string,
+  messageId: string,
+  requestId: string | undefined,
+  startTime: number,
+): ForkConversationBody => ({
+  id: String(conversation._id),
+  title: conversation.title,
+  projectId: conversation.projectId
+    ? String(conversation.projectId)
+    : undefined,
+  forkedFrom: { conversationId, messageId },
+  messageCount,
+  meta: {
+    requestId,
+    timestamp: new Date().toISOString(),
+    duration: Date.now() - startTime,
+  },
+});
+
+interface ForkTarget {
+  /** Names the kind of chat in the error log. */
+  label: string;
+  fields: Omit<ForkSessionFields, 'projectId'>;
+  findSource: (
+    orgId: string,
+    userId: string,
+    conversationId: string,
+  ) => Promise<IChatSessionDocument | null>;
+  copyArtifacts: ArtifactCopier;
+  /** Removes the artifacts copied under a fork that could not be created. */
+  discardArtifacts: (forkId: string) => Promise<void>;
+}
+
+const FORK_ARTIFACT_COPY_BATCH = 50;
+// Copying re-uploads every version's bytes, so allow far longer than a lookup.
+const FORK_ARTIFACT_COPY_TIMEOUT_MS = 180_000;
+
+/**
+ * Asks the connectors service to copy artifacts as the caller. One attempt
+ * only (`retries` counts attempts): a repeat after a timeout would leave a
+ * second, unused copy.
+ */
+export const forkArtifactCopier =
+  (appConfig: AppConfig, req: AuthenticatedUserRequest): ArtifactCopier =>
+  async (conversationId, refs) => {
+    const outcome: ArtifactCopyOutcome = { copies: [], failed: [] };
+    for (let i = 0; i < refs.length; i += FORK_ARTIFACT_COPY_BATCH) {
+      const response = await executeConnectorCommand<ArtifactCopyOutcome>(
+        `${appConfig.connectorBackend}/api/v1/artifacts/copy`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        {
+          conversationId,
+          artifacts: refs.slice(i, i + FORK_ARTIFACT_COPY_BATCH),
+        },
+        { retries: 1, timeoutMs: FORK_ARTIFACT_COPY_TIMEOUT_MS },
+      );
+      if (
+        response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        !response.data
+      ) {
+        throw handleBackendError(response, 'copy artifacts for fork');
+      }
+      outcome.copies.push(...response.data.copies);
+      outcome.failed.push(...response.data.failed);
+    }
+    return outcome;
+  };
+
+const runFork = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  target: ForkTarget,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  const conversationId = req.params.conversationId ?? '';
+  const messageId = req.params.messageId ?? '';
+  // Allocated up front: the artifacts are copied under this id before the chat
+  // exists, and a retried transaction must reuse them, not copy again.
+  const forkId = new mongoose.Types.ObjectId();
+  const copy = { started: false };
+  try {
+    const userId = req.user?.userId as string | undefined;
+    const orgId = req.user?.orgId as string | undefined;
+    if (!conversationId || !messageId) {
+      throw new BadRequestError('conversationId and messageId are required');
+    }
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const source = await target.findSource(orgId, userId, conversationId);
+    if (!source) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const fields: ForkSessionFields = {
+      ...target.fields,
+      projectId: await resolveForkProjectId(source, orgId, userId),
+    };
+    // Outside the transaction: this call can take minutes, longer than MongoDB
+    // lets a transaction live.
+    const artifacts = await copyArtifactsForFork(
+      source,
+      messageId,
+      forkId,
+      (id, refs) => {
+        copy.started = true;
+        return target.copyArtifacts(id, refs);
+      },
+    );
+    const performFork = (
+      txnSession: ClientSession | null,
+    ): Promise<ForkChatSessionResult> =>
+      copySessionUpToMessage(
+        source,
+        messageId,
+        userId,
+        orgId,
+        fields,
+        txnSession,
+        artifacts,
+      );
+
+    let result: ForkChatSessionResult;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      result = await session.withTransaction(() => performFork(session));
+    } else {
+      result = await performFork(null);
+    }
+
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        forkConversationResponse(
+          result,
+          conversationId,
+          messageId,
+          requestId,
+          startTime,
+        ),
+      );
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    logger.error(`Error forking ${target.label}`, {
+      requestId,
+      conversationId,
+      messageId,
+      error: failure.message,
+      stack: failure.stack,
+      duration: Date.now() - startTime,
+    });
+    if (copy.started) {
+      // The artifacts live outside MongoDB, so no rollback reaches them.
+      try {
+        await target.discardArtifacts(String(forkId));
+      } catch (cleanupError) {
+        logger.warn('Could not remove the artifacts of a failed fork', {
+          requestId,
+          forkId: String(forkId),
+          error:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+        });
+      }
+    }
+    next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+      session = null;
+    }
+  }
+};
+
+/**
+ * Copy a conversation into a new private chat owned by the caller, including
+ * every message up to and including `messageId`. The original is unchanged.
+ *
+ * Owner only: a shared recipient's access to the original's attachments and
+ * artifacts is revoked on unshare, which would leave a fork pointing at files
+ * it can no longer open.
+ */
+export const forkConversation =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    runFork(req, res, next, {
+      label: 'conversation',
+      fields: { sessionType: 'chat' },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne({
+          ...(buildFilter(
+            req,
+            orgId,
+            userId,
+            conversationId,
+            true,
+            false,
+          ) as FilterQuery<IChatSessionDocument>),
+          ...EXCLUDE_AGENT,
+        }),
+    });
+
+/** Owner only, for the same reason as `forkConversation`. */
+export const forkAgentConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const agentKey = req.params.agentKey ?? '';
+    if (!agentKey) {
+      next(new BadRequestError('agentKey is required'));
+      return;
+    }
+    await runFork(req, res, next, {
+      label: 'agent conversation',
+      fields: { sessionType: 'agent', agentKey },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne(
+          buildAgentConversationFilter(
+            req,
+            orgId,
+            userId,
+            agentKey,
+            conversationId,
+          ) as FilterQuery<IChatSessionDocument>,
+        ),
+    });
+  };
+
 async function performFeedbackUpdate(params: {
   query: Record<string, any>;
   conversationId: string;
@@ -3992,7 +4625,7 @@ async function performFeedbackUpdate(params: {
   }
 
   const message = await ChatSessionMessage.findOne(
-    { _id: messageId, sessionId: conversation._id },
+    { _id: messageId, sessionId: conversation._id, orgId: conversation.orgId },
     null,
     session ? { session } : undefined,
   );
@@ -4018,6 +4651,7 @@ async function performFeedbackUpdate(params: {
 
   const updatedMessage = await appendMessageFeedback(
     messageId,
+    conversation.orgId,
     feedbackEntry,
     session,
   );
@@ -4168,6 +4802,9 @@ export const archiveConversation = async (
               archivedBy: userId,
               lastActivityAt: Date.now(),
             },
+            // An archived chat is out of the list; restoring it should not
+            // bring back a pin the owner no longer remembers setting.
+            $unset: { isPinned: 1 },
           },
           {
             new: true,
@@ -4333,6 +4970,77 @@ export const unarchiveConversation = async (
     next(error);
   }
 };
+
+/**
+ * Pin is the owner's own ordering of their chat list, so unlike archive it is
+ * not open to people the chat is shared with. Re-pinning a pinned chat (or
+ * unpinning an unpinned one) succeeds without change, so a double click or a
+ * retry after a dropped response is safe.
+ */
+const setConversationPinned =
+  (
+    pinned: boolean,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const { conversationId } = req.params;
+      const userId = req.user?.userId as string | undefined;
+      const orgId = req.user?.orgId as string | undefined;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
+
+      const updated = await ChatSession.findOneAndUpdate(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          initiator: userId,
+          isDeleted: false,
+          // An archived chat is out of the list, so there is nothing to pin.
+          // Unpinning stays allowed so a stale pin can always be cleared.
+          ...(pinned ? { isArchived: false } : {}),
+          ...EXCLUDE_AGENT,
+        },
+        // Unpinning removes the field rather than storing `false`; see the schema.
+        pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
+        // Pinning is not an edit of the chat, so it must not change `updatedAt`.
+        { new: true, timestamps: false },
+      ).exec();
+
+      if (!updated) {
+        throw new NotFoundError(
+          'Conversation not found or not owned by caller',
+        );
+      }
+
+      res.status(HTTP_STATUS.OK).json({
+        id: updated._id,
+        isPinned: pinned,
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: unknown) {
+      logger.error(`Error ${pinned ? 'pinning' : 'unpinning'} conversation`, {
+        requestId,
+        message: `Error ${pinned ? 'pinning' : 'unpinning'} conversation`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(error);
+    }
+  };
+
+export const pinConversation = setConversationPinned(true);
+export const unpinConversation = setConversationPinned(false);
 
 export const listAllArchivesConversation = async (
   req: AuthenticatedUserRequest,
@@ -4650,7 +5358,7 @@ export const search =
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     try {
-      const { query, limit, filters, rewriteQuery } = req.body;
+      const { query, limit, filters, rewriteQuery, timeline } = req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
       const body = req.body as Record<string, unknown>;
       const dateBounds: Record<string, string> = {};
@@ -4686,6 +5394,7 @@ export const search =
           ...dateBounds,
           // Sent only when the caller set it, so other searches send what they always did.
           ...(typeof rewriteQuery === 'boolean' ? { rewriteQuery } : {}),
+          ...(typeof timeline === 'string' ? { timeline } : {}),
         },
       });
 
@@ -4812,9 +5521,9 @@ export const searchHistory = async (
         .skip(skip)
         .limit(limit)
         .exec(),
-      EnterpriseSemanticSearch.countDocuments({
-        filter,
-      }),
+      EnterpriseSemanticSearch.countDocuments(
+        filter as Record<string, unknown>,
+      ),
     ]);
 
     const response = {
@@ -5717,7 +6426,7 @@ export const deleteAgent =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -6325,7 +7034,9 @@ export const deleteAgent =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)
@@ -6480,7 +7191,7 @@ export const addMessageStreamToAgentConversation =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -6537,7 +7248,7 @@ export const addMessageStreamToAgentConversation =
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(
         confirmedConversation._id as mongoose.Types.ObjectId,
-        {},
+        { orgId: confirmedConversation.orgId },
         session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
@@ -7096,7 +7807,9 @@ export const addMessageStreamToAgentConversation =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)
@@ -7145,13 +7858,10 @@ export const regenerateAgentAnswers =
         agentKey,
         orgId,
         userId,
+        // Owner only: a chat shared with someone is read-only for them.
+        initiator: userId,
         isDeleted: false,
         ...ONLY_AGENT,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId },
-          { isShared: true },
-        ],
       }),
       buildAIEndpoint: (appConfig, agentKey) =>
         `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey as string)}/chat/stream`,
@@ -7308,21 +8018,26 @@ export const getAllAgentConversations = async (
         ...conversationWithComputedFields,
       };
     });
-    const processedSharedWithMeConversations = sharedWithMeConversations.map(
-      (sharedWithMeConversation: any) => {
-        const conversationWithComputedFields = addComputedFields(
+    // A project member sees another user's project-visible chat here; who it was shared with is
+    // the owner's business.
+    const visibleConversations = processedConversations.map((conversation) =>
+      conversation.isOwner
+        ? conversation
+        : { ...conversation, sharedWith: undefined },
+    );
+    const processedSharedWithMeConversations = await attachSharedBy(
+      sharedWithMeConversations.map((sharedWithMeConversation: any) =>
+        addComputedFields(
           sharedWithMeConversation as IAgentConversation,
           userId,
-        );
-        return {
-          ...conversationWithComputedFields,
-        };
-      },
+        ),
+      ),
+      orgId as string,
     );
 
     // Build response metadata
     const response = {
-      conversations: processedConversations,
+      conversations: visibleConversations,
       sharedWithMeConversations: processedSharedWithMeConversations,
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
@@ -7353,7 +8068,8 @@ export const getAllAgentConversations = async (
   }
 };
 
-export const getAgentConversationById = async (
+const getAgentConversationByIdOf = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -7398,6 +8114,7 @@ export const getAgentConversationById = async (
       conversationId as string,
       contentMatchIds,
       accessibleProjectIds,
+      true,
     );
 
     // Build message filter
@@ -7414,6 +8131,7 @@ export const getAgentConversationById = async (
       ...ONLY_AGENT,
     })
       .select({
+        orgId: 1,
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -7432,10 +8150,30 @@ export const getAgentConversationById = async (
       throw new NotFoundError('Conversation not found');
     }
 
+    // A recipient may be on the conversation only through a share, so the
+    // artifacts the owner created since sharing are granted on first view.
+    const initiatorId = session.initiator.toString();
+    const isRecipient = initiatorId !== userId;
+    if (page === 1 && isRecipient) {
+      await syncConversationRecordPermissions({
+        appConfig,
+        records: 'artifacts',
+        method: HttpMethod.POST,
+        grantorUserId: initiatorId,
+        orgId: orgId as string,
+        body: { conversationId, userIds: [userId] },
+        requestId,
+        conversationId,
+        timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+        maxAttempts: 1,
+      });
+    }
+
     const sessionId = session._id as unknown as Types.ObjectId;
 
     const totalMessages = await ChatSessionMessage.countDocuments({
       sessionId,
+      orgId: session.orgId,
     });
 
     const { skip, limit: effectiveLimit } = olderMessagesWindow(
@@ -7445,10 +8183,29 @@ export const getAgentConversationById = async (
     );
 
     const messages = await getMessages(sessionId, {
+      orgId: session.orgId,
       skip,
       limit: effectiveLimit,
       populateCitations: true,
     });
+
+    if (isRecipient) {
+      const attachmentRecordIds = collectChatAttachmentRecordIds(messages);
+      if (attachmentRecordIds.length > 0) {
+        await syncConversationRecordPermissions({
+          appConfig,
+          records: 'attachments',
+          method: HttpMethod.POST,
+          grantorUserId: initiatorId,
+          orgId: orgId as string,
+          body: { userIds: [userId], recordIds: attachmentRecordIds },
+          requestId,
+          conversationId,
+          timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+          maxAttempts: 1,
+        });
+      }
+    }
 
     const conversationWithMessages = attachMessages(session, messages);
 
@@ -7460,7 +8217,7 @@ export const getAgentConversationById = async (
     );
 
     // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
+    const builtResponse = buildConversationResponse(
       conversationWithMessages as unknown as IChatSessionDocument,
       userId,
       {
@@ -7472,6 +8229,14 @@ export const getAgentConversationById = async (
         hasPrevPage: skip + effectiveLimit < totalMessages,
       },
       sortedMessages,
+    );
+    // The recipient list is the owner's business: a viewer is told who shared
+    // the chat, never who else can read it.
+    const conversationResponse = await attachSharedByIfRecipient(
+      builtResponse.access.isOwner
+        ? builtResponse
+        : { ...builtResponse, sharedWith: undefined },
+      orgId as string,
     );
 
     // Build filters metadata using existing helper
@@ -7513,6 +8278,11 @@ export const getAgentConversationById = async (
     next(error);
   }
 };
+
+export const getAgentConversationById =
+  (appConfig: AppConfig): ConversationHandler =>
+  (req, res, next) =>
+    getAgentConversationByIdOf(appConfig, req, res, next);
 
 export const deleteAgentConversationById =
   (appConfig: AppConfig) =>

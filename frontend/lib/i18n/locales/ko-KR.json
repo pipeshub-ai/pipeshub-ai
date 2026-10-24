@@ -9,7 +9,9 @@
       "reindexFailedStart": "실패한 레코드를 다시 인덱싱하는 중…",
       "reindexFailedError": "실패한 레코드의 다시 인덱싱에 실패했습니다",
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
-      "manualIndexError": "수동 인덱싱 시작에 실패했습니다"
+      "manualIndexError": "수동 인덱싱 시작에 실패했습니다",
+      "retryClassificationStart": "분류 재시도가 대기열에 추가되었습니다",
+      "retryClassificationError": "분류 재시도에 실패했습니다"
     },
     "trash": {
       "menuLabel": "최근 삭제한 항목",
@@ -658,6 +660,13 @@
     "message": "이 작업은 문서를 처음부터 다시 인덱싱하며 추가 비용이 발생할 수 있습니다. 검색 결과가 오래되었거나, 인덱싱이 완료된 후에도 문서가 검색되지 않을 때 사용하세요.",
     "confirm": "확인"
   },
+  "reindexBlocked": {
+    "title": "이 레코드는 단독으로 재인덱싱할 수 없습니다",
+    "message": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 파일 하나만 재인덱싱하면 해당 파일이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "folderTitle": "이 폴더는 단독으로 재인덱싱할 수 없습니다",
+    "folderMessage": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 폴더만 재인덱싱하면 해당 파일들이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "goToConnectors": "커넥터로 이동"
+  },
   "kb": {
     "viewToggle": "보기 전환",
     "collectionsView": "컬렉션 보기",
@@ -684,7 +693,23 @@
     "chatSelectionLimit": "채팅에는 선택한 항목을 최대 {{max}}개까지 가져올 수 있습니다. 일부 선택을 해제한 후 다시 시도하세요.",
     "chatTooManyCollections": "채팅은 한 번에 최대 {{max}}개의 컬렉션을 검색할 수 있는데 컬렉션이 더 많습니다. 컬렉션을 열거나 질문할 컬렉션을 선택하세요.",
     "chatCollectionsLoadFailed": "채팅용 컬렉션을 불러오지 못했습니다. 다시 시도하세요.",
-    "chatNoCollections": "아직 질문할 컬렉션이 없습니다."
+    "chatNoCollections": "아직 질문할 컬렉션이 없습니다.",
+    "indexingStatus": {
+      "completed": "완료",
+      "inProgress": "진행 중",
+      "failed": "실패",
+      "fileTypeNotSupported": "지원되지 않는 파일 형식",
+      "notStarted": "시작 전",
+      "queued": "대기열에 있음",
+      "manualIndexing": "수동 인덱싱",
+      "empty": "비어 있음",
+      "paused": "일시 중지됨",
+      "needsMultimodalModel": "멀티모달 모델 필요",
+      "skipped": "건너뜀",
+      "pending": "보류 중"
+    },
+    "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
+    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -786,6 +811,7 @@
     "recents": "최근 항목",
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
+    "agentChat": "에이전트 채팅",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -824,6 +850,8 @@
     "like": "도움이 됨",
     "dislike": "도움이 안 됨",
     "copy": "복사",
+    "fork": "채팅 분기",
+    "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
@@ -848,6 +876,7 @@
     "backToChatHome": "모든 채팅",
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
+    "sharedAgentChat": "공유된 에이전트 채팅",
     "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",
@@ -867,6 +896,11 @@
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "pinned": "고정됨",
+    "pinFailed": "채팅을 고정하지 못했습니다",
+    "unpinFailed": "채팅 고정을 해제하지 못했습니다",
     "export": {
       "menuItem": "내보내기",
       "exporting": "채팅을 내보내는 중…",
@@ -947,11 +981,11 @@
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
-      "editComingSoonTitle": "출시 예정",
-      "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
-      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요."
+      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
+      "forkSuccess": "이 지점부터 새 채팅을 시작했습니다",
+      "forkError": "채팅을 분기하지 못했습니다. 다시 시도하세요."
     },
     "queryModes": {
       "chat": {
@@ -1330,7 +1364,7 @@
       "showAll": "모두 보기",
       "showLess": "간단히 보기",
       "partial": "세부 정보의 앞부분만 표시됩니다. 전체 호출은 더 깁니다.",
-      "deletesData": "데이터 삭제",
+      "cantBeUndone": "되돌릴 수 없음",
       "allow": "허용",
       "dontAskAgain": "이 도구는 다시 묻지 않기",
       "answerFailed": "답변을 보내지 못했습니다. 다시 시도하세요.",
@@ -1785,7 +1819,14 @@
         "saveErrorTitle": "변경 사항을 저장하지 못했습니다",
         "regenerateSuccessTitle": "시크릿이 재생성됨",
         "regenerateErrorTitle": "시크릿을 재생성하지 못했습니다",
-        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1)."
+        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1).",
+        "identityBoundNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동합니다. 이를 변경하면 이미 발급된 토큰은 취소됩니다.",
+        "identityUnboundNote": "이 애플리케이션의 토큰은 이를 만든 사람으로서, 그 사람의 문서 접근 권한과 역할을 가지고 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다. 대신 서비스 계정을 지정하세요.",
+        "identityAdminOnly": "관리자만 이 애플리케이션에 서비스 계정을 지정할 수 있습니다. 관리자에게 요청하세요.",
+        "identityBindAction": "이 계정 사용",
+        "identityBindRevokes": "이 작업은 애플리케이션이 이미 발급한 토큰을 취소합니다. 이를 사용하는 모든 것은 새 토큰이 필요합니다.",
+        "identityBound": "이제 애플리케이션이 해당 서비스 계정으로서 작동합니다.",
+        "identityBindFailed": "서비스 계정을 변경하지 못했습니다. 잠시 후 다시 시도하세요."
       },
       "create": {
         "panelTitle": "OAuth 2.0 애플리케이션 생성",
@@ -1797,6 +1838,7 @@
         "createDisabledScopesTooltip": "애플리케이션을 생성하려면 하나 이상의 권한 범위를 선택하세요.",
         "tabGeneral": "일반",
         "tabPermissions": "권한 및 범위",
+        "tabGranular": "세부 권한",
         "appNameLabel": "앱 이름",
         "appNamePlaceholder": "내 애플리케이션",
         "descriptionLabel": "설명",
@@ -1842,7 +1884,15 @@
         "errorOptionalUrlInvalid": "선택 URL을 입력하는 경우 유효한 http(s) 주소여야 합니다.",
         "grantRequiredTitle": "권한 부여 유형 필요",
         "grantRequiredDescription": "하나 이상의 권한 부여 유형이 선택된 상태여야 합니다.",
-        "clientCredentialsWarning": "클라이언트 자격 증명 토큰은 토큰 엔드포인트를 호출하는 사람이 아니라 항상 이 애플리케이션을 생성한 사용자로서 Pipeshub에 접근합니다. 부여한 스코프 범위 안에서 토큰은 그 사용자가 접근할 수 있는 모든 것에 접근할 수 있고 그 사용자의 역할까지 물려받으므로, 관리자가 생성한 애플리케이션은 관리자 권한을 갖게 됩니다. 또한 해당 계정이 삭제되면 토큰은 작동을 멈춥니다. 이 애플리케이션이 Authorization Code 플로우도 지원하는 경우, 사용자는 그 방식으로 직접 인증할 수 있습니다."
+        "serviceAccountHeading": "이 애플리케이션이 대신 작업할 서비스 계정",
+        "clientCredentialsIdentityNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동하며, 지정된 계정이 없으면 이를 만든 사람으로서 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다.",
+        "serviceAccountHelper": "클라이언트 자격 증명 토큰에는 사람이 포함되지 않으므로 이 애플리케이션에는 자체 ID가 필요합니다. 서비스 계정은 항상 구성원이며 관리자가 될 수 없고 로그인할 수 없습니다. 서비스 계정이 없으면 애플리케이션은 이를 만든 사람으로서 작업하게 됩니다.",
+        "serviceAccountPlaceholder": "서비스 계정 선택",
+        "serviceAccountLoading": "서비스 계정을 불러오는 중…",
+        "serviceAccountNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만든 다음 다시 돌아오세요.",
+        "serviceAccountLoadError": "서비스 계정을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "serviceAccountRetry": "다시 시도",
+        "errorServiceAccountRequired": "이 애플리케이션이 대신 작업할 서비스 계정을 선택하세요."
       }
     },
     "personalAccessTokens": {
@@ -2053,6 +2103,59 @@
       "rotateCredentialsPlaceholder": "새 API 키",
       "rotateCredentialsSave": "키 업데이트",
       "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "identity": {
+        "menuItem": "ID 전달",
+        "title": "ID 전달",
+        "hint": "게이트웨이에 요청자를 알려 사용자별 예산, 한도, 모델 접근을 적용하도록 합니다. 이 연결의 모든 모델에 적용됩니다.",
+        "enabled": "사용자 ID 전달",
+        "format": "형식",
+        "formatHeaders": "LiteLLM 헤더",
+        "formatTemplate": "헤더 템플릿",
+        "formatSignedJwt": "서명된 토큰(엔터프라이즈)",
+        "preset": "게이트웨이 프리셋",
+        "presetCustom": "사용자 지정 헤더",
+        "templates": "헤더 템플릿",
+        "templatesHint": "한 줄에 하나씩 Header-Name: value 형식으로 입력합니다. {{placeholders}}를 사용할 수 있습니다.",
+        "serviceKey": "백그라운드 작업용 키",
+        "serviceKeyPlaceholder": "인덱싱 및 추출용 게이트웨이 키",
+        "serviceKeySaved": "저장된 키가 있습니다. 바꾸려면 입력하세요.",
+        "serviceKeyHint": "인덱싱과 추출에는 로그인한 사용자가 없습니다. 비용을 사용자와 분리해 관리할 수 있도록 별도의 게이트웨이 키를 지정하세요.",
+        "serviceKeyRemove": "저장된 키 제거",
+        "preview": "미리보기",
+        "previewTitle": "나에게 전송될 내용",
+        "previewNone": "전송되는 내용이 없습니다.",
+        "previewFailed": "미리보기를 만들 수 없습니다",
+        "save": "저장",
+        "saved": "ID 전달이 저장되었습니다",
+        "saveFailed": "ID 전달을 저장하지 못했습니다"
+      },
+      "identityPolicy": {
+        "open": "ID 정책",
+        "damaged": "저장된 ID 정책을 읽을 수 없어 기본값을 표시합니다. 저장하면 대체됩니다.",
+        "title": "ID 정책",
+        "hint": "PipesHub가 모델 게이트웨이에 요청자에 대해 알려도 되는 정보입니다. ID를 전달하는 모든 연결에 적용됩니다.",
+        "subjectSource": "사용자 식별 기준",
+        "subjectUserId": "사용자 ID",
+        "subjectEmail": "이메일 주소",
+        "subjectIdp": "ID 공급자 개체 ID",
+        "includeEmail": "이메일 주소 포함",
+        "includeDisplayName": "표시 이름 포함",
+        "pseudonymize": "안정적인 가명으로 ID 숨기기",
+        "pseudonymizeHint": "게이트웨이에는 실제 ID 대신 알아볼 수 없는 ID가 보입니다. 매핑은 되돌릴 수 없습니다.",
+        "groups": "그룹 멤버십 전달",
+        "groupsHint": "게이트웨이가 그룹별 접근과 예산을 적용할 수 있습니다.",
+        "allowList": "이 그룹만 전달",
+        "allowListHint": "한 줄에 그룹 ID 하나. 비워 두면 아래 한도까지 모든 그룹을 전달합니다.",
+        "maxGroups": "전달할 최대 그룹 수",
+        "blockMissing": "로그인한 사용자가 없는 요청 거부",
+        "blockMissingHint": "ID를 전달할 때 사용자와 연결할 수 없는 대화형 호출은 서비스로 보내지 않고 거부합니다.",
+        "embeddingAsService": "검색 임베딩을 서비스에 귀속",
+        "embeddingAsServiceHint": "끔: 사용자의 검색어 임베딩 비용은 해당 사용자의 예산에서 차감됩니다.",
+        "servicePrefix": "서비스 ID 접두사",
+        "saved": "ID 정책이 저장되었습니다",
+        "saveFailed": "ID 정책을 저장하지 못했습니다",
+        "loadFailed": "ID 정책을 불러오지 못했습니다"
+      },
       "batchStatus": {
         "pending": "대기",
         "checking": "확인 중",
@@ -2146,7 +2249,7 @@
       "title": "액션",
       "subtitle": "레코드 생성, 필드 업데이트, 워크플로우 트리거 같은 자동화된 액션을 구성합니다. 각 앱에는 지원되는 기능에 맞춘 액션이 있습니다.",
       "yourActionsTitle": "내 액션",
-      "yourActionsSubtitle": "관리자가 내 계정에 제공한 액션을 인증하고 관리합니다.",
+      "yourActionsSubtitle": "관리자가 제공한 액션에 로그인하거나 직접 추가하세요.",
       "tabs": {
         "all": "전체",
         "configured": "구성됨",
@@ -2166,7 +2269,7 @@
         "manage": "관리",
         "unavailable": "사용 불가",
         "notConfigured": "구성되지 않음",
-        "adminSetupRequired": "관리자 설정 필요"
+        "add": "추가"
       },
       "trailingYourActions": "내 액션",
       "loading": "액션을 불러오는 중…",
@@ -2226,7 +2329,7 @@
         "refreshingList": "목록 업데이트 중…",
         "searchInstances": "인스턴스 검색…",
         "teamInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증된 액션은 에이전트에 추가할 수 있습니다.",
-        "personalInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증이 완료되면 에이전트에서 이 액션들을 사용할 수 있습니다.",
+        "personalInstanceInfo": "조직의 액션에 로그인하거나 직접 추가하세요. 로그인하면 에이전트에서 사용할 수 있습니다.",
         "instanceTabs": {
           "all": "전체({{count}})",
           "authenticated": "인증됨({{count}})",
@@ -2290,15 +2393,32 @@
         "numberMin": "{{min, number}} 이상의 정수를 입력하세요.",
         "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
-      "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
-      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다.",
       "toolRules": {
         "open": "도구 승인",
         "title": "도구 승인: {{name}}",
         "description": "어시스턴트나 에이전트가 이 도구를 사용하려고 할 때 어떻게 되는지입니다. 조직의 모든 사용자에게 같은 규칙이 적용됩니다.",
         "readOnly": "관리자만 변경할 수 있습니다.",
-        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다."
-      }
+        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다.",
+        "defaults": "데이터를 읽거나 변경하는 도구는 실행됩니다. 데이터를 삭제하거나 시트를 비우거나 이메일을 보내는 도구는 PipesHub 앱 채팅에서 먼저 묻고, Slack 봇이나 API처럼 아무도 응답할 수 없는 곳에서는 실행되지 않습니다.",
+        "enterpriseTitle": "조직 도구 승인",
+        "enterpriseDescription": "조직의 모든 사용자에게 이 도구 세트의 어떤 도구를 실행할지, 먼저 물을지, 실행하지 않을지 선택하세요."
+      },
+      "personal": {
+        "setupCallout": "이 액션은 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다. 추가한 후 로그인하세요.",
+        "yours": "내 액션",
+        "addOwn": "직접 추가",
+        "added": "액션을 추가했습니다.",
+        "delete": "액션 삭제",
+        "deleteTitle": "{{name}}을(를) 삭제할까요?",
+        "deleteBody": "이 액션의 로그인 정보와 도구 승인도 함께 삭제됩니다. 되돌릴 수 없습니다.",
+        "deleted": "액션을 삭제했습니다.",
+        "adminOnly": "{{name}}은(는) 관리자만 추가할 수 있습니다. 호스트 이름으로 서버에 연결하기 때문입니다. 관리자에게 조직용으로 추가해 달라고 요청하세요."
+      },
+      "enterprise": {
+        "userActionsTitle": "구성원의 개인 액션",
+        "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
+      },
+      "appsHeading": "앱 액션"
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",
@@ -2728,6 +2848,25 @@
         "noRecordTypes": "사용 가능한 레코드 유형이 없습니다",
         "localWatcherLabel": "로컬 워처",
         "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
+        "classification": "분류",
+        "classificationSkipped": "건너뜀",
+        "retryFailedClassification": "실패한 분류 재시도",
+        "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
+        "retryClassificationError": "분류 재시도에 실패했습니다",
+        "codeGraph": {
+          "title": "코드 그래프",
+          "status": {
+            "never_built": "아직 생성되지 않음",
+            "building": "생성 중",
+            "ready": "준비됨",
+            "stale": "업데이트 중",
+            "waiting_on_indexing": "인덱싱 대기 중",
+            "retrying": "재시도 중",
+            "failed": "실패",
+            "too_large": "너무 큼",
+            "unknown": "알 수 없음"
+          }
+        },
         "lastRun": {
           "title": "마지막 동기화",
           "outcome": {
@@ -3303,7 +3442,7 @@
           "none": "서버가 이 도구의 동작을 알려주지 않아 데이터를 변경하는 도구로 취급합니다."
         },
         "group": {
-          "destructive": "데이터 삭제",
+          "destructive": "되돌릴 수 없음",
           "write": "데이터 변경",
           "read": "읽기 전용",
           "notOffered": "현재 제공되지 않음",
@@ -4210,6 +4349,169 @@
         "outcomeRevoked": "권한 제거됨",
         "byAdmin": "{{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 액션",
+      "subtitle": "관리자가 에이전트에 제공한 내부 API입니다. 요청되는 경우 내 자격 증명을 연결하세요.",
+      "subtitleAdmin": "OpenAPI 명세로 내부 REST API를 액션으로 만드세요. 에이전트가 호출할 수 있는 작업과 PipesHub의 로그인 방식을 선택합니다.",
+      "emptyTitle": "첫 API 액션 추가",
+      "emptyAdmin": "내부 REST API의 OpenAPI 3.0 또는 3.1 명세를 업로드하세요.",
+      "card": {
+        "fallbackDescription": "OpenAPI 명세로 추가한 내부 REST API입니다."
+      },
+      "operationCount_other": "작업 {{count}}개",
+      "kind": {
+        "read": "읽기",
+        "write": "쓰기",
+        "destructive": "삭제"
+      },
+      "authType": {
+        "none": "인증 없음",
+        "api_key": "API 키",
+        "http_bearer": "Bearer 토큰",
+        "http_basic": "사용자 이름과 비밀번호",
+        "oauth2_client_credentials": "OAuth 2.0 클라이언트 자격 증명",
+        "oauth2_authorization_code": "OAuth 2.0 로그인"
+      },
+      "status": {
+        "connected": "연결됨",
+        "notConnected": "연결 안 됨",
+        "open": "로그인 필요 없음",
+        "shared": "공유 자격 증명"
+      },
+      "cta": {
+        "add": "API 액션 추가",
+        "connect": "연결",
+        "manageConnection": "연결 관리",
+        "details": "세부 정보",
+        "edit": "편집",
+        "delete": "삭제",
+        "more": "{{name}} 옵션 더 보기"
+      },
+      "toasts": {
+        "loadError": "API 액션을 불러오지 못했습니다",
+        "created": "API 액션을 추가했습니다",
+        "updated": "API 액션을 업데이트했습니다",
+        "saveError": "API 액션을 저장하지 못했습니다",
+        "deleted": "API 액션을 삭제했습니다",
+        "deleteError": "API 액션을 삭제하지 못했습니다",
+        "connected": "연결되었습니다",
+        "disconnected": "연결이 해제되었습니다"
+      },
+      "deleteDialog": {
+        "title": "API 액션 삭제",
+        "body": "{{name}}을(를) 삭제할까요? 저장된 모든 자격 증명이 삭제됩니다. 에이전트가 사용하는 API 액션은 삭제할 수 없습니다."
+      },
+      "editor": {
+        "addTitle": "API 액션 추가",
+        "editTitle": "API 액션 편집",
+        "spec": "OpenAPI 명세",
+        "specHint": "API의 OpenAPI 3.0/3.1 명세를 JSON 또는 YAML 형식으로 업로드하거나 붙여 넣으세요. PipesHub가 작업과 로그인 방식을 읽어 옵니다.",
+        "specEditHint": "현재 명세를 유지하려면 비워 두세요. 새 명세를 올리면 그 작업과 인증 방식 중에서 고를 수 있습니다.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "명세 읽기",
+        "previewing": "명세를 읽는 중…",
+        "validateError": "명세를 읽지 못했습니다",
+        "warnings": "명세의 일부를 건너뛰었습니다:",
+        "operations": "작업 ({{total}}개 중 {{selected}}개 선택됨)",
+        "operationsHint": "에이전트는 선택한 작업만 호출할 수 있습니다.",
+        "name": "이름",
+        "description": "설명",
+        "baseUrl": "기본 URL",
+        "baseUrlHint": "PipesHub가 요청을 보내는 주소입니다. 작업 경로가 뒤에 붙습니다.",
+        "loopbackHint": "localhost는 PipesHub 서버 자체를 뜻합니다. 네트워크의 호스트 이름처럼 PipesHub가 API에 접근하는 주소를 사용하세요.",
+        "authScheme": "인증",
+        "authSchemeLocked": "인증 방식을 바꾸려면 명세를 다시 올리세요.",
+        "scopes": "범위",
+        "oauthClientId": "OAuth 앱 클라이언트 ID",
+        "oauthClientSecret": "OAuth 앱 클라이언트 시크릿",
+        "keepSecret": "저장된 시크릿을 유지하려면 비워 두세요",
+        "sharedCredential": "공유 자격 증명 하나 사용",
+        "sharedCredentialHint": "자격 증명을 한 번 설정하면 모든 멤버가 사용합니다. 끄면 멤버마다 자신의 자격 증명을 연결합니다.",
+        "sharedCredentialForced": "클라이언트 자격 증명은 사람이 아닌 앱으로 로그인하므로 모두가 설정한 자격 증명을 공유합니다.",
+        "timeout": "시간 제한(초)",
+        "timeoutHint": "API 응답을 기다리는 시간으로, 1~{{max}}초입니다.",
+        "problems": {
+          "name": "이름을 입력하세요.",
+          "baseUrl": "기본 URL을 입력하세요.",
+          "operations": "작업을 하나 이상 선택하세요.",
+          "timeout": "1~120초 사이의 시간 제한을 입력하세요.",
+          "oauthClientId": "OAuth 앱의 클라이언트 ID를 입력하세요."
+        },
+        "create": "API 액션 추가",
+        "specLoadedHint": "이 API 액션의 기반이 되는 명세입니다. 최신 버전에서 고르려면 명세를 교체하세요.",
+        "replaceSpec": "명세 교체",
+        "specUnread": "먼저 새 명세를 읽거나 교체를 취소하세요.",
+        "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
+        "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
+        "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",
+        "sampleHint": "명세가 없나요? 모든 로그인 방식을 갖춘 헬프데스크 API 샘플로 시작하세요.",
+        "sample": {
+          "yaml": "샘플 YAML",
+          "json": "샘플 JSON"
+        },
+        "detailsHeading": "세부 정보",
+        "descriptionHint": "에이전트는 이 내용을 읽고 API를 언제 사용할지 결정합니다.",
+        "authSchemeHint": "에이전트가 API를 호출할 때 PipesHub가 로그인하는 방식입니다.",
+        "redirectUrl": "리디렉션 URL",
+        "redirectUrlHint": "이 URL을 OAuth 앱에 허용된 리디렉션으로 등록하세요.",
+        "noAuthHint": "PipesHub는 자격 증명 없이 API를 호출하므로 명세에서 공개로 표시한 작업만 작동합니다.",
+        "selectReads": "읽기만",
+        "selectAll": "전체",
+        "selectNone": "없음",
+        "unreachableWarning_other": "선택한 작업 {{count}}개에 자격 증명이 필요하므로 인증 없이는 실패합니다.",
+        "deselectUnreachable": "선택 해제",
+        "needsCredentials": "자격 증명 필요",
+        "needsCredentialsHint": "명세에 따르면 이 작업에는 자격 증명이 필요합니다. 인증하지 않으면 API가 요청을 거부합니다.",
+        "advancedHeading": "고급"
+      },
+      "connect": {
+        "mode": {
+          "none": "이 API에는 자격 증명이 필요 없습니다.",
+          "own": "에이전트가 내 자격 증명으로 이 API를 호출합니다.",
+          "shared": "모든 멤버가 여기에서 설정한 자격 증명을 사용합니다.",
+          "managed": "이 API 액션의 자격 증명은 관리자가 관리합니다."
+        },
+        "status": "상태",
+        "signIn": "로그인",
+        "signInAgain": "다시 로그인",
+        "signingIn": "로그인 중…",
+        "fields": {
+          "apiKey": "API 키",
+          "token": "토큰",
+          "username": "사용자 이름",
+          "password": "비밀번호",
+          "clientId": "클라이언트 ID",
+          "clientSecret": "클라이언트 시크릿"
+        },
+        "replaceHint": "저장되었습니다. 바꾸려면 새 값을 입력하세요.",
+        "error": "작업에 실패했습니다. 다시 시도하세요.",
+        "test": "연결 테스트",
+        "testing": "테스트 중…",
+        "testOk": "API가 응답했습니다.",
+        "testFailed": "API가 오류로 응답했습니다.",
+        "testTruncated": "응답의 앞부분만 표시됩니다.",
+        "disconnect": "연결 해제",
+        "disconnecting": "연결 해제 중…",
+        "panelTitle": "API 액션",
+        "connectionHeading": "연결",
+        "testHeading": "연결 테스트",
+        "testHint": "입력이 필요 없는 읽기 작업 하나를 호출합니다.",
+        "testIdle": "테스트 호출을 실행해 API가 무엇을 반환하는지 확인하세요.",
+        "testNeedsConnection": "먼저 연결한 다음 테스트 호출을 실행하세요.",
+        "operationsHeading_other": "에이전트가 호출할 수 있는 작업 {{count}}개"
+      },
+      "sectionTitle": "API 액션",
+      "kindCount": {
+        "read_other": "읽기 {{count}}개",
+        "write_other": "쓰기 {{count}}개",
+        "destructive_other": "삭제 {{count}}개"
+      },
+      "kindPolicy": {
+        "read": "즉시 실행",
+        "write": "먼저 사용자에게 확인",
+        "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
     }
   },
   "filePreview": {
@@ -4569,7 +4871,13 @@
     "mcpAgentApprovals": "에이전트별 도구 승인",
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
-    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨"
+    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "apiToolsets": {
+      "section": "API 액션",
+      "connectTooltip": "액션에서 연결하세요",
+      "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
+    }
   },
   "recordView": {
     "sections": {
@@ -4597,6 +4905,13 @@
       "noRecordMetadata": "이 항목에 대한 추가 레코드 메타데이터가 없습니다."
     },
     "indexingReasonAria": "인덱싱 실패 상세 정보",
+    "stageTrackLabel": "파이프라인",
+    "stageParsed": "파싱됨",
+    "stageSearchable": "검색 가능",
+    "stageClassified": "분류됨",
+    "stageEntities": "엔터티",
+    "stageAttempt": "시도 {{n}}회",
+    "stageDetailsAria": "단계 세부 정보",
     "tabRecordInformation": "레코드 정보",
     "tabDocumentDetails": "문서 상세 정보",
     "chat": "채팅",
@@ -4833,6 +5148,7 @@
     },
     "desktopHandoff": {
       "title": "로그인이 PipesHub로 전송되었습니다",
+      "integrationTitle": "인증이 PipesHub로 전송되었습니다",
       "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
       "openApp": "PipesHub 열기"
     }
@@ -4874,6 +5190,27 @@
     "doneLine": "터미널로 돌아가셔도 됩니다. 이 창은 닫아도 좋습니다.",
     "deniedTitle": "요청이 거부되었습니다",
     "deniedLine": "기기에 접근 권한이 부여되지 않았습니다."
+  },
+  "knowledgeLimit": {
+    "title": "{{appName}}에서 무엇을 볼 수 있나요?",
+    "help": "여기서 허용한 항목만 검색하고 읽을 수 있으며, 회원님이 볼 수 있는 것보다 더 많이 볼 수는 없습니다.",
+    "everything": "내가 볼 수 있는 모든 항목",
+    "everythingHint": "나중에 추가하는 소스도 포함됩니다.",
+    "only": "내가 선택한 항목만",
+    "onlyHint": "소스 전체를 선택하거나, 소스를 열어 스페이스, 폴더 또는 파일을 선택하세요.",
+    "pickOne": "소스, 스페이스, 폴더 또는 파일을 하나 이상 선택하세요.",
+    "tooMany": "최대 {{max}}개 항목을 선택하거나, 대신 소스 전체를 선택하세요.",
+    "selectedCount_other": "{{count}}개 항목 선택됨",
+    "canSeeEverything": "볼 수 있는 항목: 회원님이 볼 수 있는 모든 항목",
+    "canSeeSome_other": "볼 수 있는 항목: 선택한 {{count}}개 항목",
+    "thisToken": "이 토큰",
+    "app": {
+      "thisApp": "이 앱",
+      "help": "이 앱을 연결한 사용자는 여기에서 선택한 항목만 검색하고 읽을 수 있으며, 본인이 볼 수 있는 범위를 넘지 않습니다.",
+      "everything": "각 사용자가 볼 수 있는 모든 항목",
+      "everythingHint": "나중에 추가되는 소스도 포함됩니다."
+    },
+    "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },
   "validation": {
     "password": {

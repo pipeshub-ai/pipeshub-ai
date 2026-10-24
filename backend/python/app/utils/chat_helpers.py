@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Optional
@@ -23,7 +23,12 @@ from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import 
     is_jira_ticket_record,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import (
+    BlockType,
+    GroupType,
+    SemanticMetadata,
+    summary_with_captions,
+)
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -41,6 +46,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
@@ -76,6 +82,7 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
+    API_READ_HINTS,
     FETCH_RECORD_HINTS,
     RECORD_CLOSE,
     ReadHints,
@@ -86,6 +93,7 @@ from app.utils.record_block_selection import (  # noqa: E402
     selection_hint,
 )
 from app.utils.render_budget import RenderBudget  # noqa: E402
+from app.utils.slack_replies import corrected_has_replies, replies_note  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
 # rendering is bounded only by `max_blocks` exactly as it was before budgets
@@ -219,13 +227,25 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
-def table_summary_text(group_data: object) -> str:
-    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+def table_summary_text(group_data: object, captions: list[str] | None = None) -> str:
+    """A table's summary as the model reads it: led by its DDL for a SQL table,
+    and by any of *captions* the summary lacks."""
     if not isinstance(group_data, dict):
-        return ""
-    summary = group_data.get("table_summary", "") or ""
+        return summary_with_captions("", captions)
+    summary = summary_with_captions(group_data.get("table_summary", "") or "", captions)
     ddl = group_data.get("ddl", "") or ""
     return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
+def table_group_summary_text(group: dict[str, Any]) -> str:
+    """``table_summary_text`` for a stored table group, with its captions.
+
+    The captions are read from ``table_metadata``, not the summary, so a table
+    indexed before enrichment kept them still shows which table a row is from.
+    """
+    metadata = group.get("table_metadata") or {}
+    captions = metadata.get("captions") if isinstance(metadata, dict) else None
+    return table_summary_text(group.get("data"), captions)
 
 
 def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
@@ -239,7 +259,27 @@ def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
 
 
 
+# Verdicts by (length, str hash): the same multi-megabyte image strings are
+# checked from several render paths on every turn, and each check strips and
+# regex-scans the whole string. A str caches its own hash, so a repeat costs
+# nothing, and the key holds no reference to the image.
+_base64_image_verdicts: dict[tuple[int, int], bool] = {}
+
+
 def is_base64_image(s: str) -> bool:
+    if not isinstance(s, str):
+        return False
+    key = (len(s), hash(s))
+    verdict = _base64_image_verdicts.get(key)
+    if verdict is None:
+        verdict = _is_base64_image_uncached(s)
+        if len(_base64_image_verdicts) >= 20000:
+            _base64_image_verdicts.clear()
+        _base64_image_verdicts[key] = verdict
+    return verdict
+
+
+def _is_base64_image_uncached(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
 
@@ -609,7 +649,7 @@ async def build_multimodal_user_content(
 
     for vrid, att in fetch_tasks:  # noqa: B007
         try:
-            record = await blob_store.get_record_from_storage(vrid, org_id)
+            record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
             if not record:
                 continue
             block_containers = record.get("block_containers", {})
@@ -857,6 +897,10 @@ NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
 
 # Related records listed (id + name) per hit, after the permission check.
 MAX_RELATED_RECORDS_PER_HIT = 50
+# Edges read per hit and direction, before the permission check: a hit with
+# thousands of attachments costs a bounded read. 3x oversamples so that
+# unreadable neighbours do not starve the kept 50.
+RELATION_FETCH_LIMIT_PER_DIRECTION = 3 * MAX_RELATED_RECORDS_PER_HIT
 # Of those, how many also get full graph metadata + summary (one blob fetch each).
 MAX_FULL_METADATA_RELATED_PER_HIT = 15
 
@@ -1370,8 +1414,8 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
-                blob_record = await blob_store.get_record_from_storage(
-                    vrid, org_id, lookup_result=lookup_result
+                blob_record = await record_artifact_reader(blob_store).read_record(
+                    vrid, org_id, lookup=lookup_result
                 )
             except Exception as e:
                 logger.debug(
@@ -1423,7 +1467,7 @@ async def _relations_per_record(
             if outgoing
             else graph_provider.get_child_record_ids_by_relation_type
         )
-        return await fetch(record_id, relation_type)
+        return await fetch(record_id, relation_type, limit=RELATION_FETCH_LIMIT_PER_DIRECTION)
 
     jobs = [
         (record_id, relation_type, outgoing)
@@ -1448,6 +1492,8 @@ async def _relations_per_record(
             continue
         bucket = "parents" if outgoing else "children"
         for edge in result or []:
+            if len(out[record_id][bucket]) >= RELATION_FETCH_LIMIT_PER_DIRECTION:
+                break
             out[record_id][bucket].append({**edge, "relationType": relation_type})
     return out
 
@@ -1471,7 +1517,7 @@ async def _fetch_edges_for_records(
     by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
         relations = await graph_provider.get_node_relations_batch(
-            record_ids, list(by_value),
+            record_ids, list(by_value), limit_per_direction=RELATION_FETCH_LIMIT_PER_DIRECTION,
         )
     except Exception as e:
         # Returning {} here drops linked-record context for every hit in the
@@ -1673,14 +1719,14 @@ async def _resolve_target_metadata(
     if out_of_context_ids:
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
-        # get_record_from_storage, plus its own type-specific get_document.
+        # read_record, plus its own type-specific get_document.
         blob_lookups: dict[str, dict[str, Any]] = {}
         vrids_to_resolve = [
             id_to_vrid[rid] for rid in out_of_context_ids if rid in id_to_vrid
         ]
         if blob_store and org_id and vrids_to_resolve:
             try:
-                resolved_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                resolved_lookups = await record_artifact_reader(blob_store).lookup_many(
                     vrids_to_resolve
                 )
                 # Anything but a mapping means the pre-resolve did not happen;
@@ -1850,6 +1896,7 @@ async def enrich_records_with_graph_context(
     config_service: "ConfigurationService | None" = None,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
@@ -1859,6 +1906,8 @@ async def enrich_records_with_graph_context(
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
     cannot run nothing is added; the hits themselves are left untouched.
+    ``connection_sources`` is a connected app's limit: a parent outside it is
+    not named, so a file the limit names does not name the folder above it.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
@@ -1910,6 +1959,19 @@ async def enrich_records_with_graph_context(
         except Exception as exc:
             # Fail closed: without a verdict a related record may be one the user cannot open.
             logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
+            return
+    if connection_sources is not None:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        parent_ids = set(dependent_vrid_to_parent_id.values()) | {
+            rid for _, _, bucket in relation_buckets for rid, entry in bucket.items() if "PARENT" in entry["labels"]
+        }
+        try:
+            readable_ids -= await outside_connection(
+                graph_provider, user_id, org_id, parent_ids & readable_ids - in_context_ids, connection_sources,
+            )
+        except Exception as exc:
+            logger.warning("Graph context enrichment skipped: limit check unavailable: %s", exc)
             return
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
@@ -2258,12 +2320,19 @@ def build_address_links_info(record: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def record_header_metadata(record: dict[str, Any]) -> str:
+def record_header_metadata(record: dict[str, Any], hints: ReadHints = FETCH_RECORD_HINTS) -> str:
     """A read record's metadata as its header shows it: its own fields, then
-    the records that name it and that it names, when those were attached."""
+    the records that name it and that it names, when those were attached.
+
+    A Slack record whose messages have replies also says how many and how to
+    read them (`hints.thread`): the replies are records of their own.
+    """
     metadata = record.get("context_metadata")
     if not isinstance(metadata, str):
         metadata = ""
+    replies = replies_note(record, hints.thread)
+    if replies:
+        metadata = f"{metadata}\n{replies}" if metadata else replies
     links = build_address_links_info(record)
     return f"{metadata}{links.rstrip()}" if links else metadata
 
@@ -2470,7 +2539,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         else:
             try:
                 # Blob returns snake_case keys (Pydantic model_dump)
-                rec = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
+                rec = await record_artifact_reader(blob_store).read_record(vrid, org_id)
                 if not rec:
                     logger.warning("FK enrichment: could not fetch blob for vrid %s", vrid)
                     virtual_record_id_to_result[vrid] = None
@@ -2759,7 +2828,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     batched_lookups: dict[str, Any] = {}
     if records_to_fetch:
         try:
-            batched_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+            batched_lookups = await record_artifact_reader(blob_store).lookup_many(
                 list(records_to_fetch)
             )
         except Exception as e:
@@ -2946,8 +3015,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
         # Fragment block: split from a container due to inline images inside a group.
         # Route through the container's parent group rather than treating as standalone.
+        # Code blocks reuse the field for definition nesting -- a function inside a
+        # function -- and are standalone results, not fragments of their parent.
         parent_block_idx = block.get("parent_block_index")
-        if parent_block_idx is not None:
+        if parent_block_idx is not None and block_type != BlockType.CODE.value:
             if parent_block_idx >= len(blocks):
                 continue
             container = blocks[parent_block_idx]
@@ -3074,7 +3145,6 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
             continue
         elif block_type == GroupType.TABLE.value:
-            table_data = block.get("data",{})
             table_metadata = block.get("table_metadata", {})
             children = block.get("children")
 
@@ -3106,10 +3176,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     is_large_table = True
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
-                table_summary = table_data.get("table_summary","")
-                ddl = table_data.get("ddl", "") or ""
-                if ddl:
-                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                table_summary = table_group_summary_text(block)
 
                 if not is_large_table:
                     child_results=[]
@@ -3269,11 +3336,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             )
             continue
         block_group = block_groups[block_group_index]
-        data = block_group.get("data", {})
-        table_summary = data.get("table_summary","")
-        ddl = data.get("ddl", "") or ""
-        if ddl:
-            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+        table_summary = table_group_summary_text(block_group)
         child_results = []
         for row_index, row_score, qdrant_content in sorted_rows_tuple:
             if row_index < len(blocks):
@@ -3583,7 +3646,7 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa
 
 async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
     try:
-        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id, lookup_result=lookup_result)
+        record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id, lookup=lookup_result)
         if record:
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:
@@ -3629,6 +3692,13 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         logger.error(f"Error fetching type-specific metadata for record {record_key}: {str(e)}")
 
                 record_instance = create_record_instance_from_dict(record, graph_doc)
+                if isinstance(record_instance, MessageRecord):
+                    # Records that bundle several Slack messages, and the first
+                    # record of a thread, were stored with hasReplies False; the
+                    # messages' own "Reply Count" lines say otherwise.
+                    record_instance.has_replies = corrected_has_replies(
+                        record, has_replies=record_instance.has_replies,
+                    )
                 if record_instance:
                     if isinstance(record_instance, DealRecord):
                         record["context_metadata"] = await record_instance.to_llm_context_with_graph(
@@ -4647,7 +4717,7 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record_header_metadata(record)
+        context_metadata = record_header_metadata(record, hints)
         fk_text = _fk_lines_text(record)
         trailer_reserve = record_trailer_reserve(
             record, selection=include_blocks is not None, hints=hints,
@@ -4926,7 +4996,7 @@ def record_to_message_content(
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
-                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        summary = _TABLE_CONTINUED if continuing else table_group_summary_text(corresponding_block_group)
                         framing = _TableFraming(block_group_index, summary)
                         image_table_header = f"[Table #{block_group_index}: {summary}]\n"
                         truncation_reserve = framing.row(
@@ -5274,7 +5344,8 @@ def record_to_text(record: dict[str, Any]) -> str:
     """
     try:
         content: list[str] = []
-        context_metadata = record_header_metadata(record)
+        # This string is what the record-content API returns.
+        context_metadata = record_header_metadata(record, API_READ_HINTS)
         content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
 
         block_containers = record.get("block_containers", {})

@@ -791,6 +791,38 @@ class TestValidationExceptionHandler:
         assert "fake-token-value" not in caplog.text
         assert "page=2" in caplog.text
 
+    async def test_logged_errors_do_not_echo_the_rejected_input(self, caplog) -> None:
+        """Each error carries the rejected value as ``input``, which for a
+        password field is the password; the log keeps only where and why."""
+        import logging
+
+        from app.query_main import validation_exception_handler
+        from app.utils.logger import RedactingFormatter
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.url = "http://test/api/v1/connect"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [{
+            "type": "string_too_long",
+            "loc": ["body", "password"],
+            "msg": "String should have at most 4 characters",
+            "input": "SENTINEL-422-pw",
+            "ctx": {"max_length": 4, "value": "SENTINEL-422-ctx"},
+        }]
+
+        with caplog.at_level(logging.WARNING, logger="app.query_main"):
+            result = await validation_exception_handler(mock_request, mock_exc)
+
+        assert result.status_code == 422
+        records = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
+        assert records
+        formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
+        for text in (records[0].getMessage(), formatter.format(records[0])):
+            assert "SENTINEL-422" not in text
+            assert "password" in text
+            assert "string_too_long" in text
+
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""
         from app.query_main import validation_exception_handler

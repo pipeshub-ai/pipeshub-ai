@@ -1588,10 +1588,31 @@ class DropboxConnector(BaseConnector):
             )
         return app_users
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        profile = None
+        try:
+            response = await self.data_source.team_token_get_authenticated_admin()
+            if response.success:
+                profile = getattr(response.data, "admin_profile", None)
+            else:
+                self.logger.debug("Dropbox did not return the authenticated admin: %s", response.error)
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Dropbox admin: %s", e)
+            return
+        await self.register_authenticated_source_user(
+            getattr(profile, "email", None), getattr(profile, "team_member_id", None)
+        )
+
     async def run_sync(self) -> None:
         """Runs a full synchronization from the Dropbox account root."""
         try:
             self.logger.info("Starting Dropbox full sync.")
+
+            await self._register_authenticated_identity()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "dropbox", self.connector_id, self.logger

@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -44,6 +44,7 @@ def _make_connector(*, return_dep: bool = False):
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
+    dep.inheritance_when_unreadable = AsyncMock(return_value=False)
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -120,7 +121,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def ok():
             return "result"
-        result = await c._safe_api_call(ok())
+        result = await c._safe_api_call(ok)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -128,7 +129,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("403 forbidden")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -136,7 +137,7 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("404 notfound")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -144,28 +145,24 @@ class TestSharePointSafeApiCall:
         c = _make_connector()
         async def fail():
             raise Exception("400 badrequest invalid hostname")
-        result = await c._safe_api_call(fail(), max_retries=2, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=2, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_throttle_retries_then_succeeds(self):
         c = _make_connector()
 
-        class _FlakyAwaitable:
-            def __init__(self):
-                self._attempts = 0
+        attempts = 0
 
-            def __await__(self):
-                return self._run().__await__()
-
-            async def _run(self):
-                self._attempts += 1
-                if self._attempts == 1:
-                    raise Exception("429 too many requests throttle")
-                return "ok"
+        async def _flaky():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Exception("429 too many requests throttle")
+            return "ok"
 
         with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await c._safe_api_call(_FlakyAwaitable(), max_retries=1, retry_delay=0.01)
+            result = await c._safe_api_call(_flaky, max_retries=1, retry_delay=0.01)
         assert result == "ok"
         mock_sleep.assert_awaited()
 
@@ -177,7 +174,7 @@ class TestSharePointSafeApiCall:
             raise Exception("500 internal server error")
 
         with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock):
-            result = await c._safe_api_call(always_fail(), max_retries=1, retry_delay=0.01)
+            result = await c._safe_api_call(always_fail, max_retries=1, retry_delay=0.01)
         assert result is None
         assert c.stats["errors_encountered"] >= 1
 
@@ -1368,9 +1365,14 @@ class TestSharePointCheckUpdatedPageRecord:
         page_record.id = "rec-p"
         c._create_page_record = AsyncMock(return_value=page_record)
         c._get_page_permissions = AsyncMock(return_value=[])
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
         result = await c._check_and_fetch_updated_page_record(record)
         assert result is not None
         assert result[0] is page_record
+        assert page_record.inherit_permissions is True
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-p"
+        )
 
     @pytest.mark.asyncio
     async def test_unchanged_etag_returns_none(self):
@@ -1611,8 +1613,10 @@ class TestSharePointProcessSitePages:
         c._safe_api_call = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
         existing = MagicMock()
+        existing.id = "rec-existing"
         existing.external_revision_id = "etag-old"
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
         c._get_page_permissions = AsyncMock(return_value=[])
@@ -1623,6 +1627,11 @@ class TestSharePointProcessSitePages:
         update = collected[0][2]
         assert update.is_updated is True
         assert update.content_changed is True
+        assert page_record.inherit_permissions is True
+        assert update.permissions_changed is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-existing"
+        )
 
     @pytest.mark.asyncio
     async def test_yields_new_page_record(self):
@@ -1656,6 +1665,10 @@ class TestSharePointProcessSitePages:
             collected.append(item)
         assert len(collected) == 1
         assert c.stats["pages_processed"] >= 1
+        assert page_record.inherit_permissions is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, None
+        )
 
     @pytest.mark.asyncio
     async def test_page_processing_error_continues(self):

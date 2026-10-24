@@ -41,7 +41,12 @@ def _record(record_id: str, *texts: str, created: int = 0) -> dict:
 
 def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "r"} if access else None)
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
+            node_ids=set(node_ids) if access else set()
+        )
+    )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"searchResults": []})
@@ -75,6 +80,14 @@ class TestAccess:
             await _read(request)
         assert err.value.status_code == 403
         fetch.assert_not_awaited()
+
+    async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
+        request, graph, _ = _request()
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            await _read(request)
+        graph.check_access.assert_awaited_once()
+        assert fetch.await_args.kwargs["accessible"] == {"r-1"}
 
     async def test_no_access_to_the_thread_record_is_a_403_too(self) -> None:
         request, _, _ = _request(access=False)
@@ -181,13 +194,77 @@ class TestThreadMode:
         assert err.value.status_code == 500
         assert resolve.await_args.kwargs["raise_on_error"] is True
 
-    async def test_a_record_outside_any_thread_is_a_422_that_says_why(self) -> None:
+    async def test_a_record_not_from_slack_is_a_422_that_says_why(self) -> None:
         request, _, _ = _request()
         with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value=None)), \
                 pytest.raises(HTTPException) as err:
             await _read(request, mode="thread")
         assert err.value.status_code == 422
         assert "not part of a Slack thread" in err.value.detail
+        assert "Slack records only" in err.value.detail
+
+    async def test_a_failed_channel_lookup_is_a_500(self) -> None:
+        request, _, _ = _request()
+        channel = AsyncMock(side_effect=RuntimeError("graph down"))
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", channel), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, mode="thread")
+        assert err.value.status_code == 500
+        assert channel.await_args.kwargs["raise_on_error"] is True
+
+    async def test_a_channel_record_reads_with_its_threads_and_says_so_first(self) -> None:
+        """A run of channel messages reads as itself, then its threads' replies,
+        with the note leading the first page and inside the budget."""
+        request, _, _ = _request()
+        records = [
+            _record("burst", "parent: deploy failing\n\nReply Count: 2", created=1),
+            _record("t-1", "reply: cache", "reply: fixed", created=2),
+        ]
+        note = "This record holds 3 Slack messages; 1 of them started a thread."
+        thread = AsyncMock(return_value={
+            "ok": True, "records": records, "skipped_record_ids": [], "note": note,
+            "threads": [{"thread_record_group_id": "g-1", "record_count": 1}], "threads_not_read": 0,
+        })
+        channel = {"connector_id": "c", "org_id": "o-1", "channel_id": "C1", "is_message": True, "timestamps": []}
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value=channel)), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, record_id="burst", mode="thread", max_chars=2_000)
+
+        assert body["mode"] == "thread"
+        assert body["content"].startswith(f"[{note}]")
+        assert body["content"].index("deploy failing") < body["content"].index("reply: fixed")
+        assert body["chars"] <= 2_000 and body["maxChars"] == 2_000
+        assert body["threads"] == [{"threadRecordGroupId": "g-1", "recordCount": 1}]
+        assert body["threadsNotRead"] == 0
+
+    async def test_the_note_is_not_repeated_on_later_pages(self) -> None:
+        request, _, _ = _request()
+        records = [_record("burst", "parent", created=1), _record("t-1", "reply", created=2)]
+        thread = AsyncMock(return_value={"ok": True, "records": records, "note": "Note.", "threads": []})
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value={"org_id": "o-1"})), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, mode="thread", start_record=1)
+        assert "Note." not in body["content"]
+        assert "reply" in body["content"]
+
+    async def test_a_message_without_replies_reads_as_itself(self) -> None:
+        request, _, _ = _request()
+        records = [_record("msg", "just one message", created=1)]
+        thread = AsyncMock(return_value={
+            "ok": True, "records": records, "note": "No replies: returned on its own.", "threads": [],
+        })
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \
+                patch.object(route, "_resolve_slack_channel_record", AsyncMock(return_value={"org_id": "o-1"})), \
+                patch.object(route, "_fetch_thread_records_impl", thread):
+            body = await _read(request, record_id="msg", mode="thread")
+        assert "just one message" in body["content"]
+        assert body["content"].startswith("[No replies")
+        assert body["threadRecordCount"] == 1 and body["complete"] is True
+        assert body["threads"] == [] and body["threadsNotRead"] == 0
 
 
 class TestOverHttp:

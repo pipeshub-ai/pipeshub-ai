@@ -25,7 +25,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointRecordType,
     SiteMetadata,
 )
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -67,6 +67,7 @@ def _make_mock_deps():
         MagicMock(email="user1@contoso.com"),
     ])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
@@ -449,7 +450,7 @@ class TestSafeApiCall:
         connector, *_ = _make_connector()
         async def _return_ok():
             return "ok"
-        result = await connector._safe_api_call(_return_ok())
+        result = await connector._safe_api_call(_return_ok)
         assert result == "ok"
 
     @pytest.mark.asyncio
@@ -459,7 +460,7 @@ class TestSafeApiCall:
         async def raise_forbidden():
             raise Exception("403 forbidden accessdenied")
 
-        result = await connector._safe_api_call(raise_forbidden(), max_retries=0)
+        result = await connector._safe_api_call(raise_forbidden, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -469,7 +470,7 @@ class TestSafeApiCall:
         async def raise_notfound():
             raise Exception("404 notfound")
 
-        result = await connector._safe_api_call(raise_notfound(), max_retries=0)
+        result = await connector._safe_api_call(raise_notfound, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -479,7 +480,7 @@ class TestSafeApiCall:
         async def raise_bad_request():
             raise Exception("400 badrequest invalid")
 
-        result = await connector._safe_api_call(raise_bad_request(), max_retries=0)
+        result = await connector._safe_api_call(raise_bad_request, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -490,7 +491,7 @@ class TestSafeApiCall:
             raise Exception("403 forbidden accessdenied")
 
         # Permission error should immediately return None without retry
-        result = await connector._safe_api_call(raise_general(), max_retries=0, retry_delay=0)
+        result = await connector._safe_api_call(raise_general, max_retries=0, retry_delay=0)
         assert result is None
 
 
@@ -589,6 +590,8 @@ class TestDriveProcessing:
         assert result.is_new is True
         assert result.record is not None
         assert result.record.record_name == "document.pdf"
+        assert result.record.inherit_permissions is False
+        dep.inheritance_when_unreadable.assert_awaited_once_with(CollectionNames.RECORDS.value, None)
 
     @pytest.mark.asyncio
     async def test_process_drive_item_deleted(self):
@@ -643,6 +646,7 @@ class TestDriveProcessing:
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
         dep.get_record_by_external_id = AsyncMock(return_value=existing)
         dep.get_file_record_by_id = AsyncMock(return_value=existing)
+        dep.inheritance_when_unreadable = AsyncMock(return_value=True)
 
         item = _make_mock_drive_item("item-3", "updated.docx", e_tag="new-etag")
 
@@ -651,6 +655,9 @@ class TestDriveProcessing:
         assert result.is_updated is True
         assert result.metadata_changed is True
         assert result.content_changed is True
+        assert result.record.inherit_permissions is True
+        assert result.permissions_changed is False
+        dep.inheritance_when_unreadable.assert_awaited_once_with(CollectionNames.RECORDS.value, "existing-id")
 
     @pytest.mark.asyncio
     async def test_create_file_record_no_extension_skipped(self):
@@ -1811,6 +1818,7 @@ class TestProcessSitePages:
         assert len(results) == 1
         record, perms, update = results[0]
         assert update.is_new is True
+        assert record.inherit_permissions is False
         assert connector.stats['pages_processed'] == 1
 
     @pytest.mark.asyncio
@@ -1867,6 +1875,7 @@ class TestProcessSitePages:
         existing.record_status = ProgressStatus.COMPLETED.value
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
         dep.get_record_by_external_id = AsyncMock(return_value=existing)
+        dep.inheritance_when_unreadable = AsyncMock(return_value=True)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
@@ -1876,6 +1885,9 @@ class TestProcessSitePages:
         record, perms, update = results[0]
         assert update.is_updated is True
         assert update.content_changed is True
+        assert record.inherit_permissions is True
+        assert update.permissions_changed is False
+        dep.inheritance_when_unreadable.assert_awaited_once_with(CollectionNames.RECORDS.value, "existing-id")
 
     @pytest.mark.asyncio
     async def test_pages_date_filter_skips_page(self):
@@ -2225,8 +2237,7 @@ class TestSharePointConvertToPermissions:
         perm.link = link
 
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_empty_permissions_list(self):

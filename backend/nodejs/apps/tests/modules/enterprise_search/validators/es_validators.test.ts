@@ -1,6 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as yaml from 'js-yaml'
 import { z } from 'zod'
 import {
   enterpriseSearchCreateSchema,
@@ -8,8 +11,13 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  agentConversationShareParamsSchema,
+  agentConversationUnshareParamsSchema,
+  forkConversationParamsSchema,
+  forkAgentConversationParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
+  REQUEST_FILTER_KEYS,
   searchIdParamsSchema,
   agentConversationParamsSchema,
   deleteAgentConversationParamsSchema,
@@ -246,6 +254,38 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('forkConversationParamsSchema', () => {
+    it('should accept valid conversation and message ids', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: {
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a missing message id', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('forkAgentConversationParamsSchema', () => {
+    it('should accept valid agent, conversation, and message ids', () => {
+      const result = forkAgentConversationParamsSchema.safeParse({
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
   describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
     for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
       it(`should accept required universal stream chatMode ${chatMode}`, () => {
@@ -436,6 +476,58 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('agentConversationShareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts userIds with no access level, or an explicit read', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.true
+    })
+
+    it('rejects write access instead of silently dropping it', () => {
+      const result = agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'write' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an unknown access level and unknown body fields', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'admin' } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], isShared: true } }).success).to.be.false
+    })
+
+    it('rejects an empty list, a malformed id and a missing list', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: {} }).success).to.be.false
+    })
+
+    it('caps how many users one request may name', () => {
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => user.slice(0, -2) + String(10 + (i % 90)))
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(50) } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(51) } }).success).to.be.false
+    })
+
+    it('requires a valid agent key and conversation id', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params: { ...params, conversationId: 'x' }, body: { userIds: [user] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params: { conversationId: params.conversationId }, body: { userIds: [user] } }).success).to.be.false
+    })
+  })
+
+  describe('agentConversationUnshareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts a list of user ids', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+    })
+
+    it('rejects an empty list, a malformed id and unknown body fields', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.false
+    })
+  })
+
   describe('listAgentsQuerySchema', () => {
     it('should apply documented defaults for omitted sort params', () => {
       const result = listAgentsQuerySchema.safeParse({ query: {} })
@@ -586,6 +678,24 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('applies the documented default limit of 10 when none is sent', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(result.success && result.data.body.limit).to.equal(10)
+    })
+
+    for (const limit of [1, 10, 50, 100]) {
+      it(`keeps a limit of ${limit}`, () => {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } })
+        expect(result.success && result.data.body.limit).to.equal(limit)
+      })
+    }
+
+    for (const limit of [0, 101, 2.5]) {
+      it(`rejects a limit of ${limit}`, () => {
+        expect(enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } }).success).to.be.false
+      })
+    }
+
     it('keeps optional created and updated date bounds', () => {
       const data = {
         body: {
@@ -621,6 +731,24 @@ describe('enterprise_search/validators/es_validators', () => {
       for (const rewriteQuery of ['false', 0, null]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
         expect(result.success, JSON.stringify(rewriteQuery)).to.be.false
+      }
+    })
+
+    it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
+      for (const timeline of ['created', 'modified', 'off']) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.timeline).to.equal(timeline)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('timeline')
+    })
+
+    it('rejects a timeline that is not created, modified or off', () => {
+      for (const timeline of ['updated', '', 'none', true, false, null, 1]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success, JSON.stringify(timeline)).to.be.false
       }
     })
 
@@ -739,14 +867,58 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should drop filter keys it does not know, such as server-set ones', () => {
+    it('should refuse a filter key it does not know, listing the allowed keys', () => {
       const result = enterpriseSearchSearchSchema.safeParse({
-        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)] } },
+        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)], status: ['open'] } },
       })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.body.filters).to.deep.equal({ records: [nodeId(1)] })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        const message = result.error.issues[0].message
+        expect(message).to.contain('Unknown filter key(s): allowedApps, status')
+        for (const key of REQUEST_FILTER_KEYS) expect(message).to.contain(key)
       }
+    })
+
+    it('should refuse object prototype names as filter keys', () => {
+      const filters = JSON.parse('{"toString": [], "constructor": [], "__proto__": []}')
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.contain('Unknown filter key(s): toString, constructor')
+      }
+    })
+
+    it('should keep every known filter key as sent', () => {
+      const filters = {
+        apps: [nodeId(1)],
+        recordGroups: [nodeId(2)],
+      }
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.filters).to.deep.equal(filters)
+    })
+
+    it('should refuse a known filter key of the wrong type', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { apps: nodeId(1) } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should refuse internal-only taxonomy keys', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { departments: ['Finance'] } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should list the same filter keys as the OpenAPI Filters schema', () => {
+      const spec = yaml.load(
+        fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+      ) as { components: { schemas: { Filters: { properties: object } } } }
+      expect(Object.keys(spec.components.schemas.Filters.properties).filter((k) => k !== 'where').sort()).to.deep.equal(
+        [...REQUEST_FILTER_KEYS].sort(),
+      )
     })
 
     it('should accept 200 selected ids and reject 201, counted across keys', () => {
@@ -864,6 +1036,118 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = regenerateAnswersParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    const regenParams = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('keeps an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', filters: {} },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
+    })
+
+    it('still accepts a regenerate body without a question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: {} })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.be.undefined
+      }
+    })
+
+    it('rejects an empty edited question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: '' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an edited question over the length limit', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'a'.repeat(100001) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    const file = { recordId: 'rec-1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-1' }
+
+    it('keeps the files of an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
+    it('accepts an empty list of files, which removes them all', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { attachments: [] } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([])
+      }
+    })
+
+    it('leaves the files undefined when the body has none', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: 'Edited question' } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.be.undefined
+      }
+    })
+
+    it('rejects a file without a record id', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: [{ recordName: 'a.pdf' }] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects more files than a message can carry', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 11 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts ten files', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 10 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('accepts the files of an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
+    it('accepts an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
     })
   })
 
@@ -2239,6 +2523,26 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { name: 'Agent', models: [validModel], sendUserContext: 'yes' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('keeps apiToolsetTools, so attached API toolset operations reach Python', () => {
+      const entry = `${'a'.repeat(32)}:list_tickets`
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], apiToolsetTools: [entry] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.apiToolsetTools).to.deep.equal([entry])
+      }
+    })
+
+    it('rejects an apiToolsetTools entry that is not "<toolsetId>:<operation>"', () => {
+      for (const entry of ['list_tickets', `${'a'.repeat(32)}:`, `${'a'.repeat(32)}:bad name`, 'abc:list']) {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], apiToolsetTools: [entry] },
+        })
+        expect(result.success, entry).to.be.false
+      }
     })
 
     it('should accept a valid mcpServers list', () => {

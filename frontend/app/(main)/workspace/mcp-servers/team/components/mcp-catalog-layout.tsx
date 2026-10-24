@@ -11,7 +11,7 @@ import type { McpMyServerEntry, McpServerTemplate } from '../../types';
 import { isOfferedForNewServers, replacementFor } from '../../catalog-replacement';
 import { McpInstanceCard } from './mcp-instance-card';
 import { McpServerCard } from './mcp-server-card';
-import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+import { EnterpriseFeatureNotice } from '@/config';
 
 // ========================================
 // Types

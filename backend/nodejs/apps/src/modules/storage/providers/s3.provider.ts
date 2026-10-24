@@ -1,4 +1,8 @@
-import { S3 } from 'aws-sdk';
+import {
+  createS3Service as buildS3Service,
+  type S3Service,
+  type S3ServiceConfig,
+} from './s3-client';
 import { StorageServiceInterface } from '../services/storage.service';
 import {
   FilePayload,
@@ -23,16 +27,12 @@ import {
 } from '../utils/s3-credentials.util';
 import { escapeRegExp } from '../../../utils/escape-regexp';
 
-// SlowDown arrives as a 503, which the SDK already retries; the default of 3
-// attempts at 100ms is too little to ride out a throttling burst.
-const S3_RETRY_OPTIONS = { maxRetries: 8, retryDelayOptions: { base: 200 } };
-
 /**
  * Implementation of StorageServiceInterface for Amazon S3
  * Handles file operations with Amazon S3 storage service
  */
 class AmazonS3Adapter implements StorageServiceInterface {
-  private readonly s3: S3;
+  private readonly s3: S3Service;
   private readonly bucketName: string;
   private readonly region: string;
   private readonly usingIamRole: boolean;
@@ -74,21 +74,16 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       this.usingIamRole = resolvedCredentials.kind === 'iamRole';
 
-      // SDK v2 presigns us-east-1 with Signature V2 unless this is set.
-      // SSE-KMS buckets reject those URLs with HTTP 400.
-      const clientOptions: S3.ClientConfiguration = {
+      // Retries (maxAttempts) and Signature V4 live in createS3Service.
+      this.s3 = buildS3Service({
         region: sanitizedRegion,
-        signatureVersion: 'v4',
-        ...S3_RETRY_OPTIONS,
-      };
-      this.s3 =
-        resolvedCredentials.kind === 'explicit'
-          ? new S3({
-              ...clientOptions,
+        ...(resolvedCredentials.kind === 'explicit'
+          ? {
               accessKeyId: resolvedCredentials.accessKeyId,
               secretAccessKey: resolvedCredentials.secretAccessKey,
-            })
-          : new S3(clientOptions);
+            }
+          : {}),
+      });
 
       this.bucketName = bucket;
       this.region = sanitizedRegion;
@@ -137,7 +132,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Upload response missing file key');
       }
 
@@ -191,7 +186,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Update response missing file key');
       }
 
@@ -302,7 +297,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       return {
         statusCode: 200,
-        data: response.Body as Buffer,
+        data: response.Body,
       };
     } catch (error) {
       if (error instanceof StorageError) {
@@ -499,7 +494,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw new PresignedUrlError('Failed to extract S3 key from URL');
       }
 
-      const params: S3.GetObjectRequest = {
+      const params: {
+        Bucket: string;
+        Key: string;
+        ResponseContentDisposition?: string;
+      } = {
         Bucket: this.bucketName,
         Key: key,
       };
@@ -534,11 +533,17 @@ class AmazonS3Adapter implements StorageServiceInterface {
    * @param prefix - The S3 key prefix to list.
    * @returns A promise resolving to all matching S3 objects across all pages.
    */
-  private async _listAllObjects(prefix: string): Promise<S3.Object[]> {
-    const allObjects: S3.Object[] = [];
+  private async _listAllObjects(
+    prefix: string,
+  ): Promise<Array<{ Key?: string }>> {
+    const allObjects: Array<{ Key?: string }> = [];
     let continuationToken: string | undefined;
     do {
-      const params: S3.ListObjectsV2Request = {
+      const params: {
+        Bucket: string;
+        Prefix: string;
+        ContinuationToken?: string;
+      } = {
         Bucket: this.bucketName,
         Prefix: prefix,
         ...(continuationToken && { ContinuationToken: continuationToken }),
@@ -808,6 +813,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
       .join('/');
     return `${this.bucketName}/${encodedKey}`;
   }
+}
+
+// Own function so the export is a writable property. A re-export is a getter,
+// and sinon cannot replace that for the health check's cleanup client.
+export function createS3Service(config: S3ServiceConfig): S3Service {
+  return buildS3Service(config);
 }
 
 export default AmazonS3Adapter;

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.connectors.api import router as router_module
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
@@ -81,4 +82,35 @@ async def test_turning_on_drive_without_an_oauth_app_names_the_missing_app() -> 
     assert caught.value.status_code == 400
     assert "not linked to an OAuth app" in caught.value.detail
     assert "choose or create an OAuth app" in caught.value.detail
+    assert CONNECTOR_ID not in container.connectors_map
+
+
+@pytest.mark.asyncio
+async def test_a_failed_access_check_after_init_answers_400_with_its_reason() -> None:
+    # S3 and MinIO raise ConnectorInitError from test_connection_and_access, outside init().
+    reason = "S3: Could not list objects in bucket 'b': AccessDenied."
+    connector = MagicMock()
+    connector.init = AsyncMock(return_value=True)
+    connector.test_connection_and_access = AsyncMock(side_effect=ConnectorInitError(reason))
+    connector.cleanup = AsyncMock()
+    container = MagicMock()
+    container.connectors_map = {}
+    graph_provider = MagicMock()
+    graph_provider.get_document = AsyncMock(
+        return_value={"scope": "team", "createdBy": "user-1", "orgId": ORG_ID, "name": "Buckets"}
+    )
+
+    with patch.object(router_module, "resolve_config_service", return_value=AsyncMock()), \
+         patch.object(router_module, "build_graph_data_store", return_value=MagicMock()), \
+         patch.object(router_module, "get_data_entities_processor_cls", return_value=MagicMock()), \
+         patch.object(router_module.ConnectorFactory, "create_connector", AsyncMock(return_value=connector)):
+        with pytest.raises(HTTPException) as caught:
+            await router_module._build_and_store_connector(
+                container, CONNECTOR_ID, "S3", MagicMock(), graph_provider, "user-1", ORG_ID,
+                is_admin=True, logger=logging.getLogger("test_router_init_oauth_app_missing"),
+            )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == reason
+    connector.cleanup.assert_awaited_once()
     assert CONNECTOR_ID not in container.connectors_map

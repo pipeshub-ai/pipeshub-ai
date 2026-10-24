@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -75,6 +76,7 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
@@ -92,7 +94,7 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.core.messages import AssistantMessage, Message
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
     from app.agents.agent_loop.prompt_cache import CacheStrategy
 
 logger = logging.getLogger(__name__)
@@ -208,6 +210,25 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+# Error types a provider reports for its own transient failure inside a stream that opened with HTTP 200:
+# OpenAI/Azure's `error` event ("server_error", raised as `openai.APIError` with no status code) and Anthropic's
+# (`api_error`, `overloaded_error`, raised as `APIStatusError` carrying the stream's 200).
+_TRANSIENT_PROVIDER_ERROR_TYPES = frozenset({
+    "server_error", "internal_server_error", "api_error", "overloaded_error",
+    "rate_limit_error", "rate_limit_exceeded", "service_unavailable",
+})
+
+
+def _is_transient_provider_error(exc: Exception) -> bool:
+    body = getattr(exc, "body", None)
+    nested = body.get("error") if isinstance(body, dict) else None
+    labels = [getattr(exc, "type", None), getattr(exc, "code", None)]
+    for source in (body, nested):
+        if isinstance(source, dict):
+            labels += [source.get("type"), source.get("code")]
+    return any(isinstance(v, str) and v.lower() in _TRANSIENT_PROVIDER_ERROR_TYPES for v in labels)
+
+
 # Class names in a chat model's MRO that identify the provider family, matched
 # by name so this module keeps no hard `isinstance`/import dependency on
 # `langchain_ollama`/`langchain_openai` being installed. Matching the whole MRO
@@ -216,6 +237,12 @@ def _is_network_error(exc: Exception) -> bool:
 # falling through to the permissive default.
 _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
+_BEDROCK_CONVERSE_CLASS_NAME = "ChatBedrockConverse"
+
+# `tool_choice` asking each `cache_target` family for a reply without tool
+# calls. Bedrock Converse has no such value, and an unknown provider is never
+# sent one it may reject: both keep the plain binding.
+_NO_TOOL_CALLS: dict[str, Any] = {"anthropic": {"type": "none"}, "openai": "none"}
 
 
 def _is_openai_family(chat_model: "BaseChatModel") -> bool:
@@ -241,16 +268,23 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
       unsupported here and delivers its images through the user-message
       fallback instead — a redundant relocation, not a broken call.
 
+    - OpenAI GPT-5.x / GPT-6 on Bedrock Converse reject an `image` block
+      inside a `toolResult` with a ValidationException.
+
     Every other LangChain-wrapped provider PipesHub configures (Anthropic,
-    Gemini, Bedrock, ...) accepts multipart tool results. Whatever this gets
-    wrong for an unknown gateway is recovered at runtime off the provider's
-    own error — see `LangChainTransport._relocates_tool_images`.
+    Gemini, other Bedrock models, ...) accepts multipart tool results.
+    Whatever this gets wrong for an unknown gateway is recovered at runtime
+    off the provider's own error — see `LangChainTransport._relocates_tool_images`.
     """
     mro_names = {cls.__name__ for cls in type(chat_model).__mro__}
     if _OLLAMA_CLASS_NAME in mro_names:
         return False
     if mro_names & _OPENAI_CLASS_NAMES:
         return bool(getattr(chat_model, "use_responses_api", False))
+    if _BEDROCK_CONVERSE_CLASS_NAME in mro_names:
+        from app.utils.aimodels import bedrock_is_openai_gpt
+
+        return not bedrock_is_openai_gpt(getattr(chat_model, "model_id", None))
     return True
 
 
@@ -329,7 +363,7 @@ class LangChainTransport(LLMTransport):
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
         # Keyed on the turn's tool names; see `_bind_tools`. A transport is
         # built per request, so this can never be shared across users.
-        self._bound_by_tools: dict[tuple[str, ...], BaseChatModel] = {}
+        self._bound_by_tools: dict[tuple[str | bool, ...], BaseChatModel] = {}
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -347,6 +381,7 @@ class LangChainTransport(LLMTransport):
 
     def _bind_tools(
         self, tools: list[ToolSchema] | None, llm: BaseChatModel | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> BaseChatModel:
         """Binds `tools` onto `llm` (defaults to `self._llm`), or raises a
         `TransportError` if binding fails.
@@ -386,7 +421,8 @@ class LangChainTransport(LLMTransport):
         # handing it the cached original made the retry re-raise the very error
         # it was retrying.
         cacheable = llm is self._llm
-        cache_key = tuple(tool_names)
+        choice = _NO_TOOL_CALLS.get(self._cache_target.family) if tool_choice == "none" else None
+        cache_key = (*tool_names, choice is not None)
         if cacheable:
             cached = self._bound_by_tools.get(cache_key)
             if cached is not None:
@@ -398,8 +434,10 @@ class LangChainTransport(LLMTransport):
             # becomes required, and the model fills the optional ones with "" or 0, which a server
             # refuses (Linear's `customView` must be non-empty). See `openai_responses.py`.
             lc_tools = [{**tool, "function": {**tool["function"], "strict": False}} for tool in lc_tools]
+        # A copy: ChatAnthropic.bind_tools adds keys to a dict tool_choice.
+        choice_kwargs = {"tool_choice": copy.deepcopy(choice)} if choice is not None else {}
         try:
-            bound = llm.bind_tools(lc_tools)
+            bound = llm.bind_tools(lc_tools, **choice_kwargs)
         except Exception as exc:
             logger.error(
                 "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
@@ -458,7 +496,7 @@ class LangChainTransport(LLMTransport):
         and so is every later run for this model and endpoint in this process."""
         if not is_prompt_cache_param_conflict(exc, self._cache.sent_params):
             return False
-        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", exc)
+        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", redact_error_for_log(str(exc)))
         REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url)
         self._cache = NoCacheStrategy()
         self._bound_by_tools.clear()
@@ -472,12 +510,13 @@ class LangChainTransport(LLMTransport):
         *,
         relocate: bool | None = None,
         llm: BaseChatModel | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> AIMessage:
         """One `ainvoke`, resent once without cache parameters if the provider
         rejects one (the second pass has none, so it cannot loop)."""
         while True:
             lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
-            bound = self._bind_tools(tools, llm=llm)
+            bound = self._bind_tools(tools, llm=llm, tool_choice=tool_choice)
             try:
                 return await bound.ainvoke(lc_messages, config=self._langchain_config(), **call_kwargs)
             except Exception as exc:
@@ -509,15 +548,15 @@ class LangChainTransport(LLMTransport):
         return has_tool_result_images(messages)
 
     def _wrap_error(
-        self, exc: Exception, context: str, *, retryable: bool | None = None,
+        self, exc: Exception, context: str, *, partial_output: bool = False,
     ) -> TransportError:
         """Wrap a provider exception as a `TransportError`.
 
-        `retryable=False` forces a non-retryable result regardless of the
-        exception type. `stream()` passes it once any delta has reached the
-        client: `retry_model_call` (the PRE_MODEL_CALL wrapper) re-runs the
-        WHOLE model call, so a transient error arriving mid-stream would
-        otherwise replay text the user has already seen.
+        `stream()` passes `partial_output=True` once any delta has reached
+        the caller. The PRE_MODEL_CALL retry wrapper re-runs the WHOLE model
+        call, so a transient error arriving mid-stream stays non-retryable
+        until `Agent.step()` has retracted what the client was shown (see
+        `TransportError.discard_partial_output`).
         """
         status_code = getattr(exc, "status_code", None)
         # 529 is Anthropic's non-standard "overloaded_error" status —
@@ -530,18 +569,23 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
-        if retryable is None:
-            retryable = (
-                status_code in (429, 500, 502, 503, 504, 529)
-                if status_code else _is_network_error(exc)
-            )
+        # Below 400 (or no status) the HTTP exchange itself succeeded or never happened, so the error came from the
+        # network or from inside the stream, and its type says whether it is transient.
+        http_failed = bool(status_code) and status_code >= 400
+        retryable = (
+            status_code in (429, 500, 502, 503, 504, 529)
+            if http_failed
+            else _is_network_error(exc) or _is_transient_provider_error(exc)
+        )
         # The class name keeps the cause classifiable when the provider
         # raised with an empty message (a bare `TimeoutError()` read as an
         # unknown failure).
         return TransportError(
             f"LangChain transport error ({context}): {type(exc).__name__}: {exc}",
-            status_code=status_code,
+            # A stream's opening 200 is not the failure's status; with None the retry wrapper uses `retryable`.
+            status_code=status_code if http_failed else None,
             retryable=retryable,
+            partial_output=partial_output,
         )
 
     def _api_shape_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
@@ -700,6 +744,8 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         # thinking_budget/effort are LangChain-provider-specific `.bind()`
         # kwargs (e.g. ChatAnthropic(thinking=...), ChatOpenAI(reasoning_effort=...))
@@ -709,24 +755,24 @@ class LangChainTransport(LLMTransport):
         prompt = _system_prompt(system, system_blocks)
         # Bound up front so a bind failure surfaces as itself, not as a
         # provider error; the binding is cached for the calls below.
-        self._bind_tools(tools)
+        self._bind_tools(tools, tool_choice=tool_choice)
 
         try:
-            ai_message = await self._ainvoke(messages, tools, prompt)
+            ai_message = await self._ainvoke(messages, tools, prompt, tool_choice=tool_choice)
         except Exception as exc:
             if self._relocates_tool_images(exc, messages):
                 logger.warning(
                     "LangChainTransport.complete: model=%s rejected images inside tool "
                     "results, retrying once with them moved to a user message: %s",
-                    self._model, exc,
+                    self._model, redact_error_for_log(str(exc)),
                 )
                 try:
-                    ai_message = await self._ainvoke(messages, tools, prompt, relocate=True)
+                    ai_message = await self._ainvoke(messages, tools, prompt, relocate=True, tool_choice=tool_choice)
                 except Exception as retry_exc:
                     logger.error(
                         "LangChainTransport.complete: tool-image relocation retry also "
                         "failed for model=%s: %s — raising the ORIGINAL error",
-                        self._model, retry_exc,
+                        self._model, redact_error_for_log(str(retry_exc)),
                     )
                     raise self._wrap_error(exc, "complete") from exc
                 # Pinned for the rest of this run so every later call builds
@@ -740,15 +786,17 @@ class LangChainTransport(LLMTransport):
             logger.warning(
                 "LangChainTransport.complete: provider conflict for model=%s, "
                 "retrying once with api_mode=%s: %s",
-                self._model, mode, exc,
+                self._model, mode, redact_error_for_log(str(exc)),
             )
             try:
-                ai_message = await self._ainvoke(messages, tools, prompt, llm=fallback_llm)
+                ai_message = await self._ainvoke(
+                    messages, tools, prompt, llm=fallback_llm, tool_choice=tool_choice,
+                )
             except Exception as retry_exc:
                 logger.error(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
                     "model=%s: %s — raising the ORIGINAL error",
-                    mode, self._model, retry_exc,
+                    mode, self._model, redact_error_for_log(str(retry_exc)),
                 )
                 raise self._wrap_error(exc, "complete") from exc
             # Pinned for the rest of this agent loop (many more calls will
@@ -839,7 +887,7 @@ class LangChainTransport(LLMTransport):
             first_attempt_error = exc
             logger.warning(
                 "LangChainTransport: raw-schema attempt raised %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__, redact_error_for_log(str(exc)),
             )
 
         second_raw: Any = None
@@ -893,10 +941,12 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         prompt = _system_prompt(system, system_blocks)
         lc_messages, call_kwargs = self._request(messages, prompt)
-        lc_llm = self._bind_tools(tools)
+        lc_llm = self._bind_tools(tools, tool_choice=tool_choice)
         relocate: bool | None = None
 
         chunks: list[AIMessage] = []
@@ -1014,7 +1064,7 @@ class LangChainTransport(LLMTransport):
                 if not chunks and self._drop_cache_params(exc):
                     lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
                     try:
-                        current_llm = self._bind_tools(tools, llm=fallback_llm)
+                        current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
                     except Exception:
                         raise self._wrap_error(exc, "stream") from exc
                     continue
@@ -1029,7 +1079,7 @@ class LangChainTransport(LLMTransport):
                         "LangChainTransport.stream: retry (api_mode=%s, "
                         "relocated_images=%s) also failed for model=%s: %s — "
                         "raising the ORIGINAL error",
-                        fallback_mode, relocated_images, self._model, exc,
+                        fallback_mode, relocated_images, self._model, redact_error_for_log(str(exc)),
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
@@ -1043,9 +1093,7 @@ class LangChainTransport(LLMTransport):
                     # already saw output — so that is gated on `emitted`,
                     # letting a disconnect after nothing but a role-only
                     # chunk still be retried.
-                    raise self._wrap_error(
-                        exc, "stream", retryable=False if emitted else None,
-                    ) from exc
+                    raise self._wrap_error(exc, "stream", partial_output=emitted) from exc
                 if self._relocates_tool_images(exc, messages):
                     original_exc = exc
                     relocate = True
@@ -1055,7 +1103,7 @@ class LangChainTransport(LLMTransport):
                     logger.warning(
                         "LangChainTransport.stream: model=%s rejected images inside tool "
                         "results, retrying once with them moved to a user message: %s",
-                        self._model, exc,
+                        self._model, redact_error_for_log(str(exc)),
                     )
                     continue
                 fallback = self._conflict_fallback(exc)
@@ -1064,7 +1112,7 @@ class LangChainTransport(LLMTransport):
                 original_exc = exc
                 fallback_llm, fallback_mode = fallback
                 try:
-                    current_llm = self._bind_tools(tools, llm=fallback_llm)
+                    current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
                 except Exception:
                     # Same rationale as `complete()`'s identical guard: a
                     # bind failure on the fallback model must not replace
@@ -1075,7 +1123,7 @@ class LangChainTransport(LLMTransport):
                 logger.warning(
                     "LangChainTransport.stream: provider conflict for model=%s, "
                     "retrying once with api_mode=%s: %s",
-                    self._model, fallback_mode, exc,
+                    self._model, fallback_mode, redact_error_for_log(str(exc)),
                 )
             finally:
                 # Best-effort: never let cleanup mask the real outcome (an

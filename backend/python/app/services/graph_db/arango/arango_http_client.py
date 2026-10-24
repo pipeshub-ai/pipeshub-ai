@@ -8,9 +8,10 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import json
 import threading
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 import aiohttp
 
@@ -25,6 +26,28 @@ ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 # The client holds one session per loop, so its total is this times the
 # number of loops that use it.
 DEFAULT_POOL_LIMIT = 100
+
+
+# ArangoDB errorNum values a caller may treat as "another writer won" rather than as an outage.
+ARANGO_CONFLICT = 1200
+ARANGO_UNIQUE_CONSTRAINT_VIOLATED = 1210
+
+
+class ArangoQueryError(Exception):
+    """An AQL request the server rejected, with its HTTP status and ArangoDB errorNum."""
+
+    def __init__(self, operation: str, status: int, body: str) -> None:
+        super().__init__(f"{operation} (status={status}): {body}")
+        self.status = status
+        self.error_num: int | None = None
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return
+        if isinstance(parsed, dict):
+            error_num = cast(dict[str, object], parsed).get("errorNum")
+            if isinstance(error_num, int):
+                self.error_num = error_num
 
 
 class ArangoHTTPClient:
@@ -137,8 +160,8 @@ class ArangoHTTPClient:
                         # A session must be closed on the loop that owns it
                         future = asyncio.run_coroutine_threadsafe(session.close(), loop)
                         await asyncio.wait_for(asyncio.wrap_future(future), timeout=5)
-                except Exception:
-                    pass
+                except Exception as error:
+                    self.logger.warning("Error closing an ArangoDB HTTP session: %s", error)
             self.logger.info("✅ Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
@@ -503,12 +526,12 @@ class ArangoHTTPClient:
     async def execute_aql(
         self,
         query: str,
-        bind_vars: Optional[Dict] = None,
+        bind_vars: Optional[Dict[str, Any]] = None,
         txn_id: Optional[str] = None,
         batch_size: int = 1000,
         options: dict | None = None,
         max_runtime: float | None = None,
-    ) -> List[Dict]:
+    ) -> List[Any]:
         """
         Execute AQL query.
 
@@ -525,7 +548,9 @@ class ArangoHTTPClient:
             List[Dict]: Query results
 
         Raises:
-            Exception: If query execution fails
+            ArangoQueryError: The server rejected the query or a cursor fetch;
+                carries the HTTP status and ArangoDB errorNum.
+            Exception: Any other failure (connection, error flag in the body).
         """
         url = f"{self.base_url}/_db/{self.database}/_api/cursor"
 
@@ -548,7 +573,7 @@ class ArangoHTTPClient:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status not in [200, 201]:
                     error = await resp.text()
-                    raise Exception(f"Query failed (status={resp.status}): {error}")
+                    raise ArangoQueryError("Query failed", resp.status, error)
 
                 result = await resp.json()
                 self._check_response_for_errors(result, "Query execution")
@@ -562,7 +587,7 @@ class ArangoHTTPClient:
                     async with session.put(cursor_url, headers=headers) as cursor_resp:
                         if cursor_resp.status not in [200, 201]:
                             error = await cursor_resp.text()
-                            raise Exception(f"Cursor fetch failed (status={cursor_resp.status}): {error}")
+                            raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)
 
                         result = await cursor_resp.json()
                         self._check_response_for_errors(result, "Cursor fetch")
@@ -579,7 +604,7 @@ class ArangoHTTPClient:
     async def batch_insert_documents(
     self,
     collection: str,
-    documents: List[Dict],
+    documents: List[Dict[str, Any]],
     txn_id: Optional[str] = None,
     overwrite: bool = True,
     overwrite_mode: str = "update"  # New parameter: "replace", "update", "ignore", or "conflict"

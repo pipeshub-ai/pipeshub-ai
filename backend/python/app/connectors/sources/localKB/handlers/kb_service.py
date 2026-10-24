@@ -38,6 +38,8 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
+from app.modules.indexing.record_republish import reembeds_from_storage
+from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
@@ -75,6 +77,9 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 # Restore asks for the role its delete needed: an owner or a writer.
+#: ``(kb_id, live ids, delete-batch members)`` to the ids a connected app may not reach.
+ConnectionCheck = Callable[[str, list[str], list[dict]], Awaitable[set[str]]]
+
 RESTORE_FILE_ROLES = ("OWNER", "WRITER")
 RESTORE_BATCH_ROLES = ("OWNER", "WRITER")
 MAX_RESTORE_RECORD_IDS = 100
@@ -1591,7 +1596,13 @@ class KnowledgeBaseService:
                 "code": 500
             }
 
-    async def restore_record(self, record_id: str, user_id: str, org_id: str) -> dict:
+    async def restore_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        outside: ConnectionCheck | None = None,
+    ) -> dict:
         """Bring a deleted KB file or folder back from the trash, with everything
         deleted along with it.
 
@@ -1602,7 +1613,9 @@ class KnowledgeBaseService:
         when another item has taken the item's source id since. An item whose
         name is now used by another one beside it comes back as
         "name (restored)". Restored files are indexed again: their vectors went
-        when they were deleted.
+        when they were deleted. ``outside`` names the ids a connected app may
+        not reach; a batch holding any of them is refused whole, and an item
+        that is not in the trash is refused the same way.
         """
         try:
             if not await is_soft_delete_enabled(self.config_service):
@@ -1629,8 +1642,10 @@ class KnowledgeBaseService:
             if err:
                 return err
             if is_live_record(record):
+                if outside is not None and await outside(kb_id, [record_id], []):
+                    return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
                 if self._owes_restore_reindex(record):
-                    return await self._requeue_restored_file(record_id, kb_id, user_role)
+                    return await self._requeue_restored_file(record_id, record, kb_id, user_role)
                 return {
                     "success": True,
                     "code": 200,
@@ -1645,6 +1660,8 @@ class KnowledgeBaseService:
             member_ids = {item["record"]["_key"] for item in members}
             if record_id not in member_ids:
                 return {"success": False, "code": 409, "reason": RESTORE_CHANGED_REASON}
+            if outside is not None and await outside(kb_id, [], members):
+                return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
 
             single_file = len(members) == 1 and members[0].get("isFile") is True
             required_roles = RESTORE_FILE_ROLES if single_file else RESTORE_BATCH_ROLES
@@ -1659,7 +1676,7 @@ class KnowledgeBaseService:
                 }
 
             name = record.get("recordName") or "This item"
-            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+            if parent_refusal := await self._trashed_parent_refusal(name, members, member_ids, kb_id, outside):
                 return parent_refusal
 
             renames = await self._restore_renames(kb_id, members, member_ids)
@@ -1680,6 +1697,12 @@ class KnowledgeBaseService:
                 and item["record"].get("indexingStatus") != ProgressStatus.AUTO_INDEX_OFF.value
             ]
             to_reindex = set(reindex_ids)
+            # Read before the restore, while the record still shows how it was indexed.
+            reembed_ids = {
+                item["record"]["_key"]
+                for item in members
+                if item["record"]["_key"] in to_reindex and reembeds_from_storage(item["record"])
+            }
             now = get_epoch_timestamp_in_ms()
             # Written with the restore itself: the re-index is published after it
             # commits, and if that publish is lost the marker is what lets a retry
@@ -1705,9 +1728,11 @@ class KnowledgeBaseService:
                     kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
                 )
             except RestoreRefused as refused:
-                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id, outside)
 
-            return await self._finish_restore(processor, batch_id, members, renames, reindex_ids)
+            return await self._finish_restore(
+                processor, batch_id, members, renames, reindex_ids, reembed_ids=reembed_ids
+            )
         except Exception as e:
             self.logger.error("❌ Failed to restore record %s: %s", record_id, e, exc_info=True)
             return {"success": False, "code": 500, "reason": action_failed("restore this item")}
@@ -1718,8 +1743,13 @@ class KnowledgeBaseService:
             record.get("indexingStatus") == ProgressStatus.NOT_STARTED.value
         )
 
-    async def _requeue_restored_file(self, record_id: str, kb_id: str, user_role: str | None) -> dict:
-        """A retried restore of a file that is back but whose re-index never went out."""
+    async def _requeue_restored_file(
+        self, record_id: str, record: dict, kb_id: str, user_role: str | None
+    ) -> dict:
+        """A retried restore of a file that is back but whose re-index never went out.
+
+        ``record_id`` is passed apart from ``record``: ``get_document`` returns the generic
+        ``id`` on Arango, with no ``_key``."""
         if user_role not in RESTORE_FILE_ROLES:
             return {
                 "success": False,
@@ -1730,7 +1760,8 @@ class KnowledgeBaseService:
                 ),
             }
         processor = await self.processor_for_kb(kb_id)
-        response = await self._finish_restore(processor, None, [], {}, [record_id])
+        reembed_ids = {record_id} if reembeds_from_storage(record) else set()
+        response = await self._finish_restore(processor, None, [], {}, [record_id], reembed_ids=reembed_ids)
         response["message"] = (
             "This item was already restored but isn't searchable yet, and we couldn't queue it for "
             "indexing. Try again in a few minutes."
@@ -1741,10 +1772,29 @@ class KnowledgeBaseService:
         return response
 
     @staticmethod
-    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
-        """The 409 for a batch whose folder is in the trash outside it, else None."""
+    async def _trashed_parent_refusal(
+        name: str, members: list[dict], member_ids: set[str], kb_id: str, outside: ConnectionCheck | None,
+    ) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None.
+
+        A connected app whose limit leaves that folder out is told what to do
+        without the folder's name or id: a file the limit names does not name
+        the folder above it."""
         for item in members:
-            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+            parent_id = item.get("parentId")
+            if item.get("parentIsDeleted") and parent_id not in member_ids:
+                hidden = outside is not None and bool(
+                    await outside(kb_id, [], [{"record": {"_key": parent_id}, "parentId": None}])
+                )
+                if hidden:
+                    return {
+                        "success": False,
+                        "code": 409,
+                        "reason": (
+                            f"'{name}' was in a folder that is also in the trash. Ask someone who can "
+                            f"open that folder to restore it, then restore '{name}'."
+                        ),
+                    }
                 parent = item.get("parentName") or "the folder it was in"
                 return {
                     "success": False,
@@ -1753,12 +1803,13 @@ class KnowledgeBaseService:
                         f"'{name}' was in '{parent}', which is also in the trash. Restore "
                         f"'{parent}' first, then restore '{name}'."
                     ),
-                    "parentId": item.get("parentId"),
+                    "parentId": parent_id,
                 }
         return None
 
     async def _restore_refused_response(
-        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """The answer for a restore the write refused, nothing written.
 
@@ -1768,8 +1819,8 @@ class KnowledgeBaseService:
         try:
             batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
             members = [item for item in batch if item["record"].get("connectorId") == kb_id]
-            parent_refusal = self._trashed_parent_refusal(
-                name, members, {item["record"]["_key"] for item in members}
+            parent_refusal = await self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}, kb_id, outside,
             )
         except Exception as e:
             self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)
@@ -1841,10 +1892,14 @@ class KnowledgeBaseService:
         members: list[dict],
         renames: dict[str, str],
         reindex_ids: list[str],
+        *,
+        reembed_ids: set[str] | None = None,
     ) -> dict:
         """After the restore committed: rename what clashed, then index the files again.
 
-        Neither step can undo the restore, so a failure is reported, not raised.
+        Files in *reembed_ids* are re-embedded from their stored blocks; the rest
+        are indexed from their source. Neither step can undo the restore, so a
+        failure is reported, not raised.
         """
         rename_failed: list[str] = []
         for record_id, new_name in renames.items():
@@ -1864,9 +1919,13 @@ class KnowledgeBaseService:
         if reindex_ids:
             try:
                 typed = await self.graph_provider.get_typed_records_batch(reindex_ids)
-                published = await processor.reindex_existing_records(
-                    [typed[i] for i in reindex_ids if i in typed]
-                )
+                reembed = reembed_ids or set()
+                for vector_db_only in (True, False):
+                    batch = [typed[i] for i in reindex_ids if i in typed and (i in reembed) == vector_db_only]
+                    if batch:
+                        published += await processor.reindex_existing_records(
+                            batch, vector_db_only=vector_db_only
+                        )
             except Exception as e:
                 self.logger.error("❌ Restored batch %s but could not queue it for indexing: %s", batch_id, e)
 
@@ -1901,7 +1960,13 @@ class KnowledgeBaseService:
             )
         return response
 
-    async def restore_records(self, record_ids: list[str], user_id: str, org_id: str) -> dict:
+    async def restore_records(
+        self,
+        record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        outside: ConnectionCheck | None = None,
+    ) -> dict:
         """Restore several deleted items, each with the batch it was deleted in.
 
         Ids from one batch restore it once. Each id gets its own outcome, so
@@ -1924,7 +1989,7 @@ class KnowledgeBaseService:
                     "message": "Restored together with an item listed before it.",
                 })
                 continue
-            outcome = await self.restore_record(record_id, user_id, org_id)
+            outcome = await self.restore_record(record_id, user_id, org_id, outside)
             if outcome.get("success"):
                 restored_ids.update(r["recordId"] for r in outcome.get("restoredRecords", []))
             results.append({"recordId": record_id, **outcome})

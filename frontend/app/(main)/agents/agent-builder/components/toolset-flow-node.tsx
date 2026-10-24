@@ -7,7 +7,7 @@ import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
-import { AGENT_TOOLSET_FALLBACK_ICON, normalizeDisplayName, resolveNodeConnectorType } from '../display-utils';
+import { AGENT_TOOLSET_FALLBACK_ICON, normalizePaletteLabel, resolveNodeConnectorType } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
@@ -56,10 +56,9 @@ export function ToolsetFlowNode({
   const cfg = (data.config || {}) as Record<string, unknown>;
   const instanceName = String(cfg.instanceName ?? '').trim();
   const productLabel = String(cfg.displayName ?? '').trim() || String(cfg.toolsetName ?? '').trim();
-  const primaryTitle = instanceName
-    ? normalizeDisplayName(instanceName)
-    : normalizeDisplayName(productLabel || data.label);
-  const productLine = productLabel ? normalizeDisplayName(productLabel) : '';
+  // Names people typed (an instance, an API action) keep their casing; slugs are title-cased.
+  const primaryTitle = normalizePaletteLabel(instanceName || productLabel || data.label);
+  const productLine = productLabel ? normalizePaletteLabel(productLabel) : '';
   const secondarySubtitle =
     instanceName && productLine && primaryTitle !== productLine
       ? productLine

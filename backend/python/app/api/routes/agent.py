@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
@@ -25,8 +25,11 @@ from app.agents.agent_loop.protocol.stream_collector import collect_stream_outco
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.openapi import attachments as api_toolset_attachments
+from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
+from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -46,7 +49,10 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
-from app.modules.agents.capability_summary import fetch_connector_configs
+from app.modules.agents.capability_summary import (
+    PARTLY_SHARED_KEY,
+    fetch_connector_configs,
+)
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
@@ -63,13 +69,17 @@ from app.modules.agents.qna.router import (
 from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     SelectionNotReadyError,
     SelectionTooLargeError,
+    connection_coverage,
     has_selection,
     max_selection_nodes,
     prepare_turn_scope,
     selection_error,
+    within_connection,
 )
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
@@ -78,6 +88,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
 )
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
@@ -213,6 +226,7 @@ class ChatQuery(BaseModel):
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # ============================================================================
@@ -399,6 +413,25 @@ async def _resolve_service_account_caller_identity(
             enriched_user_info, caller_name, caller_email,
         )
     return enriched_user_info
+
+
+async def _service_account_artifact_owner(
+    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
+) -> str | None:
+    """The caller who owns what a service-account agent makes in their chat.
+
+    The agent runs as its creator, but the conversation is the caller's, and so
+    are the files made in it. Only a signed-in user of the agent's org can own
+    them: a service JWT (the Slack bot's) has no user to grant them to, so
+    they stay the creator's, as do those of a caller who is not found.
+    """
+    if user_context.get("isServiceAccount"):
+        return None
+    caller_id = user_context.get("userId")
+    caller = await get_user_or_503(graph_provider, caller_id)
+    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
+        return None
+    return caller_id
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
@@ -629,13 +662,17 @@ def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | Non
     return formatted
 
 
-def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+def _is_web_search_enabled(selected_tools: list[str] | None, *, is_universal_agent: bool = False) -> bool:
     """Whether web_search should remain enabled for this request.
 
     `selected_tools is None` means "all actions", so web_search stays enabled.
     When an explicit tools list is provided, require a web_search entry.
+
+    The universal agent's tool pickers (composer and project) never list web search; its
+    Web Search switch (`agentCapabilities.webSearch`) is the control. A narrowed or
+    project-scoped tool list there must not switch web search off behind that switch.
     """
-    if selected_tools is None:
+    if selected_tools is None or is_universal_agent:
         return True
 
     for tool in selected_tools:
@@ -787,6 +824,7 @@ async def _resolve_turn_filters(
     org_id: str,
     logger: Logger,
     project_sources: dict[str, list[str]] | None = None,
+    connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
 ) -> dict[str, Any]:
@@ -835,8 +873,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -844,8 +884,40 @@ async def _resolve_turn_filters(
         filters = await prepare_turn_scope(
             graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
             agent_sources=agent_sources, project_sources=project_sources,
+            connection_sources=connection_sources,
         )
+    elif connection_sources is not None:
+        filters = within_connection(filters, connection_sources)
     return filters
+
+
+async def _knowledge_within_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    agent_knowledge: list[dict[str, Any]],
+    connection_sources: dict[str, list[str]] | None,
+) -> list[dict[str, Any]]:
+    """``agent_knowledge`` as a connected app limited to ``connection_sources``
+    may see it: a source the limit names whole as it is, one it reaches only
+    through some of its folders or files marked as partly shared, and every
+    other source left out. Unchanged without a limit.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    if connection_sources is None:
+        return agent_knowledge
+    whole, partial = await connection_coverage(graph_provider, user_id, org_id, connection_sources)
+    kept: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        connector_id = k.get("connectorId") if isinstance(k, dict) else None
+        if connector_id in whole:
+            kept.append(k)
+        elif connector_id in partial:
+            kept.append({**k, PARTLY_SHARED_KEY: True})
+    return kept
 
 
 def _filter_knowledge_by_enabled_sources(
@@ -1094,6 +1166,21 @@ def _has_control_chars(text: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in text)
 
 
+async def _checked_api_toolset_tools(
+    raw: object, services: dict[str, Any], org_id: str, *, service_account: bool,
+) -> list[str]:
+    """The API toolset operations to store on an agent, each one checked to exist in the org."""
+    if raw == []:
+        return []
+    config_service: ConfigurationService = services["config_service"]
+    try:
+        return await api_toolset_attachments.checked_attachments(
+            ApiToolsetStore(config_service), org_id, raw, service_account=service_account,
+        )
+    except ApiToolsetError as e:
+        raise InvalidRequestError(str(e)) from e
+
+
 def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse attached MCP server references with their tools.
 
@@ -1318,6 +1405,72 @@ def _assert_no_personal_mcp_servers(
     if personal:
         raise InvalidRequestError(
             f"Personal MCP servers ({', '.join(personal)}) can't be attached to an agent that is shared "
+            "with the organization or runs as a service account."
+        )
+
+
+async def _assert_toolsets_visible(
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+) -> dict[str, dict[str, Any]]:
+    """An agent may only attach toolset instances the editor can see — the org's, or their own
+    personal ones; anything else would save fine and then fail every chat. Attachments without an
+    instance (saved before instances existed) are left as they are. Returns the instances by id."""
+    from app.agents.toolset_store import is_personal
+    from app.edition_config import get_toolset_by_id
+
+    attached = {ts["instanceId"]: ts for ts in toolsets_with_tools.values() if ts.get("instanceId")}
+    found = await asyncio.gather(*[get_toolset_by_id(instance_id, config_service, org_id) for instance_id in attached])
+    visible = {
+        instance_id: instance
+        for instance_id, instance in zip(attached, found)
+        if instance and (not is_personal(instance) or instance.get("createdBy") == user_id)
+    }
+    missing = [ts.get("instanceName") or ts.get("displayName") or instance_id for instance_id, ts in attached.items() if instance_id not in visible]
+    if missing:
+        raise InvalidRequestError(f"Action(s) not found: {', '.join(missing)}.")
+    return visible
+
+
+def _names_an_instance(toolsets_with_tools: dict[str, dict[str, Any]]) -> bool:
+    return any(ts.get("instanceId") for ts in toolsets_with_tools.values())
+
+
+async def _attached_personal_toolsets(
+    instance_ids: set[str], config_service: ConfigurationService, org_id: str,
+) -> dict[str, dict[str, Any]]:
+    """The personal toolset instances among `instance_ids`, whoever owns them (as for MCP servers,
+    a co-editor can't resolve the owner's, and dropping what it can't see would let sharing past)."""
+    from app.agents.toolset_store import find_personal_instance
+
+    found = await asyncio.gather(*[
+        find_personal_instance(config_service, org_id, instance_id, raise_on_error=True) for instance_id in instance_ids
+    ])
+    return {instance["_id"]: instance for instance in found if instance}
+
+
+def _toolset_attachments_unreadable() -> AgentError:
+    return AgentError(
+        "This agent's actions couldn't be checked, so it can't be shared right now. Please try again in a moment.",
+        status_code=503,
+    )
+
+
+def _assert_no_personal_toolsets(
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+) -> None:
+    """A personal action holds one user's sign-in and is visible to that user only; an agent other
+    people run could never use it."""
+    if not (shared_with_org or service_account):
+        return
+    from app.agents.toolset_store import is_personal
+
+    personal = [instance.get("instanceName") or instance_id for instance_id, instance in instances.items() if is_personal(instance)]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
             "with the organization or runs as a service account."
         )
 
@@ -2354,6 +2507,10 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_with_tools, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_with_tools) else {}
+        )
         mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         attached_mcp_instances = (
             await _assert_mcp_servers_exist(
@@ -2376,6 +2533,10 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        api_toolset_tools = await _checked_api_toolset_tools(
+            body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
+        )
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -2390,6 +2551,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "tags": body.get("tags", []) or [],
             "webSearch": web_search_attachment,
             "defaultReasoningEffort": default_reasoning_effort,
+            "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
             "sendUserContext": bool(body.get("sendUserContext", True)),
@@ -3018,6 +3180,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_in_body) else {}
+        )
 
         # Check permissions first, then fetch full agent data
         perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
@@ -3067,6 +3234,22 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
+        if sharing_turned_on and "toolsets" not in body:
+            existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
+            try:
+                attached_toolsets = await _attached_personal_toolsets(
+                    existing_toolset_ids, services["config_service"], org_key,
+                ) if existing_toolset_ids else {}
+            except Exception as e:
+                logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
+                raise _toolset_attachments_unreadable() from e
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+        if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
+            # Becoming a service account re-checks what is already attached.
+            body["apiToolsetTools"] = await _checked_api_toolset_tools(
+                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
+                org_key, service_account=final_service_account,
+            )
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -3124,8 +3307,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
-            # Parse toolsets first to validate before anything is written
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+            # Parsed and checked before the update above
+            toolsets_with_tools = toolsets_in_body
 
             graph_provider = services["graph_provider"]
             transaction_id = None
@@ -3738,7 +3921,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         timer.mark("services")
         body = _parse_request_body(await request.body())
-        chat_query = ChatQuery(**body)
+        try:
+            chat_query = ChatQuery(**body)
+        except ValidationError as exc:
+            # Say what is wrong (e.g. the unknown filter key and the allowed ones).
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()),
+            ) from exc
         protocol = _resolve_protocol(chat_query, request)
         logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))
@@ -3810,6 +4000,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
+            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -3822,6 +4013,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
+            artifact_owner_user_id = None
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
@@ -3829,6 +4021,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
+                artifact_owner_user_id = await _service_account_artifact_owner(
+                    user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
@@ -3845,7 +4040,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enabled=bool(agent.get("sendUserContext", True)),
             )
 
-        async def _run() -> AsyncGenerator[str, None]:
+        caller_principal = principal_from_request_user(
+            user_context, agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+        )
+        await assert_identity_allowed(
+            caller_principal, Workload.AGENT,
+            config_service=config_service, container=request.app.container,
+        )
+
+        async def _run_unbound() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the
             response headers are already on the wire, so the client sees the
             stream open immediately instead of waiting out the config fan-out.
@@ -4224,6 +4427,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         org_id=org_key,
                         logger=logger,
                         project_sources=_project_sources(chat_query.allowedFilters),
+                        connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
                     )
@@ -4251,6 +4455,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+                try:
+                    # The universal agent's knowledge is every source the user
+                    # reads, and the prompt names each one with its id. A turn
+                    # without internal search drops its knowledge below, so a
+                    # limit too large to check must not fail it.
+                    agent_knowledge = await _knowledge_within_connection(
+                        graph_provider,
+                        enriched_user_info.get("userId") or user_context.get("userId", ""),
+                        org_key,
+                        agent_knowledge,
+                        connection_limit(getattr(request.state, "user", None)) if caps.internal_search else None,
+                    )
+                except SelectionTooLargeError:
+                    yield _stream_error_frame(
+                        protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
+                    )
+                    return
 
                 logger.info(f"Filters: {filters}")
 
@@ -4276,15 +4497,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 web_search_tool_config = await web_search_coro if web_search_coro is not None else None
                 connector_configs = await connector_task
                 timer.mark("connector_cfg")
-                if not _is_web_search_enabled(chat_query.tools):
+                # Capabilities can only narrow, never expand beyond what the agent is configured with.
+                if web_search_tool_config is None:
+                    web_search_off = "not_configured"
+                elif not _is_web_search_enabled(
+                    chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                ):
+                    web_search_off = "tools_filter"
+                elif not caps.web_search:
+                    web_search_off = "capability_off"
+                else:
+                    web_search_off = None
+                if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
-
-                # Apply user-requested capability overrides (capabilities can only narrow,
-                # never expand beyond what the agent is configured with).
-                if not caps.web_search:
-                    web_search_provider = None
-                    web_search_tool_config = None
+                # Without this line a turn that silently lost web search looks like any other.
+                logger.info(
+                    "chat_stream: web search %s (agent_id=%s)",
+                    f"off, reason={web_search_off}" if web_search_off
+                    else f"on, provider={web_search_tool_config.get('provider')}",
+                    agent_id,
+                )
                 if not caps.internal_search:
                     filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
                     agent_knowledge = []
@@ -4309,6 +4542,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {
@@ -4329,12 +4563,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsets": agent_toolsets,
                     "mcpServers": agent_mcp_servers,
                     "mcpServerConfigs": mcp_server_configs,
+                    "apiToolsetTools": _api_toolset_tools_for_chat(agent.get("apiToolsetTools") or [], chat_query.tools),
                     "knowledge": agent_knowledge,
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
+                    "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,
@@ -4401,6 +4637,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 error_code, user_message = classify_exception(exc)
                 yield _stream_error_frame(protocol, user_message, error_code)
 
+        async def _run() -> AsyncGenerator[str, None]:
+            # Bound in the task that iterates the stream; see the same wrapper in chatbot.py.
+            async with call_scope(
+                caller_principal, Workload.AGENT,
+                config_service=config_service, container=request.app.container,
+                agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+                conversation_id=chat_query.conversationId,
+            ):
+                # Closed with this wrapper: a disconnect closes only the outer generator,
+                # and the inner one must stop its producer task now, not at GC.
+                async with aclosing(_run_unbound()) as inner:
+                    async for event in inner:
+                        yield event
+
         return StreamingResponse(
             _run(),
             media_type="text/event-stream",
@@ -4433,6 +4683,29 @@ def _stream_error_frame(
         evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code, **extra)
         return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
     return f"event: error\ndata: {json.dumps({'message': message, 'type': code, **extra})}\n\n"
+
+
+def _api_toolset_tools_for_chat(attached: list[str], chat_tools: list[str] | None) -> list[str]:
+    """`chat_tools` narrows the attached operations the same way it narrows toolsets; None keeps all."""
+    if chat_tools is None:
+        return attached
+    wanted = set(chat_tools)
+    return [ref for ref in attached if ref in wanted]
+
+
+async def _assistant_api_toolset_tools(
+    config_service: ConfigurationService, org_id: str, user_id: str, logger: Logger,
+) -> list[str]:
+    from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+
+    if not await is_api_toolsets_enabled(config_service):
+        return []
+    try:
+        return await connected_tool_refs(ApiToolsetStore(config_service), org_id, user_id)
+    except Exception as e:
+        # The assistant still answers without them, like it does without toolsets above.
+        logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
+        return []
 
 
 async def get_assistant_agent(
@@ -4601,5 +4874,6 @@ async def get_assistant_agent(
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
         "mcpServers": authenticated_mcp_servers_list,
+        "apiToolsetTools": await _assistant_api_toolset_tools(config_service, org_id, user_id, logger),
         "knowledge": knowledge_sources,
     }, toolset_auth_by_instance

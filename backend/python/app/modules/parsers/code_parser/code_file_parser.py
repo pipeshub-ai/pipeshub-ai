@@ -1,6 +1,8 @@
 """CodeFileParser -- source bytes to a BlocksContainer.
 
-Satisfies the ``IParser`` protocol.
+Satisfies the ``IParser`` protocol. Identity is the qualified name, which is
+unique within a file; the repo-relative path still arrives through the ``config``
+dict because it is stored on every block and used to address them.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.code_graph.version import PARSER_VERSION
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
@@ -29,12 +32,24 @@ from app.modules.parsers.code_parser.lang_config import (
     config_for_language,
     detect_language,
 )
+from app.modules.parsers.code_parser.models import Relation
 from app.services.parsing.interface import ParseResult, ParserProvider
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
 
 __all__ = ["CodeFileParser", "parse_code_to_blocks", "qualified_name_for"]
+
+# A file past these is data or generator output that slipped past the name and
+# content checks in ``routing``: every block is a graph node and an embedding,
+# and a 2 MB file of one-line functions made 50,000 of each; the largest real
+# file in PipesHub's own repo has about 3,200 spans. It is read as text instead.
+# Repeated facts go first, which costs no edges (the edge builder keeps one per
+# from, to and relation); the cap on distinct ones sits well above a large
+# hand-written function's few hundred callees.
+MAX_BLOCKS_PER_FILE = max(1, env_int("CODE_FILE_MAX_BLOCKS", 5000))
+MAX_FACTS_PER_BLOCK = max(1, env_int("CODE_BLOCK_MAX_FACTS", 2000))
 
 _MAX_SIGNATURE_CHARS = 300
 _MAX_DOCSTRING_CHARS = 500
@@ -56,13 +71,22 @@ _NON_SIGNATURE_PREFIXES = ("@", "#", "//", "/*", "*", "--", "[")
 
 
 def qualified_name_for(kind: str, name: str | None, parent_chain: tuple[str, ...] = (),
-                       *, start_line: int | None = None, end_line: int | None = None) -> str:
+                       *, start_line: int | None = None, end_line: int | None = None,
+                       content: str | None = None) -> str:
     """``"{kind}:{dotted.scope}"`` -- the human-readable identity of a symbol.
 
-    Unnamed spans are addressed by line range instead (``imports:L1-5``).
+    An unnamed span is addressed by its nearest named scope and a hash of its
+    whitespace-normalised text (``imports:@3f2a9c1d``, ``statements:Cart@…``):
+    a line range changed whenever anything above it moved, so every edit
+    re-keyed the file's imports and statements and churned their nodes (P-10).
+    Without ``content``, by line range (``imports:L1-5``).
     """
     if name:
         return f"{kind}:{'.'.join([*parent_chain, name])}"
+    if content is not None:
+        digest = hashlib.sha1(" ".join(content.split()).encode("utf-8", errors="replace"),
+                              usedforsecurity=False).hexdigest()[:8]
+        return f"{kind}:{'.'.join(parent_chain)}@{digest}"
     if start_line is not None:
         span = f"L{start_line}" if end_line in (None, start_line) else f"L{start_line}-{end_line}"
         return f"{kind}:{span}"
@@ -197,7 +221,8 @@ class CodeFileParser:
         file_path: str | None = None,
         language: str | None = None,
     ) -> BlocksContainer | None:
-        """Return blocks, or ``None`` when the file was skipped (e.g. oversized).
+        """Return blocks, or ``None`` when the file was skipped (oversized, or
+        more than ``MAX_BLOCKS_PER_FILE`` definitions).
 
         Callers receiving ``None`` should fall back to an alternative parser
         rather than treating the file as empty.
@@ -212,22 +237,45 @@ class CodeFileParser:
             return None
         if not parsed.symbols:
             return BlocksContainer()
+        if len(parsed.symbols) > MAX_BLOCKS_PER_FILE:
+            return None
         return self._to_container(parsed, path, record_name)
 
     # ------------------------------------------------------------------
 
+    def _qualified_names(self, symbols: list[ParsedSymbol]) -> list[str]:
+        """Stable identity per symbol, unique within the file.
+
+        A file may legitimately define the same name twice -- a conditional `def`
+        in either branch of an `if`, or a redefinition -- and two blocks sharing
+        an identity would hash to one `_key`, silently merging into a single node
+        and taking every edge attached to either with it. Repeats are suffixed
+        rather than allowed to collide.
+        """
+        used: dict[str, int] = {}
+        out: list[str] = []
+        for sym in symbols:
+            qname = qualified_name_for(
+                sym.kind, sym.name, sym.parent_chain,
+                start_line=sym.start_line, end_line=sym.end_line, content=sym.text,
+            )
+            seen = used.get(qname, 0) + 1
+            used[qname] = seen
+            out.append(qname if seen == 1 else f"{qname}#{seen}")
+        return out
+
     def _to_container(self, parsed: ParsedFile, file_path: str, record_name: str) -> BlocksContainer:
         symbols = parsed.symbols
+        qualified_names = self._qualified_names(symbols)
 
-        # Blocks and groups are numbered in separate spaces, so keep an
-        # index -> (is_group, idx) map to wire parents and children.
+        # Pending facts reference symbols by list index; blocks and groups are
+        # numbered in separate spaces, so keep an index -> (is_group, idx) map.
         placement: dict[int, tuple[bool, int]] = {}
         groups: list[BlockGroup] = []
         blocks: list[Block] = []
 
-        # Pass 1 -- every container that has members becomes a group, at any
-        # depth. Groups nest through parent_index, so Outer.Inner keeps its level
-        # instead of collapsing onto Outer.
+        # Pass 1 -- every top-level container becomes a group. Anything nested
+        # is a block, so groups never nest.
         for i, sym in enumerate(symbols):
             if sym.is_container:
                 placement[i] = (True, len(groups))
@@ -239,18 +287,28 @@ class CodeFileParser:
             _, gidx = placement[i]
             parent_group = self._nearest_group(sym.parent, symbols, placement)
             groups[gidx] = self._build_group(
-                sym, gidx, parsed.language, parent_group
+                sym, qualified_names[i], gidx, parsed.language, parent_group
             )
 
-        # Pass 2 -- everything else becomes a block parented to its nearest
-        # enclosing group.
+        # Pass 2 -- everything else becomes a block. A definition nested inside
+        # another block hangs off that block; everything else off its group.
         for i, sym in enumerate(symbols):
             if i in placement:
                 continue
             bidx = len(blocks)
-            parent_group = self._nearest_group(sym.parent, symbols, placement)
+            slot = placement.get(sym.parent) if sym.parent is not None else None
+            parent_block = slot[1] if slot and not slot[0] else None
+            # The two parents are exclusive. A block naming a group as parent
+            # must appear in that group's children, and a nested block's bytes
+            # are already inside its parent's, so listing it there would stop
+            # the group's children from tiling it.
+            parent_group = (
+                None if parent_block is not None
+                else self._nearest_group(sym.parent, symbols, placement)
+            )
             blocks.append(
-                self._build_block(sym, bidx, parsed.language, parent_group)
+                self._build_block(sym, qualified_names[i], bidx, parsed.language,
+                                  parent_group, parent_block)
             )
             placement[i] = (False, bidx)
             if parent_group is not None:
@@ -264,19 +322,26 @@ class CodeFileParser:
             if parent_group is not None:
                 groups[parent_group].children.add_block_group_index(gidx)
 
+        # Pass 3 -- attach pending facts to the block that owns them. Facts with
+        # no owning symbol come back for the summary block.
+        file_level = self._attach_pending(parsed, placement, blocks, groups)
+
         blocks.append(
-            self._build_summary_block(parsed, symbols, len(blocks), record_name, file_path)
+            self._build_summary_block(
+                parsed, symbols, len(blocks), record_name, file_path, file_level
+            )
         )
 
-        return BlocksContainer(blocks=blocks, block_groups=groups)
+        return BlocksContainer(blocks=blocks, block_groups=groups, code_facts_version=PARSER_VERSION)
 
     @staticmethod
     def _nearest_group(parent: int | None, symbols: list[ParsedSymbol],
                        placement: dict[int, tuple[bool, int]]) -> int | None:
         """Walk up to the closest ancestor that became a group.
 
-        A function nested inside a method has no group of its own, so it attaches
-        to the enclosing class.
+        Only a top-level container is a group, so this resolves in one step for a
+        member tiling one and returns None elsewhere. A definition nested inside a
+        block is parented through ``parent_block_index`` instead.
         """
         while parent is not None:
             slot = placement.get(parent)
@@ -285,8 +350,8 @@ class CodeFileParser:
             parent = symbols[parent].parent
         return None
 
-    def _build_group(self, sym: ParsedSymbol, index: int, language: str,
-                     parent_group: int | None = None) -> BlockGroup:
+    def _build_group(self, sym: ParsedSymbol, qualified_name: str, index: int,
+                     language: str, parent_group: int | None = None) -> BlockGroup:
         # A container keeps its whole body. Its children are subsets of it, which
         # costs nothing in vectors: vectorstore only embeds table/view groups, so
         # a code group's text never reaches Qdrant.
@@ -305,11 +370,12 @@ class CodeFileParser:
             },
             content_hash=_content_hash(sym.text),
             children=BlockGroupChildren(),
-            code_metadata=self._code_metadata(sym, language),
+            code_metadata=self._code_metadata(sym, qualified_name, language),
         )
 
-    def _build_block(self, sym: ParsedSymbol, index: int,
-                     language: str, parent_group: int | None) -> Block:
+    def _build_block(self, sym: ParsedSymbol, qualified_name: str, index: int,
+                     language: str, parent_group: int | None,
+                     parent_block: int | None = None) -> Block:
         text = sym.text
         return Block(
             index=index,
@@ -317,6 +383,7 @@ class CodeFileParser:
             name=sym.name,
             format=DataFormat.CODE,
             parent_index=parent_group,
+            parent_block_index=parent_block,
             citation_metadata=CitationMetadata(line_number=sym.start_line),
             content_hash=_content_hash(text),
             data={
@@ -326,31 +393,69 @@ class CodeFileParser:
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
             },
-            code_metadata=self._code_metadata(sym, language),
+            code_metadata=self._code_metadata(sym, qualified_name, language),
         )
 
-    def _code_metadata(self, sym: ParsedSymbol, language: str) -> CodeMetadata:
+    def _code_metadata(self, sym: ParsedSymbol, qualified_name: str,
+                       language: str) -> CodeMetadata:
         return CodeMetadata(
             language=language,
             kind=sym.kind,
             signature=_extract_signature(sym.text) if sym.name else None,
             docstring=_extract_docstring(sym.text, language),
             decorators=list(sym.decorators) or None,
-            qualified_name=qualified_name_for(
-                sym.kind, sym.name, sym.parent_chain,
-                start_line=sym.start_line, end_line=sym.end_line,
-            ),
+            qualified_name=qualified_name,
             start_line=sym.start_line,
             end_line=sym.end_line,
         )
 
+    def _attach_pending(self, parsed: ParsedFile, placement: dict[int, tuple[bool, int]],
+                        blocks: list[Block], groups: list[BlockGroup]) -> list[dict]:
+        """Bucket pending facts by owning block; return the file-level ones."""
+        buckets: dict[tuple[bool, int] | None, list[dict]] = {}
+        seen: dict[tuple[bool, int] | None, set[tuple]] = {}
+        for fact in parsed.pending:
+            key = placement.get(fact.from_symbol) if fact.from_symbol is not None else None
+            facts = buckets.setdefault(key, [])
+            if len(facts) >= MAX_FACTS_PER_BLOCK:
+                continue
+            fact_dict = fact.to_dict()
+            # The same call on another line resolves to the same edge.
+            identity = tuple(sorted((k, v) for k, v in fact_dict.items() if k != "line"))
+            if identity in seen.setdefault(key, set()):
+                continue
+            seen[key].add(identity)
+            facts.append(fact_dict)
+
+        for key, facts in buckets.items():
+            if key is None:
+                continue
+            is_group, idx = key
+            target = groups[idx] if is_group else blocks[idx]
+            if target.code_metadata is None:
+                target.code_metadata = CodeMetadata()
+            target.code_metadata.pending_edges = facts
+
+        return buckets.get(None, [])
+
     def _build_summary_block(self, parsed: ParsedFile, symbols: list[ParsedSymbol],
-                             index: int, record_name: str, file_path: str) -> Block:
+                             index: int, record_name: str, file_path: str,
+                             file_pending: list[dict]) -> Block:
         top_level = [
             f"{s.kind}:{s.name}" for s in symbols if not s.parent_chain and s.name
         ]
         summary = f"{record_name} ({parsed.language}) — " + (
             ", ".join(top_level) if top_level else "no top-level symbols"
+        )
+        facts = list(file_pending)
+        # `export function f` is resolvable here: the symbol is in this file.
+        facts.extend(
+            {
+                "relation": Relation.EXPORTS, "toName": sym.name,
+                "line": sym.start_line, "fromKind": "record", "toKind": "block",
+                "restrictToFile": True,
+            }
+            for sym in symbols if sym.is_exported and sym.name
         )
         return Block(
             index=index,
@@ -363,9 +468,14 @@ class CodeFileParser:
                 "kind": "file_summary",
                 "symbols": top_level,
                 "file_path": file_path,
+                # The parse recovered past a syntax error here; symbols after it may be
+                # missing or partial. Kept so tools can say so instead of looking complete (P-9).
+                **({"parse_error_line": parsed.parse_error_line} if parsed.parse_error_line else {}),
             },
             code_metadata=CodeMetadata(
                 language=parsed.language,
                 kind="file_summary",
+                type_table=parsed.type_table or None,
+                pending_edges=facts or None,
             ),
         )

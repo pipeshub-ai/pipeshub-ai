@@ -1088,6 +1088,101 @@ class TestFetchUsersPhases:
         assert len(result) == 2
 
     @pytest.mark.asyncio
+    async def test_reverse_lookup_never_resolves_a_deactivated_account(self) -> None:
+        """A deactivated Jira account with a PipesHub user's email must not become an app user."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock(email="gone@example.com")]
+        )
+        users_data = [
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+            {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
+        ]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await connector._fetch_users() == []
+        assert connector._deactivated_account_ids == {"u9"}
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_rejects_an_account_the_bulk_listing_did_not_offer(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock(email="hidden@example.com")]
+        )
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+        ]))
+        mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [{"accountId": "other"}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await connector._fetch_users() == []
+
+    @pytest.mark.asyncio
+    async def test_users_without_product_access_are_left_out(self) -> None:
+        connector = _make_connector()
+        licensed, unlicensed = (
+            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+            for i in ("lic", "unlic")
+        )
+        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
+        connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
+
+    @pytest.mark.asyncio
+    async def test_product_access_unknown_keeps_every_user(self) -> None:
+        connector = _make_connector()
+        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="u", email="u@x.com", full_name="u")]
+        connector._fetch_group_members = AsyncMock(return_value=([], False))
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users(users, {}) == users
+        assert await connector._keep_licensed_users(users, mapping) == users
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_role_list_keeps_every_user(self) -> None:
+        connector = _make_connector()
+        users = [
+            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+            for i in ("lic", "other")
+        ]
+        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        connector._app_roles_unread = True
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users(users, mapping) == users
+        connector._fetch_group_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_withdraws_stored_users_jira_reports_ineligible(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        stored = [
+            AppUser(id=f"node-{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=e, full_name=i)
+            for i, e in (("dead", "a@x.com"), ("unlic", "b@x.com"), ("ok", "c@x.com"), ("old", "d@x.com"))
+        ]
+        connector._stored_app_users = stored
+        # d@x.com was deactivated under one account but kept under another.
+        kept = [stored[2], AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="new", email="d@x.com", full_name="d")]
+
+        await connector._withdraw_ineligible_app_users(kept, {"dead", "unlic", "old"})
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            "conn-jira-cov", [stored[0], stored[1]]
+        )
+
+    @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
         """Phase 5 not triggered when all users have visible email."""
         connector = _make_connector()
@@ -2616,6 +2711,42 @@ class TestParseIssueToBlocksCoverage:
         comment_bg = next(bg for bg in result.block_groups if bg.source_group_id == "c1")
         assert comment_bg.format.value == "html"
         assert comment_bg.data == "<p>Comment 1</p>"
+
+    @pytest.mark.asyncio
+    async def test_restricted_comments_are_left_out(self) -> None:
+        connector = _make_connector()
+        issue_data = {"id": "100", "fields": {"summary": "Test"}}
+        comments_data = [
+            {"id": "c1", "author": {"displayName": "A"}, "created": "2024-01-15T10:00:00.000Z"},
+            {"id": "c2", "author": {"displayName": "B"}, "created": "2024-01-16T10:00:00.000Z",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "created": "2024-01-17T10:00:00.000Z",
+             "visibility": {"type": "group", "value": "jira-admins", "identifier": "g1"}},
+        ]
+        rendered_fields = {"description": "", "comment": {"comments": [
+            {"id": "c1", "body": "<p>open</p>"},
+            {"id": "c2", "body": "<p>role secret</p>"},
+            {"id": "c3", "body": "<p>group secret</p>"},
+        ]}}
+
+        result = await connector._parse_issue_to_blocks(
+            issue_data, "PROJ-1", weburl="https://jira/browse/PROJ-1",
+            rendered_fields=rendered_fields, comments_data=comments_data,
+        )
+        assert {bg.source_group_id for bg in result.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+        assert "secret" not in result.model_dump_json()
+
+    def test_restricted_comment_images_are_not_treated_as_inline(self) -> None:
+        connector = _make_connector()
+        fields = {
+            "attachment": [{"id": "9", "filename": "s.png", "mimeType": "image/png", "size": 10}],
+            "comment": {"comments": [{"id": "c2", "body": "!s.png!",
+                                      "visibility": {"type": "role", "value": "Administrators"}}]},
+        }
+        # The attachment is still visible on the issue in Jira, so it keeps its own record.
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+        fields["comment"]["comments"][0].pop("visibility")
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"9"}
 
     @pytest.mark.asyncio
     async def test_comment_rendered_body_fallback(self):

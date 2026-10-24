@@ -114,6 +114,11 @@ def format_connector_filter_lines(filters: dict[str, Any] | None) -> list[str]:
 # Shared knowledge classification utility (used by all agent modes)
 # ---------------------------------------------------------------------------
 
+#: Set on a knowledge entry that a connected app's limit reaches only in part
+#: (some of its folders or files). The prompt names such a source without its
+#: id: the id would let a tool reach the rest of it by name.
+PARTLY_SHARED_KEY = "partlyShared"
+
 def classify_knowledge_sources(
     agent_knowledge: list[dict[str, Any]],
     *,
@@ -169,6 +174,7 @@ def classify_knowledge_sources(
                 "type_key": "",
                 "connector_id": connector_id,
                 "source_type": "kb",
+                **({"partly_shared": True} if k.get(PARTLY_SHARED_KEY) else {}),
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""
@@ -178,6 +184,7 @@ def classify_knowledge_sources(
                 "type_key": type_key,
                 "connector_id": connector_id,
                 "source_type": "app",
+                **({"partly_shared": True} if k.get(PARTLY_SHARED_KEY) else {}),
             }
             if connector_configs:
                 fc = connector_configs.get(connector_id)

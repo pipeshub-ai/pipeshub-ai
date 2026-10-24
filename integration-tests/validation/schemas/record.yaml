@@ -18,6 +18,9 @@ fields:
       block_groups:
         type: array
         required: true
+      code_facts_version:
+        type: string
+        required: false
   child_record_ids:
     required: false
     type: array

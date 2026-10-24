@@ -341,7 +341,7 @@ class TestBuildPriorRoutingMessages:
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
-        blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+        blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x", lookup_result=None)
 
     @pytest.mark.asyncio
     async def test_attachment_the_caller_cannot_read_is_not_loaded(self) -> None:

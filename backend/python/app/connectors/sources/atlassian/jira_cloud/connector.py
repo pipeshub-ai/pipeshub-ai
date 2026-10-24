@@ -74,9 +74,13 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
+from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.html_utils import (
+    attachment_images_not_inlined,
     extract_attachment_ids,
+    has_unknown_macro_placeholder,
     inline_images_as_base64,
+    inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
@@ -438,6 +442,13 @@ class JiraConnector(BaseConnector):
         # groups are unknown. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
+        # This sync's users-and-roles reads, which the later steps of run_sync rely on:
+        # the stored app users and deactivated accounts (_fetch_users) decide the withdraw,
+        # and the application-role mapping is read once and reused for project access.
+        # Cleared when run_sync ends, so a _fetch_projects call outside it reads the mapping itself.
+        self._stored_app_users: list[AppUser] = []
+        self._deactivated_account_ids: set[str] = set()
+        self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -783,9 +794,17 @@ class JiraConnector(BaseConnector):
                     "project access are kept, and anything with nothing stored is saved from what was read. "
                     "The next sync reads it again"
                 )
+            self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+            licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
+            unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+            jira_users = licensed_users
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
+            if not self._user_read_unfinished:
+                await self._withdraw_ineligible_app_users(
+                    jira_users, unlicensed_ids | self._deactivated_account_ids
+                )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -881,6 +900,8 @@ class JiraConnector(BaseConnector):
                     ),
                 )
             raise
+        finally:
+            self._app_roles_mapping = None
 
     # ============================================================================
     # Placeholder Sweep
@@ -1783,6 +1804,7 @@ class JiraConnector(BaseConnector):
         # Phase 1: DB reads (0 API calls)
         # ====================================================================
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        self._stored_app_users = cached_app_users
         pipeshub_users = (
             active_pipeshub_users
             if active_pipeshub_users is not None
@@ -1803,6 +1825,10 @@ class JiraConnector(BaseConnector):
         # Phase 2: Jira bulk fetch (1 paginated API call)
         # ====================================================================
         raw_jira_users = await self._fetch_all_jira_users_bulk()
+        self._deactivated_account_ids = {
+            u["accountId"] for u in raw_jira_users
+            if u.get("accountType") == "atlassian" and not u.get("active", True) and u.get("accountId")
+        }
 
         all_active_account_ids: set[str] = set()
         visible_email_map: dict[str, str] = {}  # email.lower() -> accountId
@@ -2012,7 +2038,14 @@ class JiraConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    user = results[0]
+                    # The search is a prefix match that also returns deactivated and app accounts.
+                    user = next((
+                        u for u in results
+                        if isinstance(u, dict)
+                        and u.get("accountType", "atlassian") == "atlassian"
+                        and u.get("active", True)
+                        and (u.get("emailAddress") or email).lower() == email.lower()
+                    ), None)
                     if not user:
                         return None
                     account_id = user.get("accountId")
@@ -2044,6 +2077,9 @@ class JiraConnector(BaseConnector):
                 if isinstance(result, Exception) or result is None:
                     continue
                 account_id, email, display_name = result
+                # With the bulk listing readable, only its active hidden-email accounts are candidates.
+                if not self._user_bulk_forbidden and account_id not in unresolved_account_ids:
+                    continue
                 if account_id not in resolved:
                     resolved[account_id] = AppUser(
                         app_name=self.connector_name,
@@ -2158,6 +2194,53 @@ class JiraConnector(BaseConnector):
             return {}
 
         return mapping
+
+    async def _keep_licensed_users(
+        self,
+        jira_users: list[AppUser],
+        app_roles_mapping: dict[str, list[dict[str, str]]],
+    ) -> list[AppUser]:
+        """The users with access to a Jira product: members of a group of some application role.
+
+        Jira treats any other account as anonymous, so its group, role and user grants never
+        reach it. When the roles or a role group's members can't be read, every user is kept.
+        """
+        if self._app_roles_unread:
+            # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
+            self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
+            return jira_users
+        role_groups = {
+            g["name"]: g["groupId"]
+            for groups in app_roles_mapping.values() for g in groups if g.get("name")
+        }
+        if not role_groups:
+            return jira_users
+        licensed: set[str] = set()
+        for name, group_id in role_groups.items():
+            members, ok = await self._fetch_group_members(group_id, name)
+            if not ok:
+                self.logger.warning(
+                    "⚠️ Could not read the members of product group %s; keeping every Jira user", name
+                )
+                return jira_users
+            licensed.update(members)
+        kept = [u for u in jira_users if u.source_user_id in licensed]
+        if len(kept) < len(jira_users):
+            self.logger.info(
+                f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
+            )
+        return kept
+
+    async def _withdraw_ineligible_app_users(self, jira_users: list[AppUser], ineligible_ids: set[str]) -> None:
+        """Take the connector away from stored users whose account Jira reports deactivated or
+        without product access, unless another account with their email was kept this run."""
+        kept_emails = {u.email.lower() for u in jira_users if u.email}
+        gone = [
+            u for u in self._stored_app_users
+            if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,
@@ -3308,8 +3391,10 @@ class JiraConnector(BaseConnector):
             project_keys, project_keys_operator
         )
 
-        # Fetch application roles → groups mapping once (cached)
-        app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        # run_sync reads the mapping once per sync, before the users are filtered by it.
+        app_roles_mapping = self._app_roles_mapping
+        if app_roles_mapping is None:
+            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
         # Build accountId -> AppUser lookup for permission scheme resolution
         perm_user_by_account_id: dict[str, AppUser] = {}
@@ -4183,7 +4268,7 @@ class JiraConnector(BaseConnector):
         comment_field = issue_fields.get("comment")
         if isinstance(comment_field, dict):
             for comment in comment_field.get("comments") or []:
-                if not isinstance(comment, dict):
+                if not isinstance(comment, dict) or comment.get("visibility"):
                     continue
                 c_names, c_ids = self._inline_refs_from_body(comment.get("body"))
                 filenames |= c_names
@@ -4524,6 +4609,35 @@ class JiraConnector(BaseConnector):
         )
         return [valid]
 
+    def _markdown_from_raw_body(
+        self, raw_body: object, inlined_html: str, image_names: list[str] | None = None,
+    ) -> str | None:
+        """Rebuild a description or comment body as markdown from its raw field value.
+
+        Used when Jira's rendered HTML dropped text (see ``has_unknown_macro_placeholder``).
+        ``raw_body`` is the field as the REST API returns it: an ADF document (API v3) or a
+        wiki-markup string. Images already inlined into the rendered HTML are appended, since
+        ADF media nodes carry no fetchable URL. ``image_names`` are the file names of images
+        that could not be inlined; any not already in the text are appended, so the name stays
+        indexed even for a media node without ``alt``. Returns ``None`` when the raw value has
+        no text, so the caller keeps the rendered HTML.
+        """
+        if isinstance(raw_body, dict):
+            text = adf_to_markdown(raw_body)
+        elif isinstance(raw_body, str):
+            text = raw_body.strip()
+        else:
+            text = ""
+        if not text:
+            return None
+        missing_names = [name for name in (image_names or []) if name not in text]
+        if missing_names:
+            text = f"{text}\n\n" + "\n\n".join(missing_names)
+        images = inline_images_as_markdown(inlined_html)
+        if images:
+            text = f"{text}\n\n" + "\n\n".join(images)
+        return text
+
     async def _build_description_block_group(
         self,
         issue_id: str,
@@ -4534,15 +4648,36 @@ class JiraConnector(BaseConnector):
         attachments_by_id: dict[str, dict[str, Any]],
         is_image: Callable[[str], bool],
         fetch_base64: Callable[[dict[str, Any]], Awaitable[Optional[str]]],
+        raw_description: object = None,
     ) -> tuple[BlockGroup, set[str]]:
-        """Build the description BlockGroup (index 0) and return referenced attachment IDs."""
+        """Build the description BlockGroup (index 0) and return referenced attachment IDs.
+
+        Uses the rendered HTML, unless Jira's renderer replaced part of it with an
+        unknown-macro placeholder; then the raw description is indexed as markdown instead.
+        """
         raw_description_html = rendered_fields.get("description") or ""
         desc_referenced = extract_attachment_ids(raw_description_html)
-        description_html, _ = await inline_images_as_base64(
+        description_html, desc_inlined = await inline_images_as_base64(
             raw_description_html, attachments_by_id, is_image, fetch_base64
         )
         heading = f"<h1>{html_escape(issue_name)}</h1>"
         description_data = f"{heading}\n{description_html}" if description_html else heading
+        description_format = DataFormat.HTML
+
+        if has_unknown_macro_placeholder(raw_description_html):
+            fallback = self._markdown_from_raw_body(
+                raw_description,
+                description_html,
+                attachment_images_not_inlined(raw_description_html, desc_inlined, attachments_by_id),
+            )
+            if fallback is not None:
+                self.logger.info(
+                    "Jira issue %s: rendered description lost text to an unknown-macro "
+                    "placeholder; indexing the raw description instead",
+                    issue_key or issue_id,
+                )
+                description_data = f"# {issue_name}\n\n{fallback}"
+                description_format = DataFormat.MARKDOWN
 
         description_block_group = BlockGroup(
             id=str(uuid4()),
@@ -4553,7 +4688,7 @@ class JiraConnector(BaseConnector):
             description=f"Description for issue {issue_key}" if issue_key else "Issue description",
             source_group_id=f"{issue_id}_description",
             data=description_data,
-            format=DataFormat.HTML,
+            format=description_format,
             weburl=weburl,
             requires_processing=True,
         )
@@ -4608,9 +4743,25 @@ class JiraConnector(BaseConnector):
 
                 c_referenced = extract_attachment_ids(raw_comment_html)
                 comment_referenced_ids |= c_referenced
-                comment_html, _ = await inline_images_as_base64(
+                comment_html, comment_inlined = await inline_images_as_base64(
                     raw_comment_html, attachments_by_id, is_image, fetch_base64
                 )
+                comment_data = comment_html
+                comment_format = DataFormat.HTML
+                if has_unknown_macro_placeholder(raw_comment_html):
+                    fallback = self._markdown_from_raw_body(
+                        comment.get("body"),
+                        comment_html,
+                        attachment_images_not_inlined(raw_comment_html, comment_inlined, attachments_by_id),
+                    )
+                    if fallback is not None:
+                        self.logger.info(
+                            "Jira issue %s: rendered comment %s lost text to an unknown-macro "
+                            "placeholder; indexing the raw comment instead",
+                            issue_key or issue_id, comment_id,
+                        )
+                        comment_data = fallback
+                        comment_format = DataFormat.MARKDOWN
                 comment_children = [
                     children_map[i]
                     for i in children_map
@@ -4634,8 +4785,8 @@ class JiraConnector(BaseConnector):
                     name=f"Comment by {author_name}",
                     description=f"Comment by {author_name}",
                     source_group_id=comment_id,
-                    data=comment_html,
-                    format=DataFormat.HTML,
+                    data=comment_data,
+                    format=comment_format,
                     weburl=comment_weburl,
                     requires_processing=True,
                     children_records=comment_children or None,
@@ -4670,6 +4821,11 @@ class JiraConnector(BaseConnector):
         - non-image linked in a comment → child of that comment.
         - non-image linked only in the description → description child.
         - attachment referenced nowhere → description child.
+
+        Fallback: Jira's renderer reads plain text containing ``{`` (a pasted JSON payload, for
+        example) as a wiki macro and replaces it with an "Unknown macro" error, so that text is
+        missing from the rendered HTML. When the description or a comment shows that
+        placeholder, it is indexed as markdown converted from the raw ADF field instead.
         """
         if not weburl:
             raise ValueError("weburl is required when creating BlockGroup for issues")
@@ -4704,6 +4860,7 @@ class JiraConnector(BaseConnector):
         description_block_group, desc_referenced = await self._build_description_block_group(
             issue_id, resolved_issue_key, issue_name, weburl,
             rendered_fields, attachments_by_id, is_image, fetch_base64,
+            raw_description=fields.get("description"),
         )
         block_groups: list[BlockGroup] = [description_block_group]
 
@@ -4714,6 +4871,8 @@ class JiraConnector(BaseConnector):
             if c.get("id") is not None
         }
         comment_referenced_ids: set[str] = set()
+        # A comment restricted to a role or group would reach everyone who can open the issue.
+        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
 
         if comments_data:
             comment_bgs, comment_referenced_ids, _ = await self._build_comment_block_groups(

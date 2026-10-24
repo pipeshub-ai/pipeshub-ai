@@ -17,6 +17,7 @@ import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_back
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
+import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -51,6 +52,7 @@ export class MigrationService {
     await this.chatSessionsMigration();
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
+    await this.delegationLogRetentionMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
@@ -104,6 +106,12 @@ export class MigrationService {
   async userGroupNameIndexMigration(): Promise<void> {
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
+  }
+
+  async delegationLogRetentionMigration(): Promise<void> {
+    // Changing the retention constant does not move an index that already
+    // exists; this does. run() logs its own outcome and never throws.
+    await new DelegationLogRetentionMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {

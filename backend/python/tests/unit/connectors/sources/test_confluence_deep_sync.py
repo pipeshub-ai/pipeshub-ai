@@ -69,7 +69,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    c = ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
+    return c
 
 
 def _resp(status=200, data=None):

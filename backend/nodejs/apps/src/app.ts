@@ -10,6 +10,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
@@ -23,6 +24,8 @@ import { startOrgMetricsRefresh } from './modules/user_management/services/metri
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
+import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
+import { isApiPath } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -115,6 +118,8 @@ import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes'
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { ApiToolsetsContainer } from './modules/api_toolsets/container/api_toolsets.container';
+import { createApiToolsetsRouter } from './modules/api_toolsets/routes/api_toolsets.routes';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import {
   createMcpClientMetadataHandler,
@@ -124,6 +129,7 @@ import { ProjectsContainer } from './modules/projects/container/project.containe
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -169,6 +175,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private apiToolsetsContainer!: Container;
   private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -293,6 +300,9 @@ export class Application {
         configurationManagerConfig,
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.apiToolsetsContainer = await ApiToolsetsContainer.initialize(
         configurationManagerConfig,
       );
       this.projectsContainer = await ProjectsContainer.initialize(
@@ -512,7 +522,10 @@ export class Application {
       }),
     );
 
-    // Body parsing
+    // Body parsing. /mcp has its own, smaller limit, and it must come first:
+    // a JSON parser skips a body an earlier one has read, and one that came
+    // after the shared 10 MB parser would never get to apply its limit.
+    this.app.use('/mcp', ...mcpJsonBodyParser());
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
@@ -541,7 +554,7 @@ export class Application {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
-        skip: (req) => !req.path.startsWith('/api/'),
+        skip: (req) => !isApiPath(req.path),
       }),
     );
 
@@ -556,6 +569,10 @@ export class Application {
     if (isTelemetryEnabled()) {
       this.app.use(metricsMiddleware());
     }
+    // Registered after the rate limiter: a rejection ends the request through
+    // next(error), which skips every later middleware, so these requests would
+    // otherwise never count towards the limit.
+    this.app.use(operatorKeyGuardMiddleware);
   }
 
   private configureRoutes(): void {
@@ -647,6 +664,12 @@ export class Application {
       createSemanticSearchRouter(this.esAgentContainer),
     );
 
+    // code-graph status for the dashboard (repos and their graph status)
+    this.app.use(
+      '/api/v1/code-graph',
+      createCodeGraphRouter(this.esAgentContainer),
+    );
+
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
     // needs (currently the scheduler).
@@ -721,6 +744,12 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
+    this.app.use(
+      '/api/v1/api-toolsets',
+      createApiToolsetsRouter(this.apiToolsetsContainer),
     );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.

@@ -28,7 +28,7 @@ const pageSchema = z.preprocess(
 
 const limitSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
-  z.number().min(1).max(100).default(10),
+  z.number().int().min(1).max(100).default(10),
 );
 
 /** Limit preprocessor for conversation list endpoints (default 20). */
@@ -216,27 +216,47 @@ const entityFiltersSchema = z
 /** Most ids one request may select, across every filter key. */
 const MAX_FILTER_IDS = 200;
 
+const filtersShape = {
+  apps: z.array(appOrKbIdSchema).optional(),
+  kb: z.array(appOrKbIdSchema).optional(),
+  entityFilters: entityFiltersSchema.optional(),
+  // Reserved for the typed filter tree that will replace entityFilters.
+  where: z
+    .unknown()
+    .refine((value) => value === undefined, {
+      message: 'filters.where is not supported yet',
+    })
+    .optional(),
+  recordGroups: z.array(appOrKbIdSchema).optional(),
+  records: z.array(appOrKbIdSchema).optional(),
+  recordsExact: z.array(appOrKbIdSchema).optional(),
+};
+
+/** Keys a client may send in `filters` (`where` is reserved and always refused). */
+export const REQUEST_FILTER_KEYS = Object.keys(filtersShape).filter(
+  (key) => key !== 'where',
+);
+
 /**
  * Filter object reused across search/message/regenerate flows: whole apps
  * (`apps`, with `kb` as its older name for collections) and selections below
  * app level — record groups (with the groups nested in them), folders or
- * records (with everything under them) and single records — plus `entityFilters`.
+ * records (with everything under them) and single records — plus `entityFilters`. Classification
+ * names (departments, topics...) are internal-only for now. A key outside this list is refused with the allowed list.
  */
 const filtersSchema = z
-  .object({
-    apps: z.array(appOrKbIdSchema).optional(),
-    kb: z.array(appOrKbIdSchema).optional(),
-    entityFilters: entityFiltersSchema.optional(),
-    // Reserved for the typed filter tree that will replace entityFilters.
-    where: z
-      .unknown()
-      .refine((value) => value === undefined, {
-        message: 'filters.where is not supported yet',
-      })
-      .optional(),
-    recordGroups: z.array(appOrKbIdSchema).optional(),
-    records: z.array(appOrKbIdSchema).optional(),
-    recordsExact: z.array(appOrKbIdSchema).optional(),
+  .object(filtersShape)
+  .passthrough()
+  .superRefine((filters, ctx) => {
+    const unknown = Object.keys(filters).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(filtersShape, key),
+    );
+    if (unknown.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Unknown filter key(s): ${unknown.join(', ')}. Allowed keys: ${REQUEST_FILTER_KEYS.join(', ')}`,
+      });
+    }
   })
   .refine(
     (filters) =>
@@ -516,6 +536,39 @@ export const agentConversationTitleParamsSchema =
     body: titleBodySchema,
   });
 
+/** Most people one request may share an agent conversation with; each id costs an IAM lookup. */
+const AGENT_SHARE_MAX_USERS = 50;
+
+/**
+ * Schema for POST /:agentKey/conversations/:conversationId/share — agent
+ * conversations are read-only for recipients, so the only access level a caller
+ * may name is 'read'. The strict body rejects `accessLevel: 'write'` outright
+ * instead of silently stripping it.
+ */
+export const agentConversationShareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be shared with at once`,
+        }),
+        accessLevel: z.literal('read').optional(),
+      })
+      .strict(),
+  });
+
+/** Schema for POST /:agentKey/conversations/:conversationId/unshare. */
+export const agentConversationUnshareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be unshared at once`,
+        }),
+      })
+      .strict(),
+  });
+
 /** Schema for POST /:agentKey/conversations/:conversationId/cancel — cooperatively stop an in-flight agent run. */
 export const cancelAgentConversationStreamParamsSchema =
   agentConversationParamsSchema.extend({
@@ -730,6 +783,15 @@ const agentMcpServerSchema = z.object({
  * duplicate-type rejection — instances with no `typeId` (custom/unregistered
  * servers) are exempt, same as the Python side.
  */
+/**
+ * API toolset operations an agent may call, each `"<toolsetId>:<operation>"`.
+ * Python checks that every one exists in the organization.
+ */
+const agentApiToolsetToolsSchema = z
+  .array(z.string().regex(/^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$/))
+  .max(500)
+  .optional();
+
 const agentMcpServersSchema = z
   .array(agentMcpServerSchema)
   .max(50)
@@ -919,7 +981,9 @@ const createAgentBodySchema = z
   });
 
 export const createAgentSchema = z.object({
-  body: createAgentBodySchema,
+  body: createAgentBodySchema.extend({
+    apiToolsetTools: agentApiToolsetToolsSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -957,7 +1021,9 @@ const updateAgentBodySchema = z
 
 export const updateAgentSchema = z.object({
   params: z.object(agentKeyParam),
-  body: updateAgentBodySchema,
+  body: updateAgentBodySchema.extend({
+    apiToolsetTools: agentApiToolsetToolsSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -1032,7 +1098,19 @@ export const messageIdParamsSchema = z.object({
 // Regenerate answers (conversation + agent)
 // ---------------------------------------------------------------------------
 
+/** The composer's own limit on files per message (CHAT_ATTACHMENT_MAX_FILES in the frontend). */
+const REGENERATE_ATTACHMENTS_MAX = 10;
+
 const regenerateBodySchema = z.object({
+  // Present only when the user edited the question being regenerated.
+  query: chatQuerySchema.optional(),
+  // The edited question's files, replacing the stored ones; omitted keeps them.
+  attachments: z
+    .array(attachmentRefSchema)
+    .max(REGENERATE_ATTACHMENTS_MAX, {
+      message: `At most ${REGENERATE_ATTACHMENTS_MAX} attachments per message`,
+    })
+    .optional(),
   filters: filtersSchema,
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
@@ -1045,6 +1123,23 @@ export const regenerateAnswersParamsSchema = z.object({
     ...messageIdParam,
   }),
   body: regenerateBodySchema,
+});
+
+/** Schema for POST /:conversationId/message/:messageId/fork */
+export const forkConversationParamsSchema = z.object({
+  params: z.object({
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+});
+
+/** Schema for POST /:agentKey/conversations/:conversationId/message/:messageId/fork */
+export const forkAgentConversationParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
 });
 
 export const regenerateAgentAnswersParamsSchema = z.object({
@@ -1151,7 +1246,8 @@ export const enterpriseSearchSearchSchema = z.object({
         message: 'Search query exceeds maximum length of 100000 characters',
       }),
     filters: filtersSchema,
-    limit: limitSchema.optional(),
+    // Default 10, as the OpenAPI spec says; `.optional()` would skip the default.
+    limit: limitSchema,
     // Optional bounds on the source's own created / last-updated date. The AI
     // service parses them (the assistant's search tool uses the same parser)
     // and answers 400 with the reason when one is not a date it accepts.
@@ -1163,6 +1259,12 @@ export const enterpriseSearchSearchSchema = z.object({
     // expanded variants: for callers that write their own queries, such as
     // an agent. Left out, the AI service rewrites and expands as before.
     rewriteQuery: z.boolean().optional(),
+    // Set, the AI service searches the span the matching date bounds give
+    // period by period, as the assistant's timeline tool does, and returns
+    // the matches in date order, each labelled with its period. The value is
+    // the date records are placed by. Left out, bounds on one date over more
+    // than a month run as a timeline on it; 'off' is always a plain ranked search.
+    timeline: z.enum(['created', 'modified', 'off']).optional(),
   }),
 });
 

@@ -28,7 +28,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
-from app.utils.jinja_templates import compiled_template
+from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.time_conversion import (
     format_day_for_llm,
     format_epoch_ms_for_llm,
@@ -221,6 +221,8 @@ class ItemType(str, Enum):
     FEATURE = "FEATURE"
     SUBTASK = "SUBTASK"
     INCIDENT = "INCIDENT"
+    # The root cause that incidents are linked to (Zendesk's "problem" ticket type).
+    PROBLEM = "PROBLEM"
     IMPROVEMENT = "IMPROVEMENT"
     QUESTION = "QUESTION"
     DOCUMENTATION = "DOCUMENTATION"
@@ -1362,6 +1364,7 @@ _SOURCE_STATUS_LABELS: dict[Connectors, str] = {
     Connectors.JIRA_CLOUD_PERSONAL: "Jira",
     Connectors.JIRA_DATA_CENTER: "Jira",
     Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+    Connectors.ZENDESK: "Zendesk",
 }
 
 
@@ -2930,6 +2933,24 @@ class CodeFileRecord(Record):
     # generated. Classified by the connector from the path alone; the resolver
     # reads it instead of re-deriving "is this a test?" from the path.
     file_role: str | None = None
+    # The commit this version of the file was synced at (P-8).
+    commit_sha: str | None = None
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Adds the repo-relative path the code-graph tools address files by.
+
+        `Name` is a bare basename and `External ID` is a connector-specific URL,
+        so without this line a search hit carries no argument `get_neighbour`/
+        `read_code` accept — the only way left to obtain one is a
+        `query_code_graph` listing, which is why traces show every traversal
+        preceded by one.
+        """
+        base = super().to_llm_context(
+            frontend_url=frontend_url, include_full_semantic=include_full_semantic,
+        )
+        if not self.file_path:
+            return base
+        return f"{base}\nPath: {one_line(self.file_path)}"
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2951,6 +2972,7 @@ class CodeFileRecord(Record):
             "fileHash": self.file_hash,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     def to_arango_record(self) -> dict:
@@ -2963,6 +2985,7 @@ class CodeFileRecord(Record):
             "extension": self.extension,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     @staticmethod
@@ -3025,6 +3048,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            commit_sha=arango_base_code_file_record.get("commitSha"),
             **Record.delete_state_from_arango(arango_base_record),
         )
 

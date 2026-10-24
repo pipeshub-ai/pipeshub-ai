@@ -17,10 +17,13 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
-    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator** and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the application's **token identity** — the service account it is pointed at (`tokenIdentityUserId`), or its creator for an application registered before that was required and never bound, and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
+
+    ## Query parameter names
+    On every `/api/v1` and `/mcp` endpoint, a query parameter whose name starts with `$` or contains `.` (including a nested name such as `filter[$ne]` or `a.b`) is refused with `400` and error code `VALIDATION_ERROR`. Only names are checked: values may contain dots, such as file names.
   version: 1.0.0
   contact:
     name: API Support
@@ -67,11 +70,13 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It loads the application by **`client_id`** on every such token and takes the identity from that record.
 
-      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic (which may still equal **`client_id`** for machine tokens).
+      The JWT's **`createdBy`** claim is a cross-check rather than a source: despite its name it carries the identity, not who registered the application, and a token whose claim disagrees with the record is refused with **401**. Pointing an application at a different service account also revokes the tokens it has already issued, so a stale claim should not arrive in the first place.
 
-      **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
+      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic. Where a machine token carries **`userId === client_id`** and a **`createdBy`** claim, Python copies that claim onto **`userId`** first, so both halves of the product agree on the identity.
+
+      **Operational note:** Prefer tokens whose JWT already carries the identity as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
     description: |
       Manage OAuth 2.0 client applications registered with PipesHub.
@@ -87,7 +92,7 @@ tags:
 
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
-      - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
+      - **Client credentials:** Access tokens represent the **service account the app is pointed at**, never the caller. An app that allows this grant must name one at creation, and only an administrator may choose it. Apps created before that rule, and never bound, still represent the **OAuth app creator** — the fallback this rule exists to remove.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -298,6 +303,17 @@ tags:
   - name: MCP Servers for Agents
     description: MCP credentials that belong to a service-account agent rather than a user
 
+  - name: API Toolsets
+    description: |
+      Tools compiled from the OpenAPI spec of an organization's own REST API. An administrator
+      uploads the spec, picks the operations agents may call and how PipesHub authenticates;
+      each user then connects their own credentials, unless the administrator shares one.
+      Available when the `ENABLE_API_TOOLSETS` Labs flag is on.
+
+      Base URLs may point to the deployment's private network unless the operator sets
+      `API_TOOLSETS_ALLOW_PRIVATE_NETWORK_URLS=false`. Loopback, link-local and cloud metadata
+      addresses are always refused, and redirects are never followed.
+
   - name: MCP Servers
     description: |
       Catalog and org-scoped instances of external MCP servers that agents can call.
@@ -414,6 +430,20 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
+    ApiToolsetInstanceId:
+      name: instanceId
+      in: path
+      required: true
+      description: The API toolset's id.
+      schema:
+        type: string
+    ApiToolsetDesktopSignIn:
+      name: desktop
+      in: query
+      required: false
+      description: Set by the desktop app. The callback page then hands the result back to the app.
+      schema:
+        type: boolean
     McpInstanceId:
       name: instanceId
       in: path
@@ -479,7 +509,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
-        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator — see **OAuth Provider** tag.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the application's token identity — the service account it is pointed at, or its creator for an application registered before that was required — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -521,6 +551,7 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -564,12 +595,62 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    AIGatewayIdentityPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        subjectSource:
+          type: string
+          enum: [userId, email, idpObjectId]
+          default: userId
+        includeEmail:
+          type: boolean
+          default: false
+        includeDisplayName:
+          type: boolean
+          default: false
+        groups:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+              default: true
+            allowList:
+              type: array
+              maxItems: 500
+              items:
+                type: string
+              description: Forward only these group ids. Empty forwards all, up to maxForwarded.
+            maxForwarded:
+              type: integer
+              minimum: 1
+              maximum: 500
+              default: 50
+        pseudonymize:
+          type: boolean
+          default: false
+        onMissingIdentity:
+          type: string
+          enum: [service, block]
+          default: service
+          description: With block, an interactive call that has no person is refused instead of sent as the service.
+        queryEmbeddingIdentity:
+          type: string
+          enum: [user, service]
+          default: user
+        serviceIdentityPrefix:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: svc:pipeshub
     BuildInfo:
       type: object
       description: The build that the deployment runs. A value that is not known is null.
@@ -1654,6 +1735,179 @@ components:
           maximum: 600
           nullable: true
           description: Blank uses the default, 60.
+    ApiToolsetOperation:
+      type: object
+      description: One spec operation offered to agents as a tool.
+      properties:
+        toolName:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        summary:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, destructive]
+        requiresAuth:
+          type: boolean
+          description: 'False when the spec lets anyone call it (`security: []`).'
+        inputSchema:
+          type: object
+          description: The JSON Schema agents fill (single toolset reads only).
+    ApiToolsetAuthScheme:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [none, api_key, http_bearer, http_basic, oauth2_client_credentials, oauth2_authorization_code]
+        description:
+          type: string
+        location:
+          type: string
+          enum: [header, query, cookie]
+        paramName:
+          type: string
+        tokenUrl:
+          type: string
+        authorizationUrl:
+          type: string
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+    ApiToolsetCompiledSpec:
+      type: object
+      properties:
+        title:
+          type: string
+        version:
+          type: string
+        openapiVersion:
+          type: string
+        description:
+          type: string
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              description:
+                type: string
+        authSchemes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        warnings:
+          type: array
+          items:
+            type: string
+        specHash:
+          type: string
+    ApiToolsetPayload:
+      type: object
+      required: [name, baseUrl, operations]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        spec:
+          type: string
+          description: The OpenAPI spec's text. Required when creating.
+        baseUrl:
+          type: string
+        authSchemeName:
+          type: string
+          description: A security scheme from the spec, or `none`.
+        operations:
+          type: array
+          description: Tool names from the compiled spec, at most 200.
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        useSharedCredential:
+          type: boolean
+          description: One credential, stored by an administrator, for every user. Always on for OAuth client credentials.
+        timeoutSeconds:
+          type: number
+          minimum: 1
+          maximum: 120
+        oauthClientId:
+          type: string
+          description: OAuth sign-in toolsets only.
+        oauthClientSecret:
+          type: string
+          description: OAuth sign-in toolsets only. Left blank on a change, the stored one is kept.
+    ApiToolset:
+      type: object
+      description: An API toolset. Never carries credentials or the OAuth app's secret.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        specTitle:
+          type: string
+        authType:
+          type: string
+        useSharedCredential:
+          type: boolean
+        isConnected:
+          type: boolean
+          description: Whether the caller (or the shared credential) is connected.
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        updatedAt:
+          type: integer
+        baseUrl:
+          type: string
+          description: Settings route only, like every field below.
+        authScheme:
+          $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        scopes:
+          type: array
+          items:
+            type: string
+        timeoutSeconds:
+          type: number
+        oauthClientId:
+          type: string
+          nullable: true
+        hasOauthClientSecret:
+          type: boolean
+    ApiToolsetCredentials:
+      type: object
+      description: Only the fields the toolset's auth scheme uses are stored.
+      properties:
+        apiKey:
+          type: string
+        token:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        clientId:
+          type: string
+        clientSecret:
+          type: string
     McpServerInstance:
       type: object
       description: A stored MCP server instance. Never carries credentials.
@@ -1781,9 +2035,10 @@ components:
             type: string
             enum: [allow, ask, block]
           description: >-
-            Tool name → rule, for everyone in the organization. Each name must be a tool of the
-            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
-            at ask, `destructive` at block.
+            Tool name → rule: for everyone in the organization on an organization instance, for
+            its owner on a personal one. Each name must be a tool of the instance's toolset. A tool
+            without one starts from its kind: `read` at allow, `write` at allow, `destructive` at
+            ask.
     ToolsetToolRules:
       allOf:
         - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
@@ -1791,7 +2046,9 @@ components:
           properties:
             canEdit:
               type: boolean
-              description: Whether the caller may change the rules (an admin).
+              description: >-
+                Whether the caller may change the rules: an admin on an organization instance,
+                the owner on a personal one.
     McpToolInfo:
       type: object
       properties:
@@ -2009,6 +2266,30 @@ components:
           example: 401
 
     # ==================== OAUTH PROVIDER SCHEMAS ====================
+
+    KnowledgeLimit:
+      type: object
+      additionalProperties: false
+      description: |
+        What a connected app may see: an OAuth app's limit is picked by its
+        creator and holds for every user who connects it; a personal access
+        token's by its owner. Search, chat, agent chat and every record read by
+        id stay inside it, and inside the connecting user's own permissions.
+        Omit it for everything the user can see. Sent, it must name at least one id and at
+        most 50 in all, since it is signed into every token the app gets.
+      properties:
+        apps:
+          type: array
+          items: { type: string, format: uuid }
+          description: Whole connectors and collections.
+        recordGroups:
+          type: array
+          items: { type: string, format: uuid }
+          description: Record groups (a drive, space or project), with the groups nested in them.
+        records:
+          type: array
+          items: { type: string, format: uuid }
+          description: Folders or records, with everything under them.
 
     OAuthConsentRequest:
       type: object
@@ -2577,11 +2858,17 @@ components:
         Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
 
         **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
-        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`,
+        `refreshTokenLifetime`, `tokenIdentityUserId`.
 
         **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
         (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
         at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
+
+        **Service account rule:** If the effective grant list includes `client_credentials`,
+        `tokenIdentityUserId` is **required** and the caller must be an organisation administrator.
+        That grant issues tokens with no person in them, so without a service account the app would act
+        as whoever created it. Omitting it answers `400`; a non-administrator answers `403`.
       properties:
         name:
           type: string
@@ -2589,6 +2876,15 @@ components:
           minLength: 1
           maxLength: 100
           example: "My Integration App"
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own tokens act as. Required when
+            `allowedGrantTypes` includes `client_credentials`, ignored otherwise.
+
+            Must name a service account in the same organisation that is not disabled;
+            an ordinary user's id is refused. Administrators only.
+          example: "65f0c0ffee00000000000000"
         description:
           type: string
           description: App description
@@ -2652,6 +2948,8 @@ components:
           maximum: 31536000
           default: 2592000
           example: 2592000
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
       required:
         - name
         - allowedScopes
@@ -2713,6 +3011,13 @@ components:
           type: integer
           minimum: 3600
           maximum: 31536000
+        knowledgeLimit:
+          description: |
+            `null` lifts the limit. Any change, a lift included, revokes the
+            app's outstanding tokens, so users connect again.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeLimit'
 
     OAuthAppResponse:
       type: object
@@ -2791,6 +3096,18 @@ components:
         refreshTokenLifetime:
           type: integer
           description: Refresh token lifetime in seconds
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own `client_credentials` tokens act as.
+
+            Absent means the app has no service account and its tokens act as whoever
+            created it. Apps registered since a service account became required always
+            have one; an older app may not, and those are the ones an administrator
+            still has to move.
+          example: "65f0c0ffee00000000000000"
         createdAt:
           type: string
           format: date-time
@@ -3128,6 +3445,8 @@ components:
             no literal null option).
           default: 30
           example: 30
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatListItem:
       type: object
@@ -3170,6 +3489,8 @@ components:
             Last time this token successfully authenticated a request.
             Throttled server-side to update at most once per 5 minutes per
             token; absent if the token has never been used.
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatWithSecret:
       allOf:
@@ -4968,6 +5289,7 @@ components:
         - "AZURE FILES"
         - "LINEAR"
         - "ZAMMAD"
+        - "ZENDESK"
         - "ZOOM"
         - "GITLAB"
         - "GITLAB PERSONAL"
@@ -5083,6 +5405,14 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
           example: "COMPLETED"
+        hasIndexedCopy:
+          type: boolean
+          description: |
+            True after the record is indexed (every COMPLETED write, including the upgrade
+            backfill for records indexed earlier), and false once it is marked EMPTY. A later
+            re-queue or a failed re-index leaves it as it is, so search keeps returning the
+            previous indexed copy until the new version is indexed. Absent until the first
+            COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5190,10 +5520,59 @@ components:
         userPermission:
           type: string
 
+    StageStateSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Status of one pipeline stage (e.g. `classify`) for the record's current
+        content revision.
+      required:
+        - stage
+        - status
+        - reason
+        - attempt
+        - startedAtMs
+        - finishedAtMs
+        - updatedAtMs
+      properties:
+        stage:
+          type: string
+          description: Pipeline stage name.
+          example: classify
+        status:
+          type: string
+          description: Stage status (same values as `indexingStatus`).
+          example: COMPLETED
+        reason:
+          type: string
+          nullable: true
+          description: Failure or skip reason, when there is one.
+        attempt:
+          type: integer
+          description: Number of times this stage has run for this revision.
+        startedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        finishedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        updatedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+
     GetRecordByIdResponseSchema:
       type: object
       additionalProperties: false
-      description: Response returned by GET /knowledgeBase/record/{recordId}.
+      description: |
+        Response returned by GET /knowledgeBase/record/{recordId}.
+
+        For a connected app with a limit, a collection or folder the limit
+        leaves out is not named: `knowledgeBase` and `folder` are `null` for
+        it, as are the record's own `recordGroupId` (with `externalGroupId`),
+        `rootRecordGroupId` and `parentNodeId` (with `externalParentId`).
       required:
         - record
         - knowledgeBase
@@ -5312,6 +5691,38 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            entityExtractionStatus:
+              type: string
+              pattern: '^[A-Z_]{1,32}$'
+              description: |
+                Where named-entity extraction (people, organizations, dates and
+                other values found in the content) stands for this record:
+                NOT_STARTED, IN_PROGRESS, COMPLETED, PARTIAL, FAILED or SKIPPED.
+                Absent when no status has been stored on the record; read that
+                as not extracted. New values may be added, so treat an unknown
+                one as not finished.
+            lastEntityExtractionTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: When named-entity extraction last ran on the record (epoch milliseconds). Absent until it is written.
+            entityExtractionStrategy:
+              type: string
+              nullable: true
+              description: |
+                How the named entities were found: `deterministic` (pattern
+                recognizers only), `single_call` (one model call) or `agent`.
+                Absent until it is written.
+            entityExtractorVersion:
+              type: string
+              nullable: true
+              description: Version of the named-entity extractor that produced the record's entities, for example `ner-1`. Absent until it is written.
+            secretsRedacted:
+              type: integer
+              description: >-
+                Credentials (keys, tokens, passwords) removed from a code repository
+                file before it was indexed. Present once the file has been scanned,
+                0 when nothing was found.
             processingStartedAt:
               type: integer
               format: int64
@@ -5320,11 +5731,30 @@ components:
               type: integer
               format: int64
               nullable: true
+            retryNotBefore:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                Set while the record is QUEUED because its source rate-limited
+                the content fetch: the earliest time (epoch milliseconds)
+                indexing reads it again. `reason` then says when indexing
+                resumes. Null or absent once the source serves the record or
+                indexing ends; a value on a record that is no longer QUEUED is
+                left over from an earlier wait and means nothing.
             parsingStatus:
               type: string
               nullable: true
             indexingStatus:
               type: string
+            hasIndexedCopy:
+              type: boolean
+              description: |
+                True after the record is indexed (every COMPLETED write, including the upgrade
+                backfill for records indexed earlier), and false once it is marked EMPTY. A later
+                re-queue or a failed re-index leaves it as it is, so search keeps returning the
+                previous indexed copy until the new version is indexed. Absent until the first
+                COMPLETED or EMPTY write sets it.
             extractionStatus:
               type: string
             reason:
@@ -5337,6 +5767,15 @@ components:
             deletedByUserId:
               type: string
               nullable: true
+            restoredAtTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                When a restore last brought this knowledge-base file back from
+                the trash and queued it to be indexed again (epoch
+                milliseconds). Absent on records never restored, on folders, and
+                on files restored while their indexing was turned off.
             isDirty:
               type: boolean
               nullable: true
@@ -5356,6 +5795,21 @@ components:
             virtualRecordId:
               type: string
               nullable: true
+            contentRev:
+              type: string
+              nullable: true
+              description: |
+                Revision of the record's content, 16 lowercase hex characters:
+                the start of the SHA-256 of the content the indexer received
+                for the record. If a record still has no revision stored when
+                its vectors are written, a digest of its parsed blocks is
+                stored instead.
+                Identical content gives the same value, and a copy whose content
+                matches another record carries that record's value.
+                `stageStates` describes this revision. Set when indexing
+                starts; absent on records not indexed since pipeline stages
+                were introduced.
+              example: "78f3f276290c9f81"
             summaryDocumentId:
               type: string
               nullable: true
@@ -5457,6 +5911,14 @@ components:
               nullable: true
               additionalProperties: false
               properties: {}
+        stageStates:
+          type: array
+          description: |
+            Per-stage pipeline status for the record's current content revision.
+            Empty for records indexed before pipeline stages existed. The
+            `classify` stage's status is mirrored on `record.extractionStatus`.
+          items:
+            $ref: '#/components/schemas/StageStateSummary'
         knowledgeBase:
           type: object
           nullable: true
@@ -5638,6 +6100,10 @@ components:
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
         may not read all answer `403` instead.
+
+        An unbudgeted read returns at most 140,000 characters of `content`. A
+        longer record is cut there, the content ends with a marker line, and
+        the response carries `truncated: true` and `totalChars`.
       required:
         - content
       properties:
@@ -5647,7 +6113,17 @@ components:
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
             the record and its indexing status instead (see above). In a
-            budgeted read, the part of the record (or thread) that fit.
+            budgeted read, the part of the record (or thread) that fit. An unbudgeted read
+            returns at most 140,000 characters; a longer record is cut there and the content
+            ends with a truncation marker (see `truncated`).
+        truncated:
+          type: boolean
+          description: >-
+            Present and true only on an unbudgeted read whose content was cut to fit 140,000
+            characters, marker included. `totalChars` is then the length of the whole content.
+        totalChars:
+          type: integer
+          description: Present only with `truncated`. The length of the record's whole content, in characters.
         mode:
           type: string
           enum: [record, thread]
@@ -5772,6 +6248,29 @@ components:
             content could not be loaded.
           items:
             type: string
+        threads:
+          type: array
+          description: >-
+            Thread reads of a Slack record in no single thread only (several
+            channel messages in one record, or a message without replies). The
+            threads its messages started whose replies follow it in `records`,
+            in the order their first messages were posted; empty when none of
+            its messages has replies the caller may see.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              threadRecordGroupId:
+                type: string
+                description: The thread's record group.
+              recordCount:
+                type: integer
+                description: Replies of this thread the caller may see.
+        threadsNotRead:
+          type: integer
+          description: >-
+            Thread reads of a Slack record in no single thread only. Threads
+            of its messages left out because one read covers at most 10.
         chars:
           type: integer
           description: Budgeted reads only. Characters in `content`.
@@ -5834,8 +6333,10 @@ components:
         node_type:
           type: string
           description: >-
-            One of `recordGroup`, `folder`, `record`. Listings never contain
-            `app` nodes.
+            One of `recordGroup`, `folder`, `record`, or `app`. A listing holds
+            `app` nodes only at the root of a connected app whose limit names
+            spaces, folders or files as well as whole sources: there it lists
+            those sources.
         sub_type:
           type: string
           nullable: true
@@ -6601,7 +7102,7 @@ components:
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
         terminal event per file, then a final `done` summary, then closes. `data`
-        is the decoded JSON object for the frame; its shape depends on `event`:
+        is a JSON-encoded string whose decoded shape depends on `event`:
 
         - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
           uploaded and its record created; content indexing then continues
@@ -6630,16 +7131,17 @@ components:
             - done
             - error
         data:
-          type: object
-          additionalProperties: true
-          description: Decoded JSON payload. Shape depends on `event`.
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
 
     IndexingStatusFilter:
       type: string
       description: |
         Indexing status used to filter which records are included in a scoped
         reindex (record or record-group). Omit `statusFilters` to reindex all
-        descendants regardless of status.
+        descendants regardless of status. `SKIPPED` only matches a pipeline
+        stage's status (a stage that did not apply to the record), so it is
+        useful with a connector reindex that sets `stages`.
       enum:
         - NOT_STARTED
         - QUEUED
@@ -6649,6 +7151,7 @@ components:
         - FILE_TYPE_NOT_SUPPORTED
         - AUTO_INDEX_OFF
         - EMPTY
+        - SKIPPED
 
     ReindexRecordRequestBody:
       type: object
@@ -6705,6 +7208,23 @@ components:
           description: |
             Statuses to reindex. Omitting this reindexes everything for a KB
             connector; other connector types default server-side to `FAILED`.
+            When `stages` is set, these match the stage's own status
+            instead of `indexingStatus`; with `stages` they default to `FAILED`
+            for every connector.
+        stages:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [classify, entities]
+          description: |
+            Re-run only these pipeline stages instead of the full pipeline.
+            Records are selected by the stage's status using `statusFilters`:
+            `classify` by `extractionStatus`, `entities` (named-entity
+            extraction, which has no record field) by its entry in the
+            record's `stageStates`. Selected records are not re-parsed or
+            re-embedded. Stages selected differently cannot be combined in one
+            request (400). Omit to reindex the full pipeline.
 
     ResyncConnectorRequestBody:
       type: object
@@ -6761,6 +7281,11 @@ components:
                   description: Records synced from the connector
                 indexingStatus:
                   $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                extractionStatus:
+                  type: object
+                  description: Record counts by classification (`classify` stage) status.
+                  additionalProperties:
+                    type: integer
             byRecordType:
               type: array
               description: The same counts per record type; empty before the first sync.
@@ -6778,6 +7303,11 @@ components:
                     type: integer
                   indexingStatus:
                     $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                  extractionStatus:
+                    type: object
+                    description: Record counts by classification (`classify` stage) status.
+                    additionalProperties:
+                      type: integer
 
     ConnectorIndexingStatusCounts:
       type: object
@@ -6897,7 +7427,10 @@ components:
         parentId:
           type: string
           nullable: true
-          description: Parent node ID, or `null` at the root browse level.
+          description: |
+            Parent node ID, or `null` at the root browse level. Also `null`
+            for a connected app whose limit leaves the parent out: the node is
+            listed, and the folder above it is not named.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
@@ -7040,7 +7573,11 @@ components:
         parentNode:
           type: object
           nullable: true
-          description: Parent of `currentNode` when present; `null` when not applicable.
+          description: |
+            Parent of `currentNode` when present; `null` when not applicable,
+            and for a connected app whose limit leaves that parent out. For
+            such an app, `breadcrumbs` likewise names only the nodes inside
+            its limit.
           required:
             - id
             - name
@@ -7079,6 +7616,10 @@ components:
               description: Page size.
             totalItems:
               type: integer
+              description: |
+                Items in the whole result. For a search by a connected app
+                limited to spaces, folders or files, the matches found so far: it can
+                grow from page to page and is final once `hasNext` is false.
             totalPages:
               type: integer
             hasNext:
@@ -7200,6 +7741,12 @@ components:
                     $ref: '#/components/schemas/FilterOption'
                 connectors:
                   type: array
+                  description: |
+                    The apps and collections to filter by, each with its own name. For a
+                    connected app with a limit, only those the limit covers whole: an app
+                    or collection it covers only in part (some of its spaces, folders or
+                    files) is not offered. The other option lists are fixed and name no
+                    source.
                   items:
                     $ref: '#/components/schemas/FilterOption'
                 indexingStatus:
@@ -7524,8 +8071,8 @@ components:
         nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
         for that; a chat turn is not failed, its search simply finds nothing.
         At most 200 ids may be sent in one request, counted across all keys, and every id must
-        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
-        refused.
+        be a valid UUID. A key this schema does not list is refused with 400; the message names
+        the key and lists the allowed ones. A value of the wrong type is refused with 400 too.
 
         A selection that covers more than the configured number of nodes (50,000 by default),
         or that touches a source still being prepared for folder-level search, is refused:
@@ -7965,7 +8512,8 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when `chatMode` is `agent`.
+            only when `chatMode` is `agent`. Web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8193,7 +8741,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -8279,6 +8828,12 @@ components:
         original message are reused.
 
         Supported fields:
+        - `attachments` — optional files of the edited question, replacing the
+          stored ones (an empty list removes them all); omitted keeps them.
+          At most 10, each a ref from the attachment upload
+        - `query` — optional edited question. When it differs from the stored
+          question, the answer is regenerated for it and the stored question is
+          replaced once the new answer is saved; a failed run keeps the original
         - `filters` — optional `{ apps?, kb? }` filter object
         - `chatMode` — optional non-empty chat mode string
         - `modelKey`, `modelName`, `modelFriendlyName` —
@@ -8291,6 +8846,34 @@ components:
           be `agui`, which is also the protocol used when the field is omitted
         - `agentCapabilities` — optional per-request agent capability toggles
       properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: |
+            The edited question to answer in place of the stored one. Only the
+            last question of a conversation can be edited, and not one that ran
+            an approved action or is itself a tool-approval or question-card
+            answer. A turn that went through an answered question card can be
+            edited: the question is rewritten and the whole turn, including its
+            card and the card's answers, is replaced by the new answer. A card
+            turn that spans more than 50 saved rows cannot be edited; the
+            request is refused and the stored answer is left as it was. So is
+            an edit of an older question while a newer question has no answer.
+            A run that ends in an error answer, or whose answer cannot be
+            saved, leaves the stored question, its files and the rows of its
+            card turn as they were.
+        attachments:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            The files of the edited question, replacing the stored ones. An
+            empty list removes them all; omitted keeps the stored files. A
+            change of files alone, with the same `query`, also counts as an
+            edit. Files are not deleted when removed from a question: a fork
+            of the chat may still refer to them.
         filters:
           $ref: '#/components/schemas/Filters'
         modelKey:
@@ -8340,7 +8923,13 @@ components:
           description: |
             Optional list of tool identifiers (fully-qualified action names
             such as `jira.create_issue`) the agent may invoke when
-            regenerating. Applicable only in agent chat modes.
+            regenerating. Applicable only in agent chat modes. Regenerating
+            in the assistant's agent mode, web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
+            Regenerating a named agent's message (`AgentRegenerateRequest`),
+            a list that leaves out `web_search` turns off the agent's web
+            search for the turn, even when `agentCapabilities.webSearch` is
+            true.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8639,7 +9228,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -9527,6 +10117,11 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
 
     ConversationSharedBy:
       type: object
@@ -9553,6 +10148,11 @@ components:
         `Conversation` but omits `messages` to keep list payloads small.
         Fetch a single conversation to retrieve its messages.
       properties:
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
         _id:
           type: string
           format: objectId
@@ -9653,6 +10253,13 @@ components:
           type: string
           enum: [read, write]
           readOnly: true
+        isPinned:
+          type: boolean
+          description: |
+            `true` when the owner pinned this conversation. Absent on
+            conversations that are not pinned (never `false`). Set via
+            `PATCH /conversations/{conversationId}/pin`. Only returned to the
+            owner: lists with `source=shared` omit it.
         projectId:
           type: string
           format: objectId
@@ -9672,6 +10279,36 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+
+    ConversationPinResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - isPinned
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Conversation identifier
+        isPinned:
+          type: boolean
+          description: The conversation's pin state after the call.
+        meta:
+          type: object
+          additionalProperties: false
+          properties:
+            requestId:
+              type: string
+              description: Request correlation identifier
+            timestamp:
+              type: string
+              format: date-time
+              description: Response generation timestamp
+            duration:
+              type: integer
+              description: Server processing time in milliseconds
 
     # ==================== PROJECT SCHEMAS ====================
 
@@ -9997,6 +10634,62 @@ components:
             updated, new ids are added. The project owner is silently
             skipped if included (ownership is implicit).
 
+    ForkConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - forkedFrom
+        - messageCount
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: New conversation identifier
+        title:
+          type: string
+          description: Title of the forked conversation
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Project the fork is linked to. Present only when the source conversation
+            belonged to a project that the caller can still view; otherwise omitted.
+        forkedFrom:
+          type: object
+          additionalProperties: false
+          required:
+            - conversationId
+            - messageId
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Number of messages copied into the new conversation
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds
+
     ShareRequest:
       type: object
       description: Request to share a conversation or search with other users
@@ -10036,6 +10729,14 @@ components:
         **Filtering:**
 
         Use filters to narrow search scope to specific apps or knowledge bases.
+
+        **Date bounds** (`createdAfter`, `createdBefore`, `modifiedAfter`, `modifiedBefore`)
+        match when a record was written or last changed, not when an event it describes
+        happened. With any of them set, and while the server's `DATE_FILTER_SAFETY_NET` setting
+        is on (the default), the same search also runs once without dates, and its best matches
+        that the bounds left out come back apart from the results, in
+        `searchResponse.outsideDates`. With the setting off, no such search runs and
+        `outsideDates` is omitted.
       required:
         - query
       properties:
@@ -10053,7 +10754,14 @@ components:
           minimum: 1
           maximum: 100
           default: 10
-          description: Maximum number of results to return
+          description: |
+            For a ranked search, the maximum number of passages (entries of `searchResults`) the
+            response holds, counted after query expansion and section expansion, so it holds at
+            any number of queries. `records` lists only the records those passages come from. A
+            search run as a timeline is not cut to `limit` as a whole: `limit` is what each
+            period's own search asks for, and a period can hold more (see `timeline`). When the
+            timeline was chosen automatically (`timeline` left out), each period asks for at most
+            10, whatever `limit` is.
         createdAfter:
           type: string
           maxLength: 64
@@ -10093,6 +10801,33 @@ components:
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
+        timeline:
+          type: string
+          enum: [created, modified, 'off']
+          description: |
+            Search a span of time period by period instead of ranking matches over the whole
+            span, for questions such as "how did this evolve" or "what changed between March
+            and May". A plain search returns the best matches overall, which bunch around one
+            moment; a timeline splits the span into up to 6 periods (calendar months, or weeks
+            within one month), searches each period on its own and beside one search of the
+            whole span, and returns the matches in date order, each labelled with its period.
+
+            The value is the date records are placed by: `created` (when the record was
+            created at its source) or `modified` (its last change). The span is that date's
+            bounds (`createdAfter` / `createdBefore`, or `modifiedAfter` / `modifiedBefore`);
+            with no start it covers the year before the end, or further back to the earliest
+            of the best matches. Bounds on the other date apply to every period. `limit` is the
+            number of matches each period's own search asks for (10 when left out); matches from
+            the search of the whole span (up to 50) are added to the periods their records are
+            dated in, so a period can hold more than `limit`. Each search applies the same permissions
+            and filters as a plain search.
+
+            Left out, a search whose bounds on one date have a start and cover more than 31
+            days (a missing end is today) runs as a timeline on that date, and
+            `timeline.automatic` is `true`; any other search is a plain ranked search. `off`
+            is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
+            `false` ignores the field and never runs a timeline.
+          example: created
 
     SemanticSearchBoundingBox:
       type: object
@@ -10331,6 +11066,19 @@ components:
         block_index:
           type: integer
           nullable: true
+        qualified_name:
+          type: string
+          description: |
+            For a block of source code, the symbol it holds, written `kind:Scope.name` (for example
+            `method:Outer.Inner.run`). A span with no name is addressed by its lines instead:
+            `kind:L{line}` for one line (`statements:L1`), `kind:L{start}-{end}` for several
+            (`imports:L1-5`), or `kind:anonymous` when it has no line numbers. An empty string for a
+            block that is not code.
+            Present on a hit that is a code block, and on each passage of a list, thread, text
+            section or code group brought back whole because of a match inside it. Absent on any
+            other hit that matched directly, on the rows of a table brought back whole, and on
+            every piece of a section split around an image: its text, the image, and the text that
+            stands in for the image when it is not sent as an image.
         distanceFromMatch:
           type: integer
           minimum: 0
@@ -10339,6 +11087,12 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        timelinePeriod:
+          type: integer
+          minimum: 0
+          description: |
+            Set only on a search with `timeline`: the index in `timeline.periods` of the period
+            this hit's record is dated in.
 
     SemanticSearchGraphRecord:
       type: object
@@ -10347,6 +11101,12 @@ components:
         All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
         usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
         `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
+
+        For a connected app with a limit, a parent the limit leaves out is not named: `recordGroupId`
+        (with `externalGroupId`), `rootRecordGroupId` and `parentNodeId` (with `externalParentId`) are `null`
+        for it, and `location` keeps only the part of the trail inside the limit, or is left out.
+        `connectorInstanceName`, the source's or collection's own name, is left out unless the limit
+        covers that app whole; this applies to each hit's `metadata` too.
       properties:
         _key:
           type: string
@@ -10429,12 +11189,22 @@ components:
         deletedByUserId:
           type: string
           nullable: true
+        restoredAtTimestamp:
+          type: number
+          nullable: true
+          description: When a restore last brought the file back from the trash (epoch milliseconds); see `restoredAtTimestamp` on GET /knowledgeBase/record/{recordId}.
         processingStartedAt:
           type: number
           nullable: true
         queuedAtTimestamp:
           type: number
           nullable: true
+        retryNotBefore:
+          type: number
+          nullable: true
+          description: |
+            Earliest time (epoch milliseconds) indexing reads a record its source
+            rate-limited; see `retryNotBefore` on GET /knowledgeBase/record/{recordId}.
         parsingStatus:
           type: string
           nullable: true
@@ -10459,6 +11229,21 @@ components:
         lastExtractionTimestamp:
           type: number
           nullable: true
+        entityExtractionStatus:
+          type: string
+          nullable: true
+          description: |
+            Where named-entity extraction stands for the record; see
+            `entityExtractionStatus` on GET /knowledgeBase/record/{recordId}.
+        lastEntityExtractionTimestamp:
+          type: number
+          nullable: true
+        entityExtractionStrategy:
+          type: string
+          nullable: true
+        entityExtractorVersion:
+          type: string
+          nullable: true
         summaryDocumentId:
           type: string
           nullable: true
@@ -10468,6 +11253,13 @@ components:
         virtualRecordId:
           type: string
           nullable: true
+        contentRev:
+          type: string
+          nullable: true
+          description: |
+            Revision of the record's content (16 lowercase hex characters); see
+            `contentRev` on GET /knowledgeBase/record/{recordId}. Absent on
+            records not indexed since pipeline stages were introduced.
         previewRenderable:
           type: boolean
           nullable: true
@@ -10520,6 +11312,13 @@ components:
             there are none.
           items:
             $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+        location:
+          type: string
+          description: |
+            Where the record sits, from its source down to its parent, as
+            `Name (App ID: id) -> Name (Record Group ID: id) -> Name (Record ID: id)`.
+            It names only the ancestors the caller can open; for a connected app
+            with a limit, only those inside the limit. Absent when none is left.
 
     SemanticSearchLinkedRecord:
       type: object
@@ -10606,6 +11405,120 @@ components:
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
           additionalProperties:
             $ref: '#/components/schemas/SemanticSearchGraphRecord'
+        timeline:
+          $ref: '#/components/schemas/SemanticSearchTimeline'
+        outsideDates:
+          $ref: '#/components/schemas/SemanticSearchOutsideDates'
+
+    SemanticSearchOutsideDates:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search with date bounds, when the same search without them found
+        matches the bounds left out. Date bounds match when a record was written or last changed,
+        not when the event it describes happened, so release notes, a retrospective or a weekly
+        summary written after a period are left out of a search bounded to that period. The
+        search without dates, with the same query, filters and permissions and a limit of 10,
+        runs beside the bounded search (or beside a timeline's searches: one plain search, not a
+        second timeline). Its best matches outside the bounds, up to 3 records, best first, come
+        here, never in `searchResults`, which are unchanged. When nothing inside the bounds
+        matched, the response is then a `200` with empty `searchResults`. A server whose
+        `DATE_FILTER_SAFETY_NET` setting is `false` never sends this field.
+      required:
+        - note
+        - searchResults
+        - records
+      properties:
+        note:
+          type: string
+          description: A plain-language label for these matches, to pass on with them.
+        searchResults:
+          type: array
+          description: Up to 3 passages of each record, best first.
+          items:
+            $ref: '#/components/schemas/SemanticSearchHit'
+        records:
+          type: array
+          description: The records, best first, with their source dates.
+          items:
+            $ref: '#/components/schemas/SemanticSearchGraphRecord'
+
+    SemanticSearchTimeline:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search run as a timeline: one with `timeline` set, or one over a span
+        of more than 31 days with it left out. `searchResults` then come period by period,
+        oldest first, and by record date within a period; each hit's `timelinePeriod` is its
+        period's index in `periods`.
+      required:
+        - dateField
+        - start
+        - end
+        - periods
+        - notes
+      properties:
+        dateField:
+          type: string
+          enum: [created, modified]
+        automatic:
+          type: boolean
+          description: |
+            `true` when the caller left `timeline` out and the span was long enough to run as a
+            timeline; `false` when the caller asked for it.
+        start:
+          type: string
+          format: date
+          description: First day of the span searched.
+        end:
+          type: string
+          format: date
+          description: Last day of the span searched, inclusive.
+        periods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchTimelinePeriod'
+        notes:
+          type: array
+          items:
+            type: string
+          description: Plain-language notes on the span, such as the start chosen when none was given.
+
+    SemanticSearchTimelinePeriod:
+      type: object
+      additionalProperties: false
+      required:
+        - label
+        - start
+        - end
+        - records
+        - matches
+      properties:
+        label:
+          type: string
+          example: "March 2026 (2026-03-01 to 2026-03-31)"
+        start:
+          type: string
+          format: date
+          nullable: true
+          description: First day of the period. `null` for the last bucket, of matches whose record has no source date.
+        end:
+          type: string
+          format: date
+          nullable: true
+        records:
+          type: integer
+          minimum: 0
+          description: Records with matches in this period. `0` may only mean nothing matched this query then.
+        matches:
+          type: integer
+          minimum: 0
+        searchFailed:
+          type: boolean
+          description: This period's own search failed; any matches shown come from the search of the whole span.
+        searchIncomplete:
+          type: string
+          description: The search reached only part of the index for this period, so a record missing here may still exist.
 
     SemanticSearchExecuteResponse:
       type: object
@@ -11905,6 +12818,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -12090,6 +13013,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -12473,6 +13406,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           default: true
@@ -12658,6 +13601,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -12803,6 +13756,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -13038,6 +14001,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -13109,6 +14075,8 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         projectId:
           type: string
           format: objectId
@@ -13381,6 +14349,47 @@ components:
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
+    AgentConversationShareResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Sharing state of an agent conversation after a share or unshare call.
+        Recipients are always read-only.
+      required:
+        - id
+        - isShared
+        - sharedWith
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        isShared:
+          type: boolean
+          description: "`false` once the last recipient is removed."
+        sharedWith:
+          type: array
+          items:
+            type: object
+            required:
+              - userId
+              - accessLevel
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read]
+        unsharedUsers:
+          type: array
+          description: Only on the unshare response. The users that were asked to be removed.
+          items:
+            type: string
+            format: objectId
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
+
     AgentConversationDeleteResponse:
       type: object
       additionalProperties: false
@@ -13595,11 +14604,13 @@ components:
         not the raw `AgentConversation` document shape: fields like `agentKey`,
         `userId`, `orgId`, `conversationSource`, and root-level `messages`
         metadata outside the selected slice are omitted.
+
+        `sharedWith` is the owner's list of recipients, so it is present only for the
+        owner. A recipient gets `sharedBy` (who shared the chat) instead.
       required:
         - id
         - createdAt
         - isShared
-        - sharedWith
         - messages
         - pagination
         - access
@@ -13623,6 +14634,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -13634,6 +14648,8 @@ components:
           enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         messages:
           type: array
           items:
@@ -13786,9 +14802,9 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON object that
-        includes a `"type"` field matching `event`, plus type-specific
-        fields. Stable gateway-generated top-level outcomes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` returns `{ type, result }` where
           `result` is `{ conversation, recordsUsed, meta }` — the updated
@@ -13828,10 +14844,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -13841,8 +14856,8 @@ components:
         Server-Sent Event envelope for streaming chat responses. AG-UI is
         the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
@@ -13880,10 +14895,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -13894,8 +14908,8 @@ components:
         `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
         protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
         `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
         Stable gateway-generated top-level outcomes:
@@ -13942,10 +14956,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -13957,8 +14970,8 @@ components:
         `internal_search`, or `web_search` on an existing conversation. AG-UI
         is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit step and nested
         child-run events. Stable gateway-generated top-level outcomes:
 
@@ -14004,10 +15017,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -14018,8 +15030,8 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`; gateway-generated root terminal events do not.
@@ -14054,10 +15066,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -14067,8 +15078,8 @@ components:
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is the decoded JSON
-        object, which includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`. Stable gateway-generated top-level outcomes:
@@ -14113,10 +15124,9 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded JSON payload. It includes a `"type"`
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -14298,8 +15308,10 @@ components:
         - BEARER_TOKEN
         - BASIC_AUTH
         - ACCESS_KEY
+        - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
+        - ENTRA_ID
         - CUSTOM
         - NONE
 
@@ -15106,7 +16118,7 @@ components:
             Key-value map of feature flags to enable/disable platform features.
             Available flags:
             - ENABLE_BETA_CONNECTORS: Allow usage of beta connector integrations that may be unstable
-            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI
+            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI (default: true)
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
@@ -15325,9 +16337,7 @@ components:
       additionalProperties: false
       description: |
         Success response from getAIModelsProviders. Returns the stored models
-        bucket map. Each entry's `configuration` includes only `model`,
-        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` when
-        those keys were stored.
+        bucket map. Each entry's `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       required:
         - status
         - models
@@ -15350,8 +16360,7 @@ components:
       description: |
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
-        Each entry's `configuration` includes only `model`, `modelFriendlyName`,
-        `dimensions`, and `defaultReasoningEffort` when stored.
+        Each entry's `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       required:
         - status
         - models
@@ -16126,8 +17135,13 @@ components:
         Provider-specific configuration stored on each AI model entry.
 
         **Read shape:** user-facing GET responses return only `model`,
-        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` (when stored).
-        Values are copied as-is; other keys including credentials are omitted.
+        `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the
+        `identityForwarding*` settings (when stored). Values are copied as-is,
+        except that the value of a credential-bearing header template (such as
+        `Authorization`) is replaced by `****************`; send the placeholder
+        back to keep the stored value. Other keys including credentials, and
+        `identityForwardingServiceApiKey`, are omitted; `configuredFields`
+        lists the ones that have a value.
 
         **Write shape:** create and update still accept the full provider payload
         (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
@@ -16242,6 +17256,29 @@ components:
             choose one. Applies only when `isReasoning` is true. Empty or absent
             means the platform default (`high`). `none` is accepted for
             compatibility and treated as `low`.
+        identityForwardingEnabled:
+          type: boolean
+          description: Forward the caller's identity to the gateway. Written through the connection identity-forwarding route.
+        identityForwardingMode:
+          type: string
+          enum: [headers, template, signedJwt]
+        identityForwardingPreset:
+          type: string
+          enum: [litellm, portkey, helicone, cloudflare, apim, custom]
+        identityForwardingHeaderTemplates:
+          type: object
+          additionalProperties:
+            type: string
+          description: Header name to template. Values of credential-bearing headers read back as `****************`.
+        identityForwardingJwtAudience:
+          type: string
+        identityForwardingServiceAuth:
+          type: string
+          enum: [apiKey, jwt]
+        identityForwardingServiceApiKey:
+          type: string
+          writeOnly: true
+          description: Gateway key for background work. Never returned; `configuredFields` shows whether one is set.
 
     AddAIModelProviderRequest:
       type: object
@@ -16472,8 +17509,8 @@ components:
       description: |
         SSE event envelope for
         `GET /configurationManager/ai-models/download-progress`. Every frame
-        uses the `progress` event name; `data` is the decoded
-        `EmbeddingDownloadProgressPayload` object with one extra `timestamp` field
+        uses the `progress` event name; `data` is a JSON-encoded
+        `EmbeddingDownloadProgressPayload` with one extra `timestamp` field
         (epoch milliseconds) added by the Node.js proxy on each poll.
       properties:
         event:
@@ -16481,10 +17518,9 @@ components:
           enum:
             - progress
         data:
-          type: object
-          additionalProperties: true
+          type: string
           description: |
-            Decoded `EmbeddingDownloadProgressPayload` object plus a
+            JSON-encoded `EmbeddingDownloadProgressPayload` plus a
             `timestamp` (epoch ms) field.
 
     AIModelProviderHealthCheckBackendDetails:
@@ -18958,7 +19994,7 @@ paths:
           the cause is recorded in the delegation log, which only an
           administrator can read.
 
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** loads the application record and resolves the identity from it, treating the **`createdBy`** claim as a cross-check — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:
@@ -19447,7 +20483,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: >-
+            The selected tokenIdentityUserId is malformed, or does not name a service
+            account in this organisation. A disabled account answers 400 instead.
           content:
             application/json:
               schema:
@@ -19583,6 +20627,16 @@ paths:
       description: |
         Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
 
+        **Adding `client_credentials`** to `allowedGrantTypes` requires an organisation administrator, because
+        it settles whose documents the application's tokens reach. A non-administrator answers `403`, and that
+        check runs first — so a member sees `403` whether or not a service account is bound.
+
+        For an administrator, it answers `400` when no service account is bound or the bound account is
+        disabled, and `404` when the bound identity no longer exists or is not a service account — distinct
+        from the `404` for an application this caller cannot see. Point the application at one first with
+        `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
+        service account predates this rule and can still be edited.
+
         Creator-only: even org admins cannot edit apps owned by other users.
 
         When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
@@ -19627,13 +20681,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: >-
+            OAuth app not found or not visible to this caller (each user only sees apps they
+            created), or the service account the application is bound to no longer exists or
+            is not a service account.
           content:
             application/json:
               schema:
@@ -23343,10 +24400,13 @@ paths:
         - OAuth Apps
       summary: Choose whose identity this app's client_credentials tokens carry
       description: |
-        By default a `client_credentials` token acts as the person who created
-        the application, carrying their document access and their role, and it
-        stops working if their account is deleted. Pointing the application at
-        a service account instead means its tokens act as an identity that
+        An application registered before a service account was required, and
+        never pointed at one, has `client_credentials` tokens that act as the
+        person who created it, carrying their document access and their role,
+        and stopping when their account is deleted. Applications that allow
+        this grant must now name a service account, so this endpoint changes
+        which one rather than whether there is one. Pointing the application at
+        a service account means its tokens act as an identity that
         exists for the job, holds only what someone granted it, and survives
         any one person leaving.
 
@@ -23359,7 +24419,10 @@ paths:
         afterwards.
 
         Pass `serviceAccountId: null` to put the application back to acting as
-        its creator. That revokes outstanding tokens too.
+        its creator. That revokes outstanding tokens too. It is **refused with
+        `400` while the application allows `client_credentials`**, because
+        clearing the identity there would undo what creating the application
+        required; point it at a different service account instead.
 
         This does not change who manages the application. The creator still
         owns it in Developer Settings — moving that would leave the
@@ -23390,12 +24453,16 @@ paths:
                   type: string
                   nullable: true
                   pattern: '^[0-9a-fA-F]{24}$'
-                  description: The service account, or null to revert to the creator
+                  description: >-
+                    The service account, or null to revert to the creator. Null is refused
+                    while the application allows client_credentials.
       responses:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled
+          description: >-
+            The service account is disabled, or null was passed for an application that
+            allows client_credentials, where clearing the identity is refused.
         '401':
           description: Not authenticated
         '403':
@@ -28804,7 +29871,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/reIndexRecordResponseSchema'
         '400':
-          description: Invalid request body or parameters
+          description: >-
+            Invalid request body or parameters, or the record belongs to a
+            GitHub/GitLab repository-wide code graph and cannot be reindexed
+            on its own. Reindex the whole repository with
+            `POST /knowledgeBase/reindex/record-group/{recordGroupId}`, or run
+            a connector sync to pick up changes from the repository.
           content:
             application/json:
               schema:
@@ -29487,6 +30559,29 @@ paths:
         - `breadcrumbs` — adds the breadcrumb trail (empty at root level)
         - `permissions` — adds the caller's permission flags
 
+        **A connected app with a limit**
+
+        A token that may see only some sources pages and counts only what
+        its limit lets it see:
+        - Limited to whole sources (apps or collections) only: the listing
+          and the search cover those, with exact totals and counts.
+        - Limited to any spaces, folders or files, alone or beside whole
+          sources: the listing returns each whole source, space (record
+          group), folder and file the limit names, one item each, to open
+          by its `id`. `totalItems` counts those items, not what is inside
+          them. A search reads
+          forward only (`prevCursor` is always null), and takes a `page`
+          number up to 5; for later pages, send `nextCursor`. Its `totalItems` counts
+          the matches found so far and can grow from page to page; it is
+          final once `hasNext` is false. `counts` is returned only when the
+          whole result fits in the first page read, and is `null` otherwise.
+        - An item can sit in a folder the limit leaves out, as a file the
+          limit names does. Its `parentId` and `parent` are then `null`: the
+          item is returned, and the folder above it is not named.
+        - A `nextCursor` or `prevCursor` belongs to the limit it was read
+          under. A token with a different limit that sends it gets a `400`;
+          start that listing again without a cursor.
+
         **Access control**
 
         Requires a valid bearer token. For OAuth tokens the `kb:read` scope
@@ -29513,6 +30608,8 @@ paths:
           description: |
             Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
             Prefer `cursor`: a page number is reached by reading the pages before it.
+            A search by a connected app whose limit names any spaces, folders or files
+            takes a page number of at most 5; for later pages, send `nextCursor`.
           schema:
             type: integer
             minimum: 1
@@ -29522,8 +30619,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort. `include` and
+            `limit` come from this request. A next cursor returns the following page, and a previous
+            cursor returns the page before. A cursor whose parent disagrees with the URL, or
+            that was issued for another user, is refused with 400.
           schema:
             type: string
         - name: limit
@@ -29915,6 +31014,68 @@ paths:
                 error:
                   code: HTTP_FORBIDDEN
                   message: "Insufficient scope. Required: kb:read"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -30040,8 +31201,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort. `include` and
+            `limit` come from this request. A next cursor returns the following page, and a previous
+            cursor returns the page before. A cursor whose parent disagrees with the URL, or
+            that was issued for another user, is refused with 400.
           schema:
             type: string
         - name: limit
@@ -30451,6 +31614,68 @@ paths:
                 error:
                   code: HTTP_NOT_FOUND
                   message: "Parent node not found"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -30817,6 +32042,9 @@ paths:
         **Sorting:**
 
         Conversations are sorted by last activity timestamp (most recent first) by default.
+        With `source=owned`, conversations the caller pinned
+        (`PATCH /conversations/{conversationId}/pin`) come first, in the same order,
+        whatever `sortBy` is. `source=shared` is never pinned-first.
       operationId: getAllConversations
       x-pipeshub-sdk: true
       security:
@@ -30828,7 +32056,8 @@ paths:
           required: false
           description: |
             `owned` — owner list (`userId` filter only).
-            `shared` — explicit share grant list (`isShared` + `sharedWith`).
+            `shared` — explicit share grant list (`isShared` + `sharedWith`). Includes agent
+            conversations shared with the caller; those rows carry `agentKey`.
             Defaults to `owned` when omitted.
           schema:
             type: string
@@ -33202,6 +34431,111 @@ paths:
         '500':
           description: Persistence layer failed to update the conversation document.
 
+  /conversations/{conversationId}/pin:
+    patch:
+      tags:
+        - Conversations
+      summary: Pin conversation
+      description: |
+        Pin a conversation so it is listed first in the caller's own conversation list.
+
+        **Access:**
+
+        Owner only: the caller must be the conversation's `initiator`. People the
+        conversation is shared with, even with `write` access, cannot pin it, and
+        their own lists are not affected by the owner's pin.
+
+        **Behaviour:**
+
+        Idempotent: pinning an already pinned conversation succeeds and changes nothing.
+        Archived and deleted conversations cannot be pinned. Archiving a pinned
+        conversation removes its pin. Pinning does not change `lastActivityAt` or
+        `updatedAt`, so the conversation keeps its place among the other pinned chats.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: pinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, archived, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
+  /conversations/{conversationId}/unpin:
+    patch:
+      tags:
+        - Conversations
+      summary: Unpin conversation
+      description: |
+        Remove a conversation's pin so it is listed by recent activity again.
+
+        **Access:**
+
+        Owner only, as for `PATCH /conversations/{conversationId}/pin`.
+
+        **Behaviour:**
+
+        Idempotent: unpinning a conversation that is not pinned succeeds and changes nothing.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: unpinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is not pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
@@ -33221,6 +34555,12 @@ paths:
 
         - Only the *last* message of the conversation can be regenerated.
         - The target message must be of type `bot_response`.
+
+        **Editing the question:**
+
+        Send `query` to re-ask the last question with new wording. The answer
+        is regenerated for the edited question, which replaces the stored one
+        once the new answer is saved.
 
         **Use Cases:**
 
@@ -33285,6 +34625,55 @@ paths:
             Cannot regenerate. Common causes: target message is not the last
             message in the conversation, target message is not of type
             `bot_response`, or no preceding `user_query` exists.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
+  /conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Conversations
+      summary: Fork conversation from a message
+      description: |
+        Copy this conversation into a new private chat owned by the caller,
+        including every message up to and including `messageId`. The original
+        conversation is left unchanged.
+
+        Only the owner of the conversation can fork it. A shared recipient or a
+        project member gets 404, because their access to the original's
+        attachments and artifacts is revoked on unshare. The fork does not
+        inherit share settings. If the source is linked to a project the caller
+        can still see, the fork stays in that project but is private to the
+        caller; otherwise it is created outside the project.
+      operationId: forkConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation or message id
         '401':
           description: Unauthorized
         '404':
@@ -34662,7 +36051,10 @@ paths:
           description: |
             Invalid request — `query` is missing, empty, or the request
             body fails validation, including an unusable
-            `filters.entityFilters` or any `filters.where`.
+            `filters.entityFilters`, any `filters.where`, or a `filters` key
+            the `Filters` schema does not list (the message names it and lists the
+            allowed keys). The gateway validates before the search service, so
+            clients always see 400 for these, never 422.
           content:
             application/json:
               schema:
@@ -36319,6 +37711,7 @@ paths:
 
         `chatMode: quick` is required. Other fields are optional and reuse
         the original model/context when omitted. The body supports:
+        - `query` and `attachments` (an edited question and its files, as on the assistant endpoint)
         - `filters`
         - `chatMode`
         - `modelKey`
@@ -36406,6 +37799,56 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Agents
+      summary: Fork agent conversation from a message
+      description: |
+        Copy this agent conversation into a new private chat owned by the
+        caller, including every message up to and including `messageId`. The
+        original conversation is left unchanged.
+
+        Only the owner of the conversation can fork it; anyone else gets 404.
+      operationId: forkAgentConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:
@@ -36843,6 +38286,172 @@ paths:
           description: |
             Agent conversation not found for the authenticated user, organization,
             and agent scope, or the conversation is soft-deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/share:
+    post:
+      tags:
+        - Agents
+      summary: Share an agent conversation (read-only)
+      description: |
+        Share an agent conversation with other users in the caller's
+        organization. **Owner only** — the caller must be the conversation's
+        initiator.
+
+        Recipients get **read-only** access: they can open the transcript and
+        list it under "shared with me", but cannot continue, regenerate, rename,
+        archive, delete, fork or cancel it, rate its answers, or re-share it.
+        Only `read` is accepted as an access level.
+
+        Sharing is additive (existing recipients are kept) and idempotent. The
+        recipients are also granted read access to the conversation's artifacts
+        and chat attachments. Recipients see the full transcript, including
+        citations and tool output, as the owner sees it.
+      operationId: shareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users in the caller's organization to share with.
+                  example: ["507f1f77bcf86cd799439011"]
+                accessLevel:
+                  type: string
+                  enum: [read]
+                  default: read
+                  description: Only `read` is supported; `write` is rejected with `400`.
+      responses:
+        '200':
+          description: Conversation shared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationShareResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes: malformed or empty `userIds`, more
+            than 50 users, `accessLevel` other than `read`, sharing with
+            yourself, or a user who does not exist in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/unshare:
+    post:
+      tags:
+        - Agents
+      summary: Unshare an agent conversation
+      description: |
+        Remove specific users from an agent conversation's recipient list and
+        revoke their access to its artifacts and attachments. **Owner only.**
+        When the last recipient is removed the conversation becomes private
+        again (`isShared: false`). Removing a user who is not a recipient is a
+        no-op.
+      operationId: unshareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users to remove from the share list.
+                  example: ["507f1f77bcf86cd799439011"]
+      responses:
+        '200':
+          description: Conversation unshared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationShareResponse'
+        '400':
+          description: Malformed, empty or oversized `userIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
           content:
             application/json:
               schema:
@@ -38392,16 +40001,19 @@ paths:
 
         **Reading part of a long record, or a whole Slack thread:**
 
-        With no query parameters the whole record is returned, which for a
-        pull request with its diffs or a long document can run to hundreds of
-        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        With no query parameters the record is returned up to 140,000
+        characters (a longer one is cut and marked `truncated`), which for a
+        pull request with its diffs or a long document is a large response. Pass any of `maxChars`, `startBlock`, `query`
         or `mode` for a budgeted read instead: the response stays within
         `maxChars` and says how to continue (`nextStartBlock`, or
         `nextStartRecord` for a thread). `query` makes a record too large for
         the budget show its most relevant blocks first, with the skipped
         ranges marked. `mode=thread` returns every message of the Slack
         thread the record belongs to, oldest first, as far as the caller may
-        see them.
+        see them. A Slack record in no single thread (several channel
+        messages in one record, or a message without replies) returns itself,
+        then the replies of each thread its messages started; the first page
+        opens with a bracketed note saying which.
 
         **Permission scoping:**
 
@@ -38460,8 +40072,10 @@ paths:
           required: false
           description: >-
             `record` (default) reads this record. `thread` reads every record
-            of the Slack thread this message belongs to, oldest first; a
-            record outside any thread answers `422`.
+            of the Slack thread this message belongs to, oldest first. A Slack
+            record in no single thread reads as itself, then the threads its
+            messages started (at most 10). A record that is not from Slack
+            answers `422`.
           schema:
             type: string
             enum: [record, thread]
@@ -38505,8 +40119,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: |
-            `mode=thread` was asked of a record that is not part of a Slack
-            thread.
+            `mode=thread` was asked of a record that is not from Slack. Every
+            Slack message record can be read in thread mode.
           content:
             application/json:
               schema:
@@ -38535,9 +40149,10 @@ paths:
 
         Call it with no `nodeId` for a flat listing of every record group and
         record the caller can reach, newest first. This is a starting point to
-        pick a node from, not a roster of connected apps — app nodes are never
-        returned in a listing, though an app's `id` is accepted as a `nodeId`
-        and lists that app's record groups. Pass a node's `id` to descend:
+        pick a node from, not a roster of connected apps — app nodes are not
+        returned in a listing (except at the root of a limited connected app,
+        below), though an app's `id` is accepted as a `nodeId` and lists that
+        app's record groups. Pass a node's `id` to descend:
         record groups contain records and folders, and a record contains its
         own children — comments, attachments, sub-tasks — plus a `related`
         section of cross-referenced records, such as the Confluence page linked
@@ -38573,7 +40188,19 @@ paths:
 
         **Scope:** everything the caller can read, across both connectors and
         Knowledge Base collections. No connector-level filter is applied — the
-        listing is bounded by per-node permissions alone.
+        listing is bounded by per-node permissions, and for a connected app
+        with a limit by that limit too: no row, breadcrumb or related node
+        outside it is returned.
+
+        **A connected app with a limit:** with no `nodeId`, the root depends
+        on what the limit names.
+        - Whole sources (apps or collections) only: the usual flat root,
+          every record group and record in those sources.
+        - Any spaces, folders or files, alone or beside whole sources: one
+          row for each whole source, space (record group), folder and file
+          the limit names, and nothing from inside them. `pagination.total`
+          counts those rows, not the records inside them. `depth` is not
+          applied on this call; pass a row's `id` as `nodeId` to open it.
 
         **Permission scoping:**
 
@@ -39800,15 +41427,13 @@ paths:
         a selected group), pass the parent paths via the
         <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
         <b>Which connectors answer:</b><br>
-        Only connectors with auth type <code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>
-        or <code>OAUTH_ADMIN_CONSENT</code> (and saved settings), and <code>OAUTH</code>
-        connectors that have completed sign-in. Every other connector is refused with <code>400</code>:
-        those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
-        <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
-        (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
-        signed in, and a token or password connector with no saved settings.
-        Their filter fields are in the registry schema; dynamic values come from
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
+        any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
+        <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
+        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
+        including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
+        needs saved settings but no auth section. Otherwise the request is refused with
+        <code>400</code>.
       operationId: getConnectorFilters
       x-pipeshub-sdk: true
       security:
@@ -39837,9 +41462,8 @@ paths:
                   - filterOptions
         '400':
           description: |
-            The connector's auth type has no filter options (for example <code>NONE</code>,
-            <code>BASIC_AUTH</code> or <code>ACCESS_KEY</code>), an OAUTH connector has not
-            signed in, or a token or password connector has no saved settings.
+            An OAUTH connector has not signed in, or another connector has no saved settings
+            (or, for any type except <code>NONE</code>, no saved auth section).
           content:
             application/json:
               schema:
@@ -40685,6 +42309,15 @@ paths:
           schema:
             type: string
             enum: [authenticated, not-authenticated]
+        - name: scope
+          in: query
+          required: false
+          description: >-
+            `org` lists the organization's instances only, leaving out the caller's own personal
+            ones (the admin catalog). Omitted, both are listed; each item's `scope` says which it is.
+          schema:
+            type: string
+            enum: [org]
         - name: search
           in: query
           required: false
@@ -40811,6 +42444,12 @@ paths:
                         createdBy:
                           type: string
                           description: User ID that created the instance. Absent on registry-only entries.
+                        scope:
+                          type: string
+                          enum: [org, personal]
+                          description: >-
+                            `org` for the organization's instances, `personal` for the caller's own. Absent on
+                            registry-only entries.
                         createdAtTimestamp:
                           type: integer
                           format: int64
@@ -41276,7 +42915,13 @@ paths:
       tags:
         - Toolset Instances
       summary: Create toolset instance
-      description: Create a new toolset instance (admin only).
+      description: >-
+        Create a toolset instance. An administrator's is the organization's unless `scope` is
+        `personal`; anyone else's is always personal: kept for its owner only, who alone sees it,
+        signs in to it, uses it and sets its tool approvals. A personal instance stores only its
+        toolset's setup fields (for OAuth, the owner's own client ID and secret), every address in
+        it must be public, and each user can have a limited number
+        (`TOOLSET_MAX_PERSONAL_INSTANCES`, 25 by default).
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
@@ -41307,22 +42952,35 @@ paths:
                   type: string
                 oauthInstanceName:
                   type: string
+                scope:
+                  type: string
+                  enum: [org, personal]
+                  description: >-
+                    `personal` for the caller's own instance. Omitted, an administrator's instance
+                    is the organization's and anyone else's is personal.
       responses:
         '201':
           description: Instance created successfully
         '400':
-          description: Invalid request
+          description: >-
+            Invalid request, including a personal instance's undeclared setting, missing OAuth
+            client, or non-public address
         '401':
           description: Unauthorized
-        '403':
-          description: Forbidden
+        '409':
+          description: A name already in use, or the caller's limit of personal instances reached
+        '503':
+          description: The caller's role couldn't be confirmed, so nothing was created
 
   /toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
       summary: Get toolset instance
-      description: Retrieve a single toolset instance by its identifier.
+      description: >-
+        Retrieve a single toolset instance: an organization one, or the caller's own personal one
+        (anyone else's personal instance is not found, for administrators too). Its `scope` is
+        `org` or `personal`.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -41344,7 +43002,10 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
-      description: Update an existing toolset instance's configuration (admin only).
+      description: >-
+        Update a toolset instance: an organization one by an administrator, a personal one by its
+        owner only. A personal instance's new OAuth client signs its owner out of it; its scope
+        never changes.
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -41375,7 +43036,9 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
-      description: Delete a toolset instance and its associated configuration (admin only).
+      description: >-
+        Delete a toolset instance, every sign-in to it and its tool approval rules: an organization
+        one by an administrator, a personal one by its owner only. Refused while an agent uses it.
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -41575,8 +43238,13 @@ paths:
         - Toolset Instances
       summary: Get a toolset instance's tool approval rules
       description: >-
-        Which of the instance's tools run, ask for approval, or never run, for everyone in the
-        organization. Every member can read them; `canEdit` says whether the caller may change them.
+        Which of the instance's tools run, ask for approval, or never run. An organization
+        instance's rules apply to everyone in the organization, and every member can read them.
+        A personal instance's rules are its owner's, and nobody else finds them. `canEdit` says
+        whether the caller may change the rules. An organization instance's rules are served only when
+        organization tool rules are on (`organization_toolset_tool_rules` in the edition config);
+        otherwise 404, and each tool starts from what it does to data. A personal instance's rules
+        are served in every edition.
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
@@ -41596,12 +43264,19 @@ paths:
         '401':
           description: Unauthorized
         '404':
-          description: Instance not found
+          description: >-
+            Instance not found, or organization tool rules are off: "Organization tool approvals
+            aren't available here. Each person answers the approval card in the chat."
     put:
       tags:
         - Toolset Instances
-      summary: Set a toolset instance's tool approval rules (admin only)
-      description: Replaces the instance's rules. They apply to everyone in the organization.
+      summary: Set a toolset instance's tool approval rules
+      description: >-
+        Replaces the instance's rules: an organization instance's by administrators only (they
+        apply to everyone in the organization), a personal instance's by its owner. An
+        organization instance's rules can be set only when organization tool rules are on;
+        otherwise 404 before any admin check, and nothing is saved. A personal instance's rules
+        can be set in every edition.
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
@@ -41630,9 +43305,12 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Only administrators can change them
+          description: An organization instance's rules, and the caller isn't an administrator
         '404':
-          description: Instance not found
+          description: >-
+            Instance not found, someone else's personal instance, or an organization instance
+            while organization tool rules are off: "Organization tool approvals aren't available
+            here. Each person answers the approval card in the chat."
 
   /toolsets/oauth-configs/{toolsetType}:
     get:
@@ -42626,6 +44304,465 @@ paths:
           description: Agent or instance not found
         '409':
           description: No OAuth app is configured and the provider doesn't support dynamic registration
+
+  # -------------------- API Toolsets --------------------
+  /api-toolsets/validate:
+    post:
+      tags:
+        - API Toolsets
+      summary: Preview an OpenAPI spec (administrators)
+      description: |
+        Compiles an OpenAPI 3.0 or 3.1 spec (JSON or YAML) without saving anything, and returns
+        the operations it offers as tools, its security schemes, its servers and any warnings
+        about operations that can't be used.
+      operationId: validateApiToolsetSpec
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The spec to compile
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spec]
+              properties:
+                spec:
+                  type: string
+                  description: The spec's text, at most 5 MB.
+      responses:
+        '200':
+          description: The compiled spec
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolsetCompiledSpec'
+        '400':
+          description: The spec can't be used; the detail says why
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances:
+    get:
+      tags:
+        - API Toolsets
+      summary: List API toolsets
+      description: |
+        Every API toolset of the organization, with whether the caller has connected it.
+        How each one is reached and authenticated is on the settings route, for administrators.
+      operationId: listApiToolsets
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: API toolsets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: API Toolsets are disabled
+    post:
+      tags:
+        - API Toolsets
+      summary: Add an API toolset (administrators)
+      description: |
+        Compiles the spec again on the server and stores only the selected operations, never the
+        spec itself. OAuth client-credentials toolsets always use one shared credential.
+      operationId: createApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset to add
+        required: true
+        content:
+          application/json:
+            schema:
+              # The spec is required here; an edit may leave it out to keep the stored one.
+              allOf:
+                - $ref: '#/components/schemas/ApiToolsetPayload'
+                - type: object
+                  required: [spec]
+      responses:
+        '200':
+          description: The new toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid spec, operation, auth scheme, scope, timeout or base URL
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances/{instanceId}:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset
+      description: The toolset with each selected operation's input schema.
+      operationId: getApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    put:
+      tags:
+        - API Toolsets
+      summary: Change an API toolset (administrators)
+      description: |
+        Same body as creating one. Without `spec`, operations are picked from those already
+        stored and the auth scheme stays. Choosing another auth scheme removes every
+        credential stored for the old one.
+      operationId: updateApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset's new settings
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetPayload'
+      responses:
+        '200':
+          description: The changed toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid change
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Delete an API toolset (administrators)
+      description: |
+        Deletes the toolset with every credential and its OAuth app. Refused while an agent
+        uses one of its operations.
+      operationId: deleteApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Deleted
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+        '409':
+          description: An agent uses the toolset; the detail names it
+        '503':
+          description: Which agents use the toolset couldn't be checked, so nothing was deleted
+  /api-toolsets/instances/{instanceId}/config:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset's settings (administrators)
+      description: |
+        The toolset with its base URL, auth scheme, scopes, timeout and OAuth app client ID.
+        Never the OAuth app's secret.
+      operationId: getApiToolsetConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset's settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Connect your credentials
+      description: |
+        Stores the fields the toolset's auth scheme uses; any other field is ignored. OAuth
+        sign-in toolsets use the sign-in flow instead, and a toolset with a shared credential
+        takes it from the shared-credentials route.
+      operationId: saveApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field the auth scheme needs is missing, or the toolset uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Disconnect your credentials
+      description: Removes the caller's own credential.
+      operationId: deleteApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Disconnected
+        '401':
+          description: Unauthorized
+        '400':
+          description: The toolset uses a shared credential
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Set the shared credential (administrators)
+      description: The one credential every member's calls use, for a toolset set up to share one.
+      operationId: saveApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field is missing, or the toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Remove the shared credential (administrators)
+      description: Every member's calls fail until an administrator sets a new one.
+      operationId: deleteApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Removed
+        '400':
+          description: The toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start the shared OAuth sign-in (administrators)
+      description: Signs in once for everyone; finished on the same callback as a member's sign-in.
+      operationId: getApiToolsetSharedOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset has no shared credential or doesn't use OAuth sign-in
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/test:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    post:
+      tags:
+        - API Toolsets
+      summary: Test the connection
+      description: |
+        Calls one operation with the caller's credentials: the one named, or else the first
+        read that needs no arguments. Returns the API's status and the start of its answer.
+      operationId: testApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The operation to call and its arguments; both optional
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toolName:
+                  type: string
+                arguments:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The API answered (with any status)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: integer
+                  body:
+                    type: string
+                  truncated:
+                    type: boolean
+        '400':
+          description: Not connected, an unknown operation, or invalid arguments
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+        '502':
+          description: The API could not be reached or did not answer in time
+  /api-toolsets/instances/{instanceId}/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start an OAuth sign-in
+      description: Returns the URL to open; the sign-in can be finished within 10 minutes.
+      operationId: getApiToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset doesn't use OAuth sign-in, has no OAuth app, or uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/oauth/callback:
+    get:
+      tags:
+        - API Toolsets
+      summary: Finish an OAuth sign-in
+      description: Only the person who started the sign-in can finish it, once.
+      operationId: handleApiToolsetOAuthCallback
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  instanceId:
+                    type: string
+                  name:
+                    type: string
+        '400':
+          description: The sign-in expired, was already used, or was refused by the API
+        '401':
+          description: Unauthorized
 
   # -------------------- Skills --------------------
   /skills:
@@ -44594,8 +46731,7 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes only `model`, `modelFriendlyName`, `dimensions`, and
-        `defaultReasoningEffort` when stored.
+        includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). Unless `reveal=true` is passed, the service API key is omitted and a credential-bearing header template value reads as `****************`.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -45148,6 +47284,222 @@ paths:
         '404':
           description: Connection not found
 
+  /configurationManager/ai-models/connections/{connectionId}/identity-forwarding:
+    put:
+      tags:
+        - AI Models Providers
+      summary: Set identity forwarding for every model in a connection
+      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      operationId: setConnectionIdentityForwarding
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+                mode:
+                  type: string
+                  enum: [headers, template, signedJwt]
+                  default: headers
+                  description: signedJwt needs the enterprise edition.
+                preset:
+                  type: string
+                  enum: [litellm, portkey, helicone, cloudflare, apim, custom]
+                  default: litellm
+                headerTemplates:
+                  type: object
+                  maxProperties: 16
+                  additionalProperties:
+                    type: string
+                    maxLength: 512
+                  description: 'Header name to template, for example the value {{subject}}. Used with mode template. A value of `****************` keeps the stored template for that header.'
+                jwtAudience:
+                  type: string
+                  maxLength: 256
+                serviceAuth:
+                  type: string
+                  enum: [apiKey, jwt]
+                  default: apiKey
+                serviceApiKey:
+                  type: string
+                  maxLength: 512
+                  description: Gateway key for background work. Omit to keep the stored key; send an empty string to clear it.
+      responses:
+        '200':
+          description: Settings written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+        '400':
+          description: Invalid settings
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '404':
+          description: Connection not found
+
+  /configurationManager/ai-models/identity-policy:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Get the identity governance policy
+      description: What PipesHub may forward to a model gateway about the person asking. Answers the default when nothing is saved. When the stored policy cannot be read (for example after the secret key was rotated), `damaged` is true and `policy` is the default, not what was saved; save again to replace it.
+      operationId: getAIGatewayIdentityPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  policy:
+                    $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+                  damaged:
+                    type: boolean
+                    description: The stored policy could not be read and `policy` is the default.
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+    put:
+      tags:
+        - AI Models Providers
+      summary: Save the identity governance policy
+      description: Replaces the policy. Takes effect for new requests within about 30 seconds.
+      operationId: putAIGatewayIdentityPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+      responses:
+        '200':
+          description: The saved policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  policy:
+                    $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+        '400':
+          description: Invalid policy
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '409':
+          description: The policy changed while saving
+
+  /configurationManager/ai-models/identity/preview:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Preview what a connection would send for a person
+      description: Runs the real projector and forwarder and returns the headers with credentials redacted. No model call is made. With connectionId the stored settings (including the service key, never shown) are used, and configuration overrides them.
+      operationId: previewAIGatewayIdentity
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                userId:
+                  type: string
+                  description: A user of the same organisation. Defaults to the caller.
+                workload:
+                  type: string
+                  default: chat
+                  description: A workload name such as chat, agent, search or indexing. Background workloads preview as the service identity.
+                connectionId:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The identity and headers that would be sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  forwarding:
+                    type: object
+                    additionalProperties: true
+                  principal:
+                    type: object
+                    additionalProperties: true
+                  workload:
+                    type: object
+                    additionalProperties: true
+                  identity:
+                    type: object
+                    additionalProperties: true
+                  headers:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      type: string
+                  removedHeaders:
+                    type: array
+                    items:
+                      type: string
+                  notes:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '404':
+          description: Connection or user not found
+        '422':
+          description: Unknown workload
+
   /configurationManager/ai-models/providers:
     post:
       tags:
@@ -45583,8 +47935,8 @@ paths:
         '200':
           description: |
             SSE stream (`text/event-stream`). Every frame uses the
-            `progress` event name; `data` is the decoded
-            `EmbeddingDownloadProgressPayload` object plus a `timestamp` field.
+            `progress` event name; `data` is a JSON-encoded
+            `EmbeddingDownloadProgressPayload` plus a `timestamp` field.
           content:
             text/event-stream:
               schema:
@@ -46019,7 +48371,7 @@ paths:
 
         **Available Feature Flags:**
         - ENABLE_BETA_CONNECTORS: Enable beta connector integrations (default: false)
-        - ENABLE_MCP: Enable MCP servers (default: false)
+        - ENABLE_MCP: Enable MCP servers (default: true)
         - ENABLE_ACTIONS: Enable toolset actions (default: true)
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
@@ -46169,7 +48521,7 @@ paths:
                     description: Key-value map of every known feature flag to its resolved boolean value.
                     example:
                       ENABLE_BETA_CONNECTORS: false
-                      ENABLE_MCP: false
+                      ENABLE_MCP: true
                       ENABLE_ACTIONS: true
                       ENABLE_VECTOR_STORE_REBUILD: false
                       ENABLE_SKILLS: true
@@ -47002,8 +49354,7 @@ paths:
       summary: Get AI models configuration
       description: |
         Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
-        and `defaultReasoningEffort` when stored.
+        `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -47059,8 +49410,10 @@ paths:
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType. Each entry's `configuration` includes
-        only `model`, `modelFriendlyName`, `dimensions`, and
-        `defaultReasoningEffort` when stored.
+        `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the
+        saved `identityForwarding*` settings (when stored). The service API key is
+        never returned; a credential-bearing header template value reads as
+        `****************`.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []
@@ -47886,127 +50239,6 @@ paths:
           description: Another real login graph user already has this email
         '500':
           description: Failed to write the graph user
-  /connectors/internal/all-scheduled:
-    get:
-      tags:
-        - Connectors
-      summary: List all connectors configured for SCHEDULED sync (internal)
-      description: |
-        <b>Internal service-to-service endpoint.</b> Used exclusively by the Node.js
-        scheduled-jobs backfill migration to enumerate connector instances whose etcd
-        sync config has <code>selectedStrategy = SCHEDULED</code>.<br><br>
-
-        <b>Pagination:</b> Callers step through 1-based pages. Each response returns
-        up to <code>limit</code> items that are active (<code>isActive: true</code>)
-        and have a SCHEDULED strategy, plus a <code>hasMore</code> flag so the caller
-        knows when to stop. Database-level <code>LIMIT/OFFSET</code> is used so memory
-        stays proportional to <code>limit</code> regardless of total connector count.<br><br>
-
-        <b>Auth:</b> Requires a scoped service JWT with <code>CONNECTOR_READ</code>
-        scope. Not intended for end-user clients.
-      operationId: getAllScheduledConnectorInstancesInternal
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: page
-          in: query
-          required: false
-          description: 1-based page number (default 1)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-          example: 1
-        - name: limit
-          in: query
-          required: false
-          description: Maximum active-connector candidates to fetch from the database per call (default 50, max 200)
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 50
-          example: 50
-        - name: connectorIds
-          in: query
-          required: false
-          description: |
-            Comma-separated connector ids (at most 200). The response then holds exactly these
-            connectors, active or not and whatever their strategy, in one page with
-            <code>hasMore: false</code>. A connector that does not exist comes back as
-            <code>missing: true</code>, and one whose settings could not be read as
-            <code>unreadable: true</code>.
-          schema:
-            type: string
-          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a,1c0b3a52-2f7e-4f3e-9d65-4c1e8f0b7a11"
-      responses:
-        '200':
-          description: Page of scheduled connector instances
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        connectorId:
-                          type: string
-                          description: Connector instance UUID (_key in ArangoDB)
-                          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a"
-                        type:
-                          type: string
-                          description: Connector type (e.g. Confluence, Slack)
-                          example: "Confluence"
-                        orgId:
-                          type: string
-                          description: Organisation identifier
-                          example: "69f4b91882152b165f748e2c"
-                        ownerUserId:
-                          type: string
-                          description: User who created the connector
-                          example: "69f4b91882152b165f748e2d"
-                        isActive:
-                          type: boolean
-                          example: true
-                        missing:
-                          type: boolean
-                          description: Only with connectorIds. No connector has this id.
-                        unreadable:
-                          type: boolean
-                          description: Only with connectorIds. Its settings could not be read; sync is null.
-                        sync:
-                          type: object
-                          nullable: true
-                          description: Full sync block from etcd config; null when unreadable
-                          properties:
-                            selectedStrategy:
-                              type: string
-                              example: "SCHEDULED"
-                            scheduledConfig:
-                              type: object
-                              properties:
-                                intervalMinutes:
-                                  type: integer
-                                  example: 5
-                                timezone:
-                                  type: string
-                                  example: "UTC"
-                  hasMore:
-                    type: boolean
-                    description: True if more pages remain; false when this is the last page
-                    example: false
-        '401':
-          description: Unauthorized — missing or invalid JWT
-        '404':
-          description: No organisations found in the system
-        '500':
-          description: Internal server error
 
   /mcp:
     post:
@@ -48032,7 +50264,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
-        description: MCP JSON-RPC 2.0 request object with method, params, and id.
+        description: MCP JSON-RPC 2.0 request object with method, params, and id. The body can be at most 5 MB.
         content:
           application/json:
             schema:
@@ -48080,6 +50312,52 @@ paths:
                         type: string
         '401':
           description: Unauthorized
+        '413':
+          description: |
+            The request body is larger than 5 MB, the most `/mcp` accepts. The
+            answer is a JSON-RPC 2.0 error whose `id` is null, because the
+            request was refused before it was read. `error.data.requestId`
+            identifies the request for support.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                      data:
+                        type: object
+                        properties:
+                          requestId:
+                            type: string
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
+              example:
+                jsonrpc: "2.0"
+                id: null
+                error:
+                  code: -32000
+                  message: This request is too large for PipesHub. One MCP request can be at most 5 MB. Send less in one call, such as a shorter question or fewer IDs, and try again.
+                  data:
+                    requestId: 7f3c2a10-5b1e-4c8e-9a43-2d6f0e8b1c55
         '500':
           description: Internal server error
     get:

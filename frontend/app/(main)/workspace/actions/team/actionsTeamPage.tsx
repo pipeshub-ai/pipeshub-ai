@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { EnterpriseFeatureNotice } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -40,6 +41,8 @@ import {
 import type { ActionCardCta } from '../components/action-card';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { useActionsStore } from '../store';
+import { ApiActionsSection } from '@/app/(main)/workspace/api-toolsets/components';
+import { API_ACTION_FILTERS } from '@/app/(main)/workspace/api-toolsets/toolset-form';
 
 const TEAM_TABS = [
   { value: 'all', labelKey: 'workspace.actions.tabs.all' },
@@ -103,6 +106,7 @@ function TeamActionsPageContent() {
     instanceFilterTab,
     refreshKey,
     enabled: Boolean(isAdmin && toolsetTypeParam),
+    scope: 'org',
   });
 
   useEffect(() => {
@@ -164,6 +168,7 @@ function TeamActionsPageContent() {
         includeRegistry: true,
         limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
         search: debouncedCatalogSearch || undefined,
+        scope: 'org',
       });
       setCatalogRows(toolsets);
     } catch {
@@ -475,6 +480,21 @@ function TeamActionsPageContent() {
         tabCountsOverride={tabCountsOverride}
         trailingAction={
           <NavigateButton label={t('workspace.actions.trailingYourActions')} onClick={() => router.push('/workspace/actions/personal/')} />
+        }
+        leadingSection={
+          <ApiActionsSection
+            manage
+            searchQuery={searchQuery}
+            // An API action exists once added, so it is never "not configured".
+            filter={activeTab === 'not_configured' ? API_ACTION_FILTERS.none : API_ACTION_FILTERS.all}
+          />
+        }
+        itemsHeading={t('workspace.actions.appsHeading')}
+        footer={
+          <EnterpriseFeatureNotice
+            title={t('workspace.actions.enterprise.userActionsTitle')}
+            description={t('workspace.actions.enterprise.userActionsDescription')}
+          />
         }
         items={tabFilteredCatalog}
         resolveCta={resolveCta}

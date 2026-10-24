@@ -966,17 +966,60 @@ describe('UserController', () => {
   });
 
   describe('checkUserExistsByEmail', () => {
-    it('should return users found by email', async () => {
+    const lookup = (exec: () => Promise<unknown>) =>
+      ({ select: () => ({ lean: () => ({ exec }) }) }) as any;
+
+    it('should return users found by the email the token was minted for', async () => {
       req.body = { email: 'test@test.com' };
+      req.tokenPayload = { email: 'test@test.com' };
       const mockUsers = [{ _id: 'u1', email: 'test@test.com' }];
 
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
+      const find = sinon.stub(Users, 'find').returns(lookup(async () => mockUsers));
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(find.firstCall.args[0]).to.deep.equal({ email: 'test@test.com', isDeleted: false });
       expect(res.json.calledWith(mockUsers)).to.be.true;
     });
+
+    it('should refuse an email other than the token\'s without querying', async () => {
+      req.body = { email: 'victim@test.com' };
+      req.tokenPayload = { email: 'caller@test.com' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
+
+    it('should refuse a token that carries no email without querying', async () => {
+      req.body = { email: 'test@test.com' };
+      req.tokenPayload = { userId: 'u1', orgId: 'o1' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
   });
+
+  describe('checkUserExistsByEmail org scoping', () => {
+    it('confines the lookup to the token org when the token carries one', async () => {
+      req.body = { email: 'me@test.com' }
+      req.tokenPayload = { email: 'me@test.com', orgId: 'org-a' }
+      const find = sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: () => Promise.resolve([]) }) }),
+      } as any)
+
+      await controller.checkUserExistsByEmail(req, res, next)
+
+      expect(find.firstCall.args[0]).to.deep.equal({
+        email: 'me@test.com', isDeleted: false, orgId: 'org-a',
+      })
+    })
+  })
 
   describe('createUser', () => {
     it('should create a user and publish event', async () => {
@@ -2103,8 +2146,11 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail (additional)', () => {
     it('should return empty array when no users found', async () => {
       req.body = { email: 'notfound@test.com' };
+      req.tokenPayload = { email: 'notfound@test.com' };
 
-      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: async () => [] }) }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -4312,11 +4358,16 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('checkUserExistsByEmail - found', () => {
     it('should return found users', async () => {
-      sinon.stub(Users, 'find').resolves([
-        { _id: 'u1', email: 'exists@test.com' },
-      ] as any);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({
+            exec: async () => [{ _id: 'u1', email: 'exists@test.com' }],
+          }),
+        }),
+      } as any);
 
       req.body = { email: 'exists@test.com' };
+      req.tokenPayload = { email: 'exists@test.com' };
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -5700,7 +5751,12 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail - error handling', () => {
     it('should call next on database error', async () => {
       req.body = { email: 'test@test.com' };
-      sinon.stub(Users, 'find').rejects(new Error('DB error'));
+      req.tokenPayload = { email: 'test@test.com' };
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({ exec: () => Promise.reject(new Error('DB error')) }),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 

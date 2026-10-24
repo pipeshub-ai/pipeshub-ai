@@ -62,6 +62,7 @@ def mock_graph_provider():
     provider.get_record_owner_source_user_email = AsyncMock(return_value=None)
     provider.get_user_by_user_id = AsyncMock(return_value=None)
     provider.delete_nodes = AsyncMock()
+    provider.delete_blocks_for_records = AsyncMock(return_value=0)
     provider.delete_record_by_external_id = AsyncMock()
     provider.remove_user_access_to_record = AsyncMock()
     provider.delete_edge = AsyncMock()
@@ -160,7 +161,19 @@ class TestGraphTransactionStore:
         assert await tx_store.link_record_to_group("r1", "g1", inherit=False) == 1
 
         mock_graph_provider.link_record_to_group.assert_awaited_once_with(
-            "r1", "g1", inherit=False, leaving_group_id=None, transaction="txn-123"
+            "r1", "g1", inherit=False, leaving_group_id=None, browse_root=None, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_link_record_to_group_passes_the_browse_root_through(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.link_record_to_group = AsyncMock(return_value=0)
+
+        await tx_store.link_record_to_group("r1", "g1", inherit=True, leaving_group_id="g0", browse_root=True)
+
+        mock_graph_provider.link_record_to_group.assert_awaited_once_with(
+            "r1", "g1", inherit=True, leaving_group_id="g0", browse_root=True, transaction="txn-123"
         )
 
     @pytest.mark.asyncio
@@ -426,6 +439,11 @@ class TestGraphTransactionStore:
             ["key1"], "records", graph_name="knowledgeGraph", transaction="txn-123"
         )
         mock_graph_provider.delete_nodes.assert_not_called()
+        # The record's code blocks are only reachable by recordId, so they have to
+        # go with it rather than survive as an orphaned symbol projection.
+        mock_graph_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["key1"], transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_delete_edge(self, tx_store, mock_graph_provider) -> None:
@@ -623,7 +641,7 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_user_by_user_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_by_user_id("user1")
-        mock_graph_provider.get_user_by_user_id.assert_awaited_once_with("user1")
+        mock_graph_provider.get_user_by_user_id.assert_awaited_once_with("user1", raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
@@ -733,6 +751,22 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_app_users.return_value = [mock_app_user]
         result = await tx_store.get_app_users("org1", "conn1")
         assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_app_users_leaves_out_a_membership_the_source_names_no_user_for(
+        self, tx_store, mock_graph_provider,
+    ) -> None:
+        member = {"_key": "au1", "email": "member@test.com", "fullName": "Member", "orgId": "org1",
+                  "connectorId": "conn1", "sourceUserId": "src1", "appName": "UNKNOWN"}
+        # An external collaborator's membership (ensure_app_membership): both graph
+        # stores answer a null sourceUserId for it
+        external = {"_key": "u2", "email": "outsider@test.com", "fullName": "Outsider", "orgId": "org1",
+                    "connectorId": "conn1", "sourceUserId": None, "appName": "UNKNOWN"}
+        mock_graph_provider.get_app_users.return_value = [external, member]
+
+        result = await tx_store.get_app_users("org1", "conn1")
+
+        assert [u.email for u in result] == ["member@test.com"]
 
     @pytest.mark.asyncio
     async def test_get_user_groups(self, tx_store, mock_graph_provider) -> None:
@@ -1180,11 +1214,21 @@ class TestGraphDataStore:
     @pytest.mark.asyncio
     async def test_the_store_says_whether_its_transaction_was_asked_to_be_explicit(self, mock_graph_provider) -> None:
         store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(side_effect=lambda e: e is True)
 
         async with store.transaction() as by_default:
             assert by_default.explicit is False
         async with store.transaction(explicit=True) as asked:
             assert asked.explicit is True
+
+    @pytest.mark.asyncio
+    async def test_the_store_follows_the_provider_when_the_caller_does_not_ask(self, mock_graph_provider) -> None:
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(return_value=True)
+
+        async with store.transaction() as by_default:
+            assert by_default.explicit is True
+        mock_graph_provider.opens_explicit_transaction.assert_called_once_with(None)
 
     @pytest.mark.asyncio
     async def test_transaction_rolls_back_on_exception(self, mock_graph_provider) -> Never:

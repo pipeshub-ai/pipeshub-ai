@@ -1478,7 +1478,7 @@ class _FakeResponse:
     def __init__(
         self,
         status: int,
-        text: str = "",
+        text: str | bytes = "",
         *,
         headers: Optional[dict[str, str]] = None,
         raise_on: Optional[Exception] = None,
@@ -1492,6 +1492,11 @@ class _FakeResponse:
         if self._raise is not None:
             raise self._raise
         return self._text
+
+    async def read(self) -> bytes:
+        if self._raise is not None:
+            raise self._raise
+        return self._text if isinstance(self._text, bytes) else self._text.encode("utf-8")
 
     async def __aenter__(self) -> "_FakeResponse":
         if self._raise is not None:
@@ -1994,6 +1999,28 @@ class TestStreamStorageRecord:
         resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
         assert resp.body == b"hi"
         assert resp.media_type == "application/octet-stream"
+
+    async def test_returns_raw_bytes_as_sent(self, folder_connector, monkeypatch) -> None:
+        folder_connector._storage_base_url = AsyncMock(return_value="http://x")
+        folder_connector._storage_token = AsyncMock(return_value="t")
+        pdf = b"%PDF-1.4\n\xff\xfe binary"
+        headers = {"Content-Type": "application/octet-stream"}
+        session = _FakeSession([("get", _FakeResponse(200, pdf, headers=headers))])
+        _patch_session(monkeypatch, session)
+
+        resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
+        assert resp.body == pdf
+
+    async def test_raw_bytes_that_look_like_json_are_not_parsed(self, folder_connector, monkeypatch) -> None:
+        folder_connector._storage_base_url = AsyncMock(return_value="http://x")
+        folder_connector._storage_token = AsyncMock(return_value="t")
+        body = b'{"type": "Buffer", "data": [104, 105]}'
+        headers = {"Content-Type": "application/octet-stream"}
+        session = _FakeSession([("get", _FakeResponse(200, body, headers=headers))])
+        _patch_session(monkeypatch, session)
+
+        resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
+        assert resp.body == body
 
     async def test_non_2xx_raises_bad_gateway(self, folder_connector, monkeypatch):
         folder_connector._storage_base_url = AsyncMock(return_value="http://x")
@@ -3085,7 +3112,7 @@ class TestApplyFileEventBatchDirectoryRename:
         on_records_moved instead of deleting the old row and creating a
         new one.
         """
-        owner = await self._setup(folder_connector, tmp_path)
+        await self._setup(folder_connector, tmp_path)
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
         )
@@ -3112,7 +3139,8 @@ class TestApplyFileEventBatchDirectoryRename:
         assert folder_record.local_fs_relative_path == "docs"
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
-        assert perms[0].email == owner.email
+        assert folder_record.inherit_permissions is True
+        assert perms == []
         folder_connector.data_entities_processor.on_new_records.assert_not_awaited()
         folder_connector._delete_external_ids.assert_not_awaited()
 

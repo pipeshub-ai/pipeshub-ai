@@ -26,10 +26,15 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.hooks.code_graph_unlock import (
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
+)
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
@@ -45,6 +50,7 @@ from app.agents.agent_loop.hooks.result_accumulation import (
 )
 from app.agents.agent_loop.hooks.retrieval_context import retrieval_context_emission
 from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+from app.agents.agent_loop.hooks.selected_nodes import selected_nodes_prompt
 from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
 
 __all__ = [
@@ -59,17 +65,23 @@ __all__ = [
     "attachment_rehydration",
     "citation_tracking",
     "ensure_fetch_full_record_available",
+    "code_graph_unlock_after_tools",
+    "code_graph_unlock_on_turn",
     "completion_gate",
     "conversation_enrichment",
     "entity_tools_used_in_history",
     "progressive_entity_tools",
     "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
     "shape_retrieved_image_injection",
+    # "repo_instructions_after_tools",
+    # "repo_instructions_on_turn",
     "result_accumulation",
     "retrieval_context_emission",
     "retry_with_status",
+    "selected_nodes_prompt",
     "stash_tool_call_metadata",
 ]

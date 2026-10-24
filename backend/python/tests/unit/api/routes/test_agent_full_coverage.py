@@ -420,6 +420,11 @@ class TestIsWebSearchEnabled:
         from app.api.routes.agent import _is_web_search_enabled
         assert _is_web_search_enabled([]) is False
 
+    def test_universal_agent_ignores_tool_list(self) -> None:
+        from app.api.routes.agent import _is_web_search_enabled
+        assert _is_web_search_enabled(["jira.search"], is_universal_agent=True) is True
+        assert _is_web_search_enabled([], is_universal_agent=True) is True
+
 
 # ============================================================================
 # _resolve_service_account_caller_identity — lines 258-276
@@ -1187,7 +1192,8 @@ class TestCreateAgentInstanceFields:
 
         services = {
             "graph_provider": AsyncMock(),
-            "config_service": AsyncMock(),
+            # The instance the agent attaches, in the org list the save checks against.
+            "config_service": AsyncMock(get_config=AsyncMock(return_value=[{"_id": "inst1", "orgId": "o1"}])),
             "logger": MagicMock(),
         }
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn1")

@@ -129,6 +129,10 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("PUT", f"{_CM}/ai-models/connections/:connectionId/credentials", admin="invalid"),
     _no_admin("POST", f"{_CM}/ai-models/prepare-model",
               "starts preparing a local model; no validator follows the check"),
+    AdminRoute("PUT", f"{_CM}/ai-models/connections/:connectionId/identity-forwarding", admin="invalid"),
+    AdminRoute("GET", f"{_CM}/ai-models/identity-policy"),
+    AdminRoute("PUT", f"{_CM}/ai-models/identity-policy", admin="invalid"),
+    AdminRoute("POST", f"{_CM}/ai-models/identity/preview", admin="invalid"),
     AdminRoute("PUT", f"{_CM}/ai-models/providers/:modelType/:modelKey", admin="invalid"),
     AdminRoute("DELETE", f"{_CM}/ai-models/providers/:modelType/:modelKey", admin="invalid"),
     AdminRoute("PUT", f"{_CM}/ai-models/default/:modelType/:modelKey", admin="invalid"),
@@ -212,9 +216,9 @@ def _py(method: str, path: str, handler: str, **kw: Any) -> AdminRoute:
 
 
 _MCP = "/api/v1/mcp-servers"
+_API_TOOLSETS = "/api/v1/api-toolsets"
+_API_TOOLSET_BODY = {"name": "it-admin-probe", "baseUrl": "https://it-admin-probe.invalid", "operations": []}
 _TOOLSETS = "/api/v1/toolsets"
-_TOOLSET_BODY = {"instanceName": "it-admin-probe", "toolsetType": "it-no-such-toolset",
-                 "authType": "NONE"}
 _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"},
                "baseUrl": "http://localhost"}
 
@@ -235,15 +239,21 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"enabled": False}, refusal_words="Only admins",
         admin=None, why_no_admin="turns the sample workspace on or off for the whole org"),
     _py("GET", f"{_MCP}/instances", "api/routes/mcp_servers.py::list_instances"),
-    _py("POST", f"{_TOOLSETS}/instances", "api/routes/toolsets.py::create_toolset_instance",
-        member_body=_TOOLSET_BODY, admin="admin_body"),
-    _py("PUT", f"{_TOOLSETS}/instances/:instanceId",
-        "api/routes/toolsets.py::update_toolset_instance",
-        member_body={"instanceName": "it-admin-probe"}),
-    _py("DELETE", f"{_TOOLSETS}/instances/:instanceId",
-        "api/routes/toolsets.py::delete_toolset_instance"),
-    _py("PUT", f"{_TOOLSETS}/instances/:instanceId/tool-rules",
-        "api/routes/toolsets.py::update_toolset_tool_rules", member_body={"tools": {}}),
+    # An admin's request carries no usable spec, so the compiler stops it and nothing is saved.
+    _py("POST", f"{_API_TOOLSETS}/validate", "api/routes/api_toolsets.py::validate_api_toolset_spec",
+        member_body={"spec": "not a spec"}, admin="admin_body"),
+    _py("POST", f"{_API_TOOLSETS}/instances", "api/routes/api_toolsets.py::create_api_toolset",
+        member_body=_API_TOOLSET_BODY, admin="admin_body"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/config", "api/routes/api_toolsets.py::get_api_toolset_config"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::update_api_toolset",
+        member_body=_API_TOOLSET_BODY),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::delete_api_toolset"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::save_api_toolset_shared_credentials", member_body={"apiKey": "it-admin-probe"}),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::delete_api_toolset_shared_credentials"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials/oauth/authorize",
+        "api/routes/api_toolsets.py::start_api_toolset_shared_oauth"),
     _py("PUT", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::update_toolset_oauth_config",
         member_body={"clientId": "x"}),
@@ -257,7 +267,8 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
     ("POST", "/api/v1/oauth/:connectorType"): {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
-    ("POST", f"{_TOOLSETS}/instances"): _TOOLSET_BODY,
+    ("POST", f"{_API_TOOLSETS}/validate"): {"spec": "not a spec"},
+    ("POST", f"{_API_TOOLSETS}/instances"): _API_TOOLSET_BODY,
 }
 
 # Python handlers that reach an admin check but sit behind Node's
@@ -302,13 +313,20 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
-    # Everyone reads a toolset's tool approvals; the admin flag says who may change them.
+    # Everyone reads an org toolset's tool approvals; the admin flag says who may change them.
+    # A personal toolset's are its owner's alone.
     "api/routes/toolsets.py::get_toolset_tool_rules": "members read, admins edit",
     # The listing is the same for an admin; the flag only labels the root `permissions` block.
     "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_root_nodes":
         "admin flag fills the root permissions block",
     "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes":
         "admin flag is read but unused below a parent",
+    # Members add toolsets of their own: an org toolset is the admins', a personal one its
+    # owner's, and nobody else (the admin included) finds a personal one.
+    "api/routes/toolsets.py::create_toolset_instance": "a member's new toolset is personal",
+    "api/routes/toolsets.py::update_toolset_instance": "a personal toolset is its owner's",
+    "api/routes/toolsets.py::delete_toolset_instance": "a personal toolset is its owner's",
+    "api/routes/toolsets.py::update_toolset_tool_rules": "a personal toolset's rules are its owner's",
     # Record reads: the caller's own access to the record decides, admin or not.
     # The admin flag only reaches the connector loader, which refuses nobody on it.
     "connectors/api/router.py::download_file": "signed link and record permission",
@@ -338,3 +356,12 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
 }
+
+
+# A toolset's tool-rules routes answer 404 with this when the edition has no organization tool
+# rules (`edition_config.organization_toolset_tool_rules`); their admin check is never reached.
+ORG_TOOL_RULES_OFF = "Organization tool approvals aren't available here"
+TOOL_RULES_HANDLERS = frozenset({
+    "api/routes/toolsets.py::get_toolset_tool_rules",
+    "api/routes/toolsets.py::update_toolset_tool_rules",
+})

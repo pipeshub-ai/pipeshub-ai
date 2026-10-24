@@ -42,6 +42,7 @@ from .constants import (
     _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS,
     _REPO_LOOKUP_TTL_SECONDS,
     _RETRYABLE_STATUS_CODES,
+    _RETRYABLE_TRANSPORT_ERRORS,
 )
 
 if TYPE_CHECKING:
@@ -88,7 +89,7 @@ class RuntimeHelper:
 
     @staticmethod
     def _is_retryable_error(response: GitHubResponse | None) -> bool:
-        """True for transient failures (429/5xx) worth a backed-off retry."""
+        """True for transient failures (429/5xx, a dropped connection) worth a backed-off retry."""
         if response is None or response.success:
             return False
         # The 504 on a wall-clock timeout is stamped locally for status
@@ -96,6 +97,8 @@ class RuntimeHelper:
         # its full budget would multiply the stall by _GITHUB_MAX_RETRIES.
         if response.exception_type == asyncio.TimeoutError.__name__:
             return False
+        if response.status_code is None:
+            return response.exception_type in _RETRYABLE_TRANSPORT_ERRORS
         return response.status_code in _RETRYABLE_STATUS_CODES
 
     @staticmethod

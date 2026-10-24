@@ -31,6 +31,7 @@ interface ProviderGridProps {
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   onRefresh: () => void;
   /** Full workspace page vs compact onboarding-style panel. */
@@ -79,6 +80,7 @@ export function ProviderGrid({
   onSetDefault,
   onDelete,
   onRotate,
+  onIdentityForwarding,
   isLoading = false,
   onRefresh,
   layout = 'page',
@@ -373,6 +375,7 @@ export function ProviderGrid({
           onSetDefault={onSetDefault}
           onDelete={onDelete}
           onRotate={onRotate}
+          onIdentityForwarding={onIdentityForwarding}
           isLoading={isLoading}
           showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
         />

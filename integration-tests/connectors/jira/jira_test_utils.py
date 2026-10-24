@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from app.connectors.sources.atlassian.jira_cloud.connector import (  # type: ignore[import-not-found]
+    MAX_INLINE_IMAGE_BYTES,
     PLACEHOLDER_SWEEP_MAX_DEPTH,
 )
 from app.sources.external.jira.jira import (
@@ -39,7 +40,8 @@ logger = logging.getLogger("jira-test-utils")
 _JIRA_GROUP_PAGE = 50
 _JIRA_GROUP_MEMBER_PAGE = 50
 # Jira lists these in bulk groups but ``/group/member`` returns 404 (add-on pseudo-group).
-_GROUP_NAMES_SKIP_MEMBER_FETCH: frozenset[str] = frozenset({"atlassian-addons"})
+# The connector never syncs Atlassian-managed app groups (connector.py ``startswith("atlassian-addons")``).
+_GROUP_NAME_PREFIX_SKIP_MEMBER_FETCH = "atlassian-addons"
 
 
 class JiraAuthError(RuntimeError):
@@ -61,22 +63,33 @@ async def collect_jira_synced_users_for_connector_edges(
     page_size: int = 50,
     max_pages: int = 500,
 ) -> tuple[set[str], set[str]]:
+    """``(emails_lower, account_ids)`` of :func:`jira_synced_account_by_email`."""
+    by_email = await jira_synced_account_by_email(datasource, page_size=page_size, max_pages=max_pages)
+    return set(by_email), set(by_email.values())
+
+
+async def jira_synced_account_by_email(
+    datasource: JiraDataSource,
+    *,
+    page_size: int = 50,
+    max_pages: int = 500,
+) -> dict[str, str]:
     """Users the Jira connector can link via ``User→Group`` / ``User→Role`` edges.
 
     Mirrors :meth:`JiraCloudConnector._fetch_users`: paginated ``get_all_users('')``,
     **active** users only, with non-empty ``emailAddress`` (private / missing email ⇒
-    excluded — no PERMISSION edges are created for them).
+    excluded — no PERMISSION edges are created for them), and with Jira product access
+    (``_keep_licensed_users``).
 
     Returns:
-        ``(emails_lower, account_ids)`` — one accountId per user with visible email.
+        Lowercase email → accountId, one per user with visible email.
 
     Raises:
         JiraAuthError: On HTTP 401/403 from Jira.
         RuntimeError: On other non-success HTTP status or unparseable payload.
     """
-    emails_lower: set[str] = set()
-    account_ids: set[str] = set()
     seen_account_ids: set[str] = set()
+    account_by_email: dict[str, str] = {}
     start_at = 0
 
     for _ in range(max_pages):
@@ -114,13 +127,61 @@ async def collect_jira_synced_users_for_connector_edges(
             if not email:
                 continue
             seen_account_ids.add(aid)
-            account_ids.add(aid)
-            emails_lower.add(email.lower())
+            account_by_email[email.lower()] = aid
         if len(batch_users) < page_size:
             break
         start_at += page_size
 
-    return emails_lower, account_ids
+    licensed = await _jira_product_access_account_ids(datasource)
+    if licensed is not None:
+        return {e: aid for e, aid in account_by_email.items() if aid in licensed}
+    return account_by_email
+
+
+async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Optional[set[str]]:
+    """Members of the groups of any application role, or None to keep every user.
+
+    Mirrors ``JiraCloudConnector._keep_licensed_users``: an account outside every product
+    group has no Jira access, so the connector leaves it out. None only when there are no
+    role groups. A group that no longer exists (404) has no members, as in the connector's
+    ``_fetch_group_members``. Any other unread member list raises: falling back to every
+    user here would let a sync that kept unlicensed accounts match the expectation.
+    """
+    mapping = await jira_fetch_application_roles_to_groups_mapping(datasource)
+    names = {g["name"] for groups in mapping.values() for g in groups if g.get("name")}
+    if not names:
+        return None
+    licensed: set[str] = set()
+    for name in names:
+        start_at = 0
+        members: set[str] = set()
+        while True:
+            resp = await jira_api_call_with_retry(
+                datasource.get_users_from_group,
+                groupname=name,
+                includeInactiveUsers=False,
+                startAt=start_at,
+                maxResults=_JIRA_GROUP_MEMBER_PAGE,
+                context=f"product group members {name!r}",
+            )
+            if resp.status == 404:
+                # Gone, so it has no members: not even the pages already read.
+                members = set()
+                break
+            if resp.status in (401, 403):
+                _raise_on_auth_error(resp.status, "_jira_product_access_account_ids")
+            if resp.status != 200:
+                raise RuntimeError(f"product group {name!r} members: HTTP {resp.status} startAt={start_at}")
+            data = resp.json() or {}
+            batch = data.get("values") or []
+            members.update(m["accountId"] for m in batch if m.get("accountId"))
+            # The connector's stop rule: isLast decides; a short page ends it only without isLast.
+            is_last = data.get("isLast")
+            if not batch or is_last is True or (is_last is None and len(batch) < _JIRA_GROUP_MEMBER_PAGE):
+                break
+            start_at += len(batch)
+        licensed |= members
+    return licensed
 
 
 async def count_jira_users_with_visible_email(
@@ -205,7 +266,7 @@ async def _jira_fetch_group_member_emails_with_visible_address(
     group_name: str,
 ) -> list[str]:
     """Member emails from ``/rest/api/3/group/member`` (inactive excluded)."""
-    if group_name in _GROUP_NAMES_SKIP_MEMBER_FETCH:
+    if group_name.startswith(_GROUP_NAME_PREFIX_SKIP_MEMBER_FETCH):
         return []
     out: list[str] = []
     start_at = 0
@@ -306,64 +367,11 @@ async def preview_jira_user_group_and_role_permission_edge_totals(
     )
     ug_total = _sum_user_group_permission_edges_from_map(all_groups, groups_members_map)
 
-    roles_resp = await jira_api_call_with_retry(
-        datasource.get_project_roles, projectIdOrKey=project_key,
-        context=f"project roles {project_key!r}",
+    # Distinct members per role: a user who is a direct actor and in a group actor has one edge.
+    role_counts = await preview_jira_role_member_counts(
+        datasource, project_key=project_key, lead_account_id=lead_account_id,
     )
-    if roles_resp.status in (401, 403):
-        _raise_on_auth_error(roles_resp.status, "preview_jira_user_group_and_role_permission_edge_totals")
-    if roles_resp.status != 200:
-        raise RuntimeError(
-            f"get_project_roles failed for {project_key!r}: HTTP {roles_resp.status}",
-        )
-    roles_dict = roles_resp.json() or {}
-    if not isinstance(roles_dict, dict):
-        raise RuntimeError("get_project_roles: expected JSON object mapping")
-
-    ur_total = 0
-    for role_name, role_url in roles_dict.items():
-        if role_name == "atlassian-addons-project-access":
-            continue
-        try:
-            role_id = int(str(role_url).rstrip("/").split("/")[-1])
-        except (TypeError, ValueError):
-            continue
-        rresp = await jira_api_call_with_retry(
-            datasource.get_project_role,
-            projectIdOrKey=project_key,
-            id=role_id,
-            excludeInactiveUsers=True,
-            context=f"project role {project_key}/{role_name}",
-        )
-        if rresp.status != 200:
-            continue
-        role_data = rresp.json() or {}
-        actors = role_data.get("actors") or []
-        member_slots = 0
-        for actor in actors:
-            atype = actor.get("type", "")
-            if atype == "atlassian-user-role-actor":
-                au = actor.get("actorUser") or {}
-                acc = au.get("accountId")
-                em = (au.get("emailAddress") or "").strip().lower()
-                ok = (acc and acc in synced_accounts) or (em and em in synced_emails)
-                if ok:
-                    member_slots += 1
-            elif atype == "atlassian-group-role-actor":
-                gname = actor.get("name") or actor.get("displayName")
-                gid = actor.get("groupId")
-                group_members: list[str] = []
-                if gid and str(gid) in groups_members_map:
-                    group_members = groups_members_map[str(gid)]
-                elif gname and str(gname) in groups_members_map:
-                    group_members = groups_members_map[str(gname)]
-                member_slots += len(group_members)
-        ur_total += member_slots
-
-    if lead_account_id in synced_accounts:
-        ur_total += 1
-
-    return ug_total, ur_total
+    return ug_total, sum(role_counts.values())
 
 
 async def preview_jira_role_member_counts(
@@ -377,14 +385,16 @@ async def preview_jira_role_member_counts(
     Mirrors ``_sync_project_roles`` actor expansion, including **group actors**
     (``atlassian-group-role-actor``): a group actor contributes all of its synced members
     as ``User→Role`` edges (connector.py: ``member_users.extend(group_members)``). Counts are
-    de-duplicated per role (by email, falling back to accountId) to match the graph, where the
-    per-(user, role) edge is upserted once even if a user is both a direct and a group actor.
+    de-duplicated per role by accountId to match the graph, where the per-(user, role) edge is
+    upserted once even if a user is both a direct and a group actor. Role actors carry no email,
+    so group members (emails) are mapped to their accountIds first.
 
     Also includes the synthetic ``{project_key}_projectLead`` role (1 if the lead is synced).
     """
-    synced_emails, synced_accounts = await collect_jira_synced_users_for_connector_edges(datasource)
+    account_by_email = await jira_synced_account_by_email(datasource)
+    synced_accounts = set(account_by_email.values())
     _all_groups, groups_members_map = await build_jira_groups_members_map_for_synced_users(
-        datasource, synced_emails,
+        datasource, set(account_by_email),
     )
 
     roles_resp = await jira_api_call_with_retry(
@@ -418,12 +428,11 @@ async def preview_jira_role_member_counts(
             atype = actor.get("type", "")
             if atype == "atlassian-user-role-actor":
                 au = actor.get("actorUser") or {}
-                acc = au.get("accountId")
-                em = (au.get("emailAddress") or "").strip().lower()
-                if em and em in synced_emails:
-                    members.add(em)
-                elif acc and acc in synced_accounts:
-                    members.add(f"acct:{acc}")
+                acc = au.get("accountId") or account_by_email.get(
+                    (au.get("emailAddress") or "").strip().lower()
+                )
+                if acc and acc in synced_accounts:
+                    members.add(acc)
             elif atype == "atlassian-group-role-actor":
                 gname = actor.get("name") or actor.get("displayName")
                 gid = actor.get("groupId")
@@ -432,7 +441,7 @@ async def preview_jira_role_member_counts(
                     group_members = groups_members_map[str(gid)]
                 elif gname and str(gname) in groups_members_map:
                     group_members = groups_members_map[str(gname)]
-                members.update(group_members)  # synced, lowercased emails
+                members.update(account_by_email[e] for e in group_members)  # synced, lowercased emails
         counts[source_role_id] = len(members)
 
     counts[f"{project_key}_projectLead"] = 1 if (lead_account_id and lead_account_id in synced_accounts) else 0
@@ -605,8 +614,14 @@ async def assert_jira_issues_match_graph_records(
     graph_ids = await owned_record_external_ids(
         graph_provider, connector_id, prefix=JIRA_IT_ARTIFACT_PREFIX, record_type="TICKET",
     )
+    # A link to an issue of another project leaves a placeholder TICKET for its target.
+    placeholders = {
+        str(r["externalRecordId"])
+        for r in await graph_provider.fetch_records_by_type(connector_id, "TICKET")
+        if r.get("isPlaceholder") and r.get("externalRecordId")
+    }
     missing = live - graph_ids
-    extra = graph_ids - live
+    extra = graph_ids - live - placeholders
     if missing or extra:
         raise AssertionError(
             f"{phase}: graph TICKETs != live Jira issues for connector {connector_id} "
@@ -856,6 +871,30 @@ def retry_delay_seconds(resp: Any, attempt: int, *, base_delay: float = 2.0) -> 
 # =============================================================================
 
 
+async def count_visible_jira_projects(datasource: JiraDataSource) -> int:
+    """Projects ``/project/search`` lists to the sync account: what an unfiltered sync covers."""
+    total = 0
+    start_at = 0
+    while True:
+        resp = await jira_api_call_with_retry(
+            datasource.search_projects, startAt=start_at, maxResults=50, context="project search",
+        )
+        if resp.status in (401, 403):
+            _raise_on_auth_error(resp.status, "count_visible_jira_projects")
+        if resp.status != 200:
+            raise RuntimeError(f"search_projects failed: HTTP {resp.status} startAt={start_at}")
+        data = resp.json() or {}
+        batch = data.get("values") or []
+        if not batch:
+            return total
+        total += len(batch)
+        start_at += len(batch)
+        # Same stop rule as the connector's _paginate_project_search, so the count is what it syncs.
+        listed = data.get("total", 0)
+        if data.get("isLast", False) or (listed > 0 and start_at >= listed):
+            return total
+
+
 async def search_issues_jql(
     datasource: JiraDataSource,
     jql: str,
@@ -1087,7 +1126,7 @@ def resolve_inline_image_attachment_ids(issue_fields: dict[str, Any]) -> set[str
     comment_field = issue_fields.get("comment")
     if isinstance(comment_field, dict):
         for comment in comment_field.get("comments") or []:
-            if not isinstance(comment, dict):
+            if not isinstance(comment, dict) or comment.get("visibility"):
                 continue
             c_names, c_ids = _inline_refs_from_body(comment.get("body"))
             filenames |= c_names
@@ -1105,6 +1144,8 @@ def resolve_inline_image_attachment_ids(issue_fields: dict[str, Any]) -> set[str
             continue
         mime = (attachment.get("mimeType") or "").lower()
         if not mime.startswith("image/"):
+            continue
+        if int(attachment.get("size") or 0) > MAX_INLINE_IMAGE_BYTES:
             continue
         filename = (attachment.get("filename") or "").strip().lower()
         att_id = str(attachment_id)
@@ -1181,8 +1222,8 @@ async def derive_jira_scope_counts(
     Mirrors the connector's sync-path record creation:
       - ``ticket``: one TICKET record per issue.
       - ``file``: one FILE record per attachment that is *not* a new inline image
-        (``_fetch_issue_attachments`` skips image attachments referenced in description;
-        comment bodies are not on the issue-search payload, same as production sync).
+        (``_fetch_issue_attachments`` skips image attachments referenced in the description
+        or an unrestricted comment; the sync's issue search requests ``comment`` too).
       - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
         epic child; attachments use ATTACHMENT, not PARENT_CHILD).
 
@@ -1192,7 +1233,7 @@ async def derive_jira_scope_counts(
     issues = await search_issues_jql(
         datasource,
         f'project = "{project_key}"',
-        ["parent", "attachment", "description", "summary"],
+        ["parent", "attachment", "description", "comment", "summary"],
     )
     ticket = 0
     files = 0

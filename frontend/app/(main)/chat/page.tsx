@@ -55,7 +55,13 @@ import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
-import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectProjectsEnabled,
+  selectApiToolsetsEnabled,
+} from '@/lib/store/feature-flags-store';
+import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
+import { buildApiActionGroups } from '@/chat/tool-groups';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
@@ -181,6 +187,7 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   // When the feature flag is off, projectId is always null so the UI degrades
   // to a normal chat without project context.
@@ -355,7 +362,9 @@ function ChatContent() {
 
       if (agentId?.trim()) {
         try {
-          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
+          // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
+          // open, and the chat itself loads without it, so that is not worth an error toast.
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId, { quiet: Boolean(conversationId) });
           if (cancelled) return;
           const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
           const collectionRows = extractAgentKnowledgeCollectionRows(agent);
@@ -369,14 +378,20 @@ function ChatContent() {
             kb: kbIds,
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
-          const toolGroups = buildAgentChatToolGroups(agent);
+          const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
+          // Without the list there is nothing to name the operations by: treat it as no API actions.
+          const apiActionGroups = attachedApiTools.length
+            ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
+            : [];
+          if (cancelled) return;
+          const toolGroups = [...buildAgentChatToolGroups(agent), ...apiActionGroups];
           const mcpGroups = buildAgentChatMcpGroups(agent);
           const deprecatedToolNames = (agent?.toolsets ?? [])
             .flatMap((ts) => ts.tools ?? [])
             .filter((tool) => tool.deprecated === true)
             .map((tool) => tool.name);
           store.hydrateAgentChatResources({
-            toolCatalogFullNames: toolFullNames,
+            toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
             toolGroups,
             mcpGroups,
             connectors,
@@ -465,7 +480,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, router, t]);
+  }, [agentId, apiActionsEnabled, router, t]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
   // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
@@ -1007,15 +1022,11 @@ function ChatContent() {
     );
   }, [conversationId, historyAndShareAgentId]);
 
-  // Agent threads are not shareable by anyone (including the owner), so gate on
-  // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
-  const showConversationShare =
-    Boolean(
-      conversationId &&
-        chatShareAdapter &&
-        activeSlotIsOwner === true &&
-        !historyAndShareAgentId
-    );
+  // Only the owner sees the Share button, for plain and agent chats alike. Agent chats are shared
+  // read-only: the backend refuses `write`, and a recipient gets no composer (see showChatInput).
+  const showConversationShare = Boolean(
+    conversationId && chatShareAdapter && activeSlotIsOwner === true
+  );
 
   useEffect(() => {
     if (!showConversationShare && isShareSidebarOpen) {
@@ -1061,10 +1072,6 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
-  // Hide chat input when viewing a shared conversation the user does not own.
-  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
-  const showChatInput = activeSlotIsOwner !== false;
-
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -1086,6 +1093,14 @@ function ChatContent() {
   // attaches AND its history has finished loading.
   const showInitialLoading =
     conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
+
+  // Hide chat input when viewing a shared conversation the user does not own.
+  // `null` means "not yet known": an existing chat that is still loading must not show the
+  // composer, or a recipient sees it until the chat arrives. Otherwise (a new chat, or a chat
+  // whose ownership could not be read) it stays visible.
+  const showChatInput =
+    activeSlotIsOwner !== false &&
+    !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
   // Search mode: show results view when in search mode with results/in-progress search
   const mode = useChatStore((s) => s.settings.mode);
@@ -1223,6 +1238,7 @@ function ChatContent() {
           displayName={agentContextDisplayName}
           isMobile={isMobile}
           hasExpandButton={!isMobile && isNavCollapsed}
+          readOnly={activeSlotIsOwner === false}
         />
       )}
 

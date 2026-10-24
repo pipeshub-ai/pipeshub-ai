@@ -191,3 +191,13 @@ class TestContextFromEnvelope:
     def test_unsafe_only_request_id_falls_back_to_anon_root(self):
         ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "@@@ ///"})
         assert ctx.root_id.startswith("anon-")
+
+
+class TestAdmittedInPropagation:
+    def test_an_admission_stamp_rides_on_outbound_headers(self) -> None:
+        token = rc.set_admitted_in("dom-1")
+        try:
+            assert rc.inject_request_headers({})[rc.HEADER_ADMITTED_IN] == "dom-1"
+        finally:
+            rc.reset_admitted_in(token)
+        assert rc.HEADER_ADMITTED_IN not in rc.inject_request_headers({})

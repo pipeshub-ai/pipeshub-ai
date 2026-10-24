@@ -133,10 +133,22 @@ def format_responses_input(
 
     for msg in messages:
         if msg.role == MessageRole.TOOL:
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                # A multipart result (text plus retrieved images) goes out as
+                # input blocks; concatenating the footer onto the list raised
+                # TypeError and failed the whole turn.
+                output: Any = _responses_content_blocks(content)
+                if step_footer:
+                    output.append({"type": "input_text", "text": step_footer})
+                output = output or ""
+            else:
+                output = (content or "") + step_footer
             items.append({
                 "type": "function_call_output",
                 "call_id": msg.tool_call_id,
-                "output": (msg.content or "") + getattr(msg, "step_footer", ""),
+                "output": output,
             })
             continue
 

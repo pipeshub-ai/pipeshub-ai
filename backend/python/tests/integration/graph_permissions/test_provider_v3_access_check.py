@@ -222,9 +222,12 @@ async def test_details_of_a_record_admitted_without_a_role_read_as_reader(access
     assert [(p["accessType"], p["relationship"]) for p in details["permissions"]] == [("CONNECTOR", "READER")]
 
 
-async def test_deleted_placeholder_and_unknown_ids_are_denied(access_graph, provider) -> None:
-    ids = ["v3-dec-deleted", "v3-dec-placeholder", "no-such-node", "v3-seed-deleted"]
-    assert await _check(provider, ids) == set()
+async def test_deleted_and_unknown_ids_are_denied_and_a_placeholder_asked_by_id_is_not(
+    access_graph, provider,
+) -> None:
+    denied = ["v3-dec-deleted", "no-such-node", "v3-seed-deleted"]
+    assert await _check(provider, denied) == set()
+    assert await _check(provider, ["v3-dec-placeholder"]) == {"v3-dec-placeholder"}
 
 
 async def test_batch_shape(access_graph, provider) -> None:

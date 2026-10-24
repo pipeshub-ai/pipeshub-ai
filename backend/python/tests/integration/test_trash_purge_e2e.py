@@ -592,7 +592,7 @@ async def test_a_child_restored_after_the_purge_looked_keeps_its_folder(
 
         async def restore_once_the_purge_has_looked(query: str, *args: object, **kwargs: object) -> object:
             rows = await real_query(query, *args, **kwargs)
-            if "LET target = " in query and "@containment" in query:
+            if "@containment" in query and ("LET targets = " in query or "LET target = " in query):
                 await world.graph.http_client.execute_aql(_restore_query(world), {"key": child})
             return rows
 

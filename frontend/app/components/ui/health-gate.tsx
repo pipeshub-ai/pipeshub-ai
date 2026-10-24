@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Heading } from '@radix-ui/themes';
+import { Flex, Text, Heading, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
@@ -21,7 +21,8 @@ import {
 import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
-import { useShouldPollServiceHealth } from '@/config';
+import { useShouldPollServiceHealth, logoutAndRedirect, logoutFromWorkspaceMenu } from '@/config';
+import { isElectron } from '@/lib/electron';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -58,8 +59,25 @@ function classifyUnhealthyServices(
   return { critical, nonCritical };
 }
 
+/**
+ * The app shell (and its workspace menu) is hidden behind this screen, so it
+ * must carry its own way out: a dead desktop server URL would otherwise trap
+ * the user here with no logout and no way to point at another server.
+ */
+function leaveUnreachableServer(): void {
+  // The flag is global; left false, the next HealthGate mount (after signing in
+  // to another server) would block until the first retry succeeds.
+  useServicesHealthStore.setState({ apiServerReachable: true });
+  if (isElectron()) {
+    logoutFromWorkspaceMenu();
+  } else {
+    logoutAndRedirect();
+  }
+}
+
 function BackendUnavailableScreen() {
   const { t } = useTranslation();
+  const electron = isElectron();
 
   return (
     <Flex
@@ -103,6 +121,16 @@ function BackendUnavailableScreen() {
         </Text>
 
         <LottieLoader variant="loader" size={48} />
+
+        <Button
+          type="button"
+          size="2"
+          variant="soft"
+          onClick={leaveUnreachableServer}
+          style={{ cursor: 'pointer' }}
+        >
+          {electron ? t('electron.serverUrlSetup.changeServer') : t('workspaceMenu.logOut')}
+        </Button>
       </Flex>
     </Flex>
   );

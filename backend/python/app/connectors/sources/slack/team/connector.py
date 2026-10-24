@@ -4,7 +4,10 @@ Slack Connector — Production-ready implementation
 Sync pipeline (in order):
   1. Users       → AppUser nodes + user_id_to_email_cache + user_id_to_internal_id_cache
   2. UserGroups  → AppUserGroup nodes with resolved AppUser members
-  3. Channels    → RecordGroup nodes (public/private/DM/MPIM) + HAS_PERMISSION edges
+  3. Channels    → RecordGroup nodes (public/private/DM/MPIM) + HAS_PERMISSION edges,
+                   plus READ for the user who authenticated the connector on each one
+                   (the token reads it, so they can; a bot token has no account to link),
+                   and the app membership those grants need when they are not a member
   4. Messages    → MessageRecord / FileRecord / LinkRecord per channel (incremental,
                    per-channel checkpoint via messages_sync_point)
   5. Thread-growth → detects threads with new replies since last run.
@@ -490,6 +493,8 @@ class SlackConnector(BaseConnector):
         # Key: Slack channel_id  Value: {"id": str, "label": str}
         self.channel_filter_cache:         dict[str, dict[str, str]] = {}
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
+        # Set each run_sync by _authenticator_grant(); added to every channel's grants.
+        self._authenticator_permission:    Permission | None         = None
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -667,6 +672,10 @@ class SlackConnector(BaseConnector):
             # Phase 1 — Users (warms all user caches as a side-effect)
             await self._sync_users()
 
+            # Phase 1a — Who the token belongs to; needs the user caches Phase 1 warmed
+            await self._register_authenticated_identity()
+            self._authenticator_permission = await self._authenticator_grant()
+
             # Phase 1b — Workspace roles (AppRole for permission resolution)
             await self._sync_workspace_roles()
 
@@ -675,6 +684,10 @@ class SlackConnector(BaseConnector):
 
             # Phase 3 — Channels → RecordGroups + HAS_PERMISSION
             channels = await self._sync_channels()
+
+            # Phase 3a — App membership for the authenticator's grants, judged against
+            # the channels Phase 3 committed
+            await self._sync_authenticator_membership()
 
             # Phase 4 — Messages per channel (per-RecordGroup sync point).
             # Channels are independent (separate sync-point keys, separate
@@ -1147,7 +1160,7 @@ class SlackConnector(BaseConnector):
                         f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
                     continue
-                batch.append((rg, perms))
+                batch.append((rg, self._with_authenticator(perms)))
                 record_groups.append(rg)
                 total += 1
 
@@ -1167,6 +1180,77 @@ class SlackConnector(BaseConnector):
         return record_groups
 
     # ── Permission helpers ─────────────────────────────────────────────────────
+
+    async def _register_authenticated_identity(self) -> None:
+        """Link the user who authenticated this connector to the Slack account the token
+        belongs to, as the other connectors do. A bot token names a bot, which has no
+        account to link: any link left from an earlier user token is removed, and
+        _authenticator_grant() gives them the channels instead."""
+        try:
+            ds = await self._fresh_datasource()
+            resp = await ds.auth_test()
+        except Exception as exc:
+            self.logger.debug(f"Could not read who the Slack token belongs to: {exc}")
+            return
+        data = resp.data if resp and resp.success and isinstance(resp.data, dict) else {}
+        if data.get("bot_id"):
+            try:
+                await self.data_entities_processor.unlink_authenticator(self.connector_id)
+            except Exception as exc:
+                self.logger.warning(f"Could not remove the user-token link of connector {self.connector_id}: {exc}")
+            return
+        user_id = data.get("user_id")
+        await self.register_authenticated_source_user(
+            self.user_id_to_email_cache.get(user_id) if user_id else None, user_id,
+        )
+
+    async def _authenticator_grant(self) -> Permission | None:
+        """READ for the user who authenticated this connector, on every channel the token
+        reads. They hold the token, so Slack already shows them whatever it fetches; a bot
+        token has no Slack account to link them to, so this grant is how they reach it."""
+        email = await self.authenticator_email()
+        if not email:
+            self.logger.warning(
+                f"Connector {self.connector_id}: the user who authenticated it could not be "
+                f"read; they will only see the channels their own email is a member of"
+            )
+            return None
+        return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ)
+
+    def _with_authenticator(self, perms: list[Permission]) -> list[Permission]:
+        """The channel's grants plus the authenticator's, unless they are already a member."""
+        grant = getattr(self, "_authenticator_permission", None)
+        if not grant:
+            return perms
+        email = (grant.email or "").lower()
+        if any(
+            p.entity_type == EntityType.USER and (p.email or "").lower() == email for p in perms
+        ):
+            return perms
+        return [*perms, grant]
+
+    async def _sync_authenticator_membership(self) -> None:
+        """Let the authenticator reach the channels _with_authenticator() granted them.
+
+        A connector's records open only to members of its app, and the user sync makes
+        only Slack members members. An authenticator outside the workspace holds the
+        grants alone, so they get the membership an external collaborator gets, which
+        never touches a member's own. A former authenticator's goes once a sync has
+        taken their last grant. Non-fatal: the next sync tries both again."""
+        grant = self._authenticator_permission
+        if grant and grant.email:
+            try:
+                await self.data_entities_processor.on_external_app_users([grant.email], self.connector_id)
+            except Exception as exc:
+                self.logger.warning(
+                    f"Connector {self.connector_id}: could not make the authenticator a member: {exc}"
+                )
+        try:
+            await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        except Exception as exc:
+            self.logger.warning(
+                f"Connector {self.connector_id}: could not remove a former authenticator's membership: {exc}"
+            )
 
     async def _channel_permissions(
         self,
@@ -2045,7 +2129,11 @@ class SlackConnector(BaseConnector):
                 source_updated_at=last_ts_ms,
                 content=aggregated_text,
                 thread_id=thread_ts,
-                has_replies=False,
+                # The thread's first burst holds its parent message.
+                has_replies=any(
+                    m.get("ts") == thread_ts and m.get("reply_count", 0) > 0
+                    for m in burst.messages
+                ),
                 is_reply=True,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
@@ -2445,6 +2533,12 @@ class SlackConnector(BaseConnector):
                 content=aggregated_text,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
+                # True when any message in the burst started a thread, as the
+                # deferred-thread loop below decides it.
+                has_replies=any(
+                    m.get("reply_count", 0) > 0 and m.get("thread_ts") == m.get("ts")
+                    for m in burst.messages
+                ),
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
@@ -2828,15 +2922,15 @@ class SlackConnector(BaseConnector):
     ) -> Optional[LinkRecord]:
         try:
             unfurl       = self._unfurl_data(url, msg)
-            rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=unfurl.get("title") or url[:100],
                 record_type=RecordType.LINK,
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
-                external_record_group_id=ctx.channel_id,
-                record_group_id=rg_id,
+                # A link in a thread reply sits in the thread group with its message.
+                external_record_group_id=parent.external_record_group_id or ctx.channel_id,
+                record_group_id=parent.record_group_id or ctx.channel_groups_map.get(ctx.channel_id),
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,

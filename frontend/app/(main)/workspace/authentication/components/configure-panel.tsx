@@ -26,8 +26,9 @@ const METHOD_DOC_URLS: Record<ConfigurableMethod, string> = {
   microsoft: 'https://docs.pipeshub.com/auth/microsoft-azureAd',
 };
 
-const METHOD_ICONS: Record<ConfigurableMethod, string> = {
-  google: 'google',
+// Material Icons has no 'google' glyph; the name would render as raw text.
+const METHOD_ICONS: Record<ConfigurableMethod, React.ReactNode> = {
+  google: <img src="/icons/auth-config/google.svg" alt="" width={24} height={24} />,
   microsoft: 'window',
 };
 

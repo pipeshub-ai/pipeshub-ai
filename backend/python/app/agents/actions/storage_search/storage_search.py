@@ -41,6 +41,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
+from app.utils.bounded_cache import SizeBoundedCache
 
 logger = logging.getLogger(__name__)
 
@@ -1199,6 +1200,8 @@ def _record_search_text(raw: str) -> str:
     snippets. A file that does not parse (e.g. cut at the read cap) yields
     only its block data strings.
     """
+    if isinstance(raw, _ScoredRecord):
+        return raw.search_text
     try:
         rec = json_mod.loads(raw).get("record")
     except (ValueError, AttributeError, RecursionError):
@@ -1224,6 +1227,33 @@ def _unescaped_block_data(raw: str) -> list[str]:
     return out
 
 
+class _ScoredRecord(str):
+    """A record file's contents that already carry their extracted search text."""
+
+    __slots__ = ("search_text",)
+
+
+# Record files by (path, mtime, size): every grep hit's file was read and
+# JSON-parsed in full to score it, again on each search of every turn, and grep
+# keeps returning the same files. Scoring runs on worker threads.
+_scored_record_cache: SizeBoundedCache[_ScoredRecord] = SizeBoundedCache(
+    max_size=200_000_000, size_of=lambda v: len(v) + len(v.search_text),
+)
+
+
+def _read_scored_record(full_path: str) -> str:
+    st = os.stat(full_path)
+    key = (full_path, st.st_mtime_ns, st.st_size)
+    hit = _scored_record_cache.get(key)
+    if hit is None:
+        with open(full_path, encoding="utf-8", errors="replace") as f:
+            raw = f.read(_MAX_SCORE_READ_BYTES)
+        hit = _ScoredRecord(raw)
+        hit.search_text = _record_search_text(raw)
+        _scored_record_cache.put(key, hit)
+    return hit
+
+
 def _score_record_file(
     full_path: str,
     regexes: list[regex.Pattern[str]],
@@ -1237,8 +1267,7 @@ def _score_record_file(
     company name that appears everywhere.
     """
     try:
-        with open(full_path, encoding="utf-8", errors="replace") as f:
-            raw = f.read(_MAX_SCORE_READ_BYTES)
+        raw = _read_scored_record(full_path)
     except OSError:
         return 0, 0, "", 0
     distinct, total, snippet = score_text(_record_search_text(raw), regexes, timeout=timeout)

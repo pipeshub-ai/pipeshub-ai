@@ -236,7 +236,7 @@ export const reauthenticateMcpInstance = proxyMcp(
 
 export const getMcpOAuthAuthorizationUrl = proxyMcp(
   HttpMethod.GET,
-  (req) => `/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl'])}`,
+  (req) => `/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl', 'desktop'])}`,
   'Get MCP OAuth authorization URL',
   { sendsOnce: true },
 );
@@ -351,7 +351,7 @@ export const reauthenticateAgentMcpInstance = proxyMcp(
 export const getAgentMcpOAuthAuthorizationUrl = proxyMcp(
   HttpMethod.GET,
   (req) =>
-    `/agents/${encAgentKey(req)}/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl'])}`,
+    `/agents/${encAgentKey(req)}/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl', 'desktop'])}`,
   'Get agent MCP OAuth authorization URL',
   { sendsOnce: true },
 );

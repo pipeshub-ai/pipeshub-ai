@@ -22,10 +22,12 @@ from app.config.constants.service import TokenScopes, config_node_constants
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DEFAULT_CONTEXT_LENGTH,
+    _classifies_as_code,
     classify_request_blocks,
 )
-from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.base_client import BaseServiceClient, parse_retry_after
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -79,14 +81,27 @@ class ExtractionClient(BaseServiceClient):
         Returns ``None`` when the LLM produced no classification (e.g. empty
         document).  Raises :class:`ExtractionClientError` on explicit failures.
         Raises :class:`ServiceCallError` on connection problems.
+
+        The service has no record of its own, so *record_name* and *record_type*
+        travel with the request: the type selects the code prompt (``CODE_FILE``)
+        over the document prompt, and both give the document prompt its file
+        context.
         """
-        context_length_ceiling = await self._context_length_ceiling()
-        payload = {
-            "block_container": {
+        if _classifies_as_code(record_type):
+            # The code prompt reads the file-summary block, each block's
+            # code_metadata and the block groups (a class's docstring and its
+            # INHERITS edges), all of which the trimmed document request drops.
+            # The service still cuts the rendered file to its token budget.
+            container = block_container.model_dump(mode="json")
+        else:
+            context_length_ceiling = await self._context_length_ceiling()
+            container = {
                 "blocks": classify_request_blocks(
                     block_container.blocks, context_length_ceiling
                 ),
-            },
+            }
+        payload = {
+            "block_container": container,
             "org_id": org_id,
             "departments": departments or [],
             "record_name": record_name,
@@ -104,6 +119,12 @@ class ExtractionClient(BaseServiceClient):
 
         if not body.get("success"):
             error_msg = body.get("error") or "Classification failed"
+            if body.get("error_code") == LLMNotConfiguredError.code:
+                raise LLMNotConfiguredError(error_msg)
+            if body.get("error_code") == LLMUnavailableError.code:
+                # Set while the provider's circuit is open behind that service.
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                raise LLMUnavailableError(error_msg, retry_after=retry_after)
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")

@@ -33,6 +33,9 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.services.model_identity.errors import classify_for_user
+from app.utils.log_redaction import redact_secrets_in_text
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -232,6 +235,13 @@ def classify_error(error_msg: str) -> tuple[str, str]:
         if hit is not None:
             return hit
 
+    # A gateway that enforces per-user budgets and model access answers with the
+    # statuses broken providers use; read before the generic 429/403 hints, whose
+    # advice ("wait a minute", "the API key is wrong") would be wrong for these.
+    gateway = classify_for_user(error_msg)
+    if gateway is not None:
+        return gateway
+
     lower = error_msg.lower()
 
     if any(hint in lower for hint in _CONTENT_FILTER_HINTS):
@@ -268,14 +278,14 @@ def classify_error(error_msg: str) -> tuple[str, str]:
 
 
 def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
-    """The raw error with URLs and account ids masked, capped at `max_len`.
+    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
 
     A provider's error can echo the request URL, whose query string may carry
-    a credential (Google's REST endpoints accept `?key=`).
+    a credential (Google's REST endpoints accept `?key=`), or a request header.
     """
     text = _URL_RE.sub("[url]", error_msg)
     text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
-    return text[:max_len]
+    return redact_secrets_in_text(text)[:max_len]
 
 
 def _status_phrase(status_code: int) -> str | None:

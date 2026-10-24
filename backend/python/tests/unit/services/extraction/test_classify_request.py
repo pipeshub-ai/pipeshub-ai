@@ -251,3 +251,30 @@ async def test_the_trim_budget_reads_the_models_uncached_like_the_service() -> N
     await _sent_payload(client, _container(n_text=3))
     client._config_service.get_config.assert_awaited_once()
     assert client._config_service.get_config.await_args.kwargs.get("use_cache") is False
+
+
+@pytest.mark.asyncio
+async def test_a_code_file_reaches_the_service_with_what_the_code_prompt_reads() -> None:
+    """The summary block, code_metadata and block groups: without them the service
+    finds no summary block and classifies the file with the document prompt."""
+    from app.modules.parsers.code_parser import CodeFileParser
+    from app.modules.transformers.document_extraction import find_code_summary_block
+
+    source = b'class Store(Base):\n    """Persists vectors."""\n\n    def upsert(self, points):\n        return points\n'
+    container = CodeFileParser().parse_to_blocks(source, "store.py", "app/store.py", "python")
+    assert container.block_groups, "a class is a block group"
+    post = AsyncMock(return_value=httpx.Response(200, json={"success": True, "classification": None}))
+    client = _client({"llm": [{"provider": "openai"}]})
+    with patch.object(client, "_post_json", new=post):
+        await client.classify(container, "org-1", record_type="CODE_FILE")
+
+    received = ClassifyRequest.model_validate(post.call_args[0][1]).block_container
+    summary = find_code_summary_block(received.blocks)
+    assert summary is not None
+    extractor = DocumentExtraction(logging.getLogger("test"), MagicMock(), MagicMock())
+    sent = extractor._prepare_code_content(received.blocks, summary, 128000, received.block_groups)
+    local = extractor._prepare_code_content(
+        container.blocks, find_code_summary_block(container.blocks), 128000, container.block_groups,
+    )
+    assert sent == local
+    assert "Persists vectors." in sent

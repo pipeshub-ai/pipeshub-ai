@@ -41,6 +41,17 @@ export interface FeedbackPayload {
   };
 }
 
+export interface ForkConversationResult {
+  id: string;
+  title: string;
+  projectId?: string;
+  forkedFrom: {
+    conversationId: string;
+    messageId: string;
+  };
+  messageCount: number;
+}
+
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
   onStatus?: (data: SSEStatusEvent) => void;
@@ -115,7 +126,9 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     status: conv.status,
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
+    ...(conv.isPinned === true ? { isPinned: true } : {}),
     sharedBy: conv.sharedBy,
+    agentKey: conv.agentKey,
   };
 }
 
@@ -375,6 +388,10 @@ export const ChatApi = {
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
+      /** The edited question's files, replacing the stored ones; omitted keeps them. */
+      attachments?: AttachmentRef[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -400,6 +417,12 @@ export const ChatApi = {
     if (request.runId) {
       body.runId = request.runId;
     }
+    if (request.query) {
+      body.query = request.query;
+    }
+    if (request.attachments !== undefined) {
+      body.attachments = request.attachments;
+    }
 
     await runChatStream(endpoint, body, callbacks);
   },
@@ -424,6 +447,10 @@ export const ChatApi = {
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
+      /** The edited question's files, replacing the stored ones; omitted keeps them. */
+      attachments?: AttachmentRef[];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -448,6 +475,12 @@ export const ChatApi = {
     }
     if (model.runId) {
       agentRegenBody.runId = model.runId;
+    }
+    if (model.query) {
+      agentRegenBody.query = model.query;
+    }
+    if (model.attachments !== undefined) {
+      agentRegenBody.attachments = model.attachments;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);
@@ -539,6 +572,20 @@ export const ChatApi = {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/title`, { title });
   },
 
+  /**
+   * Copy a conversation into a new chat, including every message up to `messageId`.
+   * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/fork
+   */
+  async forkConversation(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ForkConversationResult> {
+    const { data } = await apiClient.post<ForkConversationResult>(
+      `/api/v1/conversations/${conversationId}/message/${messageId}/fork`,
+    );
+    return data;
+  },
+
   // Delete a conversation
   async deleteConversation(conversationId: string): Promise<void> {
     await apiClient.delete(`/api/v1/conversations/${conversationId}`);
@@ -552,6 +599,13 @@ export const ChatApi = {
   // Restore (unarchive) a conversation
   async restoreConversation(conversationId: string): Promise<void> {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/unarchive`);
+  },
+
+  // Pin or unpin one of the caller's own conversations (idempotent; owner only)
+  async setConversationPinned(conversationId: string, pinned: boolean): Promise<void> {
+    await apiClient.patch(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/${pinned ? 'pin' : 'unpin'}`,
+    );
   },
 
   /**

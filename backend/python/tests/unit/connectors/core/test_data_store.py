@@ -212,7 +212,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
         return None
 
-    async def get_user_by_user_id(self, user_id):
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> None:
         return None
 
     async def get_user_group_by_external_id(self, connector_id, external_id, *, raise_on_error=False):

@@ -155,6 +155,23 @@ async def test_service_account_sign_in_uses_delegated_tokens_and_writes_no_setti
     assert "credentials" not in ws.config
 
 
+async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Workspace) -> None:
+    await ws.sync()
+
+    admin_id = ws.world.users[ADMIN].user_id
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.app_users[ADMIN].source_user_id == admin_id
+
+
+async def test_an_admin_email_configured_as_an_alias_registers_the_primary_account(ws: Workspace) -> None:
+    ws.world.aliases["it@example.com"] = ADMIN
+    ws.config["auth"]["adminEmail"] = "it@example.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, ws.world.users[ADMIN].user_id)]
+
+
 async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None:
     for n in range(3):
         ws.world.add_user(f"extra{n}@example.com")
@@ -481,12 +498,6 @@ async def test_a_user_whose_sync_fails_on_a_full_resync_keeps_their_records(ws: 
     assert ws.names() == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A failed permission read is treated as 'this file is shared with nobody', so the next "
-    "change to the file replaces its stored access with an empty list and people lose access "
-    "(the rule from #3521/#3528 is that a failed read keeps what is stored).",
-)
 async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -> None:
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
     await ws.sync()
@@ -500,11 +511,6 @@ async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -
     assert (BOB, "USER", "READ") in ws.grants("shared")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="If the second page of a file's permissions fails, the first page is saved as the "
-    "complete list, silently dropping everyone listed after it.",
-)
 async def test_a_permission_list_that_fails_on_a_later_page_is_not_saved_as_complete(ws: Workspace) -> None:
     ws.world.perm_page_size = 2
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE,

@@ -6,19 +6,24 @@ supports real hierarchical directories (unlike S3/Azure Blob where directories
 are virtual prefix-based paths).
 
 Key differences from Azure Blob/S3:
-- Directories are real entities with metadata, not internal placeholders
-- Directory URLs are navigable (hide_weburl=False)
-- Recursive directory traversal is required
+- Directories are real entities, listed by a recursive walk
+- Like S3/Azure Blob, folders are stored as FILE records (is_file=False,
+  folder mimeType, internal) under the share's FILE_SHARE record group, not as
+  record groups of their own; this is the model for file-storage connectors
+- weburl is the file's REST endpoint, which a browser cannot open without a SAS,
+  so it is hidden (hide_weburl=True) and citations open the file in PipesHub
+- Access is APP_LEVEL: share-level RBAC and NTFS ACLs are not read
 """
 
+import asyncio
 import base64
 import mimetypes
 import uuid
 from collections.abc import AsyncGenerator, Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from logging import Logger
-from urllib.parse import quote, unquote
+from typing import Any
+from urllib.parse import quote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -26,6 +31,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -33,22 +39,26 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
 )
-from app.connectors.core.registry.folder_scope import FolderScope
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -69,8 +79,12 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
+    included_names,
     load_connector_filters,
+    name_passes_filter,
 )
+from app.connectors.core.registry.folder_scope import FolderScope
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.azure_files.common.apps import AzureFilesApp
 from app.models.entities import (
     AppUser,
@@ -82,19 +96,37 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import Permission
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.azure.azure_files import AzureFilesClient
 from app.sources.external.azure.azure_files import AzureFilesDataSource
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_downloadable,
-    to_stream_error,
-)
-from app.utils.streaming import create_stream_record_response, stream_content
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+# Directories listed at once within a share, under the 50 requests/s limiter.
+DIRECTORY_CONCURRENCY = 8
+# Stale records removed per delete transaction.
+DELETE_BATCH_SIZE = 500
+# Long enough to start the download it is minted for.
+SAS_URL_LIFETIME = timedelta(minutes=5)
+
+SETUP_INFO = (
+    "Use the least-privileged credential that can read your shares: Microsoft Entra ID "
+    "with the Storage File Data Privileged Reader role, or a SAS connection string for "
+    "the File service with only Read and List permissions (service, container and object "
+    "resource types). An account key connection string gives full read, write and delete "
+    "access to everything in the storage account. Share-level permissions and NTFS folder "
+    "permissions are not applied: every synced file is visible to everyone with access to "
+    "this connector, so for a team connector pick only shares the whole organisation may read "
+    "(a team connector syncs nothing until File Share Names names at least one share)."
+)
+
+
+def _file_url(base_url: str, share_name: str, path: str = "") -> str:
+    """URL of a share, folder or file under the account's file endpoint."""
+    url = f"{base_url}/{quote(share_name)}"
+    return f"{url}/{quote(path)}" if path else url
 
 
 def get_file_extension(file_path: str) -> str | None:
@@ -178,6 +210,8 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     ) -> None:
         super().__init__(logger, data_store_provider, config_service)
         self.account_name = account_name
+        # The account's file endpoint, set by the connector from its client.
+        self.account_url = ""
 
     def _create_placeholder_parent_record(
         self,
@@ -218,14 +252,9 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         Returns:
             Azure Files URL for the directory
         """
-        if "/" in parent_external_id:
-            parts = parent_external_id.split("/", 1)
-            share_name = parts[0]
-            path = parts[1]
-            return f"https://{self.account_name}.file.core.windows.net/{share_name}/{quote(path)}"
-        else:
-            share_name = parent_external_id
-            return f"https://{self.account_name}.file.core.windows.net/{share_name}"
+        share_name, _, path = parent_external_id.partition("/")
+        base_url = self.account_url or f"https://{self.account_name}.file.core.windows.net"
+        return _file_url(base_url, share_name, path)
 
     def _extract_path_from_external_id(self, parent_external_id: str) -> str | None:
         """Extract path from external ID.
@@ -253,14 +282,59 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             AuthField(
                 name="connectionString",
                 display_name="Connection String",
-                placeholder="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
-                description="The Azure Storage connection string from Azure Portal (Storage account > Access keys)",
+                placeholder="FileEndpoint=https://<account>.file.core.windows.net/;SharedAccessSignature=sv=...",
+                description=(
+                    "Prefer a SAS connection string (Storage account > Shared access signature: "
+                    "File service, Read and List permissions, Service, Container and Object resource "
+                    "types). An account key connection string (Access keys) also works but gives full "
+                    "write and delete access to the whole storage account."
+                ),
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
             ),
-        ])
+        ]),
+        AuthBuilder.type(AuthType.ENTRA_ID).fields([
+            AuthField(
+                name="accountUrl",
+                display_name="File Endpoint",
+                placeholder="https://<account>.file.core.windows.net",
+                description="The storage account's file endpoint",
+                field_type="URL",
+                max_length=2000,
+                is_secret=False
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Tenant ID",
+                placeholder="00000000-0000-0000-0000-000000000000",
+                description="Directory (tenant) ID of the Entra ID app registration",
+                field_type="TEXT",
+                max_length=100,
+                is_secret=False
+            ),
+            AuthField(
+                name="clientId",
+                display_name="Client ID",
+                placeholder="00000000-0000-0000-0000-000000000000",
+                description="Application (client) ID; give the app the Storage File Data Privileged Reader role",
+                field_type="TEXT",
+                max_length=100,
+                is_secret=False
+            ),
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Client secret value",
+                description="A client secret of the app registration",
+                field_type="PASSWORD",
+                max_length=500,
+                is_secret=True
+            ),
+        ]),
     ])\
+    .with_info(SETUP_INFO)\
+    .with_resilience_config(rate_limit=50, max_retries=3)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.AZURE_FILES.value))
         .add_documentation_link(DocumentationLink(
@@ -278,7 +352,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             display_name="File Share Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select specific Azure File Shares to sync",
+            description="Select the Azure File Shares to sync. Required for a team connector: everything synced is visible to the whole organisation.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_value=[],
             default_operator=MultiselectOperator.IN.value
@@ -346,6 +420,12 @@ class AzureFilesConnector(BaseConnector):
         self.share_name: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
+        # The account's file endpoint (sovereign clouds and custom endpoints included).
+        self.account_url: str = ""
+        # Set when the last run could not read a share, folder or item.
+        self._sync_incomplete = False
+        # Shares whose root could not be listed in the current run.
+        self._unread_shares: set[str] = set()
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -378,16 +458,13 @@ class AzureFilesConnector(BaseConnector):
             return False
 
         auth_config = config.get("auth", {})
-        connection_string = auth_config.get("connectionString")
-
-        if not connection_string:
+        if auth_config.get("authType") != AuthType.ENTRA_ID and not auth_config.get("connectionString"):
             self.logger.error("Azure Files connectionString not found in configuration.")
+            await self._notify_problem(
+                NotificationType.CONNECTOR_AUTH_ERROR, "Credentials missing",
+                "The Azure Files connection string is missing.",
+            )
             return False
-
-        # Derive account name for web URL generation
-        self.account_name = self._extract_account_name_from_connection_string(
-            connection_string
-        )
 
         # Load creator email if needed (for personal scope permission creation)
         await self._load_creator_email()
@@ -400,11 +477,17 @@ class AzureFilesConnector(BaseConnector):
             )
             self.data_source = AzureFilesDataSource(client)
 
-            # Update the entities processor with the account name
+            try:
+                self.account_name = client.get_account_name()
+                self.account_url = client.get_account_url()
+            except Exception as e:
+                self.logger.warning(f"Could not read the account name and endpoint from the credentials: {e}")
+
             if isinstance(
                 self.data_entities_processor, AzureFilesDataSourceEntitiesProcessor
             ):
                 self.data_entities_processor.account_name = self.account_name or ""
+                self.data_entities_processor.account_url = self.account_url
 
             # Load connector filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -416,6 +499,10 @@ class AzureFilesConnector(BaseConnector):
         except Exception as e:
             self.logger.error(
                 f"Failed to initialize Azure Files client: {e}", exc_info=True
+            )
+            await self._notify_problem(
+                NotificationType.CONNECTOR_AUTH_ERROR, "Could not connect",
+                f"Failed to initialize the Azure Files client: {e}",
             )
             return False
 
@@ -432,18 +519,38 @@ class AzureFilesConnector(BaseConnector):
                 return value or None
         return None
 
+    def _base_url(self) -> str:
+        return self.account_url or f"https://{self.account_name}.file.core.windows.net"
+
     def _generate_web_url(self, share_name: str, file_path: str) -> str:
         """Generate the web URL for an Azure file."""
-        return f"https://{self.account_name}.file.core.windows.net/{share_name}/{quote(file_path)}"
+        return _file_url(self._base_url(), share_name, file_path)
 
     def _generate_directory_url(self, share_name: str, dir_path: str) -> str:
         """Generate the web URL for an Azure Files directory."""
-        if dir_path:
-            return f"https://{self.account_name}.file.core.windows.net/{share_name}/{quote(dir_path)}"
-        return f"https://{self.account_name}.file.core.windows.net/{share_name}"
+        return _file_url(self._base_url(), share_name, dir_path)
+
+    async def _notify_problem(self, notification_type: NotificationType, title: str, message: str) -> None:
+        """Tell the connector's owner, naming the instance; never fails the caller."""
+        try:
+            await self.notify(
+                type=notification_type,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: {title}",
+                message=f"{self.display_name}: {message}",
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not send the notification \"{title}\": {e}")
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A run that could not read a share, a folder or an item did not see all of the
+        source, so the links of what it did not write must stay."""
+        return FullSyncCoverage(complete=not self._sync_incomplete)
 
     async def run_sync(self) -> None:
         """Runs a full synchronization from file shares."""
+        self._sync_incomplete = False
+        self._unread_shares = set()
         try:
             self.logger.info("Starting Azure Files full sync.")
 
@@ -454,6 +561,26 @@ class AzureFilesConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
+
+            # Get sync filters
+            sync_filters = (
+                self.sync_filters
+                if hasattr(self, "sync_filters") and self.sync_filters
+                else FilterCollection()
+            )
+
+            selected_shares = included_names(sync_filters, "shares")
+            if self.scope == ConnectorScope.TEAM.value and not selected_shares:
+                # Every synced file is readable by the whole organisation, so a team
+                # connector must not pick up every share the credential can list, nor
+                # every share but a few (Not in), which takes in shares created later.
+                message = (
+                    "A team connector syncs only the shares named in File Share Names (operator In), "
+                    "since everything it syncs is visible to the whole organisation. Select the "
+                    "shares to sync in the connector's filters."
+                )
+                await self._notify_problem(NotificationType.CONNECTOR_SYNC_ERROR, "No file shares selected", message)
+                raise ValueError(message)
 
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(
@@ -476,19 +603,6 @@ class AzureFilesConnector(BaseConnector):
                         "Personal connector has no created_by; skipping user-app edges."
                     )
 
-            # Get sync filters
-            sync_filters = (
-                self.sync_filters
-                if hasattr(self, "sync_filters") and self.sync_filters
-                else FilterCollection()
-            )
-
-            # Get share filter if specified
-            share_filter = sync_filters.get("shares")
-            selected_shares = (
-                share_filter.value if share_filter and share_filter.value else []
-            )
-
             # List all shares or use configured share
             shares_to_sync: list[str] = []
             shares_list_payload: list[Any] | None = None
@@ -499,23 +613,22 @@ class AzureFilesConnector(BaseConnector):
                 self.logger.info("Listing all shares...")
                 shares_response = await self.data_source.list_shares()
                 if not shares_response.success:
-                    self.logger.error(
-                        f"Failed to list shares: {shares_response.error}"
+                    self._sync_incomplete = True
+                    await self._notify_problem(
+                        NotificationType.CONNECTOR_AUTH_ERROR, "Could not list file shares",
+                        f"Listing the storage account's file shares failed: {shares_response.error}. "
+                        "Check that the credentials are valid and have not expired.",
                     )
-                    return
+                    raise ConnectionError(f"Failed to list shares: {shares_response.error}")
 
-                shares_data = shares_response.data
-                if shares_data:
-                    shares_list_payload = shares_data
-                    shares_to_sync = [
-                        share.get("name")
-                        for share in shares_data
-                        if share.get("name")
-                    ]
-                    self.logger.info(f"Found {len(shares_to_sync)} share(s) to sync")
-                else:
-                    self.logger.warning("No shares found")
-                    return
+                # An empty account still runs the cleanup below for shares that are gone.
+                shares_list_payload = shares_response.data or []
+                shares_to_sync = [
+                    share.get("name")
+                    for share in shares_list_payload
+                    if share.get("name") and name_passes_filter(sync_filters, "shares", share.get("name"))
+                ]
+                self.logger.info(f"Found {len(shares_to_sync)} share(s) to sync")
 
             target_names = {n for n in shares_to_sync if n}
             share_ts_ms = _share_last_modified_epoch_ms_from_list(
@@ -536,57 +649,103 @@ class AzureFilesConnector(BaseConnector):
             # Create record groups for shares first
             await self._create_record_groups_for_shares(shares_to_sync, share_ts_ms)
 
-            # Sync each share
-            seen: set[str] = set()
-            complete = True
-            for share_name in shares_to_sync:
-                if not share_name:
-                    continue
+            # Sync each share. Deletes are decided per share, so a share that
+            # cannot be read holds back only its own.
+            failed_shares: list[str] = []
+            for share_name in dict.fromkeys(n for n in shares_to_sync if n):
                 try:
                     self.logger.info(f"Syncing share: {share_name}")
                     share_seen, share_complete = await self._sync_share(share_name)
-                    seen |= share_seen
-                    complete = complete and share_complete
                 except Exception as e:
-                    complete = False
+                    share_seen, share_complete = set(), False
+                    self._unread_shares.add(share_name)
                     self.logger.error(
                         f"Error syncing share {share_name}: {e}", exc_info=True
                     )
-                    continue
+                if share_complete:
+                    await self._remove_records_not_seen(share_name, share_seen)
+                else:
+                    failed_shares.append(share_name)
 
-            if complete:
-                await self._remove_records_not_seen(seen)
-            else:
+            await self._remove_unsynced_shares(target_names)
+
+            if failed_shares:
+                self._sync_incomplete = True
                 self.logger.warning(
-                    "Some listings failed; not removing records of files that "
-                    "were not seen this sync"
+                    f"Some listings failed in {failed_shares}; not removing records of files "
+                    "in them that were not seen this sync"
                 )
+                await self._notify_problem(
+                    NotificationType.CONNECTOR_SYNC_ERROR, "Some file shares could not be read",
+                    f"Could not read all of {', '.join(failed_shares)}. Files deleted there stay "
+                    "searchable until a sync reads them in full; see the connector logs.",
+                )
+                if self._unread_shares >= target_names:
+                    raise RuntimeError(f"No share could be read: {', '.join(sorted(self._unread_shares))}")
 
             self.logger.info("Azure Files full sync completed.")
         except Exception as ex:
+            self._sync_incomplete = True
             self.logger.error(f"Error in Azure Files connector run: {ex}", exc_info=True)
             raise
 
-    async def _remove_records_not_seen(self, seen: set[str]) -> None:
-        """Delete records of files and directories this sync did not find.
+    async def _remove_records_not_seen(self, share_name: str, seen: set[str]) -> None:
+        """Delete the records of a share's files and directories this sync did not find.
 
-        Covers deletions, shares no longer synced, items now excluded by the
-        sync filters, and a file edited and then renamed between two syncs,
-        which is found at its new path under a new revision rather than moved.
-        Only called after every listing succeeded.
+        Covers deletions, items now excluded by the sync filters, and a file edited
+        and then renamed between two syncs, which is found at its new path under a
+        new revision rather than moved. Only called after the share was read in full.
         """
-        records = await self.data_entities_processor.get_records_by_record_type(
-            self.connector_id, RecordType.FILE
-        )
-        stale = [r for r in records if r.external_record_id not in seen]
+        try:
+            stored = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.RECORDS.value,
+                {"connectorId": self.connector_id, "externalGroupId": share_name},
+                return_fields=["id", "_key", "externalRecordId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Not removing deleted files of {share_name}: its records could not be read: {e}")
+            return
+        stale = [
+            node.get("_key") or node.get("id")
+            for node in stored
+            if node.get("externalRecordId") not in seen and (node.get("_key") or node.get("id"))
+        ]
         if not stale:
             return
-        self.logger.info(f"Removing {len(stale)} records of items no longer in the synced shares")
-        for record in stale:
+        self.logger.info(f"Removing {len(stale)} records of items no longer in share {share_name}")
+        await self._delete_records(stale)
+
+    async def _delete_records(self, record_ids: list[str]) -> None:
+        for start in range(0, len(record_ids), DELETE_BATCH_SIZE):
+            batch = record_ids[start:start + DELETE_BATCH_SIZE]
             try:
-                await self.data_entities_processor.on_record_deleted(record.id)
+                # Each stale record is listed, so no subtree walk is needed.
+                result = await self.data_entities_processor.on_records_deleted_cascade(
+                    batch, self.connector_id, cascade_children=False, include_trashed_roots=True,
+                )
+                if not (result or {}).get("success", False):
+                    self.logger.warning(f"Failed to delete {len(batch)} records: {(result or {}).get('reason')}")
             except Exception as e:
-                self.logger.warning(f"Failed to delete record {record.external_record_id}: {e}")
+                self.logger.warning(f"Failed to delete {len(batch)} records: {e}")
+
+    async def _remove_unsynced_shares(self, synced: set[str]) -> None:
+        """Remove the shares, with their records, that this sync no longer covers:
+        taken out of the share filter, or no longer in the account."""
+        try:
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.RECORD_GROUPS.value,
+                {"connectorId": self.connector_id, "groupType": RecordGroupType.FILE_SHARE.value},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Not removing shares that are no longer synced: they could not be read: {e}")
+            return
+        for share_name in sorted({g.get("externalGroupId") for g in groups} - synced - {None, ""}):
+            self.logger.info(f"Removing share {share_name}, which is no longer synced")
+            if not await self.data_entities_processor.on_record_group_deleted(share_name, self.connector_id):
+                self.logger.warning(f"Could not remove share {share_name}; retrying next sync")
 
     async def _create_record_groups_for_shares(
         self,
@@ -809,7 +968,10 @@ class AzureFilesConnector(BaseConnector):
         return True
 
     async def _sync_share(self, share_name: str) -> tuple[set[str], bool]:
-        """Sync files and directories from a specific share with recursive traversal."""
+        """Sync files and directories from a specific share with recursive traversal.
+
+        Returns the external ids found and whether the share was read in full.
+        """
         if not self.data_source:
             raise ConnectionError("Azure Files connector is not initialized.")
 
@@ -849,36 +1011,75 @@ class AzureFilesConnector(BaseConnector):
         # The share itself is the parent of its top-level items (a placeholder
         # record may exist for it), and no listing returns it.
         seen: set[str] = {share_name}
+        # Directories listed in full; only a path under one of them can be known to be gone.
+        listed: set[str] = set()
         complete = True
+        share_gone = False
 
         scope = FolderScope.from_filters(sync_filters)
         if not scope.is_everything:
             self.logger.info(f"Folder filter for share {share_name}: {scope.describe()}")
-        chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
+        list_roots = {p.rstrip("/") for p in scope.list_prefixes}
+        chosen_folders = {p for p in list_roots if p}
         batch_records: list[tuple[FileRecord, list[Permission]]] = []
         max_timestamp = last_sync_time if last_sync_time else 0
 
-        # Recursive directory traversal
-        async def traverse_directory(directory_path: str) -> None:
-            nonlocal batch_records, max_timestamp, complete
+        # A full sync writes every record, which also restores links an earlier
+        # run lost; other runs leave a record whose revision is unchanged alone.
+        full_sync = self._full_sync_running()
+        stored_revisions = await self._stored_revisions(share_name)
+        # A move is looked for among this share's records only: FileIds repeat across shares.
+        paths_by_revision: dict[str, list[str]] | None = None
+        if stored_revisions is not None:
+            paths_by_revision = {}
+            for stored_path, revision in stored_revisions.items():
+                paths_by_revision.setdefault(revision, []).append(stored_path)
 
-            try:
-                async with self.rate_limiter:
-                    response = await self.data_source.list_directories_and_files(
-                        share_name=share_name,
-                        directory_path=directory_path,
-                    )
+        move_candidates: list[tuple[str, FileRecord, list[Permission]]] = []
+        directory_slots = asyncio.Semaphore(DIRECTORY_CONCURRENCY)
+        write_lock = asyncio.Lock()
+
+        async def flush(*, force: bool = False) -> None:
+            nonlocal batch_records
+            if not batch_records or (len(batch_records) < self.batch_size and not force):
+                return
+            to_write, batch_records = batch_records, []
+            # One writer at a time, in listing order, so parents land before children.
+            async with write_lock:
+                await self.data_entities_processor.on_new_records(to_write)
+
+        async def share_is_gone() -> bool:
+            props = await self.data_source.get_share_properties(share_name)
+            return not props.success and "not found" in (props.error or "").lower()
+
+        async def traverse_directory(directory_path: str) -> None:
+            nonlocal max_timestamp, complete, share_gone
+            subdirectories: list[str] = []
+
+            async with directory_slots:
+                try:
+                    async with self.rate_limiter:
+                        response = await self.data_source.list_directories_and_files(
+                            share_name=share_name,
+                            directory_path=directory_path,
+                        )
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
-                        if directory_path in chosen_folders and "not found" in error_msg.lower():
-                            # A chosen folder that doesn't exist has nothing to sync;
-                            # a typo must not block removal for the whole share.
-                            self.logger.warning(
-                                f"Folder {share_name}/{directory_path} named in the folder filter does not exist"
-                            )
-                            return
+                        if directory_path in list_roots and "not found" in error_msg.lower():
+                            if await share_is_gone():
+                                share_gone = True
+                                return
+                            if directory_path in chosen_folders:
+                                # A chosen folder that doesn't exist has nothing to sync;
+                                # a typo must not block removal for the whole share.
+                                self.logger.warning(
+                                    f"Folder {share_name}/{directory_path} named in the folder filter does not exist"
+                                )
+                                return
                         complete = False
+                        if directory_path in list_roots:
+                            self._unread_shares.add(share_name)
                         self.logger.error(
                             f"Failed to list items in {share_name}/{directory_path}: {error_msg}"
                         )
@@ -901,6 +1102,7 @@ class AzureFilesConnector(BaseConnector):
                                 self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
 
                     items = response.data or []
+                    listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
                     self.logger.debug(
                         f"Processing {len(items)} items from {share_name}/{directory_path or 'root'}"
                     )
@@ -936,8 +1138,9 @@ class AzureFilesConnector(BaseConnector):
 
                             # Seen before processing: an item that fails to
                             # process still exists and must not be removed.
-                            normalized_path = (item_path or item_name).strip().strip("/")
-                            seen.add(f"{share_name}/{normalized_path}")
+                            # Only slashes are trimmed: spaces are part of the name.
+                            external_record_id = f"{share_name}/{(item_path or item_name).strip('/')}"
+                            seen.add(external_record_id)
 
                             # Track max timestamp for incremental sync
                             last_modified = item.get("last_modified")
@@ -961,43 +1164,72 @@ class AzureFilesConnector(BaseConnector):
                                     except ValueError:
                                         pass
 
-                            record, permissions = await self._process_azure_files_item(
-                                item, share_name
-                            )
-                            if record:
-                                batch_records.append((record, permissions))
-
-                                if len(batch_records) >= self.batch_size:
-                                    await self.data_entities_processor.on_new_records(
-                                        batch_records
-                                    )
-                                    batch_records = []
-
-                            # Recurse into subdirectories
                             if is_directory:
-                                await traverse_directory(item_path)
+                                subdirectories.append(item_path)
+
+                            stored_revision = (stored_revisions or {}).get(external_record_id)
+                            if (
+                                not full_sync
+                                and stored_revision
+                                and stored_revision == self._get_azure_files_revision_id(item)
+                            ):
+                                continue
+
+                            # Per item: directories are walked concurrently.
+                            moved_from: dict[str, str] = {}
+                            record, permissions = await self._process_azure_files_item(
+                                item, share_name, moved_from, paths_by_revision
+                            )
+                            if not record:
+                                if item_name:
+                                    # Not written, so the unlink after a full sync would cut it off.
+                                    complete = False
+                                continue
+                            old_external_id = moved_from.get(record.id)
+                            if old_external_id:
+                                move_candidates.append((old_external_id, record, permissions))
+                                continue
+                            batch_records.append((record, permissions))
+                            await flush()
 
                         except Exception as e:
+                            complete = False
                             self.logger.error(
                                 f"Error processing item {item.get('name', 'unknown')}: {e}",
                                 exc_info=True,
                             )
                             continue
 
-            except Exception as e:
-                complete = False
-                self.logger.error(
-                    f"Error during directory traversal for {share_name}/{directory_path}: {e}",
-                    exc_info=True,
-                )
+                except Exception as e:
+                    complete = False
+                    self.logger.error(
+                        f"Error during directory traversal for {share_name}/{directory_path}: {e}",
+                        exc_info=True,
+                    )
+                    return
+
+            # Outside the slot: a parent waiting on its children must not hold one.
+            if subdirectories:
+                await asyncio.gather(*(traverse_directory(path) for path in subdirectories))
 
         # Start traversal from root
-        for prefix in scope.list_prefixes:
-            await traverse_directory(prefix.rstrip("/"))
+        await asyncio.gather(*(traverse_directory(path) for path in sorted(list_roots)))
 
-        # Process remaining records
-        if batch_records:
-            await self.data_entities_processor.on_new_records(batch_records)
+        if share_gone:
+            self.logger.warning(f"Share {share_name} no longer exists; removing its records")
+            await self._notify_problem(
+                NotificationType.CONNECTOR_SYNC_ERROR, f"File share {share_name} not found",
+                f"The file share {share_name} selected in File Share Names no longer exists, so its "
+                "files were removed. Remove it from the filter if it is gone for good.",
+            )
+            return set(), True
+
+        try:
+            await self._write_moves(share_name, move_candidates, seen, listed, paths_by_revision)
+            await flush(force=True)
+        except Exception as e:
+            complete = False
+            self.logger.error(f"Error writing records of share {share_name}: {e}", exc_info=True)
 
         if max_timestamp > 0:
             await self.record_sync_point.update_sync_point(
@@ -1005,6 +1237,90 @@ class AzureFilesConnector(BaseConnector):
             )
 
         return seen, complete
+
+    def _full_sync_running(self) -> bool:
+        running = getattr(self.data_entities_processor, "full_sync_running", None)
+        return bool(running(self.connector_id)) if callable(running) else True
+
+    async def _stored_revisions(self, share_name: str) -> dict[str, str] | None:
+        """External id -> stored revision of the share's live records, read once per walk;
+        None when they could not be read."""
+        try:
+            nodes = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.RECORDS.value,
+                {"connectorId": self.connector_id, "externalGroupId": share_name},
+                return_fields=["externalRecordId", "externalRevisionId", "isDeleted"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored records of {share_name}; writing every item: {e}")
+            return None
+        return {
+            node["externalRecordId"]: node["externalRevisionId"]
+            for node in nodes
+            if node.get("externalRecordId") and node.get("externalRevisionId") and node.get("isDeleted") is not True
+        }
+
+    async def _write_moves(
+        self,
+        share_name: str,
+        candidates: list[tuple[str, FileRecord, list[Permission]]],
+        seen: set[str],
+        listed: set[str],
+        paths_by_revision: dict[str, list[str]] | None = None,
+    ) -> None:
+        """Write the items found under a stored record's FileId at a new path.
+
+        Only once the share is listed is it known which stored paths are gone: a
+        path is gone when the directory above it was listed and did not hold it, or
+        is gone itself (a directory whose listing failed proves nothing). Each new path takes one of
+        those with its revision (the record moves, keeping its index when the
+        content did not change); a new path left with none is a copy that kept its
+        FileId (AzCopy, robocopy) and gets a record of its own.
+        """
+
+        def is_gone(external_id: str) -> bool:
+            # Also gone: anything under a directory that is itself gone (a renamed folder's files).
+            if external_id in seen:
+                return False
+            parent = get_parent_path(external_id[len(share_name) + 1:])
+            parent_id = f"{share_name}/{parent}" if parent else share_name
+            if parent_id in listed:
+                return True
+            return parent_id != share_name and is_gone(parent_id)
+
+        moves: list[tuple[str, FileRecord, list[Permission]]] = []
+        copies: list[tuple[FileRecord, list[Permission]]] = []
+        taken: set[str] = set()
+        for old_external_id, record, permissions in candidates:
+            stored_paths = (
+                [old_external_id] if paths_by_revision is None
+                else paths_by_revision.get(record.external_revision_id or "", [])
+            )
+            gone = [path for path in stored_paths if path not in taken and is_gone(path)]
+            old_path = old_external_id if old_external_id in gone else next(iter(gone), None)
+            stored = None
+            if old_path and old_path != old_external_id:
+                # Paired with another stored path of the same revision than the one picked
+                # while the share was still being listed: take that record's identity.
+                stored = await self.data_entities_processor.get_record_by_external_id(self.connector_id, old_path)
+                if stored is None:
+                    old_path = None
+            if old_path is None:
+                record.id = str(uuid.uuid4())
+                record.version = 0
+                copies.append((record, permissions))
+                continue
+            if stored is not None:
+                record.id = stored.id
+                record.version = stored.version + 1
+                record.source_created_at = stored.source_created_at
+            taken.add(old_path)
+            moves.append((old_path, record, permissions))
+        for start in range(0, len(moves), self.batch_size):
+            await self.data_entities_processor.on_records_moved(moves[start:start + self.batch_size])
+        for start in range(0, len(copies), self.batch_size):
+            await self.data_entities_processor.on_new_records(copies[start:start + self.batch_size])
 
     def _get_azure_files_revision_id(self, item: dict) -> str:
         """
@@ -1036,7 +1352,10 @@ class AzureFilesConnector(BaseConnector):
             if not written:
                 return str(file_id)
             if isinstance(written, datetime):
-                written = written.isoformat()
+                # A listing gives an aware time, get_file_properties a naive one in UTC.
+                if written.tzinfo is None:
+                    written = written.replace(tzinfo=timezone.utc)
+                written = written.astimezone(timezone.utc).isoformat()
             return f"{file_id}:{item.get('size')}:{str(written).strip(chr(34))}"
 
         content_md5 = item.get("content_md5")
@@ -1055,11 +1374,20 @@ class AzureFilesConnector(BaseConnector):
         return ""
 
     async def _process_azure_files_item(
-        self, item: dict, share_name: str
+        self,
+        item: dict,
+        share_name: str,
+        moved_from: dict[str, str] | None = None,
+        paths_by_revision: dict[str, list[str]] | None = None,
     ) -> tuple[FileRecord | None, list[Permission]]:
         """Process a single Azure Files item (file or directory) and convert it to a FileRecord.
 
         Key difference from S3/Blob: Directories are REAL entities, not placeholders.
+
+        An item found by its FileId under another path of the same share reuses that
+        record; ``moved_from`` then maps the record id to the stored external id, for
+        the caller to write it as a move. ``paths_by_revision`` (stored revision ->
+        external ids, this share's records) is where that record is looked for.
         """
         try:
             item_name = item.get("name", "")
@@ -1068,8 +1396,8 @@ class AzureFilesConnector(BaseConnector):
 
             is_directory = item.get("is_directory", False)
             is_file = not is_directory
-            raw_path = (item.get("path") or item_name).strip()
-            normalized_path = raw_path.lstrip("/").rstrip("/") if raw_path else ""
+            # Only slashes are trimmed: leading and trailing spaces are part of the name.
+            normalized_path = (item.get("path") or item_name).strip("/")
 
             # Parse timestamps
             last_modified = item.get("last_modified")
@@ -1135,9 +1463,21 @@ class AzureFilesConnector(BaseConnector):
                             f"Stored revision missing for {normalized_path}, processing record"
                         )
             elif current_revision_id:
-                existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
-                    self.connector_id, current_revision_id
-                )
+                if paths_by_revision is not None:
+                    old_path = next(
+                        (p for p in paths_by_revision.get(current_revision_id, ()) if p != external_record_id), None
+                    )
+                    existing_record = (
+                        await self.data_entities_processor.get_record_by_external_id(self.connector_id, old_path)
+                        if old_path else None
+                    )
+                else:
+                    existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
+                        self.connector_id, current_revision_id
+                    )
+                if existing_record and existing_record.external_record_group_id != share_name:
+                    # FileIds are unique only within a share; new shares hand out the same ones.
+                    existing_record = None
 
                 if existing_record:
                     is_move = True
@@ -1172,9 +1512,8 @@ class AzureFilesConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             record_name = normalized_path.rstrip("/").split("/")[-1] or normalized_path.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
+            if is_move and moved_from is not None:
+                moved_from[record_id] = existing_record.external_record_id
 
             version = 0 if not existing_record else existing_record.version + 1
 
@@ -1255,19 +1594,60 @@ class AzureFilesConnector(BaseConnector):
         return []
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access."""
+        """Test that the credential can do what a sync needs: list the shares to sync,
+        list their roots, and read a file's properties."""
         if not self.data_source:
             return False
         try:
-            response = await self.data_source.list_shares()
-            if response.success:
-                self.logger.info("Azure Files connection test successful.")
-                return True
-            else:
-                self.logger.error(
-                    f"Azure Files connection test failed: {response.error}"
+            shares = included_names(self.sync_filters, "shares")
+            if not shares:
+                response = await self.data_source.list_shares()
+                if not response.success:
+                    self.logger.error(
+                        f"Azure Files connection test failed: cannot list file shares "
+                        f"(needs List permission on the service): {response.error}"
+                    )
+                    return False
+                shares = [s.get("name") for s in response.data or [] if s.get("name")][:1]
+
+            # Listing each selected root also works for a share SAS, which cannot list shares.
+            readable: tuple[str, list[dict]] | None = None
+            for share_name in shares:
+                listing = await self.data_source.list_directories_and_files(share_name=share_name)
+                if listing.success:
+                    readable = readable or (share_name, listing.data or [])
+                elif "not found" in (listing.error or "").lower():
+                    # Not a credential problem: the sync removes a gone share's files and
+                    # tells the owner, which it could not do if the connector never started.
+                    self.logger.warning(f"Azure Files connection test: selected share {share_name} not found")
+                else:
+                    self.logger.error(
+                        f"Azure Files connection test failed: share {share_name} cannot be listed "
+                        f"(needs List permission): {listing.error}"
+                    )
+                    return False
+
+            if readable:
+                share_name, items = readable
+                # Reading properties needs the Read permission that listing does not.
+                item = next((i for i in items if not i.get("is_directory") and i.get("path")), None) or next(
+                    (i for i in items if i.get("path")), None
                 )
-                return False
+                if item:
+                    props = await (
+                        self.data_source.get_directory_properties(share_name, item["path"])
+                        if item.get("is_directory")
+                        else self.data_source.get_file_properties(share_name, item["path"])
+                    )
+                    if not props.success:
+                        self.logger.error(
+                            f"Azure Files connection test failed: cannot read share {share_name} "
+                            f"(needs Read permission): {props.error}"
+                        )
+                        return False
+
+            self.logger.info("Azure Files connection test successful.")
+            return True
         except Exception as e:
             self.logger.error(
                 f"Azure Files connection test failed: {e}", exc_info=True
@@ -1292,16 +1672,16 @@ class AzureFilesConnector(BaseConnector):
             )
             return None
 
+        # The stored path is the file's real name; "%" in it is a literal character.
         if external_record_id.startswith(f"{share_name}/"):
             file_path = external_record_id[len(f"{share_name}/") :]
         else:
             file_path = external_record_id.lstrip("/")
 
-        file_path = unquote(file_path)
         return (share_name, file_path)
 
     async def get_signed_url(self, record: Record) -> str | None:
-        """Generate a SAS URL for an Azure file."""
+        """Generate a short-lived SAS URL for an Azure file, if the credentials carry an account key."""
         if not self.data_source:
             return None
         try:
@@ -1316,51 +1696,34 @@ class AzureFilesConnector(BaseConnector):
                 f"File: {file_path}, Record ID: {record.id}"
             )
 
-            # Generate SAS URL with 24 hour expiry
-            expiry = datetime.now(timezone.utc) + timedelta(hours=24)
             response = await self.data_source.generate_file_sas_url(
                 share_name=share_name,
                 file_path=file_path,
                 permission="r",
-                expiry=expiry,
+                expiry=datetime.now(timezone.utc) + SAS_URL_LIFETIME,
             )
 
             if response.success and response.data:
                 return response.data.get("sas_url")
+            if "account key required" in (response.error or "").lower():
+                # A SAS connection string or Entra ID carries no key to sign with.
+                self.logger.debug(f"No account key to sign a SAS URL for record {record.id}")
             else:
                 self.logger.error(
                     f"Failed to generate SAS URL: {response.error} | "
                     f"Share: {share_name} | File: {file_path}"
                 )
-                return None
+            return None
         except Exception as e:
-            # Returning None is deliberate: it hands the caller to the direct-download
-            # fallback, which reports the real status. Only the diagnostic must survive.
+            # Returning None is deliberate: callers fall back to streaming the
+            # file. Only the diagnostic must survive.
             self.logger.error(
                 f"Error generating SAS URL for record {record.id}: {e}", exc_info=True
             )
             return None
 
-    async def _stream_file_content(
-        self, content: bytes, chunk_size: int = 8192
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream file content in chunks.
-
-        Args:
-            content: The file content as bytes
-            chunk_size: Size of each chunk to yield (default: 8KB)
-
-        Yields:
-            Chunks of bytes
-        """
-        offset = 0
-        while offset < len(content):
-            chunk = content[offset : offset + chunk_size]
-            yield chunk
-            offset += len(chunk)
-
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream Azure file content."""
+        """Stream Azure file content, chunk by chunk from the SDK, whatever the credential."""
         if isinstance(record, FileRecord) and not record.is_file:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1381,68 +1744,37 @@ class AzureFilesConnector(BaseConnector):
 
         share_name, file_path = path_info
 
-        # Try to generate SAS URL first
-        signed_url = await self.get_signed_url(record)
-
-        if signed_url:
-            # Use SAS URL streaming (existing behavior)
-            return create_stream_record_response(
-                stream_content(
-                    signed_url,
-                    record_id=record.id,
-                    file_name=record.record_name,
-                    connector=self.display_name,
-                ),
-                filename=record.record_name,
-                mime_type=record.mime_type if record.mime_type else "application/octet-stream",
-                fallback_filename=f"record_{record.id}"
-            )
-
-        # Fallback: Download file directly when SAS URL generation fails
-        # This handles cases where account key is missing from connection string
-        self.logger.info(
-            f"SAS URL generation failed, falling back to direct download - "
-            f"Share: {share_name} | File: {file_path} | Record ID: {record.id}"
-        )
-
         try:
-            download_response = await self.data_source.download_file(
+            # Azure failures arrive as HttpResponseError here, before any byte is
+            # sent, and are mapped below (403 on the share vs a deleted file).
+            downloader = await self.data_source.download_file_stream(
                 share_name=share_name,
                 file_path=file_path,
             )
-
-            # Azure failures now arrive as HttpResponseError and are mapped below; a
-            # falsy response here means the wrapper returned without calling Azure.
-            if not download_response.success or not download_response.data:
-                self.logger.error(
-                    f"Azure Files download failed for {share_name}/{file_path}: "
-                    f"{download_response.error or 'no data returned'}"
-                )
-                raise map_source_status(None, connector=self.display_name)
-
-            # Get file content from response
-            file_content = download_response.data.get("content")
-            if not file_content:
-                raise not_downloadable(
-                    "Downloaded file has no content", connector=self.display_name
-                )
-
-            # Stream the content in chunks
-            return create_stream_record_response(
-                self._stream_file_content(file_content),
-                filename=record.record_name,
-                mime_type=record.mime_type if record.mime_type else "application/octet-stream",
-                fallback_filename=f"record_{record.id}"
-            )
-
         except HTTPException:
             raise
         except Exception as e:
             self.logger.error(
-                f"Error downloading file directly for record {record.id}: {e}",
+                f"Error downloading file for record {record.id}: {e}",
                 exc_info=True
             )
             raise to_stream_error(e, connector=self.display_name) from e
+
+        async def chunks() -> AsyncGenerator[bytes, None]:
+            try:
+                async for chunk in downloader.chunks():
+                    yield chunk
+            except Exception as e:
+                # A later range request can fail too (a file deleted mid-download).
+                self.logger.error(f"Error streaming file for record {record.id}: {e}", exc_info=True)
+                raise to_stream_error(e, connector=self.display_name) from e
+
+        return create_stream_record_response(
+            chunks(),
+            filename=record.record_name,
+            mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+            fallback_filename=f"record_{record.id}"
+        )
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
@@ -1461,14 +1793,18 @@ class AzureFilesConnector(BaseConnector):
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
         if filter_key == "shares":
-            return await self._get_share_options(page, limit, search)
+            return await self._get_share_options(page, limit, search, cursor)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
 
     async def _get_share_options(
-        self, page: int, limit: int, search: str | None
+        self, page: int, limit: int, search: str | None, cursor: str | None = None
     ) -> FilterOptionsResponse:
-        """Get list of available file shares."""
+        """One page of file shares, paged by Azure's continuation token.
+
+        Share names are lowercase, and the service filters by prefix, so a search
+        matches shares whose name starts with it.
+        """
         try:
             if not self.data_source:
                 return FilterOptionsResponse(
@@ -1480,7 +1816,11 @@ class AzureFilesConnector(BaseConnector):
                     message="Azure Files connector is not initialized",
                 )
 
-            response = await self.data_source.list_shares()
+            response = await self.data_source.list_shares_page(
+                results_per_page=limit,
+                continuation_token=cursor or None,
+                name_starts_with=search.strip().lower() if search and search.strip() else None,
+            )
             if not response.success:
                 return FilterOptionsResponse(
                     success=False,
@@ -1491,33 +1831,12 @@ class AzureFilesConnector(BaseConnector):
                     message=f"Failed to list shares: {response.error}",
                 )
 
-            shares_data = response.data
-            if not shares_data:
-                return FilterOptionsResponse(
-                    success=True,
-                    options=[],
-                    page=page,
-                    limit=limit,
-                    has_more=False,
-                )
-
-            all_shares = [
-                share.get("name") for share in shares_data if share.get("name")
-            ]
-
-            if search:
-                search_lower = search.lower()
-                all_shares = [
-                    share for share in all_shares if search_lower in share.lower()
-                ]
-
-            start_idx = (page - 1) * limit
-            end_idx = start_idx + limit
-            paginated_shares = all_shares[start_idx:end_idx]
-            has_more = end_idx < len(all_shares)
-
+            data = response.data or {}
+            next_cursor = data.get("next")
             options = [
-                FilterOption(id=share, label=share) for share in paginated_shares
+                FilterOption(id=share["name"], label=share["name"])
+                for share in data.get("shares") or []
+                if share.get("name")
             ]
 
             return FilterOptionsResponse(
@@ -1525,7 +1844,8 @@ class AzureFilesConnector(BaseConnector):
                 options=options,
                 page=page,
                 limit=limit,
-                has_more=has_more,
+                has_more=bool(next_cursor),
+                cursor=next_cursor,
             )
 
         except Exception as e:
@@ -1767,64 +2087,8 @@ class AzureFilesConnector(BaseConnector):
             return None
 
     async def run_incremental_sync(self) -> None:
-        """Run an incremental synchronization from shares."""
-        try:
-            self.logger.info("Starting Azure Files incremental sync.")
-
-            if not self.data_source:
-                raise ConnectionError("Azure Files connector is not initialized.")
-
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, self.filter_key, self.connector_id, self.logger
-            )
-
-            sync_filters = (
-                self.sync_filters
-                if hasattr(self, "sync_filters") and self.sync_filters
-                else FilterCollection()
-            )
-
-            share_filter = sync_filters.get("shares")
-            selected_shares = (
-                share_filter.value if share_filter and share_filter.value else []
-            )
-
-            shares_to_sync = []
-            if selected_shares:
-                shares_to_sync = selected_shares
-                self.logger.info(f"Using filtered shares: {shares_to_sync}")
-            else:
-                shares_response = await self.data_source.list_shares()
-                if shares_response.success and shares_response.data:
-                    shares_to_sync = [
-                        share.get("name")
-                        for share in shares_response.data
-                        if share.get("name")
-                    ]
-
-            if not shares_to_sync:
-                self.logger.warning("No shares to sync")
-                return
-
-            for share_name in shares_to_sync:
-                if not share_name:
-                    continue
-                try:
-                    self.logger.info(f"Incremental sync for share: {share_name}")
-                    await self._sync_share(share_name)
-                except Exception as e:
-                    self.logger.error(
-                        f"Error in incremental sync for share {share_name}: {e}",
-                        exc_info=True,
-                    )
-                    continue
-
-            self.logger.info("Azure Files incremental sync completed.")
-        except Exception as ex:
-            self.logger.error(
-                f"Error in Azure Files incremental sync: {ex}", exc_info=True
-            )
-            raise
+        """Azure Files has no change feed: an incremental sync is a full walk."""
+        await self.run_sync()
 
     @classmethod
     async def create_connector(

@@ -27,6 +27,7 @@ from app.sandbox.manager import get_executor
 from app.sandbox.models import ExecutionResult, SandboxLanguage
 from app.sandbox.package_policy import PackageNotAllowedError, get_allowlist
 from app.sandbox.redact import redact_sandbox_paths
+from app.services.artifact_registry.models import artifact_owner_id
 from app.utils.conversation_tasks import register_task
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ class CodingSandbox:
 
         conversation_id = self.chat_state.get("conversation_id")
         org_id = self.chat_state.get("org_id")
-        user_id = self.chat_state.get("user_id")
+        user_id = artifact_owner_id(self.chat_state)
         blob_store = self.chat_state.get("blob_store")
         graph_provider = self.chat_state.get("graph_provider")
 

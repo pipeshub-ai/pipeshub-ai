@@ -50,7 +50,8 @@ async def test_entity_filters_narrow_the_record_id_search_without_widening_scope
     )
 
     assert scope.await_args.args == ("u1", "org", {"departments": ["Legal"]}, None)
-    assert scope.await_args.kwargs == {}
+    # Nothing marked this scope as narrow, so the containers may be tried.
+    assert scope.await_args.kwargs == {"prefer_record_ids": False}
     must = svc.vector_db_service.filter_collection.await_args.kwargs["must"]
     assert must == {"orgId": "org", "virtualRecordId": ["v1"]}
 
@@ -89,7 +90,7 @@ async def test_entity_filters_keep_container_scoping(monkeypatch):
 
 async def test_entity_filters_intersect_a_tools_record_ids(monkeypatch):
     svc = _service()
-    monkeypatch.setattr(svc, "_resolve_search_scope", AsyncMock(return_value=(None, {"v1": "r1", "v2": "r2"}, None)))
+    monkeypatch.setattr(svc, "_resolve_search_scope", _legacy_scope({"v1": "r1", "v2": "r2"}))
     monkeypatch.setattr(svc, "_execute_parallel_searches", AsyncMock(return_value=[]))
     svc.graph_provider.get_records_for_named_entities = AsyncMock(
         return_value=_hits(("r1", "v1", "a"), ("r2", "v2", "a")),

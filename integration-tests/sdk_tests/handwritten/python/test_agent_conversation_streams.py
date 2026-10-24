@@ -1,7 +1,8 @@
-"""Streaming chat, follow-up, regenerate and feedback on an agent conversation."""
+"""Streams, feedback, fork and attachments on an agent conversation."""
 
 from pipeshub_sdk import Pipeshub
 
+from .errors import raises_status
 from .streams import created_conversation_id, last_answer_id, read_finished_run
 
 CHAT_MODE = "quick"
@@ -50,6 +51,33 @@ def test_handwritten_agent_conversation_streams(pipeshub: Pipeshub):
         )
         assert feedback.message_id == answer_id
         assert feedback.feedback.is_helpful is True
+
+        fork = pipeshub.agents.fork_agent_conversation(
+            agent_key=agent_key, conversation_id=conversation_id, message_id=answer_id
+        )
+        assert fork.forked_from.conversation_id == conversation_id
+        assert fork.forked_from.message_id == answer_id
+
+        upload = pipeshub.agents.upload_agent_conversation_chat_attachments(
+            agent_key=agent_key,
+            conversation_id=conversation_id,
+            files=[
+                {
+                    "file_name": "sdk-test-attachment.txt",
+                    "content": b"PipesHub SDK test attachment.\n",
+                }
+            ],
+        )
+        assert upload.conversation_id == conversation_id
+        assert upload.attachments, "upload returned no attachment"
+        record_id = upload.attachments[0].record_id
+        pipeshub.agents.delete_agent_conversation_chat_attachment(
+            agent_key=agent_key, record_id=record_id
+        )
+        with raises_status(404):
+            pipeshub.agents.delete_agent_conversation_chat_attachment(
+                agent_key=agent_key, record_id=record_id
+            )
     finally:
         # Deleting the agent removes its conversations with it.
         pipeshub.agents.delete_agent(agent_key=agent_key)

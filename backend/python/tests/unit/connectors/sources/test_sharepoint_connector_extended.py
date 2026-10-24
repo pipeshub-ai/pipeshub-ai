@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -90,6 +90,7 @@ def _make_connector():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     dsp = MagicMock()
     # Set up transaction context manager
@@ -885,7 +886,7 @@ class TestSafeApiCallExtended:
         c = _make_connector()
         async def fail():
             raise Exception("400 badrequest invalid hostname")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -898,20 +899,17 @@ class TestSafeApiCallExtended:
             if call_count == 1:
                 raise Exception("429 throttle")
             return "ok"
-        # Can't retry an already-awaited coroutine directly,
-        # but _safe_api_call accepts a coroutine. We test the pattern:
-        result = await c._safe_api_call(throttle_then_ok(), max_retries=1, retry_delay=0.01)
-        # First call fails with throttle, but retry also calls the same coroutine
-        # The actual implementation awaits api_call directly, so retry won't help for coroutines.
-        # This tests the error path:
-        assert result is None
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await c._safe_api_call(throttle_then_ok, max_retries=1, retry_delay=0.01)
+        assert result == "ok"
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_generic_error_exhausts_retries(self):
         c = _make_connector()
         async def fail():
             raise Exception("something weird")
-        result = await c._safe_api_call(fail(), max_retries=1, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=1, retry_delay=0.01)
         assert result is None
 
 
@@ -1186,6 +1184,10 @@ class TestProcessDriveItem:
         assert result is not None
         assert result.is_new is True
         assert result.record is not None
+        assert result.record.inherit_permissions is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, None
+        )
 
     @pytest.mark.asyncio
     async def test_updated_file(self):

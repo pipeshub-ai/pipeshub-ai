@@ -21,11 +21,13 @@ Async test execution:
 """
 from __future__ import annotations
 
+import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.connectors.sources.gitlab.constants import GITLAB_COMPARE_DIFF_LIMIT
 from app.connectors.sources.gitlab.repos import ReposSync, _classify_compare_diffs
 
@@ -956,3 +958,31 @@ class TestBlobRecordVersion:
         assert new_record.version == 0
         assert new_record.source_created_at is None
         assert new_record.source_updated_at is None
+
+class TestPathPolicy:
+    """GitLab applies the same path policy as GitHub: .gitattributes and admin excludes (P-1, P-7)."""
+
+    async def test_gitattributes_and_exclude_filter_shape_the_diff(self) -> None:
+        c, repos = _make_incremental_connector()
+        gitattributes = MagicMock(success=True, data=MagicMock(
+            content=base64.b64encode(b"gen/** linguist-generated\n").decode()))
+        c.runtime.ds_call = AsyncMock(side_effect=[branch_res("new-sha"), gitattributes])
+        c.sync_filters = FilterCollection.model_validate({"filters": [{
+            "key": SyncFilterKey.EXCLUDE_PATHS.value, "type": "list", "operator": "in",
+            "value": ["docs/"]}]})
+        repos._get_code_repo_checkpoint = AsyncMock(return_value="new-sha")
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        diffs = [diff_entry(old_path=p, new_path=p) for p in ("src/a.py", "gen/b.py", "docs/c.py")]
+
+        _, _, modifies, _ = _classify_compare_diffs(diffs, repos._policy)
+        assert modifies == ["src/a.py"]
+        assert c.runtime.ds_call.await_args_list[1].kwargs["ref"] == "new-sha"
+
+    async def test_an_unreadable_gitattributes_excludes_nothing_extra(self) -> None:
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("404"))
+
+        rules = await repos._load_linguist_exclusions(_PROJECT_ID, "sha")
+
+        assert not rules

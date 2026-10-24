@@ -905,19 +905,21 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search, includeRegistry, page, limit, authStatus, toolsetType } = req.query as {
+      const { search, includeRegistry, page, limit, authStatus, toolsetType, scope } = req.query as {
         search?: string;
         includeRegistry?: boolean | string;
         page?: number | string;
         limit?: number | string;
         authStatus?: string;
         toolsetType?: string;
+        scope?: string;
       };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
       if (page !== undefined && page !== null) queryParams.append('page', String(page));
       if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
       if (authStatus) queryParams.append('authStatus', String(authStatus));
+      if (scope) queryParams.append('scope', scope);
       if (toolsetType && String(toolsetType).trim()) {
         queryParams.append('toolsetType', String(toolsetType).trim());
       }
@@ -1092,7 +1094,7 @@ export const getInstanceOAuthAuthorizationUrl =
   ): Promise<void> => {
     try {
       const { instanceId } = req.params;
-      const { base_url } = req.query;
+      const { base_url, desktop } = req.query;
 
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
@@ -1104,6 +1106,7 @@ export const getInstanceOAuthAuthorizationUrl =
 
       const queryParams = new URLSearchParams();
       if (base_url) queryParams.append('base_url', String(base_url));
+      if (desktop === 'true') queryParams.append('desktop', 'true');
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/oauth/authorize?${queryParams.toString()}`,
@@ -1466,7 +1469,7 @@ export const getAgentToolsetOAuthUrl =
   ): Promise<void> => {
     try {
       const { agentKey, instanceId } = req.params;
-      const { base_url } = req.query;
+      const { base_url, desktop } = req.query;
 
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
@@ -1479,6 +1482,7 @@ export const getAgentToolsetOAuthUrl =
 
       const queryParams = new URLSearchParams();
       if (base_url) queryParams.append('base_url', String(base_url));
+      if (desktop === 'true') queryParams.append('desktop', 'true');
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/toolsets/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/oauth/authorize?${queryParams.toString()}`,

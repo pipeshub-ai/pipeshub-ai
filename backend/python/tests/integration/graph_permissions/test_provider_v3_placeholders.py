@@ -3,9 +3,10 @@
 A connector writes a placeholder (``isPlaceholder``) for a parent it did not
 read: a Confluence space's homepage when sync filters name only some pages, a
 Jira project outside the selection. Browsing lists the stub, flagged, so the
-records under it stay reachable; the frontend shows it read-only. A flatten,
-a content filter and the batch access check never return it: a stub has no
-content.
+records under it stay reachable; the frontend shows it read-only. A flatten
+and a content filter never return it: a stub has no content. The access
+check does return one asked by id, so navigate can open it, and does not
+return one asked only by virtual record id.
 
 The graph is the saas-test Confluence shape that hid a whole space:
 
@@ -150,10 +151,11 @@ async def test_someone_without_the_space_sees_neither(placeholder_graph, provide
     assert rows == {}
 
 
-async def test_the_access_check_still_refuses_a_stub(placeholder_graph, provider) -> None:
-    """A stub has no content: search and citations must never be handed one."""
+async def test_the_access_check_opens_a_stub_asked_by_id(placeholder_graph, provider) -> None:
+    """Navigate asks by node id, so a stub the hub lists is openable. A search
+    citation asks by virtual record id; that arm still drops a stub."""
     check = await provider.check_access(USER_U, ORG, node_ids=["ph-home", "ph-page"])
-    assert check.node_ids == frozenset({"ph-page"})
+    assert check.node_ids == frozenset({"ph-home", "ph-page"})
 
 
 async def test_both_backends_give_the_same_pages(placeholder_graph, neo4j_provider, arango_provider) -> None:

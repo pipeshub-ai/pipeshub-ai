@@ -1,3 +1,13 @@
+/** What a connected app (an OAuth app or a personal access token) may see,
+ * as its user picked it: whole apps and collections, record groups, and
+ * folders or records with everything under them. The Python services bound
+ * every search and every record reached by id to it. */
+export interface KnowledgeLimit {
+  apps: string[];
+  recordGroups: string[];
+  records: string[];
+}
+
 // Token Payload
 export interface OAuthTokenPayload {
   userId: string;
@@ -23,6 +33,8 @@ export interface OAuthTokenPayload {
    * calling.
    */
   act?: { sub: string };
+  /** Absent when the app may see everything its user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Generated Tokens Response
@@ -55,6 +67,7 @@ export interface GenerateTokensOptions {
    * on {@link OAuthTokenPayload}.
    */
   actorUserId?: string;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -160,6 +173,16 @@ export interface CreateOAuthAppRequest {
   isConfidential?: boolean;
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
+  knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own tokens act as.
+   *
+   * Required when the app allows `client_credentials`, and ignored otherwise.
+   * That grant has no person in it, so without this the app acts as whoever
+   * created it — and an app created by an administrator would carry
+   * administrator rights for as long as it exists.
+   */
+  tokenIdentityUserId?: string;
 }
 
 // Update OAuth App Request
@@ -174,6 +197,7 @@ export interface UpdateOAuthAppRequest {
   termsOfServiceUrl?: string | null;
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
+  knowledgeLimit?: KnowledgeLimit | null;
 }
 
 // OAuth App Response (public data without secret)
@@ -194,6 +218,16 @@ export interface OAuthAppResponse {
   isConfidential: boolean;
   accessTokenLifetime: number;
   refreshTokenLifetime: number;
+  knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own `client_credentials` tokens act as.
+   *
+   * Absent means the app has no service account and its tokens act as whoever
+   * created it. Apps created since that became a requirement always have one;
+   * an app registered before it may not, and those are the ones an
+   * administrator still has to move.
+   */
+  tokenIdentityUserId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -212,6 +246,8 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** What the app's creator let it see; absent for everything the user can. */
+    knowledgeLimit?: KnowledgeLimit;
   };
   scopes: Array<{
     name: string;
@@ -240,6 +276,7 @@ export interface AuthCodeExchangeResult {
   userId: string;
   orgId: string;
   scopes: string[];
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // OAuth Error Response (RFC 6749)
@@ -314,6 +351,8 @@ export interface TokenListItem {
   isRevoked: boolean;
   name?: string;
   lastUsedAt?: Date;
+  /** Absent when the token may see everything its user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Personal Access Tokens
@@ -323,6 +362,8 @@ export interface CreatePatRequest {
   /** Days until expiry, or 'never' for a non-expiring token (stored as a
    * far-future expiresAt — the schema's expiresAt is required). */
   expiryDays?: 30 | 90 | 365 | 'never';
+  /** What the token may see; omit for everything the user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 export interface PatWithSecret {
@@ -332,6 +373,7 @@ export interface PatWithSecret {
   createdAt: Date;
   expiresAt: Date;
   accessToken: string;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 export interface PatListItem {
@@ -341,6 +383,7 @@ export interface PatListItem {
   createdAt: Date;
   expiresAt: Date;
   lastUsedAt?: Date;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 /**

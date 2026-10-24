@@ -85,7 +85,7 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}
@@ -104,6 +104,7 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -150,7 +151,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -179,7 +180,15 @@ services:
       - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
       - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
@@ -286,6 +295,55 @@ services:
       timeout: 3s
       retries: 20
 
+  # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
+  # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
+  # site with the same people and groups, served from the lumenfold@1 content pack
+  # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
+  # pinned, so every run gets the same world and the suites can name fixture issues
+  # (integration-tests/connectors/atlassian_sim.env). The test process uses the
+  # published ports; the connector uses the aliases. The Confluence connector only
+  # resolves users through Jira on an *.atlassian.net host on port 80, hence that
+  # alias. Never recreate confluence-sim while a connector syncs from it: without the
+  # alias the name resolves to the real atlassian.net.
+  confluence-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["confluence"]
+    environment: &connsim-site
+      CONNSIM_SOURCES: confluence,jira
+      CONNSIM_PACK: /pack
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+      CONNSIM_MEDIA_BASE_URL: http://confluence-sim-media.atlassian.net
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8101:80"
+    networks:
+      default:
+        aliases:
+          - confluence-sim.atlassian.net
+          - confluence-sim-media.atlassian.net
+    mem_limit: 1g
+
+  jira-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["jira"]
+    environment: *connsim-site
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8102:80"
+    networks:
+      default:
+        aliases:
+          - jira-sim.internal
+    mem_limit: 1g
+
   # An external MCP server that agent tests register and call, so "an agent
   # calls an MCP tool" is checked without a third-party service. Its call log
   # is read through the published port (integration-tests/helper/mcp_fixture.py).
@@ -297,6 +355,24 @@ services:
       - ../../integration-tests/mcp_fixture:/srv:ro
     ports:
       - "127.0.0.1:8097:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A REST API (Acme Helpdesk) that agent tests add as an API Toolset from its
+  # OpenAPI spec, so "an agent calls an internal API" is checked without a
+  # third-party service. Its call log is read through the published port
+  # (integration-tests/helper/openapi_fixture.py).
+  openapi-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/openapi_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8098:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
       interval: 5s
@@ -456,6 +532,7 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-pipeshubtest} ${MINIO_ROOT_PASSWORD:-pipeshubtest123} &&
       mc mb --ignore-existing local/${MINIO_TEST_BUCKET:-pipeshub-connector-test} &&
+      mc mb --ignore-existing local/${MINIO_SECOND_TEST_BUCKET:-pipeshub-connector-test-2} &&
       echo 'minio bucket ready'
       "
 
@@ -685,6 +762,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
 volumes:
+  connsim_data:
   zammad-storage:
   mongodb_data:
     driver: local

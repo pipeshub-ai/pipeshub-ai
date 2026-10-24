@@ -7,6 +7,7 @@
     "local_fs": "Arango leg inflated by a 240s timeout in test_tc_lfs_filter_001_excluded_extension_is_dropped (57s on Neo4j). Real figure is nearer 19 min.",
     "azure_files": "Understated: all four tests errored at setup in this run. Expect it to grow once the nested-folder sync fix lands.",
     "sharepoint": "Skipped in CI (no credentials), so it costs nothing today.",
+    "zendesk": "Estimated, not measured: this suite is new (19 tests, no scenario matrix). Replace with the minutes from the first run that executes it.",
     "zammad": "Estimated, not measured: this suite is new. Sized from bookstack (12.1 min, 5 tests) plus Zammad's slower stack start and its wait for the search index.",
     "scenario_matrix": "Each connector's *_scenario_matrix_test.py (connectors/scenario_matrix.py) is added here as an estimate, not a measurement: Neo4j leg only (it skips on the ArangoDB leg), about 4 to 22 min per connector depending on how slow the source's sync and search index are. smb had no measured figure, so its number is the matrix estimate alone. Replace with measured minutes after the first nightly that runs it.",
     "google_drive": "google_drive_workspace and google_drive_individual measured from the connectors-2 job of manual run 38789665806 (2026-10-15), which hit the 300-min job timeout: workspace 81.4 min (Neo4j, scenario matrix included) + 79.8 min (ArangoDB), individual 28.2 + 26.5 min. The other suites keep the 2026-09-19 figures."
@@ -35,6 +36,7 @@
     "github": 11.0,
     "sharepoint": 0.0,
     "zammad": 25.0,
+    "zendesk": 15.0,
     "smb": 6.0
   }
 }

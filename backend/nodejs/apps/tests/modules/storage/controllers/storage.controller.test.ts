@@ -40,6 +40,14 @@ function makeRes(): any {
       res.body = data
       return res
     },
+    type(contentType: string) {
+      res.contentType = contentType
+      return res
+    },
+    send(data: any) {
+      res.body = data
+      return res
+    },
     setHeader: sinon.stub(),
   }
   return res
@@ -818,6 +826,11 @@ describe('StorageController', () => {
 
       await controller.getDocumentBuffer(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
+      expect(next.called).to.be.false
+      // Raw bytes, not a JSON array of numbers: a large file's JSON would overflow V8.
+      expect(res.contentType).to.equal('application/octet-stream')
+      expect(Buffer.isBuffer(res.body)).to.be.true
+      expect(res.body.toString()).to.equal('file-data')
     })
 
     it('should throw NotFoundError when document not found', async () => {
@@ -1764,6 +1777,23 @@ describe('StorageController.moveTree collision handling', () => {
       expect(moveLocal.called).to.be.false
       expect(res.body).to.deep.equal({ moved: 0, collision: true })
     })
+  })
+
+  it('scopes the tree lookup by orgId, not just the path prefix', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const find = sinon.stub(DocumentModel, 'find').returns({
+      select: () => ({ lean: () => Promise.resolve([]) }),
+    } as any)
+
+    await controller.moveTree(
+      makeReq({ orgId, body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed' } }),
+      makeRes(),
+      sinon.stub(),
+    )
+
+    expect(String(find.firstCall.args[0].orgId)).to.equal(String(orgId))
   })
 
   it('allows folder names containing ".." but rejects a ".." segment', async () => {

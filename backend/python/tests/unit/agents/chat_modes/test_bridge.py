@@ -12,12 +12,13 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
@@ -56,13 +57,15 @@ def _stream_agent(result: Any) -> MagicMock:
     return agent
 
 
-def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
+def _patch_connectors(
+    has_sql: bool = False, has_slack: bool = False, has_code: bool = False
+):
     """Stub the single connector-instance query `run_chat_stream` issues, and
     the connector prefetch beside it.
 
     Returns instance dicts rather than booleans so the real
-    `connector_instances_have_sql`/`_have_slack` predicates run over them —
-    the two flags used to come from two separate queries, and this is what
+    `connector_instances_have_sql`/`_have_slack`/`_have_code` predicates run
+    over them — the flags used to come from one query each, and this is what
     pins them to one.
     """
     instances = []
@@ -70,6 +73,8 @@ def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
         instances.append({"type": Connectors.POSTGRESQL.value, "isConfigured": True})
     if has_slack:
         instances.append({"type": Connectors.SLACK.value, "isConfigured": True})
+    if has_code:
+        instances.append({"type": Connectors.GITLAB.value, "isConfigured": True})
     return (
         patch(
             "app.agents.chat_modes.bridge.fetch_user_connector_instances",
@@ -286,6 +291,20 @@ class TestApplyPolicyToChatState:
         )
 
         assert chat_state["allowed_sql_connector_ids"] == frozenset()
+
+    def test_code_knowledge_follows_the_connector_like_sql_and_slack(self) -> None:
+        """Chat modes have no per-agent knowledge scope, so code-tool
+        availability mirrors connector presence — same as SQL and Slack."""
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(chat_state, INTERNAL_SEARCH_POLICY, web_search_config=None)
+        assert chat_state["has_code_knowledge"] is True
+
+    def test_web_search_mode_turns_code_tools_off(self) -> None:
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(
+            chat_state, WEB_SEARCH_POLICY, web_search_config={"provider": "tavily"}
+        )
+        assert chat_state["has_code_knowledge"] is False
 
 
 class TestResolveCustomInstructions:
@@ -704,6 +723,56 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+
+    async def _prefetch_ran_for(self, query: str) -> bool:
+        prefetch = AsyncMock(return_value=PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        ))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"]["query"] = query
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": query},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=prefetch),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+        assert events[-1].startswith("event: complete\n")
+        return prefetch.await_count > 0
+
+    @pytest.mark.parametrize(("switch", "query", "prefetched"), [
+        ("true", "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("true", "What is the redirect URI for the Dropbox team app?", True),
+        # On when unset.
+        (None, "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("false", "Between March and May 2026, what problems came up with the Slack bot?", True),
+    ])
+    async def test_a_span_question_skips_the_upfront_search_only_with_the_timeline_on(
+        self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,
+    ) -> None:
+        """The upfront search is the top matches overall, bunched around one
+        moment; with the timeline tool on, a span question is left to it."""
+        if switch is None:
+            monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, switch)
+        assert await self._prefetch_ran_for(query) is prefetched
 
     async def _goal_constraints_for(self, prefetch_result: PrefetchResult) -> list[str]:
         captured: dict[str, Any] = {}
@@ -1397,3 +1466,66 @@ class TestRunChatStreamNoToolsDegradation:
 
         assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
         assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
+
+
+class TestConnectorFlagsReachChatState:
+    """Every flag the tool gates read must actually be PASSED to
+    `build_initial_state`, not just computed.
+
+    `has_code_connector` was a keyword-only parameter with a `False` default
+    that no caller ever supplied, so `tool_loader`'s
+    `has_code_connector and has_code_knowledge` gate was `False and ...` on
+    every request and the code-graph toolset never loaded — for an org with an
+    indexed GitLab repo and the tools plainly configured. The gate's own tests
+    passed throughout: they built the context with `has_code_connector=True`
+    by hand, which is the half that was never true in production.
+    """
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        config_service = AsyncMock()
+        config_service.get_config.return_value = {"providers": []}
+        return {
+            "query_info": {"query": "hello", "chatMode": "agent", "filters": {}},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "policy": AGENT_POLICY,
+            "log": MagicMock(),
+            "retrieval_service": AsyncMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": config_service,
+        }
+
+    async def _captured_kwargs(self, **connectors) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _capture(*args, **kwargs) -> Never:
+            seen.update(kwargs)
+            raise RuntimeError("stop here — the call is what is under test")
+
+        instances_patch, prefetch_patch = _patch_connectors(**connectors)
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture),
+            instances_patch,
+            prefetch_patch,
+        ):
+            [_ async for _ in run_chat_stream(**self._kwargs())]
+        return seen
+
+    async def test_a_configured_repo_connector_reaches_build_initial_state(self) -> None:
+        seen = await self._captured_kwargs(has_code=True)
+        assert seen["has_code_connector"] is True
+
+    async def test_no_repo_connector_leaves_the_flag_off(self) -> None:
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True)
+        assert seen["has_code_connector"] is False
+        assert seen["has_sql_connector"] is True, "the other flags still work"
+        assert seen["has_slack_connector"] is True
+
+    async def test_all_three_flags_come_from_the_one_instance_query(self) -> None:
+        """Three predicates, one round trip — adding the code flag must not
+        reintroduce a per-flag lookup on the pre-first-token path."""
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
+        assert (seen["has_sql_connector"], seen["has_slack_connector"],
+                seen["has_code_connector"]) == (True, True, True)

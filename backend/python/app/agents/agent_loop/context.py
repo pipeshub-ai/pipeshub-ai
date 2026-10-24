@@ -20,9 +20,12 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+if TYPE_CHECKING:
+    from app.services.artifact_registry.models import Actor
 
 
 def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
@@ -59,6 +62,8 @@ class AgentContext(BaseModel):
     org_id: str
     user_id: str
     user_email: str
+    # Who owns the artifacts the run makes; see `chat_state.ChatState`.
+    artifact_owner_user_id: str = ""
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
@@ -87,6 +92,9 @@ class AgentContext(BaseModel):
     # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # API toolset operations the agent may call, as stored on the agent:
+    # `"<instanceId>:<toolName>"` (see `app/agents/openapi/attachments.py`).
+    api_toolset_tools: list[str] = Field(default_factory=list)
 
     # Knowledge config
     has_knowledge: bool = False
@@ -107,6 +115,8 @@ class AgentContext(BaseModel):
     has_sql_knowledge: bool = False
     has_slack_connector: bool = False
     has_slack_knowledge: bool = False
+    has_code_connector: bool = False
+    has_code_knowledge: bool = False
     is_multimodal_llm: bool = False
     # The user's question for this turn. Reaches tools that need to know what
     # is being asked -- `fetch_record` ranks an over-budget record's blocks
@@ -388,6 +398,17 @@ class AgentContext(BaseModel):
         return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
     @property
+    def artifact_actor(self) -> Actor:
+        """The `Actor` artifacts are created and read as; see `artifact_owner`."""
+        from app.services.artifact_registry.models import artifact_owner
+
+        return artifact_owner({
+            "org_id": self.org_id,
+            "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id,
+        })
+
+    @property
     def artifact_registry(self) -> Any:
         """`ArtifactRegistryService` for this request — `None` when either
         `graph_provider` or `blob_store` isn't wired (background/test runs
@@ -427,6 +448,7 @@ class AgentContext(BaseModel):
         return cls(
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
+            artifact_owner_user_id=state.get("artifact_owner_user_id") or state.get("user_id", ""),
             user_email=state.get("user_email", ""),
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
@@ -443,6 +465,7 @@ class AgentContext(BaseModel):
             toolset_configs=state.get("toolset_configs") or {},
             mcp_servers=state.get("mcp_servers") or [],
             mcp_server_configs=state.get("mcp_server_configs") or {},
+            api_toolset_tools=state.get("api_toolset_tools") or [],
             web_search_config=state.get("web_search_config"),
             deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
             has_knowledge=bool(state.get("has_knowledge", False)),
@@ -456,6 +479,8 @@ class AgentContext(BaseModel):
             has_sql_knowledge=bool(state.get("has_sql_knowledge", False)),
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
+            has_code_connector=bool(state.get("has_code_connector", False)),
+            has_code_knowledge=bool(state.get("has_code_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
@@ -564,6 +589,7 @@ class AgentContext(BaseModel):
             "blob_store": self.blob_store,
             "org_id": self.org_id,
             "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id or self.user_id,
             "user_email": self.user_email,
             "user_info": self.user_info,
             "org_info": self.org_info,
@@ -588,6 +614,8 @@ class AgentContext(BaseModel):
             "has_sql_knowledge": self.has_sql_knowledge,
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
+            "has_code_connector": self.has_code_connector,
+            "has_code_knowledge": self.has_code_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
             "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,

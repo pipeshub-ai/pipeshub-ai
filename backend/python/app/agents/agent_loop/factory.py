@@ -105,6 +105,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
@@ -126,18 +127,24 @@ from app.agents.agent_loop.hooks import (
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
     completion_gate,
     conversation_enrichment,
     progressive_entity_tools,
+    # repo_instructions_after_tools,
+    # repo_instructions_on_turn,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
     retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
+    selected_nodes_prompt,
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
@@ -169,11 +176,13 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.openapi_tool_loader import OpenAPIToolProvider
 from app.agents.agent_loop.output_cap_transport import (
     max_turn_output_chars,
     with_output_cap,
 )
 from app.agents.agent_loop.parked_turn import ASK_USER_QUESTION_RESUME_PREFIX
+from app.agents.agent_loop.period_summary import period_summary_hint
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -240,10 +249,31 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__lookup_record",
 })
 
+# Code structure is cross-cutting: the exploring agent is where code questions
+# land, and routing them back through the parent costs a turn and loses the
+# child's context. The full codegraph set ships as shared so a search that
+# unlocks the toolset can walk edges and read symbols without another
+# delegation.
+#
+# SHARED, never claimed. `plan_domain_agents` claiming is exclusive, so listing
+# these on a definition would take them OFF the parent -- flipping
+# `surfaces.code_graph` to False and deleting the tool's own entry from the
+# parent's source list. Shared names never enter `claimed`, which is the same
+# mechanism `_DOMAIN_SHARED_NAV_TOOL_NAMES` relies on.
+_DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
+    "codegraph__query_code_graph",
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+    "codegraph__search_code",
+    "codegraph__outline",
+    "codegraph__impact",
+    "codegraph__entry_points",
+})
 # Tools a deployment switch adds to the knowledge tools. Not counted toward
 # the lazy-disclosure threshold, so turning one on never hides web search or
 # connector tools behind fetch_tools for a request that was eager without it.
-_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME, TIMELINE_TOOL_NAME})
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
@@ -251,6 +281,22 @@ _SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
 _MAX_TURNS = 15
 # Deep research searches, reads and cross-checks before answering; its web budget bounds the cost.
 _DEEP_RESEARCH_MAX_TURNS = 30
+
+#: Traversal results L3 keeps past its turn window. A walk spans more turns
+#: than the window holds, and each hop is the address the next one needs —
+#: clearing an earlier hop strands the walk. Measured on the eval fixture
+#: (A-8-result-size): a one-hop walk is ~3KB median / 7KB p90, a two-hop walk
+#: ~15KB / 22KB, a symbol read under 1KB. A run of two-hop walks is the costly
+#: case; L4-L7 still compact by budget, which bounds it. `query_code_graph` is
+#: deliberately absent — its listings are re-callable, not something to carry.
+_CODE_TRAVERSAL_TOOLS = frozenset({
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+    # A walk too, grouped by file; and an outline is a few hundred bytes.
+    "codegraph__impact",
+    "codegraph__outline",
+})
 
 
 DIRECT_TRANSPORT = "direct"
@@ -496,6 +542,7 @@ class PipesHubAgentFactory:
         # every MCP-less chat).
         if not context.mcp_servers or await is_mcp_enabled(context.config_service):
             await MCPToolProvider().load_into(tool_registry, context)
+        await OpenAPIToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
@@ -803,6 +850,7 @@ class PipesHubAgentFactory:
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
                 ),
+                code_tool_names=_DOMAIN_SHARED_CODE_TOOL_NAMES,
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(
@@ -1080,7 +1128,7 @@ class PipesHubAgentFactory:
                 # Same reasoning: fetch_full_record results carry [refN]
                 # markers that AnswerFinalizer needs to build citations.
                 "knowledgegraph__fetch_record",
-            }),
+            }) | _CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
         hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
@@ -1119,6 +1167,8 @@ class PipesHubAgentFactory:
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
         hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
+        hooks.on(HookEvent.POST_TOOL_USE).use(code_graph_unlock_after_tools(context))
+        # hooks.on(HookEvent.POST_TOOL_USE).use(repo_instructions_after_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
@@ -1132,10 +1182,16 @@ class PipesHubAgentFactory:
 
         # Answers an approval card: settles the stopped call before the loop starts.
         hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
+        hooks.on(HookEvent.PRE_AGENT).use(selected_nodes_prompt(context))
+        hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
+        hooks.on(HookEvent.PRE_TURN).use(code_graph_unlock_on_turn(context))
+        # hooks.on(HookEvent.PRE_TURN).use(repo_instructions_on_turn(context))
+        # After visibility mutations — prompt builder reads bound_tool_names.
+        hooks.on(HookEvent.PRE_TURN).use(sync_visible_tools_for_prompt(context))
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))

@@ -13,6 +13,7 @@ import {
   getConversationById,
   getSearchById,
   listAllArchivesConversation,
+  pinConversation,
   regenerateAnswers,
   search,
   searchHistory,
@@ -20,6 +21,7 @@ import {
   shareSearch,
   unarchiveConversation,
   unarchiveSearch,
+  unpinConversation,
   unshareConversationById,
   unshareSearch,
   updateFeedback,
@@ -57,6 +59,10 @@ import {
   searchArchivedConversations,
   setConversationProject,
   setConversationProjectVisibility,
+  forkConversation,
+  forkAgentConversation,
+  shareAgentConversation,
+  unshareAgentConversation,
 } from '../controller/es_controller';
 import {
   addMessage,
@@ -117,6 +123,10 @@ import {
   getModelUsageRequestSchema,
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
+  forkConversationParamsSchema,
+  forkAgentConversationParamsSchema,
+  agentConversationShareParamsSchema,
+  agentConversationUnshareParamsSchema,
 } from '../validators/es_validators';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -418,6 +428,20 @@ export function createConversationalRouter(container: Container): Router {
     regenerateAnswers(appConfig),
   );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
+  /**
+   * @route POST /api/v1/conversations/:conversationId/message/:messageId/fork
+   * @desc Copy this conversation into a new chat, including every message up to messageId
+   */
+  router.post(
+    '/:conversationId/message/:messageId/fork',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    ValidationMiddleware.validate(forkConversationParamsSchema),
+    forkConversation(appConfig),
+  );
+
   /**
    * @route POST /api/v1/conversations/:conversationId/cancel
    * @desc Cooperatively stop an in-flight assistant chat stream
@@ -488,6 +512,34 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     unarchiveConversation,
+  );
+
+  /**
+   * @route PATCH /api/v1/conversations/:conversationId/pin
+   * @desc Pin a conversation to the top of the owner's list
+   * @access Private (owner only)
+   * @param {string} conversationId - Conversation ID
+   */
+  router.patch(
+    '/:conversationId/pin',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    pinConversation,
+  );
+
+  /**
+   * @route PATCH /api/v1/conversations/:conversationId/unpin
+   * @desc Remove a conversation's pin
+   * @access Private (owner only)
+   * @param {string} conversationId - Conversation ID
+   */
+  router.patch(
+    '/:conversationId/unpin',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    unpinConversation,
   );
 
   /**
@@ -737,6 +789,20 @@ export function createAgentConversationalRouter(container: Container): Router {
       regenerateAgentAnswers(appConfig),
     );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/fork
+   * @desc Copy this agent conversation into a new chat, including every message up to messageId
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/fork',
+    authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(forkAgentConversationParamsSchema),
+    forkAgentConversation(appConfig),
+  );
+
   /**
    * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/cancel
    * @desc Cooperatively stop an in-flight agent chat stream
@@ -778,7 +844,33 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(getAgentConversationByIdSchema),
-    getAgentConversationById,
+    getAgentConversationById(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/share
+   * @desc Share an agent conversation read-only with other users in the org. Owner only.
+   * @body { userIds: string[], accessLevel?: 'read' }
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/share',
+    authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationShareParamsSchema),
+    shareAgentConversation(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/unshare
+   * @desc Remove read access to an agent conversation for specific users. Owner only.
+   * @body { userIds: string[] }
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/unshare',
+    authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    ValidationMiddleware.validate(agentConversationUnshareParamsSchema),
+    unshareAgentConversation(appConfig),
   );
 
   router.delete(

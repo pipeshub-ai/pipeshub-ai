@@ -448,7 +448,20 @@ export function AskUserQuestionCard({
   const [step, setStep] = useState(() =>
     firstUnansweredStep(questions, initialAnswers),
   );
-  const [showAnswers, setShowAnswers] = useState(true);
+  const settled = status === 'submitted' || status === 'persisted';
+  const allAnswered = settled && !hasUnansweredQuestions(normalized, answers);
+  // A finished card opens the way "Show less" leaves it. Collapse once per
+  // completion, including a card that was just submitted, and leave a later
+  // "Show more" open until another question is still unanswered.
+  const [showAnswers, setShowAnswers] = useState(!allAnswered);
+  const [autoCollapsed, setAutoCollapsed] = useState(allAnswered);
+  if (allAnswered && !autoCollapsed) {
+    setAutoCollapsed(true);
+    setShowAnswers(false);
+  } else if (!allAnswered && autoCollapsed) {
+    setAutoCollapsed(false);
+    if (settled) setShowAnswers(true);
+  }
   const questionKey = questions.map((q) => q.uuid).join('|');
   const initialAnswersKey = JSON.stringify(initialAnswers);
 

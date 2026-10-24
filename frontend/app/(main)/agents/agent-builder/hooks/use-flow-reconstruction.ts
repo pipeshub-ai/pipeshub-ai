@@ -6,6 +6,7 @@ import { Node, Edge } from '@xyflow/react';
 import {
   truncateText,
   normalizeDisplayName,
+  normalizePaletteLabel,
   formattedProvider,
 } from '../display-utils';
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
@@ -20,6 +21,8 @@ import type {
 } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 import { skillNodeWarning } from '../skill-node-warning';
+import { apiToolsetsOnAgent } from '../api-toolset-attachments';
+import type { ApiToolset } from '../../../workspace/api-toolsets/types';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
 interface ModelConfigObject {
@@ -50,12 +53,19 @@ export function useAgentBuilderReconstruction(): {
     agent: AgentReconstructionSource,
     models: unknown[],
     tools: unknown[],
-    knowledgeBases: { id: string; name: string; connectorId?: string }[]
+    knowledgeBases: { id: string; name: string; connectorId?: string }[],
+    apiToolsets?: ApiToolset[]
   ) => { nodes: Node<FlowNodeData>[]; edges: Edge[] };
 } {
   const { t } = useTranslation();
   const reconstructFlowFromAgent = useCallback(
-    (agent: AgentReconstructionSource, models: unknown[], tools: unknown[], knowledgeBases: { id: string; name: string; connectorId?: string }[]) => {
+    (
+      agent: AgentReconstructionSource,
+      models: unknown[],
+      tools: unknown[],
+      knowledgeBases: { id: string; name: string; connectorId?: string }[],
+      apiToolsets: ApiToolset[] = []
+    ) => {
       const nodes: Node<FlowNodeData>[] = [];
       const edges: Edge[] = [];
       let nodeCounter = 1;
@@ -112,10 +122,16 @@ export function useAgentBuilderReconstruction(): {
         },
       };
 
+      // API toolsets are stored as a flat list but drawn as toolset nodes like any action.
+      const agentToolsets: AgentToolset[] = [
+        ...(agent.toolsets ?? []),
+        ...apiToolsetsOnAgent(agent.apiToolsetTools ?? [], apiToolsets, t('agentBuilder.apiToolsets.section')),
+      ];
+
       // Calculate node counts for intelligent positioning
       let toolsetsCount = 0;
-      if (agent.toolsets && agent.toolsets.length > 0) {
-        toolsetsCount = agent.toolsets.length;
+      if (agentToolsets.length > 0) {
+        toolsetsCount = agentToolsets.length;
       } else if (agent.tools && agent.tools.length > 0) {
         const uniqueApps = new Set<string>();
         agent.tools.forEach((toolName: string) => {
@@ -437,11 +453,11 @@ export function useAgentBuilderReconstruction(): {
       // 4. Create Toolset nodes
       const toolsetNodes: Node<FlowNodeData>[] = [];
 
-      const hasToolsets = agent.toolsets && agent.toolsets.length > 0;
+      const hasToolsets = agentToolsets.length > 0;
       const hasLegacyTools = !hasToolsets && agent.tools && agent.tools.length > 0;
 
-      if (hasToolsets && agent.toolsets) {
-        agent.toolsets.forEach((toolset: AgentToolset, index: number) => {
+      if (hasToolsets) {
+        agentToolsets.forEach((toolset: AgentToolset, index: number) => {
           const toolsetName = toolset.name || '';
           const toolsetDisplayName = toolset.displayName || toolset.name || t('agentBuilder.toolsetDefaultName');
           const toolsetInstanceName = toolset.instanceName?.trim();
@@ -519,7 +535,7 @@ export function useAgentBuilderReconstruction(): {
             data: {
               id: nodeId,
               type: `toolset-${toolsetName}`,
-              label: normalizeDisplayName(nodeHeaderLabel),
+              label: normalizePaletteLabel(nodeHeaderLabel),
               description: t('agentBuilder.toolsetWithToolCount', {
                 name: toolsetDisplayName,
                 count: toolsForNode.length,

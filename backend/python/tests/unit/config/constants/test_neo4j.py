@@ -33,6 +33,9 @@ class TestNeo4jLabel:
     def test_records_label(self) -> None:
         assert Neo4jLabel.RECORDS.value == "Record"
 
+    def test_stage_states_label(self) -> None:
+        assert Neo4jLabel.STAGE_STATES.value == "StageState"
+
     def test_record_groups_label(self) -> None:
         assert Neo4jLabel.RECORD_GROUPS.value == "RecordGroup"
 
@@ -101,7 +104,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 49
+        assert len(Neo4jLabel) == 50
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +158,7 @@ class TestCollectionToLabelMapping:
         """Verify that every key in COLLECTION_TO_LABEL maps to the expected Neo4j label."""
         expected_pairs = [
             (CollectionNames.RECORDS.value, Neo4jLabel.RECORDS.value),
+            (CollectionNames.STAGE_STATES.value, Neo4jLabel.STAGE_STATES.value),
             (CollectionNames.RECORD_GROUPS.value, Neo4jLabel.RECORD_GROUPS.value),
             (CollectionNames.SYNC_POINTS.value, Neo4jLabel.SYNC_POINTS.value),
             (CollectionNames.FILES.value, Neo4jLabel.FILES.value),
@@ -207,7 +211,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 49
+        assert len(COLLECTION_TO_LABEL) == 50
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():

@@ -26,6 +26,12 @@ vi.mock('@/config', async () => {
   return { OAuthAppSelector };
 });
 
+// Redirect URIs are built from the configured public frontend URL, not the page origin.
+const FRONTEND_PUBLIC_URL = 'https://pipeshub.example.com';
+vi.mock('@/lib/hooks/use-frontend-public-url', () => ({
+  useFrontendPublicUrl: () => FRONTEND_PUBLIC_URL,
+}));
+
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('next/link', () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) => (
@@ -268,7 +274,7 @@ describe('AuthenticateTab: redirect URL', () => {
 
     expect(screen.getByText('Redirect/Callback URL')).toBeTruthy();
     expect(
-      screen.getByText(`${window.location.origin}/connectors/oauth/callback/Jira`)
+      screen.getByText(`${FRONTEND_PUBLIC_URL}/connectors/oauth/callback/Jira`)
     ).toBeTruthy();
   });
 
@@ -282,7 +288,7 @@ describe('AuthenticateTab: redirect URL', () => {
 
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(
-        `${window.location.origin}/connectors/oauth/callback/Jira`
+        `${FRONTEND_PUBLIC_URL}/connectors/oauth/callback/Jira`
       )
     );
     await waitFor(() =>

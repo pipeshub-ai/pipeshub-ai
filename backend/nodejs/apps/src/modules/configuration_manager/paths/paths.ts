@@ -39,6 +39,7 @@ export const configPaths = {
   },
   aiModels: '/services/aiModels',
   aiModelsEmbedding: '/services/aiModels/embedding',
+  aiGatewayIdentityPolicy: '/services/aiGateway/identityPolicy',
   systemPrompts: '/services/systemPrompts',
   // v2 re-runs the same backfill after the BullMQ queue prefix moved from the
   // default `bull` to the hash-tagged `{crawling}` (needed so BullMQ's
