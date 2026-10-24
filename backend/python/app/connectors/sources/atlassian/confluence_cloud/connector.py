@@ -11,6 +11,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 import uuid
@@ -2603,6 +2604,8 @@ class ConfluenceConnector(BaseConnector):
     # A comment changed this long before the last checkpoint is still looked at: the checkpoint
     # is taken at the end of a sync, after its comment search.
     _COMMENT_CHECK_OVERLAP = timedelta(minutes=10)
+    # How long an item a filtered search left out is not searched for again.
+    _UNSTORED_RECHECK_SECONDS = 24 * 3600
 
     async def _reindex_pages_with_changed_comments(self, space_key: str) -> None:
         """Re-index the stored pages and blog posts of a space whose comments changed since the last check.
@@ -3002,12 +3005,26 @@ class ConfluenceConnector(BaseConnector):
         modified time, so the incremental search would never return it. The sync
         filters still apply, so an item they leave out stays out. Returns False
         when a read failed, so the caller holds the checkpoint.
+
+        Items the search did not return (left out by the filters, or placeholder
+        ancestors) are searched again once a day or when the filters change, not every run.
         """
         stored_ids = {r.external_record_id for r in stored}
-        unseen = sorted(
+        unstored = {
             item_id for item_id, status in existing.items()
             if status == "current" and item_id not in stored_ids and item_id not in listing.seen
+        }
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "unstored", f"{record_type.value}/{space.short_name}")
+        filters_tag = hashlib.sha256(
+            json.dumps(self._content_filter_kwargs(record_type), sort_keys=True, default=str).encode()
+        ).hexdigest()
+        before = await self.pages_sync_point.read_sync_point(key) or {}
+        recent = (
+            before.get("filters") == filters_tag
+            and time.time() - float(before.get("at") or 0) < self._UNSTORED_RECHECK_SECONDS
         )
+        not_returned = set(json.loads(before.get("ids") or "[]")) & unstored if recent else set()
+        unseen = sorted(unstored - not_returned)
         if not unseen:
             return True
         self.logger.info(
@@ -3015,11 +3032,16 @@ class ConfluenceConnector(BaseConnector):
         )
         complete = True
         for start in range(0, len(unseen), ID_SEARCH_CHUNK):
-            result = await self._sync_content(
-                space.short_name, record_type, defer_checkpoint=True,
-                within_ids=unseen[start:start + ID_SEARCH_CHUNK],
-            )
+            chunk = unseen[start:start + ID_SEARCH_CHUNK]
+            result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, within_ids=chunk)
             complete = complete and result.complete
+            if result.complete:
+                not_returned |= set(chunk) - set(result.seen)
+        await self.pages_sync_point.update_sync_point(key, {
+            "filters": filters_tag,
+            "at": before.get("at") if recent else time.time(),
+            "ids": json.dumps(sorted(not_returned)),
+        })
         return complete
 
     async def _list_space_content(

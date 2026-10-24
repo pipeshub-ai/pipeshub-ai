@@ -1381,6 +1381,26 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records, "the id search runs with the filters, so an excluded page stays out"
 
+    async def test_a_page_the_filters_leave_out_is_searched_for_once_a_day(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        await connector._sync_spaces_content([ENG])
+        search.by_cursor = {None: search_page([])}
+        await connector._sync_spaces_content([ENG])
+
+        def searches_for_11() -> int:
+            return sum(1 for q in search.queries if re.search(r"(?:^| AND )id in \([^)]*11", q.get("cql", "")))
+
+        search.queries.clear()
+        await connector._sync_spaces_content([ENG])
+        assert searches_for_11() == 0
+
+        key = next(k for k in checkpoints.sync_points if "unstored" in k)
+        checkpoints.sync_points[key]["at"] -= 2 * 24 * 3600
+        await connector._sync_spaces_content([ENG])
+        assert searches_for_11() == 1
+
     async def test_a_failed_search_for_a_listed_page_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
         api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
