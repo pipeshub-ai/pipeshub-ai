@@ -19,19 +19,19 @@ def ends(fragment: str, method: str = "GET") -> Callable[[str, str, dict[str, st
     return match
 
 
-def fail(world: Any, matcher: Callable[[str, str, dict[str, str]], bool], status: Any = 500, times: int = 1,
+def fail(world: Any, matcher: Callable[[str, str, dict[str, str]], bool], status: Any = 500, times: int = 1,  # noqa: ANN401
          skip: int = 0, **headers: str) -> Fault:
     fault = Fault(matcher, kind=status, times=times, skip=skip, headers=headers)
     world.gl.faults.append(fault)
     return fault
 
 
-def hook(world: Any, matcher: Callable[[str, str, dict[str, str]], bool], action: Callable[[], None],
+def hook(world: Any, matcher: Callable[[str, str, dict[str, str]], bool], action: Callable[[], None],  # noqa: ANN401
          skip: int = 0) -> Fault:
     fault = Fault(matcher, kind="hook", times=1, skip=skip, action=action)
     world.gl.faults.append(fault)
     return fault
 
 
-def pid(project: Any) -> str:
+def pid(project: Any) -> str:  # noqa: ANN401
     return f"/api/v4/projects/{project.id}"

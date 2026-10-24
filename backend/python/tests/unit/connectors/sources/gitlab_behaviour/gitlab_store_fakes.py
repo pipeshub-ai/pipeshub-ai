@@ -231,7 +231,9 @@ class FakeDataStore:
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
-    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Every stored node matching all the filters, as the graph stores answer them."""
         if collection == "recordGroups":
             nodes = [{"id": g.id, "connectorId": g.connector_id, "externalGroupId": g.external_group_id,
@@ -242,7 +244,11 @@ class FakeDataStore:
                       "recordType": str(getattr(r.record_type, "value", r.record_type)),
                       "sourceCreatedAtTimestamp": r.source_created_at,
                       "sourceLastModifiedTimestamp": r.source_updated_at} for r in self.db.records.values()]
-        return [n for n in nodes if all(n.get(k) == v for k, v in filters.items())]
+        found = [n for n in nodes if all(n.get(k) == v for k, v in filters.items())]
+        if return_fields:
+            # `_key` is the node's id, as both graph stores answer it.
+            found = [{f: n.get("id" if f == "_key" else f) for f in return_fields} for n in found]
+        return found
 
     async def batch_update_nodes(self, patches: list[dict[str, Any]], collection: str) -> None:
         for patch in patches:

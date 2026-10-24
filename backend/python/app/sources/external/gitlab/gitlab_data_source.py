@@ -370,6 +370,7 @@ class GitLabDataSource:
         get_all: bool | None = None,
         per_page: int | None = None,
         page: int | None = None,
+        *,
         iterator: bool | None = None,
     ) -> GitLabResponse:
         """List project issues with optional filters.  ``data`` is a list of ``ProjectIssue``,
@@ -510,6 +511,7 @@ class GitLabDataSource:
         get_all: bool | None = None,
         per_page: int | None = None,
         page: int | None = None,
+        *,
         iterator: bool | None = None,
     ) -> GitLabResponse:
         """List merge requests with optional filters.  ``data`` is a list of ``ProjectMergeRequest``,

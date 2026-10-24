@@ -34,11 +34,11 @@ def _server(items: list[SimpleNamespace], cap: int, calls: list[dict]) -> AsyncM
     def parse(v: datetime | None) -> float | None:
         return v.timestamp() if v else None
 
-    async def ds_call(method, **kw):
+    async def ds_call(method, **kw) -> object:
         calls.append(kw)
         after, before = parse(kw.get("updated_after")), parse(kw.get("updated_before"))
 
-        def t(i):
+        def t(i) -> float:
             return datetime.fromisoformat(i.updated_at.replace("Z", "+00:00")).timestamp()
 
         rows = sorted((i for i in items if (after is None or t(i) >= after - 1e-9)
@@ -83,7 +83,7 @@ async def test_an_item_edited_between_pages_does_not_hide_another() -> None:
     calls: list[dict] = []
     inner = _server(items, 100, calls)
 
-    async def ds_call(method, **kw):
+    async def ds_call(method, **kw) -> object:
         if len(calls) == 1:  # between the first and the second page
             items[0].updated_at = _iso(2_000_000)
         return await inner(method, **kw)
@@ -103,7 +103,7 @@ async def test_a_failed_page_says_so_and_keeps_what_was_read() -> None:
     inner = _server(items, 100, [])
     seen = {"n": 0}
 
-    async def ds_call(method, **kw):
+    async def ds_call(method, **kw) -> object:
         seen["n"] += 1
         if seen["n"] == 2:
             return GitLabResponse(success=False, error="502", status_code=502)

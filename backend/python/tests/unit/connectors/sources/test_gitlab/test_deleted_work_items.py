@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from app.connectors.sources.gitlab.deleted_work_items import ISSUES, DeletedWorkItems
 from app.sources.client.gitlab.gitlab import GitLabResponse
 
 from .conftest import make_mock_connector
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 PROJECT = 42
 
@@ -23,18 +27,18 @@ def _setup(stored: list[dict], total: int | None, present: list[int], lookups: d
            state: dict | None = None) -> tuple[MagicMock, DeletedWorkItems]:
     c = make_mock_connector()
     tx = MagicMock()
-    tx.get_nodes_by_filters = AsyncMock(side_effect=lambda collection, filters: (
+    tx.get_nodes_by_filters = AsyncMock(side_effect=lambda collection, filters, **_: (
         stored if filters["externalGroupId"].endswith("-work-items") and "confidential" not in filters["externalGroupId"]
         else []))
 
     @asynccontextmanager
-    async def transaction():
+    async def transaction() -> AsyncIterator[MagicMock]:
         yield tx
 
     c.data_store_provider = MagicMock(transaction=transaction)
     c.record_sync_point.read_sync_point = AsyncMock(return_value=state)
 
-    async def ds_call(method, **kw):
+    async def ds_call(method, **kw) -> GitLabResponse:
         if kw.get("iterator"):
             return GitLabResponse(success=True, data=SimpleNamespace(total=total))
         if kw.get("get_all"):
@@ -57,7 +61,20 @@ async def test_only_an_item_gitlab_answers_404_for_is_removed() -> None:
     await _reconcile(items)
     c.data_entities_processor.on_record_deleted.assert_awaited_once_with("rec-2")
     c.note_failed_read.assert_called_once()  # issue 3 could not be confirmed
-    c.record_sync_point.update_sync_point.assert_not_called()  # so the next sync looks again
+    _, saved = c.record_sync_point.update_sync_point.await_args.args
+    assert saved["sweep_pending"] is True  # so the next sync looks again
+
+
+async def test_a_sweep_that_failed_runs_again_even_when_the_count_adds_up() -> None:
+    """One issue deleted and one created while a sweep failed: the next sync lists only
+    newer items, so the count matches the baseline and only the pending flag finds it."""
+    gone = GitLabResponse(success=False, status_code=404, error="404")
+    c, items = _setup(_stored(1, 2), total=2, present=[1], lookups={2: gone},
+                      state={"total": 2, "checked_at": 0, "sweep_pending": True})
+    await _reconcile(items)
+    c.data_entities_processor.on_record_deleted.assert_awaited_once_with("rec-2")
+    _, saved = c.record_sync_point.update_sync_point.await_args.args
+    assert saved["sweep_pending"] is False
 
 
 async def test_a_count_that_adds_up_sweeps_nothing() -> None:

@@ -72,7 +72,7 @@ def make_mock_connector() -> MagicMock:
 
     # The issue and merge request listing reads through runtime.ds_call, so a test
     # stubbing that one call controls what the listing returns.
-    async def _listing(method, **kwargs):
+    async def _listing(method, **kwargs) -> object:
         return await runtime.ds_call(method, **kwargs)
 
     c.listing = MagicMock()

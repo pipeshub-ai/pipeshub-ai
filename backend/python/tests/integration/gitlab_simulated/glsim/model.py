@@ -1,6 +1,6 @@
 """The state of one simulated GitLab instance, and GitLab's own answer to "who can read what".
 
-Every rule here names where it comes from in ``docs/SOURCES.md``. Behaviour the
+Every rule here names where it comes from in ``SOURCES.md``. Behaviour the
 documentation leaves open is a ``Behaviour`` switch, so a scenario can run under each
 answer.
 """
@@ -11,10 +11,12 @@ import base64
 import hashlib
 import itertools
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 GUEST, PLANNER, REPORTER, DEVELOPER, MAINTAINER, OWNER = 10, 15, 20, 30, 40, 50
 MINIMAL = 5
@@ -44,7 +46,7 @@ def b64(data: bytes) -> str:
 
 @dataclass
 class Behaviour:
-    """Switches for behaviour GitLab's documentation leaves open (see docs/SOURCES.md)."""
+    """Switches for behaviour GitLab's documentation leaves open (see SOURCES.md)."""
 
     note_bumps_issue: bool = True          # a new, edited or deleted comment moves updated_at
     compare_detects_renames: bool = True   # compare reports exact-content moves as renamed_file
@@ -271,7 +273,7 @@ class World:
     def next_id(self) -> int:
         return next(self._ids)
 
-    def add_user(self, username: str, email: str, *, public_email: str | None = None, **kw: Any) -> User:
+    def add_user(self, username: str, email: str, *, public_email: str | None = None, **kw: Any) -> User:  # noqa: ANN401
         u = User(self.next_id(), username, username.title(), email,
                  public_email=email if public_email is None else public_email, **kw)
         self.users[u.id] = u
@@ -294,7 +296,7 @@ class World:
         self.groups[g.id] = g
         return g
 
-    def add_project(self, namespace: Any, path: str, *, members: dict[User, int] | None = None,
+    def add_project(self, namespace: Any, path: str, *, members: dict[User, int] | None = None,  # noqa: ANN401
                     files: dict[str, str | bytes] | None = None, visibility: str = "private") -> Project:
         p = Project(self.next_id(), path, path, namespace, visibility)
         for u, lvl in (members or {}).items():
@@ -321,17 +323,17 @@ class World:
         p.branches[branch] = sha
         return c
 
-    def add_issue(self, p: Project, title: str, *, author: User, description: str = "", **kw: Any) -> Issue:
+    def add_issue(self, p: Project, title: str, *, author: User, description: str = "", **kw: Any) -> Issue:  # noqa: ANN401
         t = self.clock.tick()
         iid = max(p.issues, default=0) + 1
         i = Issue(self.next_id(), iid, p, title, description, author, t, t, **kw)
         p.issues[iid] = i
         return i
 
-    def touch(self, item: Any) -> None:
+    def touch(self, item: Any) -> None:  # noqa: ANN401
         item.updated_at = self.clock.tick()
 
-    def add_note(self, item: Any, body: str, *, author: User, internal: bool = False, system: bool = False,
+    def add_note(self, item: Any, body: str, *, author: User, internal: bool = False, system: bool = False,  # noqa: ANN401
                  position: dict[str, Any] | None = None) -> Note:
         t = self.clock.tick()
         n = Note(self.next_id(), body, author, t, t, system, internal, position)
@@ -341,7 +343,7 @@ class World:
         return n
 
     def add_mr(self, p: Project, title: str, *, author: User, description: str = "",
-               files: list[dict[str, Any]] | None = None, **kw: Any) -> MergeRequest:
+               files: list[dict[str, Any]] | None = None, **kw: Any) -> MergeRequest:  # noqa: ANN401
         t = self.clock.tick()
         iid = max(p.mrs, default=0) + 1
         sha = hashlib.sha1(f"mr{p.id}{iid}{t}".encode()).hexdigest()

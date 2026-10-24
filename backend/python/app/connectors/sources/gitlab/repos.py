@@ -322,9 +322,11 @@ class ReposSync:
         c = self.c
         try:
             async with c.data_store_provider.transaction() as tx_store:
+                # Ids and paths only: a large repository has many stored records.
                 nodes = await tx_store.get_nodes_by_filters(
                     collection=CollectionNames.RECORDS.value,
                     filters={"connectorId": c.connector_id, "externalGroupId": f"{project_id}-code-repository"},
+                    return_fields=["_key", "externalRecordId", "isDeleted"],
                 )
             gone = [n for n in nodes if not n.get("isDeleted") and n.get("externalRecordId") not in seen]
             for node in gone:

@@ -2,6 +2,8 @@
 store failures. Nothing may be lost for good, and a sync that did not work must never
 report success."""
 
+import contextlib
+
 import pytest
 
 from tests.integration.gitlab_simulated.helpers import ends, fail, on, pid
@@ -33,7 +35,6 @@ async def test_transient_5xx_and_dropped_connections_are_retried(world, org) -> 
 
 
 async def test_graphql_tree_page_failing_briefly_is_retried(world, org) -> None:
-    gl, p = world.gl, org["project"]
     fail(world, on("/api/graphql", method="POST"), status=503, times=1)
     await world.sync()
     diff = await world.diff()
@@ -51,7 +52,7 @@ async def test_issue_listing_down_for_the_whole_sync_does_not_report_success(wor
 
 
 async def test_repository_walk_failing_does_not_report_success(world, org) -> None:
-    gl, p = world.gl, org["project"]
+    gl = world.gl
     fail(world, on("/api/graphql", method="POST"), status=502, times=100)
     await world.sync(expect_error=True)
     gl.faults.clear()
@@ -88,8 +89,6 @@ async def test_secrets_never_reach_the_logs(world, org) -> None:
     gl, p = world.gl, org["project"]
     gl.add_issue(p, "Issue", author=org["dev"])
     fail(world, ends(f"{pid(p)}/issues"), status=401, times=3)
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     assert gl.sync_token.value not in world.logs.text()

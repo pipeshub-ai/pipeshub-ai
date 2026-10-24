@@ -1,6 +1,8 @@
 """Everything that leaves GitLab or the sync's scope must leave PipesHub, and nothing
 else may be removed. Run with GL_AUDIT_SOFT_DELETE=1 for the trash."""
 
+import contextlib
+
 import pytest
 
 from tests.integration.gitlab_simulated.helpers import ends, fail, pid
@@ -189,10 +191,8 @@ async def test_a_failed_issue_listing_removes_nothing(world, org) -> None:
     await world.sync()
     fail(world, ends(f"{pid(p)}/issues"), status=502, times=50)
     fail(world, ends(f"{pid(p)}/merge_requests"), status=502, times=50)
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     world.gl.faults.clear()
     diff = await world.diff()
     assert diff.clean(), diff
@@ -205,10 +205,8 @@ async def test_a_full_sync_whose_issue_listing_fails_hides_nothing(world, org) -
     gl.add_issue(p, "Stays", author=org["dev"])
     await world.sync()
     fail(world, ends(f"{pid(p)}/issues"), status=502, times=50)
-    try:
+    with contextlib.suppress(Exception):
         await world.sync(full=True)
-    except Exception:
-        pass
     world.gl.faults.clear()
     diff = await world.diff()
     assert diff.clean(), diff
@@ -220,10 +218,8 @@ async def test_a_full_sync_with_a_revoked_token_hides_nothing(world, org) -> Non
     gl.add_mr(p, "Stays too", author=org["dev"])
     await world.sync()
     gl.sync_token.revoked = True
-    try:
+    with contextlib.suppress(Exception):
         await world.sync(full=True)
-    except Exception:
-        pass
     gl.sync_token.revoked = False
     diff = await world.diff()
     assert diff.clean(), diff

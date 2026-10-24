@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
-def is_internal_note(note: Any) -> bool:
+def is_internal_note(note: object) -> bool:
     """Internal notes are for Planner and up. GitLab before 15.0 calls the flag ``confidential``."""
     return getattr(note, "internal", False) is True or getattr(note, "confidential", False) is True
 

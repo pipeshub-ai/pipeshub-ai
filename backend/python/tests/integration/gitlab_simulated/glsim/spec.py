@@ -99,7 +99,7 @@ def check_query(template: str, method: str, query: dict[str, str], modelled: set
     return gaps, None
 
 
-def _nullable(node: Any) -> Any:
+def _nullable(node: Any) -> Any:  # noqa: ANN401
     """Grape does not say which fields may be null; every property may be."""
     if isinstance(node, list):
         return [_nullable(n) for n in node]
@@ -138,13 +138,13 @@ def response_schema(template: str, method: str = "get") -> dict[str, Any] | None
 
 
 @lru_cache(maxsize=512)
-def _validator(key: str) -> Any:
+def _validator(key: str) -> Any:  # noqa: ANN401
     schema = json.loads(key)
     schema["definitions"] = _definitions()
     return jsonschema.Draft7Validator(schema)
 
 
-def validate(schema: dict[str, Any], instance: Any, *, listing: bool = False) -> list[str]:
+def validate(schema: dict[str, Any], instance: Any, *, listing: bool = False) -> list[str]:  # noqa: ANN401
     schema = copy.deepcopy(schema)
     if schema.get("type") == "file":
         return []
@@ -162,7 +162,7 @@ def _resolve(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth: int = 0) -> Any:
+def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth: int = 0) -> Any:  # noqa: ANN401
     """An instance of ``schema`` with every required field present.
 
     ``overrides`` supplies the modelled values. Anything else required gets a sentinel.
@@ -202,6 +202,6 @@ def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth:
     return None
 
 
-def make(definition_name: str, **values: Any) -> dict[str, Any]:
+def make(definition_name: str, **values: Any) -> dict[str, Any]:  # noqa: ANN401
     """A full ``definition_name`` object with ``values`` as its modelled fields."""
     return fill(definition(definition_name), values)

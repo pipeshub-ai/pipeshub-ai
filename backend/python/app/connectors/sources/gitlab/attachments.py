@@ -51,14 +51,19 @@ def is_upload_url(url: str, base_url: str) -> bool:
     ``..`` segments would resolve (httpx removes dot segments) to any other API
     path on the instance, so the path must still be an upload once resolved.
     """
-    if not url or not url.startswith(f"{base_url.rstrip('/')}/"):
+    base = base_url.rstrip("/")
+    if not url or not url.startswith(f"{base}/"):
         return False
     try:
         resolved = httpx.URL(url)
+        # GitLab can run under a relative URL (https://host/gitlab); its API sits below that.
+        prefix = httpx.URL(base).raw_path.decode("ascii", errors="replace").rstrip("/")
     except (ValueError, httpx.InvalidURL):
         return False
     path = resolved.raw_path.decode("ascii", errors="replace")
-    return not resolved.query and bool(_UPLOAD_PATH.match(path))
+    if not path.startswith(f"{prefix}/"):
+        return False
+    return not resolved.query and bool(_UPLOAD_PATH.match(path[len(prefix):]))
 
 
 class AttachmentsHelper:

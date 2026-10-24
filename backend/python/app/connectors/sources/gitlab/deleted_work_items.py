@@ -88,7 +88,9 @@ class DeletedWorkItems:
             )
             return
         state = await c.record_sync_point.read_sync_point(self._key(project_id)) or {}
-        if state.get("total") is not None:
+        # A sweep that failed must run again: by the next sync the listing has moved past
+        # the items created meanwhile, so the count alone can no longer show a deletion.
+        if state.get("total") is not None and not state.get("sweep_pending"):
             since = int(state.get("checked_at") or 0)
             created = sum(1 for item in listed if parse_timestamp(item.created_at) > since)
             if total >= int(state["total"]) + created:
@@ -98,7 +100,9 @@ class DeletedWorkItems:
         present = {int(item.iid) for item in listed} if listed_everything else None
         if await self._sweep(project_id, method, created_after, created_before, present):
             await c.record_sync_point.update_sync_point(
-                self._key(project_id), {"total": total, "checked_at": checked_at})
+                self._key(project_id), {"total": total, "checked_at": checked_at, "sweep_pending": False})
+        else:
+            await c.record_sync_point.update_sync_point(self._key(project_id), {**state, "sweep_pending": True})
 
     async def _sweep(self, project_id: int, method: Callable[..., GitLabResponse], created_after: datetime | None,
                      created_before: datetime | None, present: set[int] | None) -> bool:
@@ -138,6 +142,7 @@ class DeletedWorkItems:
                     collection=CollectionNames.RECORDS.value,
                     filters={"connectorId": c.connector_id, "externalGroupId": f"{project_id}{suffix}",
                              "recordType": self.kind.record_type},
+                    return_fields=["_key", "externalRecordId", "webUrl", "isDeleted"],
                 )
                 for node in nodes:
                     if node.get("isDeleted"):

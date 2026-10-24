@@ -7,6 +7,8 @@ Needs the graph stack from deployment/docker-compose/docker-compose.integration.
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 
@@ -19,7 +21,7 @@ from tests.integration.gitlab_simulated.glsim.model import Behaviour  # noqa: E4
 from tests.integration.gitlab_simulated.world import World, acme  # noqa: E402
 
 
-def pytest_collection_modifyitems(items):
+def pytest_collection_modifyitems(items) -> None:
     for item in items:
         if "gitlab_simulated" in str(item.fspath):
             item.add_marker(pytest.mark.integration)
@@ -27,7 +29,7 @@ def pytest_collection_modifyitems(items):
 
 
 @pytest.fixture(params=["neo4j", "arango"])
-async def world(request, monkeypatch):
+async def world(request, monkeypatch) -> AsyncIterator[World]:
     marker = request.node.get_closest_marker("behaviour")
     behaviour = Behaviour(**marker.kwargs) if marker else Behaviour()
     personal = request.node.get_closest_marker("personal") is not None
@@ -41,7 +43,7 @@ async def world(request, monkeypatch):
 
 
 @pytest.fixture
-async def org(world):
+async def org(world) -> dict[str, Any]:
     """The standard instance with matching PipesHub users, configured on its one project."""
     people = acme(world.gl, world.domain)
     for name in ("maya", "dev", "rita", "pat", "gus", "olga"):
@@ -51,6 +53,6 @@ async def org(world):
     return people
 
 
-def pytest_configure(config):
+def pytest_configure(config) -> None:
     config.addinivalue_line("markers", "behaviour(**fields): simulator behaviour switches for this test")
     config.addinivalue_line("markers", "personal: run the GitLab Personal connector")

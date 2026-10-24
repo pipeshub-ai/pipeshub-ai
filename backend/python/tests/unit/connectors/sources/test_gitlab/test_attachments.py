@@ -428,6 +428,17 @@ class TestUploadLinksStayInUploads:
         assert is_upload_url(good, base)
         assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
         assert not is_upload_url(f"https://evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+
+    def test_is_upload_url_under_a_relative_url_install(self) -> None:
+        from app.connectors.sources.gitlab.attachments import is_upload_url
+
+        base = "https://example.com/gitlab"
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", f"{base}/")
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
+        # Climbing out of the prefix lands outside the instance's API.
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../../../../api/v4/user", base)
+        assert not is_upload_url(f"https://example.com/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
         assert not is_upload_url(f"{base}.evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
         assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf?x=1", base)
 

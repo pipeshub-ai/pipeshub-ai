@@ -15,6 +15,7 @@ does in the product.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import re
 import types
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import gitlab.base
@@ -37,7 +38,6 @@ from app.connectors.core.sync import sync_runner
 from app.connectors.sources.gitlab import repos as repos_module
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
-from app.models.entities import Record
 from app.modules.parsers.code_parser.path_policy import PathPolicy
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.gitlab_simulated.glsim import spec as gl_spec
@@ -58,6 +58,9 @@ from tests.integration.real_graph import (
     connect_neo4j,
 )
 
+if TYPE_CHECKING:
+    from app.models.entities import Record
+
 ARANGO_DB = "gitlab_sim_it"
 
 # Fields GitLab really leaves out of some payloads, so ``getattr(x, f, None)`` on them is a
@@ -77,7 +80,7 @@ ABSENT_ON_PURPOSE: dict[str, str] = {
 _providers: dict[str, Any] = {}
 
 
-async def graph_provider(backend: str, monkeypatch: Any) -> Any:
+async def graph_provider(backend: str, monkeypatch: Any) -> Any:  # noqa: ANN401
     """The repository's integration graph stores (tests/integration/real_graph.py)."""
     if backend in _providers:
         return _providers[backend]
@@ -101,11 +104,11 @@ class Producer:
     async def initialize(self) -> None:
         return None
 
-    async def send_message(self, topic: str, message: dict[str, Any], key: str | None = None, **_: Any) -> bool:
+    async def send_message(self, topic: str, message: dict[str, Any], key: str | None = None, **_: Any) -> bool:  # noqa: ANN401
         self.events.append((topic, message))
         return True
 
-    async def send_messages(self, topic: str, items: list[Any], **_: Any) -> list[bool]:
+    async def send_messages(self, topic: str, items: list[Any], **_: Any) -> list[bool]:  # noqa: ANN401
         for _key, message in items:
             self.events.append((topic, message))
         return [True] * len(items)
@@ -120,14 +123,14 @@ class ConfigService:
         self.config = config
         self.platform: dict[str, Any] = {}
 
-    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:
+    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
         return default
 
-    async def set_config(self, path: str, value: Any, **_: Any) -> bool:
+    async def set_config(self, path: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             self.config.clear()
             self.config.update(value)
@@ -174,7 +177,7 @@ _CODE_RE = re.compile(r"^/(.+)/-/(blob|tree)/HEAD/(.+)$")
 
 
 class World:
-    def __init__(self, backend: str, graph: Any, gl: GitLab, *, personal: bool = False,
+    def __init__(self, backend: str, graph: Any, gl: GitLab, *, personal: bool = False,  # noqa: ANN401
                  domain: str = "acme.com") -> None:
         self.backend, self.graph, self.gl = backend, graph, gl
         self.domain = domain
@@ -210,7 +213,7 @@ class World:
     # ------------------------------------------------------------------ setup
 
     @classmethod
-    async def create(cls, backend: str, monkeypatch: Any, *, behaviour: Behaviour | None = None,
+    async def create(cls, backend: str, monkeypatch: Any, *, behaviour: Behaviour | None = None,  # noqa: ANN401
                      personal: bool = False, domain: str = "acme.com") -> "World":
         graph = await graph_provider(backend, monkeypatch)
         world = cls(backend, graph, GitLab(behaviour), personal=personal, domain=domain)
@@ -229,7 +232,7 @@ class World:
         await world.add_pipeshub_user(world.creator_email, user_id=world.creator_id)
         return world
 
-    def _patch(self, monkeypatch: Any) -> None:
+    def _patch(self, monkeypatch: Any) -> None:  # noqa: ANN401
         world, gl = self, self.gl
 
         # python-gitlab's retry and Retry-After waits run on GitLab's clock, not the wall's.
@@ -240,7 +243,7 @@ class World:
         monkeypatch.setattr(gitlab.utils, "time", types.SimpleNamespace(
             sleep=_sleep, time=lambda: gl.clock.t, monotonic=lambda: gl.clock.t))
 
-        async def _asleep(delay: float, *_: Any, **__: Any) -> None:
+        async def _asleep(delay: float, *_: Any, **__: Any) -> None:  # noqa: ANN401
             world.sleeps.append(delay)
             gl.clock.advance(delay)
 
@@ -250,7 +253,7 @@ class World:
 
         original = gitlab.base.RESTObject.__getattr__
 
-        def audited(obj: Any, name: str) -> Any:
+        def audited(obj: Any, name: str) -> Any:  # noqa: ANN401
             try:
                 value = original(obj, name)
             except AttributeError:
@@ -306,7 +309,7 @@ class World:
                                         for k, v in (indexing or {}).items()}},
             }})
 
-    def set_sync_filter(self, key: str, value: Any, operator: str = "in", type_: str = "list") -> None:
+    def set_sync_filter(self, key: str, value: Any, operator: str = "in", type_: str = "list") -> None:  # noqa: ANN401
         self.config["filters"]["sync"]["values"][key] = {"operator": operator, "type": type_, "value": value}
         if self.synced_once:
             self.pending_full_sync = True
@@ -412,7 +415,7 @@ class World:
 
     # ------------------------------------------------------------------ reading PipesHub
 
-    async def record_docs(self, **filters: Any) -> list[dict[str, Any]]:
+    async def record_docs(self, **filters: Any) -> list[dict[str, Any]]:  # noqa: ANN401
         docs = await self.graph.get_nodes_by_filters(
             CollectionNames.RECORDS.value, {"connectorId": self.connector_id, **filters})
         return [{**d, "id": d.get("id") or d.get("_key")} for d in docs]
@@ -473,7 +476,7 @@ class World:
                 out.append((item, not public))
         return out
 
-    def _readable_item(self, viewer: User | None, item: Any) -> bool:
+    def _readable_item(self, viewer: User | None, item: Any) -> bool:  # noqa: ANN401
         return self.gl.can_read_issue(viewer, item) if isinstance(item, Issue) else self.gl.can_read_mr(viewer, item)
 
     def _truth(self, viewer: User | None, doc: dict[str, Any]) -> bool | None:
@@ -573,10 +576,8 @@ class World:
         for group in container.get("block_groups", []):
             parts.append(str(group.get("data") or ""))
             for comment_list in group.get("comments") or []:
-                for c in comment_list or []:
-                    parts.append(str(c.get("text") or ""))
-        for block in container.get("blocks", []):
-            parts.append(str(block.get("data") or ""))
+                parts.extend(str(c.get("text") or "") for c in comment_list or [])
+        parts.extend(str(block.get("data") or "") for block in container.get("blocks", []))
         return "\n".join(parts)
 
     async def checkpoint(self, group: str) -> dict[str, Any]:
@@ -594,15 +595,11 @@ class World:
 
     async def destroy(self) -> None:
         if self.connector is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self.connector.cleanup()
-            except Exception:
-                pass
         self.server.stop()
-        try:
+        with contextlib.suppress(Exception):
             await self.graph.delete_connector_instance(self.connector_id, self.org_id)
-        except Exception:
-            pass
 
 
 def acme(gl: GitLab, domain: str = "acme.com") -> dict[str, Any]:

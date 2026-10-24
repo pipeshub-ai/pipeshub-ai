@@ -480,8 +480,10 @@ class UsersSync:
 
         async def fetch_full_user(member_id: int, member: Any) -> tuple[int, Any]:
             attributes = getattr(member, "attributes", None)
-            if isinstance(attributes, dict) and "public_email" in attributes:
-                # GitLab 16+ members payloads carry public_email already (null when unset).
+            listed = attributes.get("public_email") if isinstance(attributes, dict) else None
+            if isinstance(listed, str) and listed.strip():
+                # GitLab 16+ members payloads carry public_email. When it is empty the
+                # profile is still read: with an admin token it holds the private email.
                 return member_id, member
             async with sem:
                 try:

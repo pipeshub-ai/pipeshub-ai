@@ -1,5 +1,8 @@
 """Content streaming, reindexing, indexing filters, filter options and the connection test."""
 
+import pytest
+from fastapi import HTTPException
+
 from tests.integration.gitlab_simulated.helpers import ends, fail, pid
 
 
@@ -28,7 +31,7 @@ async def test_merge_request_content_has_description_comments_commits_and_diffs(
 
 
 async def test_code_file_streams_the_synced_content(world, org) -> None:
-    gl, p = world.gl, org["project"]
+    p = org["project"]
     await world.sync()
     body = await world.stream(f"/{p.path_with_namespace}/-/blob/HEAD/src/app.py")
     assert body == b"print('hi')\n"
@@ -63,12 +66,14 @@ async def test_indexing_filters_turn_types_off(world, org) -> None:
     gl.add_mr(p, "MR", author=org["dev"])
     world.set_indexing(issues=False, merge_requests=False, code_files=False)
     await world.sync()
-    for d in (await world.live_docs()).values():
+    docs = (await world.live_docs()).values()
+    assert {"TICKET", "PULL_REQUEST", "CODE_FILE"} <= {d.get("recordType") for d in docs}
+    for d in docs:
         assert d.get("indexingStatus") == "AUTO_INDEX_OFF", d.get("recordName")
 
 
 async def test_filter_options_list_projects_and_groups(world, org) -> None:
-    gl, p = world.gl, org["project"]
+    gl = world.gl
     gl.add_project(org["group"], "gadgets")
     await world.start()
     res = await world.connector.get_filter_options("project_ids", search="gad")
@@ -100,9 +105,9 @@ async def test_comment_listing_failing_while_streaming_is_not_indexed_as_empty(w
     issue = gl.add_issue(p, "Has comments", author=org["dev"])
     gl.add_note(issue, "important detail", author=org["rita"])
     await world.sync(index=False)
+    record = await world.typed(str(issue.id))
     fail(world, ends(f"{pid(p)}/issues/{issue.iid}/notes"), status=502, times=20)
-    try:
-        await world.stream(str(issue.id))
-    except Exception:
-        return
-    raise AssertionError("an issue whose comments could not be read streamed as if it had none")
+    with pytest.raises(HTTPException) as err:
+        response = await world.connector.stream_record(record)
+        _ = [chunk async for chunk in response.body_iterator]
+    assert err.value.status_code >= 500, "an issue whose comments could not be read streamed as if it had none"

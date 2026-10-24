@@ -1,6 +1,8 @@
 """First, incremental and full sync; checkpoints; pagination; items that change while a
 listing is being read; resuming after an interruption."""
 
+import contextlib
+
 from tests.integration.gitlab_simulated.helpers import ends, fail, hook, pid
 
 
@@ -71,7 +73,7 @@ async def test_issue_updated_while_the_listing_is_read_is_not_lost(world, org) -
     await world.sync()
     names = await world.names("TICKET")
     assert len(names) == 150
-    stale = [n for n in names if not (n.endswith("v2") or n.endswith("v3"))]
+    stale = [n for n in names if not (n.endswith(("v2", "v3")))]
     assert not stale, f"{len(stale)} issue(s) kept their old title for good: {stale[:5]}"
 
 
@@ -90,10 +92,9 @@ async def test_issue_deleted_while_the_listing_is_read_does_not_hide_another(wor
         issues[3].deleted = True
 
     hook(world, ends(f"{pid(p)}/issues"), delete_one, skip=1)
-    try:  # the deleted issue's comments answer 404 mid-sync: that sync may say it is incomplete
+    # The deleted issue's comments answer 404 mid-sync: that sync may say it is incomplete.
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     await world.sync()
     names = await world.names("TICKET")
     old = [n for n in names if not n.endswith("v2") and n != "Issue 003"]
@@ -116,7 +117,7 @@ async def test_merge_request_updated_while_the_listing_is_read_is_not_lost(world
     await world.sync()
     await world.sync()
     names = await world.names("PULL_REQUEST")
-    old = [n for n in names if not (n.endswith("v2") or n.endswith("v3"))]
+    old = [n for n in names if not (n.endswith(("v2", "v3")))]
     assert not old, f"{len(old)} MR(s) kept their old title for good: {old[:5]}"
 
 
@@ -140,17 +141,15 @@ async def test_store_failure_is_retried_on_the_next_sync(world, org) -> None:
     original = world.processor.on_new_records
     calls = {"n": 0}
 
-    async def flaky(records, *a, **kw):
+    async def flaky(records, *a, **kw) -> object:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("graph store unavailable")
         return await original(records, *a, **kw)
 
     world.processor.on_new_records = flaky
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     world.processor.on_new_records = original
     await world.sync()
     assert len(await world.names("TICKET")) == 12
@@ -165,10 +164,8 @@ async def test_interrupted_sync_resumes(world, org) -> None:
     for n in range(40):
         gl.add_issue(p, f"Issue {n:02}", author=org["dev"])
     fail(world, ends(f"{pid(p)}/issues"), status="drop", times=20)
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     await world.restart()
     await world.sync()
     assert len(await world.names("TICKET")) == 40

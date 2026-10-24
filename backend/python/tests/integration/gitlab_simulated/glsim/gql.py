@@ -1,9 +1,9 @@
 """GitLab GraphQL for the repository tree walk.
 
-The audit validated the connector's query against GitLab's published schema (graphql-core,
-introspected from gitlab.com). graphql-core is not a backend dependency, so this copy
-only answers that exact query (``specs/connector_tree_query.graphql``): any other query
-is a gap and fails the test, so a changed query is noticed and re-validated.
+The connector's query was validated against the schema introspected from gitlab.com when
+``specs/connector_tree_query.graphql`` was saved; that schema is not kept here. This module
+answers only that exact query: any other query is a gap and fails the test, so a changed
+query is noticed and validated again.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _tree_page(gl: World, p: Project, ref: str, after: str) -> dict[str, Any]:
             "pageInfo": {"endCursor": end, "hasNextPage": start + size < len(entries)}}
 
 
-def execute(gl: World, render: Any, me: User, body: bytes) -> Any:
+def execute(gl: World, render: Any, me: User, body: bytes) -> Any:  # noqa: ANN401
     try:
         req = json.loads(body or b"{}")
     except ValueError:

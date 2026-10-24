@@ -39,7 +39,7 @@ def _parent_when_synced(full_path: str, group_paths: list[str]) -> str | None:
     return parent_path
 
 
-def member_has_access(member: Any) -> bool:
+def member_has_access(member: object) -> bool:
     """GitLab gives nothing to a blocked, deactivated or banned user, nor to a member still
     awaiting a seat; members listings include all of them."""
     state = getattr(member, "state", None)

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from app.sources.external.gitlab.gitlab_data_source import GitLabDataSource
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.anyio
 
@@ -430,7 +434,7 @@ class TestDirectHttp:
     async def test_get_img_bytes_stops_reading_past_the_limit(self, data_source: GitLabDataSource) -> None:
         sent = {"bytes": 0}
 
-        async def body():
+        async def body() -> AsyncIterator[bytes]:
             for _ in range(64):
                 sent["bytes"] += 65536
                 yield b"0" * 65536
@@ -445,7 +449,7 @@ class TestDirectHttp:
     async def test_get_attachment_files_content_streams_chunks(self, data_source: GitLabDataSource) -> None:
         data_source.token = "stream-token"
 
-        async def _aiter_bytes(chunk_size: int = 65536):
+        async def _aiter_bytes(chunk_size: int = 65536) -> AsyncIterator[bytes]:
             yield b"part-1"
             yield b"part-2"
 

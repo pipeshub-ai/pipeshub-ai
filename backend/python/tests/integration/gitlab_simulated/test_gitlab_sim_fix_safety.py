@@ -2,6 +2,7 @@
 written by the old code must end up consistent."""
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.sync_point.sync_point import (
@@ -171,7 +172,7 @@ async def test_upgrade_malicious_attachment_record_is_never_fetched(world, org) 
                         external_record_group_id=f"{p.id}-work-items", is_file=True, extension="txt",
                         version=0, inherit_permissions=True, origin="CONNECTOR")
     await world.processor.on_new_records([(record, [])])
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await world.stream(bad)
     assert not [c for c in gl.calls if f"/projects/{vault.id}/" in c.path]
 

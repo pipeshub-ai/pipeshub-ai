@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,13 +18,16 @@ from app.connectors.sources.gitlab.removed_projects import RemovedProjects
 
 from .conftest import make_mock_connector
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 
 def _connector(stored_groups: list[dict]) -> MagicMock:
     c = make_mock_connector()
     tx = MagicMock(get_nodes_by_filters=AsyncMock(return_value=stored_groups))
 
     @asynccontextmanager
-    async def transaction():
+    async def transaction() -> AsyncIterator[MagicMock]:
         yield tx
 
     c.data_store_provider = MagicMock(transaction=transaction)

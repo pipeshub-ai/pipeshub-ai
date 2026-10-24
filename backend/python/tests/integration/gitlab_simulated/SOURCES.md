@@ -19,13 +19,13 @@ How the specs are enforced:
 - Every JSON body the simulator sends is validated against the operation's 200 schema. An invalid body is a gap.
 - Required fields the simulator does not model are filled with sentinels (`__sim_unmodelled__`, `-987654321`). If the connector reads one, the test fails. The read is caught by wrapping python-gitlab's `RESTObject.__getattr__`.
 - If the connector reads a field the payload does not contain, the test fails. The only exceptions are fields GitLab really leaves out of some payloads. They are listed in `world.py` (`ABSENT_ON_PURPOSE`), each with its reason.
-- GraphQL queries are parsed, validated and executed by graphql-core against the gitlab.com schema. A selected field the simulator does not model is a gap.
+- GraphQL: the simulator answers only the connector's tree query, compared as text (whitespace aside) with `specs/connector_tree_query.graphql`, which was validated against the gitlab.com schema when it was saved. Any other query is a gap, so a changed query fails until that file is updated and checked again.
 
-"Live" below means checked read-only on 2026-10-23 against gitlab.com, with the token given for this task:
+"Live" below means checked read-only on 2026-10-23 against gitlab.com:
 - public `gitlab-org/gitlab`;
-- the user's own projects `pipeshub-group1/it-nested/gl-it-primary` and `darshan.godase/test` (sizes only).
+- the PipesHub test project `pipeshub-group1/it-nested/gl-it-primary` and a private personal project (sizes only).
 
-Only GET requests and one GraphQL read query were sent. Nothing was written. `live/live-api-facts.json` holds the raw answers.
+Only GET requests and one GraphQL read query were sent. The 2026-10-24 rows come from a private scratch project, changed between syncs and deleted afterwards.
 
 | Behaviour | Source | Confidence |
 |---|---|---|
@@ -48,7 +48,7 @@ Only GET requests and one GraphQL read query were sent. Nothing was written. `li
 | Compare cut at `diff_max_files` (1,000 by default, 3,000 on gitlab.com, an admin can set 500 to 3,000). Switch `compare_max_files` | GitLab source `lib/gitlab/git/diff_collection.rb`, `app/models/commit.rb`. Live: 3,000 on gitlab.com | High for files. The line and byte limits are not modelled |
 | Compare reports exact-content moves as `renamed_file`. Switch `compare_detects_renames` | Git rename detection (similarity-based in reality) | Medium |
 | A project's old path answers 301 to `/projects/:id` after a rename or transfer (GET only) | docs/rest__index.md "Redirects" | High |
-| For an old path with a dot (`darshan.godase/x`), gitlab.com's 301 keeps the ref from the first dot (`/projects/<id>.godase%2Fx`), so following it ends in 404 | Live 2026-10-24, renaming a scratch project under `darshan.godase` | High (seen) |
+| For an old path with a dot (`user.name/x`), gitlab.com's 301 keeps the ref from the first dot (`/projects/<id>.name%2Fx`), so following it ends in 404 | Live 2026-10-24, renaming a scratch project under a user namespace with a dot | High (seen) |
 | A deleted project first stays readable, renamed `<path>-deletion_scheduled-<id>`, until it is removed for good | Live 2026-10-24 on gitlab.com | High (seen); not modelled |
 | Deleted or unreadable project, issue or merge request: 404 | docs; GitLab answers 404 rather than 403 for things you cannot see | High |
 | Issues feature off: issue listing 403 | Behaviour of GitLab feature access levels | Medium |

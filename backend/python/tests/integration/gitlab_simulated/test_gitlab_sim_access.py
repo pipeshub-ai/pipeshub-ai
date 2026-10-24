@@ -1,5 +1,7 @@
 """For every user and record, PipesHub's answer must equal GitLab's."""
 
+import contextlib
+
 from tests.integration.gitlab_simulated.glsim.model import Membership
 from tests.integration.gitlab_simulated.helpers import ends, fail, pid
 
@@ -166,10 +168,8 @@ async def test_member_listing_failing_for_a_moment_costs_nobody_access(world, or
     gl.add_mr(p, "MR", author=org["dev"])
     await world.sync()
     fail(world, ends(f"{pid(p)}/members/all"), status=503, times=200)
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     gl.faults.clear()
     diff = await world.diff()
     assert diff.clean(), diff

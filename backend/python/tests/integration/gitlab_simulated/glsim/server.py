@@ -10,14 +10,14 @@ does not validate against the operation's schema is a gap and fails the test.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import re
 import socket
 import threading
 import time
-from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 from tests.integration.gitlab_simulated.glsim import gql, spec
@@ -37,9 +37,12 @@ from tests.integration.gitlab_simulated.glsim.model import (
     parse_iso,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 
 class Reply(Exception):
-    def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None,
+    def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None,  # noqa: ANN401
                  raw: bytes | None = None, content_type: str = "application/json") -> None:
         self.status, self.body, self.headers, self.raw, self.content_type = status, body, headers or {}, raw, content_type
 
@@ -69,9 +72,9 @@ class Render:
 
     def user_full(self, u: User, *, me: bool) -> dict[str, Any]:
         name = "API_Entities_UserPublic" if me else "API_Entities_User"
-        values: dict[str, Any] = dict(id=u.id, username=u.username, name=u.name, state=u.state, locked=False,
-                                      avatar_url=None, web_url=f"{self.base}/{u.username}",
-                                      public_email=u.public_email or None, bot=u.bot)
+        values: dict[str, Any] = {"id": u.id, "username": u.username, "name": u.name, "state": u.state, "locked": False,
+                                      "avatar_url": None, "web_url": f"{self.base}/{u.username}",
+                                      "public_email": u.public_email or None, "bot": u.bot}
         if me:
             values.update(email=u.email, external=u.external)
         out = spec.make(name, **values)
@@ -81,7 +84,7 @@ class Render:
             out["is_auditor"] = True
         return out
 
-    def member(self, u: User, m: Any) -> dict[str, Any]:
+    def member(self, u: User, m: Any) -> dict[str, Any]:  # noqa: ANN401
         out = spec.make("API_Entities_Member", id=u.id, username=u.username, name=u.name, state=u.state,
                         locked=False, avatar_url=None, web_url=f"{self.base}/{u.username}",
                         public_email=u.public_email or None, access_level=m.access_level,
@@ -90,7 +93,7 @@ class Render:
             out.pop("public_email", None)
         return out
 
-    def namespace(self, ns: Any) -> dict[str, Any]:
+    def namespace(self, ns: Any) -> dict[str, Any]:  # noqa: ANN401
         if isinstance(ns, Group):
             return {"id": ns.id, "name": ns.name, "path": ns.path, "kind": "group", "full_path": ns.full_path,
                     "parent_id": ns.parent.id if ns.parent else None, "avatar_url": None,
@@ -99,14 +102,14 @@ class Render:
                 "parent_id": None, "avatar_url": None, "web_url": f"{self.base}/{ns.username}"}
 
     def project(self, p: Project, definition: str = "API_Entities_Projects_WithAccessAndCatalogSetting") -> dict[str, Any]:
-        values = dict(id=p.id, name=p.name, path=p.path, path_with_namespace=p.path_with_namespace,
-                      name_with_namespace=p.path_with_namespace.replace("/", " / "), description=None,
-                      web_url=f"{self.base}/{p.path_with_namespace}", visibility=p.visibility,
-                      namespace=self.namespace(p.namespace), default_branch=p.default_branch if p.head() else None,
-                      archived=p.archived, created_at=iso(p.commits[min(p.commits, key=lambda s: p.commits[s].date)].date)
-                      if p.commits else iso(self.gl.clock.t), last_activity_at=iso(self.gl.clock.t),
-                      issues_enabled=p.issues_enabled, merge_requests_enabled=p.merge_requests_enabled,
-                      empty_repo=not bool(p.head()))
+        values = {"id": p.id, "name": p.name, "path": p.path, "path_with_namespace": p.path_with_namespace,
+                      "name_with_namespace": p.path_with_namespace.replace("/", " / "), "description": None,
+                      "web_url": f"{self.base}/{p.path_with_namespace}", "visibility": p.visibility,
+                      "namespace": self.namespace(p.namespace), "default_branch": p.default_branch if p.head() else None,
+                      "archived": p.archived, "created_at": iso(p.commits[min(p.commits, key=lambda s: p.commits[s].date)].date)
+                      if p.commits else iso(self.gl.clock.t), "last_activity_at": iso(self.gl.clock.t),
+                      "issues_enabled": p.issues_enabled, "merge_requests_enabled": p.merge_requests_enabled,
+                      "empty_repo": not bool(p.head())}
         if definition == "API_Entities_BasicProjectDetails":
             for k in ("archived", "issues_enabled", "merge_requests_enabled", "empty_repo"):
                 values.pop(k)
@@ -151,7 +154,7 @@ class Render:
             sha=mr.sha, web_url=self.web(p, "merge_requests", mr.iid), source_branch=f"feature-{mr.iid}",
             target_branch=p.default_branch, draft=False, source_project_id=p.id, target_project_id=p.id)
 
-    def note(self, n: Note, item: Any) -> dict[str, Any]:
+    def note(self, n: Note, item: Any) -> dict[str, Any]:  # noqa: ANN401
         kind = "Issue" if isinstance(item, Issue) else "MergeRequest"
         out = spec.make("API_Entities_Note", id=n.id, type="DiffNote" if n.position else None, body=n.body,
                         author=self.user_basic(n.author), created_at=iso(n.created_at), updated_at=iso(n.updated_at),
@@ -288,7 +291,7 @@ class Api:
             moved = self.gl.project_redirect(ref)
             if moved is not None:
                 # gitlab.com keeps the old ref from its first dot in the Location (seen live
-                # 2026-10-24: darshan.godase/x -> /projects/<id>.godase%2Fx), so for a dotted
+                # 2026-10-24: user.name/x -> /projects/<id>.name%2Fx), so for a dotted
                 # namespace following the redirect ends in 404.
                 tail = quote(ref[ref.index("."):], safe=".") if "." in ref else ""
                 loc = f"{self.r.base}/api/v4/projects/{moved.id}{tail}"
@@ -332,10 +335,10 @@ class Api:
 
     # ------------------------------------------------------------ users
 
-    def me(self, me: User, q: dict[str, str]) -> Any:
+    def me(self, me: User, q: dict[str, str]) -> Any:  # noqa: ANN401
         return self.r.user_full(me, me=True)
 
-    def user(self, me: User, q: dict[str, str], uid: str) -> Any:
+    def user(self, me: User, q: dict[str, str], uid: str) -> Any:  # noqa: ANN401
         u = self.gl.users.get(int(uid))
         if u is None:
             raise not_found("404 User Not Found")
@@ -346,7 +349,7 @@ class Api:
     def _project_level(self, me: User, p: Project) -> int:
         return self.gl.access_level(me, p)
 
-    def projects(self, me: User, q: dict[str, str]) -> Any:
+    def projects(self, me: User, q: dict[str, str]) -> Any:  # noqa: ANN401
         items = [p for p in self.gl.projects.values() if not p.deleted and self.gl.can_read_project(me, p)]
         if q.get("membership") in ("true", "1") or q.get("min_access_level"):
             floor = int(q.get("min_access_level") or GUEST)
@@ -370,10 +373,10 @@ class Api:
         chunk, h = self.paginate(items, q, "/api/v4/projects")
         raise Reply(200, [render(p) for p in chunk], h)
 
-    def project(self, me: User, q: dict[str, str], id: str) -> Any:
+    def project(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         return self.r.project(self.readable_project(me, id))
 
-    def project_members_all(self, me: User, q: dict[str, str], id: str) -> Any:
+    def project_members_all(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.readable_project(me, id)
         rows = sorted(self.gl.project_member_rows(p).items())
         chunk, h = self.paginate(rows, q, f"/api/v4/projects/{id}/members/all")
@@ -405,7 +408,7 @@ class Api:
         desc = (q.get("sort") or "desc") == "desc"
         return sorted(items, key=lambda x: (getattr(x, key), x.id), reverse=desc)
 
-    def issues(self, me: User, q: dict[str, str], id: str) -> Any:
+    def issues(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.readable_project(me, id)
         if q.get("state") and q["state"] != "all":
             pass
@@ -434,17 +437,17 @@ class Api:
             h["Link"] = f"<{self.r.base}{path}?{urlencode({**q, 'cursor': cur})}>; rel=\"next\""
         return [render(x) for x in chunk], h
 
-    def _issue(self, me: User, id: str, iid: str) -> Issue:
+    def _issue(self, me: User, id: str, iid: str) -> Issue:  # noqa: A002
         p = self.readable_project(me, id)
         i = p.issues.get(int(iid))
         if i is None or not self.gl.can_read_issue(me, i):
             raise not_found("404 Not found")
         return i
 
-    def issue(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def issue(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         return self.r.issue(self._issue(me, id, iid))
 
-    def _notes(self, me: User, item: Any, q: dict[str, str], path: str) -> Any:
+    def _notes(self, me: User, item: Any, q: dict[str, str], path: str) -> Any:  # noqa: ANN401
         p = item.project
         notes = [n for n in item.notes if not n.internal or self.gl.can_read_internal_note(me, p)]
         key = q.get("order_by") or "created_at"
@@ -452,12 +455,12 @@ class Api:
         chunk, h = self.paginate(notes, q, path)
         raise Reply(200, [self.r.note(n, item) for n in chunk], h)
 
-    def issue_notes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def issue_notes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         return self._notes(me, self._issue(me, id, iid), q, f"/api/v4/projects/{id}/issues/{iid}/notes")
 
     # ------------------------------------------------------------ merge requests
 
-    def mrs(self, me: User, q: dict[str, str], id: str) -> Any:
+    def mrs(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         items = [m for m in p.mrs.values() if self.gl.can_read_mr(me, m)]
         items = self._order(self._window(items, q), q)
@@ -466,27 +469,27 @@ class Api:
         chunk, h = self.paginate(items, q, f"/api/v4/projects/{id}/merge_requests")
         raise Reply(200, [self.r.mr(m) for m in chunk], h)
 
-    def _mr(self, me: User, id: str, iid: str) -> MergeRequest:
+    def _mr(self, me: User, id: str, iid: str) -> MergeRequest:  # noqa: A002
         p = self.code_project(me, id)
         m = p.mrs.get(int(iid))
         if m is None or not self.gl.can_read_mr(me, m):
             raise not_found("404 Not found")
         return m
 
-    def mr(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def mr(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         return self.r.mr(self._mr(me, id, iid), "API_Entities_MergeRequest")
 
-    def mr_notes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def mr_notes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         return self._notes(me, self._mr(me, id, iid), q, f"/api/v4/projects/{id}/merge_requests/{iid}/notes")
 
-    def mr_changes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def mr_changes(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         m = self._mr(me, id, iid)
         body = self.r.mr(m, "API_Entities_MergeRequestChanges")
         body["changes"] = [dict(f) for f in m.files]
         body["overflow"] = False
         return body
 
-    def mr_commits(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:
+    def mr_commits(self, me: User, q: dict[str, str], id: str, iid: str) -> Any:  # noqa: A002, ANN401
         m = self._mr(me, id, iid)
         chunk, h = self.paginate(m.commits, q, f"/api/v4/projects/{id}/merge_requests/{iid}/commits")
         raise Reply(200, [self.r.commit(m.project, s) for s in chunk], h)
@@ -503,7 +506,7 @@ class Api:
             return ref
         raise not_found("404 Commit Not Found")
 
-    def branch(self, me: User, q: dict[str, str], id: str, branch: str) -> Any:
+    def branch(self, me: User, q: dict[str, str], id: str, branch: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         name = unquote(branch)
         if name not in p.branches:
@@ -512,7 +515,7 @@ class Api:
                          protected=False, developers_can_push=False, developers_can_merge=False, can_push=True,
                          default=name == p.default_branch, web_url=f"{self.r.base}/{p.path_with_namespace}/-/tree/{name}")
 
-    def compare(self, me: User, q: dict[str, str], id: str) -> Any:
+    def compare(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         if not q.get("from") or not q.get("to"):
             raise Reply(400, {"error": "from is missing, to is missing"})
@@ -555,7 +558,7 @@ class Api:
                 "name": d.rsplit("/", 1)[-1], "type": "tree", "path": d, "mode": "040000"} for d in sorted(dirs)]
         return out + sorted(files, key=lambda e: e["path"])
 
-    def tree(self, me: User, q: dict[str, str], id: str) -> Any:
+    def tree(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         sha = self._resolve_ref(p, q.get("ref"))
         entries = self._tree_entries(p.commits[sha].tree, unquote(q.get("path") or ""), q.get("recursive") == "true")
@@ -564,7 +567,7 @@ class Api:
         chunk, h = self.paginate(entries, q, f"/api/v4/projects/{id}/repository/tree")
         raise Reply(200, [spec.make("API_Entities_TreeObject", **e) for e in chunk], h)
 
-    def file(self, me: User, q: dict[str, str], id: str, fp: str) -> Any:
+    def file(self, me: User, q: dict[str, str], id: str, fp: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         if not q.get("ref"):
             raise Reply(400, {"error": "ref is missing"})
@@ -578,7 +581,7 @@ class Api:
                 "content": b64(content), "content_sha256": "", "ref": q["ref"], "blob_id": git_blob_sha(content),
                 "commit_id": sha, "last_commit_id": sha, "execute_filemode": False}
 
-    def file_raw(self, me: User, q: dict[str, str], id: str, fp: str) -> Any:
+    def file_raw(self, me: User, q: dict[str, str], id: str, fp: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         sha = self._resolve_ref(p, q.get("ref") or "HEAD")
         content = p.commits[sha].tree.get(unquote(fp))
@@ -586,7 +589,7 @@ class Api:
             raise not_found("404 File Not Found")
         raise Reply(200, raw=content, content_type="text/plain")
 
-    def commits(self, me: User, q: dict[str, str], id: str) -> Any:
+    def commits(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         sha = self._resolve_ref(p, q.get("ref_name"))
         path = unquote(q.get("path") or "")
@@ -601,7 +604,7 @@ class Api:
         chunk, h = self.paginate(chain, q, f"/api/v4/projects/{id}/repository/commits")
         raise Reply(200, [self.r.commit(p, s) for s in chunk], h)
 
-    def upload(self, me: User, q: dict[str, str], id: str, secret: str, fname: str) -> Any:
+    def upload(self, me: User, q: dict[str, str], id: str, secret: str, fname: str) -> Any:  # noqa: A002, ANN401
         p = self.readable_project(me, id)
         data = p.uploads.get((unquote(secret), unquote(fname)))
         if data is None:
@@ -616,7 +619,7 @@ class Api:
             raise not_found("404 Group Not Found")
         return g
 
-    def groups(self, me: User, q: dict[str, str]) -> Any:
+    def groups(self, me: User, q: dict[str, str]) -> Any:  # noqa: ANN401
         items = self.gl.visible_groups(me)
         if q.get("min_access_level"):
             floor = int(q["min_access_level"])
@@ -629,22 +632,22 @@ class Api:
         chunk, h = self.paginate(items, q, "/api/v4/groups")
         raise Reply(200, [self.r.group(g) for g in chunk], h)
 
-    def group(self, me: User, q: dict[str, str], id: str) -> Any:
+    def group(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         return self.r.group(self._group(me, id), "API_Entities_GroupDetail")
 
-    def group_members(self, me: User, q: dict[str, str], id: str) -> Any:
+    def group_members(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         g = self._group(me, id)
         rows = sorted(g.members.items())
         chunk, h = self.paginate(rows, q, f"/api/v4/groups/{id}/members")
         raise Reply(200, [self.r.member(self.gl.users[uid], m) for uid, m in chunk], h)
 
-    def group_members_all(self, me: User, q: dict[str, str], id: str) -> Any:
+    def group_members_all(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         g = self._group(me, id)
         rows = sorted(self.gl.group_member_rows(g).items())
         chunk, h = self.paginate(rows, q, f"/api/v4/groups/{id}/members/all")
         raise Reply(200, [self.r.member(self.gl.users[uid], m) for uid, (m, _) in chunk], h)
 
-    def group_projects(self, me: User, q: dict[str, str], id: str) -> Any:
+    def group_projects(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         g = self._group(me, id)
         sub = q.get("include_subgroups") in ("true", "1")
         items = [p for p in self.gl.projects.values() if not p.deleted and isinstance(p.namespace, Group)
@@ -656,7 +659,7 @@ class Api:
         render = self.r.project_simple if q.get("simple") == "true" else (lambda p: self.r.project(p, "API_Entities_Project"))
         raise Reply(200, [render(p) for p in chunk], h)
 
-    def descendant_groups(self, me: User, q: dict[str, str], id: str) -> Any:
+    def descendant_groups(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         g = self._group(me, id)
         items = [d for d in self.gl.visible_groups(me) if g in d.ancestors()]
         if q.get("min_access_level"):
@@ -667,7 +670,7 @@ class Api:
 
     # ------------------------------------------------------------ GraphQL
 
-    def graphql(self, me: User, q: dict[str, str], body: bytes) -> Any:
+    def graphql(self, me: User, q: dict[str, str], body: bytes) -> Any:  # noqa: ANN401
         return gql.execute(self.gl, self.r, me, body)
 
 
@@ -684,7 +687,7 @@ class Server:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *args: Any) -> None:
+            def log_message(self, *args: Any) -> None:  # noqa: ANN401
                 return
 
             def do_GET(self) -> None:
@@ -743,10 +746,8 @@ class Server:
             if fault is not None and fault.kind == "drop":
                 gl.calls.append(Call(method, path, query, 0, token, resource))
                 h.close_connection = True
-                try:
+                with contextlib.suppress(OSError):
                     h.connection.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
                 return
             if fault is not None and fault.kind == "hook":
                 with gl.lock:
@@ -796,10 +797,8 @@ class Server:
                 h.close_connection = True
             gl.bytes_sent[key] = sent
             return
-        try:
+        with contextlib.suppress(OSError):
             h.wfile.write(payload)
-        except OSError:
-            pass
         if fault is not None and fault.kind == "truncate":
             h.close_connection = True
 
@@ -817,7 +816,7 @@ class Server:
             "RateLimit-Limit": str(limit), "RateLimit-Remaining": "0", "RateLimit-Reset": str(int(reset)),
             "Retry-After": str(max(1, int(reset - self.gl.clock.t)))})
 
-    def _dispatch(self, method: str, path: str, query: dict[str, str], token: str | None, body: bytes) -> Any:
+    def _dispatch(self, method: str, path: str, query: dict[str, str], token: str | None, body: bytes) -> Any:  # noqa: ANN401
         gl = self.gl
         for m, pattern, fn, modelled in self.api.routes:
             if m != method:
@@ -842,7 +841,7 @@ class Server:
                        + (f" (GitLab: {template})" if template else " (not in GitLab's spec either)"))
         raise not_found("404 Not Found")
 
-    def _validate(self, method: str, path: str, body: Any) -> None:
+    def _validate(self, method: str, path: str, body: Any) -> None:  # noqa: ANN401
         template = spec.match(path)
         if template is None:
             return

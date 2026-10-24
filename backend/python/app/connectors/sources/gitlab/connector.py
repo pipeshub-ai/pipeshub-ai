@@ -516,7 +516,7 @@ class GitLabConnector(BaseConnector):
         """Record a part of the source this sync could not read; the sync carries on."""
         self.sync_problems.append(problem)
 
-    def note_failed_read(self, what: str, response: Any) -> None:
+    def note_failed_read(self, what: str, response: object) -> None:
         """A read GitLab refused for good (403: not allowed or the feature is off; 404: gone)
         is an answer, not a gap. Anything else, or a listing cut off part-way, left part of
         the source unread."""
