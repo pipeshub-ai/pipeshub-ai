@@ -58,8 +58,11 @@ class WorkerLoop:
                 # The clients bound to the dead loop cannot move to a new one; a consumer
                 # starting late would otherwise run on a second loop and hide the failure.
                 raise RuntimeError("the shared worker event loop died; restart the indexing service")
-            if self._stopping and self._thread is not None and self._thread.is_alive():
+            exiting = self._stopping or self._loop is None or not self._loop.is_running()
+            if exiting and self._thread is not None and self._thread.is_alive():
                 # A second loop beside one still shutting down would split the shared clients.
+                # Covers an unrequested exit too: its thread records the failure only once it
+                # gets this lock, which a start() waiting for its new loop would be holding.
                 raise RuntimeError("the previous shared worker event loop is still shutting down")
             if not self._stopping and self._loop is not None and self._loop.is_running():
                 return self._loop

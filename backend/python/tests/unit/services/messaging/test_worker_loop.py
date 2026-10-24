@@ -196,3 +196,36 @@ def test_a_dead_loop_is_not_replaced() -> None:
     with pytest.raises(RuntimeError, match="died"):
         worker.start()
     worker.stop()
+
+
+def test_a_loop_exiting_on_its_own_is_not_replaced_before_its_exit_is_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Between run_forever() returning and the failure being recorded, a start() must not open
+    a second loop: it would hold the lock the exiting thread needs to record the failure."""
+    worker = WorkerLoop(_LOGGER)
+    loop = worker.start()
+    thread = worker._thread
+    assert thread is not None
+    exiting, release = threading.Event(), threading.Event()
+    record_exit = worker._on_exit
+
+    def held_exit(error: BaseException | None) -> None:
+        exiting.set()
+        release.wait(5)
+        record_exit(error)
+
+    monkeypatch.setattr(worker, "_on_exit", held_exit)
+    loop.call_soon_threadsafe(loop.stop)
+    assert exiting.wait(5)
+    try:
+        with pytest.raises(RuntimeError, match="still shutting down"):
+            worker.start()
+    finally:
+        release.set()
+    thread.join(5)
+
+    assert isinstance(worker.failure, RuntimeError)
+    with pytest.raises(RuntimeError, match="died"):
+        worker.start()
+    worker.stop()
