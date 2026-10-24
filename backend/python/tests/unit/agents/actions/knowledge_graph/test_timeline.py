@@ -831,3 +831,32 @@ class TestEverySearchKeepsTheTurnsScope:
             assert call["filter_groups"]["apps"] == ["drive-1"]
             assert call["filter_groups"]["kb"] == []
             assert call["filter_groups"]["recordGroups"] == ["folder-x"]
+
+
+class TestAConnectedAppsLimit:
+    """The timeline tool hands the turn's connection limit to each period's graph context."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "sources"), [
+        ({"apps": ["slack-1"], "kb": []}, None),
+        ({"apps": ["slack-1"], "kb": [], "records": ["f"], "connectionApps": [], "connectionRecordGroups": [],
+             "connectionRecords": ["f"]}, {"apps": [], "recordGroups": [], "records": ["f"]}),
+    ])
+    async def test_the_turns_limit_reaches_the_graph_context(self, filters, sources) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        graph_context = AsyncMock()
+
+        async def flatten(results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update({r["virtual_record_id"]: _record(r["virtual_record_id"]) for r in results})
+            return corpus.units(results)
+
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", graph_context), \
+                patch(f"{_BUILDER}.enrich_records_with_address_links", new_callable=AsyncMock), \
+                patch("app.modules.transformers.blob_storage.BlobStorage"):
+            await execute_timeline_search(
+                _state(corpus, filters=filters), "slack bot problems", start="2026-03-01", end="2026-05-31",
+            )
+
+        graph_context.assert_awaited()
+        assert {call.kwargs["connection_sources"] == sources for call in graph_context.await_args_list} == {True}
