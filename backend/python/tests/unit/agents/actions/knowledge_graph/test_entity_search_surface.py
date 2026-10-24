@@ -190,14 +190,14 @@ def test_without_the_exact_text_gate_search_offers_no_exact_match(
     assert "exact_match" not in {p.name for p in _search_of(served).parameters}
 
 
-@pytest.mark.parametrize("offered", [False, True])
+@pytest.mark.parametrize(("offered", "named"), [(False, True), (False, False), (True, True)])
 def test_with_the_exact_text_gate_search_also_takes_exact_match(
-    monkeypatch: pytest.MonkeyPatch, offered: bool,
+    monkeypatch: pytest.MonkeyPatch, offered: bool, named: bool,
 ) -> None:
     monkeypatch.delenv("EXACT_TEXT_SEARCH_GATE", raising=False)
-    _, ungated = _tools(offered)
+    _, ungated = _tools(offered, named=named)
     monkeypatch.setenv("EXACT_TEXT_SEARCH_GATE", "true")
-    _, served = _tools(offered)
+    _, served = _tools(offered, named=named)
 
     before, after = _search_of(ungated), _search_of(served)
     assert after.parameters == [*before.parameters, surface.EXACT_MATCH_PARAMETER]
