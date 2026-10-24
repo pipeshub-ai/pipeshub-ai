@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import Filter, FilterCollection
 from app.connectors.sources.linear import connector as connector_module
 from app.connectors.sources.linear.api_gateway import (
     LinearApiError,
@@ -789,51 +789,16 @@ class TestCommentActivity:
 
 
 class TestRemoveStaleTeams:
-    async def _decide(self, filter_team_ids, operator, team_ids) -> dict:
+    @pytest.mark.asyncio
+    async def test_the_team_filter_is_not_consulted(self) -> None:
+        """Only the synced teams go to the reconciler, which removes what Linear deleted or
+        hides; what the filter leaves out is unlinked by the full sync a filter change runs."""
         connector = _make_connector()
-        decisions = {}
-
-        async def remove_stale_teams(synced_team_ids, is_deselected, parent_team_ids) -> list:
-            decisions.update({team_id: is_deselected(team_id) for team_id in team_ids})
-            return []
-
-        connector._reconciler.remove_stale_teams = AsyncMock(side_effect=remove_stale_teams)
-        await connector._remove_stale_teams({"team-a"}, filter_team_ids, operator)
-        connector._reconciler.remove_stale_teams.assert_awaited_once()
-        assert connector._reconciler.remove_stale_teams.await_args.args[0] == {"team-a"}
-        return decisions
-
-    @pytest.mark.asyncio
-    async def test_include_filter_deselects_what_is_not_listed(self) -> None:
-        decisions = await self._decide(["team-a"], MagicMock(value="in"), ["team-a", "team-b"])
-        assert decisions == {"team-a": False, "team-b": True}
-
-    @pytest.mark.asyncio
-    async def test_exclude_filter_deselects_what_is_listed(self) -> None:
-        decisions = await self._decide(["team-b"], MagicMock(value="not_in"), ["team-a", "team-b"])
-        assert decisions == {"team-a": False, "team-b": True}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("filter_team_ids", [None, []])
-    async def test_no_filter_deselects_nothing(self, filter_team_ids) -> None:
-        decisions = await self._decide(filter_team_ids, None, ["team-a", "team-b"])
-        assert decisions == {"team-a": False, "team-b": False}
-
-    @pytest.mark.asyncio
-    async def test_operator_defaults_to_include(self) -> None:
-        decisions = await self._decide(["team-a"], None, ["team-a", "team-b"])
-        assert decisions == {"team-a": False, "team-b": True}
-
-    @pytest.mark.asyncio
-    async def test_unsynced_parents_of_synced_teams_are_passed_on(self) -> None:
-        """A synced team's parent outside the sync keeps its group and members."""
-        connector = _make_connector()
-        connector._unsynced_parent_team_ids = {"team-parent"}
         connector._reconciler.remove_stale_teams = AsyncMock(return_value=[])
 
-        await connector._remove_stale_teams({"team-a"}, ["team-a"], MagicMock(value="in"))
+        await connector._remove_stale_teams({"team-a"})
 
-        assert connector._reconciler.remove_stale_teams.await_args.args[2] == {"team-parent"}
+        connector._reconciler.remove_stale_teams.assert_awaited_once_with({"team-a"})
 
     @pytest.mark.asyncio
     async def test_removed_team_forgets_its_issue_checkpoint(self) -> None:
@@ -845,12 +810,100 @@ class TestRemoveStaleTeams:
         connector.issues_sync_point.store["team_issues_team-kept"] = {"last_sync_time": NOW - 1000}
         connector._reconciler.remove_stale_teams = AsyncMock(return_value=["team-gone"])
 
-        await connector._remove_stale_teams({"team-kept"}, None, None)
+        await connector._remove_stale_teams({"team-kept"})
 
         # If the team comes back it is read from the beginning.
         assert connector.issues_sync_point.store["team_issues_team-gone"] == {
             "last_sync_time": 0, "resume_cursor": "", "resume_since": 0, "resume_started_at": 0, "held_runs": 0}
         assert connector.issues_sync_point.store["team_issues_team-kept"] == {"last_sync_time": NOW - 1000}
+
+
+class TestDateScope:
+    """An issue or project the date filters leave out may stay stored (a full sync left it
+    unlinked); nothing under it is synced, so nothing makes it readable again."""
+
+    @staticmethod
+    def _connector() -> LinearConnector:
+        connector = _make_connector()
+        connector.sync_filters = FilterCollection(filters=[
+            Filter(key="created", type="datetime", operator="is_between", value={"start": 1000, "end": 2000}),
+            Filter(key="modified", type="datetime", operator="is_before", value={"start": None, "end": 3000}),
+        ])
+        return connector
+
+    @pytest.mark.parametrize("created, updated, inside", [
+        (1500, 2500, True),
+        (500, 2500, False),   # created before the range
+        (2500, 2500, False),  # created after it
+        (1500, 3500, False),  # modified after the modified range
+        (None, None, True),   # a stub without dates is judged by its own listing
+    ])
+    def test_created_and_modified_ranges(self, created, updated, inside) -> None:
+        record = _ticket(source_created_at=created, source_updated_at=updated)
+        assert self._connector()._in_date_scope(record) is inside
+
+    def test_without_date_filters_everything_is_in_scope(self) -> None:
+        connector = _make_connector()
+        assert connector._in_date_scope(_ticket(source_created_at=1, source_updated_at=1)) is True
+
+
+class TestReindexRespectsTheFilters:
+    """A reindex writes what changed in Linear. What the filters leave out stays unlinked, and
+    an issue moved to a team the filter leaves out is removed, not filed under that team."""
+
+    ISSUE_CREATED = 1704103200000  # _issue()'s createdAt, 2024-01-01T10:00:00Z
+
+    @staticmethod
+    def _connector(*filters: Filter) -> LinearConnector:
+        connector = _make_connector()
+        connector.sync_filters = FilterCollection(filters=list(filters))
+        connector._remover.remove_record = AsyncMock()
+        return connector
+
+    @staticmethod
+    def _teams(operator: str, *team_ids: str) -> Filter:
+        return Filter(key="team_ids", type="list", operator=operator, value=list(team_ids))
+
+    def test_the_team_filter(self) -> None:
+        include = self._connector(self._teams("in", "team-1"))
+        exclude = self._connector(self._teams("not_in", "team-1"))
+        assert include._team_in_filter("team-1") and not include._team_in_filter("team-2")
+        assert not exclude._team_in_filter("team-1") and exclude._team_in_filter("team-2")
+        assert _make_connector()._team_in_filter("team-2"), "without a team filter every team is synced"
+
+    @staticmethod
+    async def _refetch(connector: LinearConnector, issue: dict, stored: TicketRecord) -> object:
+        datasource = _use_datasource(connector, MagicMock())
+        datasource.issue = AsyncMock(return_value=_ok({"issue": issue}))
+        return await connector._check_and_fetch_updated_issue(stored)
+
+    @pytest.mark.asyncio
+    async def test_an_issue_moved_to_a_deselected_team_is_removed(self) -> None:
+        connector = self._connector(self._teams("in", "team-1"))
+        # The deselected team's group is still stored, unlinked by the full sync
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        stored = _ticket("issue-1", team_id="team-1", source_updated_at=1)
+
+        assert await self._refetch(connector, _issue(team_id="team-2"), stored) is None
+        connector._remover.remove_record.assert_awaited_once_with(stored)
+
+    @pytest.mark.asyncio
+    async def test_an_issue_of_a_deselected_team_is_not_written(self) -> None:
+        connector = self._connector(self._teams("in", "team-2"))
+        stored = _ticket("issue-1", team_id="team-1", source_updated_at=1)
+
+        assert await self._refetch(connector, _issue(team_id="team-1"), stored) is None
+        connector._remover.remove_record.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("start, written", [(ISSUE_CREATED + 1, False), (ISSUE_CREATED - 1, True)])
+    async def test_the_date_filters_decide_what_is_written(self, start, written) -> None:
+        connector = self._connector(Filter(key="created", type="datetime", operator="is_after",
+                                           value={"start": start, "end": None}))
+        stored = _ticket("issue-1", team_id="team-1", source_updated_at=1)
+
+        assert (await self._refetch(connector, _issue(team_id="team-1"), stored) is not None) is written
+        connector._remover.remove_record.assert_not_awaited()
 
 
 class TestReconcile:
@@ -1019,7 +1072,7 @@ class TestRunSync:
             "_sync_projects_for_teams", "_sync_comment_activity", "_sync_deleted_issues",
             "_sync_deleted_projects", "_reconcile", "_sweep_placeholder_records",
         ]
-        connector._remove_stale_teams.assert_called_once_with({"team-1"}, None, None)
+        connector._remove_stale_teams.assert_called_once_with({"team-1"})
         connector._sync_comment_activity.assert_called_once_with({"team-1"})
         # Nothing was read from the beginning, so reconciliation is not forced.
         connector._reconcile.assert_called_once_with({"team-1"}, forced=False)
@@ -1091,8 +1144,21 @@ class TestRunSync:
         connector._sweep_placeholder_records.assert_awaited_once()
         titles = [c.kwargs["title"] for c in connector.notify.await_args_list]
         assert len(titles) == 2
-        assert "remove deleted or deselected teams" in titles[0]
+        assert "remove deleted teams" in titles[0]
         assert "moved or deleted records" in titles[1]
+        # A full sync that skipped a step must not have the platform unlink what it did not write
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_clean_run_reports_reading_everything(self) -> None:
+        """What an earlier run skipped does not stop this run's full sync from unlinking."""
+        connector = _make_connector()
+        self._prepare(connector)
+        connector._read_everything = False
+
+        await self._run(connector)
+
+        assert connector.full_sync_coverage().complete is True
 
     @pytest.mark.asyncio
     async def test_rejected_token_stops_the_sync_and_asks_to_reconnect(self) -> None:
@@ -1298,6 +1364,7 @@ class TestPartialScans:
         _, failed = await connector._sync_issues_for_teams([(_team_rg(), [])])
 
         assert failed == ["Engineering"]
+        assert connector.full_sync_coverage().complete is False
         connector.data_entities_processor.on_new_records.assert_awaited_once()
         stored = connector.issues_sync_point.store["team_issues_team-1"]
         assert not stored.get("last_sync_time"), "a partly read team moved its checkpoint"
@@ -1315,6 +1382,7 @@ class TestPartialScans:
         _, failed = await connector._sync_issues_for_teams([(_team_rg(), [])])
 
         assert failed == []
+        assert connector.full_sync_coverage().complete is True
         assert connector.data_entities_processor.on_new_records.await_count == 2
         stored = connector.issues_sync_point.store["team_issues_team-1"]
         assert stored["last_sync_time"] == NOW and stored["resume_cursor"] == ""
@@ -1377,7 +1445,6 @@ class TestUnsyncedParentTeams:
 
         assert [rg.external_group_id for rg, _ in record_groups] == ["team-web", "team-ops"]
         assert {g.source_user_group_id for g, _ in user_groups} == {"team-web", "team-ops", "team-sec"}
-        assert connector._unsynced_parent_team_ids == {"team-eng", "team-sec"}
         assert datasource.teams.await_count == 2
         assert datasource.teams.await_args.kwargs["filter"] == {"id": {"in": ["team-sec"]}}
 

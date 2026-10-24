@@ -1,15 +1,19 @@
 """Finds what PipesHub still holds that Linear no longer has in the sync's scope.
 
 Linear offers no feed of deletions. An issue removed for good, an issue moved to a team
-outside the sync, a deleted attachment or document, a deleted or deselected team: none of
-them show up in "changed since" listings. The reconciler lists ids on both sides and
-removes what Linear no longer returns.
+outside the sync, a deleted attachment or document, a deleted team: none of them show up
+in "changed since" listings. The reconciler lists ids on both sides and removes what
+Linear no longer returns.
+
+What the sync filters leave out (a deselected team, an issue outside a date filter) is
+not removed here. Changing a filter runs a full sync, after which the platform unlinks
+what that sync did not write: the records stay, and nobody can read them.
 
 Safety rules:
   * Ids are compared only against a listing that was read to its end; a failed or
     partial listing raises and nothing is removed.
   * An issue missing from the listing is looked up by id before it is removed.
-  * A team is removed only on a definite answer: deselected, not found, or archived.
+  * A team is removed only on a definite answer: not found, or archived.
 """
 
 from collections.abc import Callable, Iterable
@@ -44,7 +48,6 @@ class SourceReconciler:
         connector_id: str,
         logger: Logger,
         now: Callable[[], int],
-        narrow: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._processor = processor
@@ -53,30 +56,16 @@ class SourceReconciler:
         self._connector_id = connector_id
         self._logger = logger
         self._now = now
-        # Adds the connector's own sync filters (dates) to a Linear filter, so that what
-        # the filters exclude counts as out of scope.
-        self._narrow = narrow or (lambda linear_filter: None)
         self._calls = 0
-
-    def _scoped(self, linear_filter: dict[str, Any]) -> dict[str, Any]:
-        self._narrow(linear_filter)
-        return linear_filter
 
     # ------------------------------------------------------------------ teams
 
-    async def remove_stale_teams(
-        self,
-        synced_team_ids: set[str],
-        is_deselected: Callable[[str], bool],
-        parent_team_ids: set[str] = frozenset(),
-    ) -> list[str]:
-        """Remove stored teams the sync no longer covers. Returns the removed team ids.
+    async def remove_stale_teams(self, synced_team_ids: set[str]) -> list[str]:
+        """Remove stored teams Linear deleted, archived or hides from the sync account.
+        Returns the removed team ids.
 
-        ``is_deselected`` answers from the connector's team filter alone. A team is never
-        judged out of scope merely because a listing did not return it. A team in
-        ``parent_team_ids`` is outside the sync but is the parent of a synced team (whose
-        group hangs under its group, and which may be open to its members): it loses its
-        records and keeps its group and members.
+        A team is never judged gone merely because a listing did not return it, or
+        because the team filter leaves it out: it is looked up by id.
         """
         stored = await self._processor.get_nodes_by_filters(
             CollectionNames.RECORD_GROUPS.value, {"connectorId": self._connector_id},
@@ -88,10 +77,7 @@ class SourceReconciler:
                 continue
             if doc.get("isDeletedAtSource"):
                 continue  # already removed; kept only until its records leave the trash
-            if team_id in parent_team_ids:
-                await self._remover.remove_group_records(team_id)
-                continue
-            if not (is_deselected(team_id) or await self._team_is_gone(team_id)):
+            if not await self._team_is_gone(team_id):
                 continue
             await self._remover.remove_group(team_id)
             removed.append(team_id)
@@ -154,7 +140,7 @@ class SourceReconciler:
         listed = {
             n["id"]: n for n in await self._ids(
                 "projectIds", "projects",
-                {"filter": self._scoped({"accessibleTeams": {"some": {"id": {"in": scope}}}}),
+                {"filter": {"accessibleTeams": {"some": {"id": {"in": scope}}}},
                  "includeArchived": True}, page_size=PROJECT_PAGE)
             if n.get("id") and not n.get("trashed")
         }
@@ -193,7 +179,7 @@ class SourceReconciler:
         live = {
             n["id"] for n in await self._ids(
                 "issueIds", "issues",
-                {"filter": self._scoped({"team": {"id": {"in": scope}}}), "includeArchived": True})
+                {"filter": {"team": {"id": {"in": scope}}}, "includeArchived": True})
             if n.get("id") and not n.get("trashed")
         }
         suspects = [r for r in stored if r.external_record_id not in live]
@@ -203,14 +189,14 @@ class SourceReconciler:
             found = {
                 n["id"]: n for n in await self._ids(
                     "issueIds", "issues",
-                    {"filter": self._scoped({"id": {"in": [r.external_record_id for r in batch]}}),
+                    {"filter": {"id": {"in": [r.external_record_id for r in batch]}},
                      "includeArchived": True})
             }
             for record in batch:
                 node = found.get(record.external_record_id)
                 team_id = ((node or {}).get("team") or {}).get("id")
                 if node is not None and not node.get("trashed") and team_id in scope:
-                    continue  # still there and still selected: the listing was behind
+                    continue  # still there and still in a synced team: the listing was behind
                 await self._remover.remove_record(record)
                 removed += 1
         return removed

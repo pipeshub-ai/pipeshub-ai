@@ -30,8 +30,15 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.sync.sync_runner import (
+    _begin_full_sync_run,
+    _unlink_what_full_sync_missed,
+)
 from app.connectors.sources.linear import connector as connector_module
 from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.sources.client.graphql.client import GraphQLClient
 from app.sources.external.linear import linear as datasource_module
@@ -87,7 +94,7 @@ class _Env:
 
     # ------------------------------------------------------------------ sync
 
-    async def sync(self) -> None:
+    async def _connector(self) -> LinearConnector:
         if self.connector is None:
             self.connector = LinearConnector(
                 logger, self.processor, GraphDataStore(logger, self.graph), _Config(self.connector_id, self.config),
@@ -95,9 +102,27 @@ class _Env:
             )
             self.connector.notify = AsyncMock()
             assert await self.connector.init() is True
+        return self.connector
+
+    async def sync(self) -> None:
+        connector = await self._connector()
         self.ws.tick()
-        await self.connector.run_sync()
+        await connector.run_sync()
         self.ws.tick(5 * 60_000)  # syncs run minutes apart; the connector re-reads a short overlap
+
+    async def full_sync(self) -> None:
+        """A full sync as the platform runs one, which every filter change asks for: the
+        checkpoints are forgotten, the connector syncs, then the platform unlinks every
+        node that sync did not write."""
+        connector = await self._connector()
+        await self.graph.delete_sync_points_by_connector_id(connector_id=self.connector_id)
+        processor, seen = _begin_full_sync_run(connector, self.connector_id)
+        assert seen is not None
+        try:
+            await self.sync()
+            assert await _unlink_what_full_sync_missed(connector, self.connector_id, self.graph, logger, seen)
+        finally:
+            processor.end_full_sync_run(self.connector_id, seen)
 
     def select_teams(self, *teams: Team) -> None:
         self.config["filters"]["sync"]["values"]["team_ids"] = {
@@ -116,8 +141,34 @@ class _Env:
     async def record(self, external_id: str) -> dict[str, Any] | None:
         return next((d for d in await self.records() if d.get("externalRecordId") == external_id), None)
 
+    async def stored_id(self, external_id: str) -> str | None:
+        """The record's id, stubs included."""
+        docs = await self.graph.get_nodes_by_filters(
+            CollectionNames.RECORDS.value, {"connectorId": self.connector_id, "externalRecordId": external_id})
+        return next((d.get("id") or d.get("_key") for d in docs or [] if not d.get("isDeleted")), None)
+
     async def readable(self, email: str) -> set[str]:
-        """Record ids the user may read by the access check, and by search."""
+        """Record ids the user may read by the access check, by search, or by browsing."""
+        return set().union(*await self.access(email))
+
+    async def listed(self, email: str) -> set[str]:
+        """Record ids the Knowledge Hub lists for the user (All Records, flattened)."""
+        ids: set[str] = set()
+        cursor = None
+        for _ in range(50):
+            page = await KnowledgeHubService(logger, self.graph).get_nodes(
+                user_id=self.user_ids[email], org_id=self.org_id, flattened=True, origins=["CONNECTOR"],
+                limit=200, cursor=cursor)
+            assert page.success, page.error
+            ids |= {item.id for item in page.items}
+            cursor = page.pagination.nextCursor if page.pagination else None
+            if not cursor:
+                return ids
+        raise AssertionError("the Knowledge Hub listing did not end")
+
+    async def access(self, email: str) -> tuple[set[str], set[str], set[str]]:
+        """Record ids the user may read by the access check, those search finds for them,
+        and those the Knowledge Hub lists for them."""
         docs = await self.records()
         ids = [d["id"] for d in docs]
         checked = await self.graph.filter_accessible_record_ids(ids, self.user_ids[email], self.org_id)
@@ -127,9 +178,23 @@ class _Env:
                 "indexingStatus": "COMPLETED", "virtualRecordId": doc.get("virtualRecordId") or f"vr-{doc['id']}"})
         searched = await self.graph.get_accessible_virtual_record_ids(
             self.user_ids[email], self.org_id, raise_on_error=True)
-        return set(checked) | (set(searched.values()) & set(ids))
+        return set(checked), set(searched.values()) & set(ids), await self.listed(email) & set(ids)
 
     # ------------------------------------------------------------------ the oracle
+
+    def in_scope(self, item: Issue | Project) -> bool:
+        """Whether the sync filters cover an issue or project. What they leave out may stay
+        stored, but nobody may read it."""
+        values = self.config["filters"]["sync"]["values"]
+        team_filter = values.get("team_ids") or {}
+        team_ids = set(team_filter.get("value") or [])
+        if team_ids:
+            teams = {item.team.id} if isinstance(item, Issue) else {t.id for t in item.teams}
+            excluding = team_filter.get("operator") == "not_in"
+            if (teams <= team_ids) if excluding else not (teams & team_ids):
+                return False
+        start = ((values.get("created") or {}).get("value") or {}).get("start")
+        return not (start and item.created_at < start)
 
     def owners(self, doc: dict[str, Any]) -> list[Issue | Project]:
         """The Linear issues or projects a record's content comes from."""
@@ -158,20 +223,25 @@ class _Env:
             name = f"{doc.get('recordType')} {doc.get('recordName')}"
             if not owners or all(o.trashed for o in owners):
                 problems.append(f"{name} is stored but gone from Linear")
+            covered = [o for o in owners if self.in_scope(o)]
             if doc.get("recordType") == "FILE":
                 # A file is one record per issue that links it, or one record for all of them.
-                expected[doc["id"]] = set().union(*(self.ws.readers(o) for o in owners)) if owners else set()
+                expected[doc["id"]] = set().union(*(self.ws.readers(o) for o in covered)) if covered else set()
             else:
-                expected[doc["id"]] = self.ws.readers(owners[0]) if owners else set()
+                expected[doc["id"]] = self.ws.readers(owners[0]) if owners and owners[0] in covered else set()
         for email in self.user_ids:
-            readable = await self.readable(email)
+            checked, searched, listed = await self.access(email)
             for doc in docs:
                 name = f"{doc.get('recordType')} {doc.get('recordName')!r}"
                 allowed = email in expected[doc["id"]]
-                if doc["id"] in readable and not allowed:
-                    problems.append(f"{email} can read {name}, which Linear hides from them")
-                elif allowed and doc["id"] not in readable:
+                if doc["id"] in checked | searched | listed and not allowed:
+                    problems.append(f"{email} can reach {name}, which Linear hides from them")
+                elif allowed and doc["id"] not in checked:
                     problems.append(f"{email} cannot read {name}, which Linear shows them")
+                elif allowed and doc["id"] not in searched:
+                    problems.append(f"{email} cannot find {name} in search, which Linear shows them")
+                elif allowed and doc["id"] not in listed:
+                    problems.append(f"{email} cannot browse to {name}, which Linear shows them")
         assert not problems, "PipesHub disagrees with Linear:\n  " + "\n  ".join(sorted(problems))
 
 
@@ -366,6 +436,8 @@ async def test_a_parent_team_pass_leaves_its_sub_teams_out(env: _Env) -> None:
 
 
 async def test_narrowing_and_widening_the_team_filter(env: _Env) -> None:
+    """A filter change runs a full sync. What the narrower filter leaves out stays stored
+    and readable by nobody; once the filter widens it is readable again, as the same record."""
     p = await _people(env, "alice", "bob")
     ws = env.ws
     eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
@@ -374,16 +446,70 @@ async def test_narrowing_and_widening_the_team_filter(env: _Env) -> None:
     audit = ws.issue(sec, "Access review")
     await env.sync()
     assert await env.ticket_names() == {_name(build), _name(audit)}
+    kept = {x.id: (await env.record(x.id))["id"] for x in (build, build.attachments[0])}
 
     env.select_teams(sec)
-    await env.sync()
-    assert await env.ticket_names() == {_name(audit)}
-    assert await env.record(build.attachments[0].id) is None, "a deselected team's attachment is still stored"
+    await env.full_sync()
+    assert {x: (await env.record(x) or {}).get("id") for x in kept} == kept, "a deselected team's record was deleted"
+    for email in env.user_ids:
+        assert not set(kept.values()) & await env.readable(email), f"{email} still reads the deselected team"
     await env.assert_matches_linear()
 
     env.config["filters"]["sync"]["values"] = {}
+    await env.full_sync()
+    assert {x: (await env.record(x) or {}).get("id") for x in kept} == kept, "the records were created again"
+    assert set(kept.values()) <= await env.readable(p["bob"].email)
+    await env.assert_matches_linear()
+
+
+async def test_narrowing_the_created_date_filter_keeps_older_issues_unreadable(env: _Env) -> None:
+    """Issues created before a newly set date stay stored, and nobody can read them. An old
+    parent of a newer sub-issue stays as a stub, so the sub-issue keeps its place and readers."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    eng = ws.team("ENG", members=[p["sync"], p["alice"]])
+    old = ws.issue(eng, "Old task", attachments=[Attachment("Spec", "https://docs.example/spec")])
     await env.sync()
-    assert await env.ticket_names() == {_name(build), _name(audit)}
+    cut = ws.tick()
+    # Written while its parent is stored, so it hangs under the parent, which falls outside the new range
+    new = ws.issue(eng, "New task", parent=old)
+    await env.sync()
+    old_ids = {await env.stored_id(x.id) for x in (old, old.attachments[0])}
+
+    env.config["filters"]["sync"]["values"]["created"] = {
+        "operator": "is_after", "type": "datetime", "value": {"start": cut, "end": None}}
+    await env.full_sync()
+
+    assert {await env.stored_id(x.id) for x in (old, old.attachments[0])} == old_ids, (
+        "an issue the date filter leaves out was deleted")
+    assert await env.record(old.id) is None, "the old parent is not a stub"
+    assert not old_ids & await env.readable(p["alice"].email)
+    assert (await env.record(new.id))["id"] in await env.readable(p["alice"].email)
+    await env.assert_matches_linear()
+
+    # A new comment brings an issue back for re-reading; one the filter leaves out stays out.
+    now = ws.tick()
+    old.comments.append(Comment("Still relevant?", p["alice"], created_at=now, updated_at=now))
+    await env.sync()
+    assert not old_ids & await env.readable(p["alice"].email)
+    await env.assert_matches_linear()
+
+
+async def test_a_full_sync_that_fails_partway_takes_no_access_away(env: _Env) -> None:
+    """A team whose issues could not be read is not counted as read: the platform must
+    not unlink what that sync did not get to write."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    eng = ws.team("ENG", members=[p["sync"], p["alice"]])
+    for n in range(120):
+        ws.issue(eng, f"Issue {n:03d}")
+    await env.sync()
+    await env.assert_matches_linear()
+
+    ws.failing["issues"] = lambda variables: bool(variables.get("after"))  # every later page, every retry
+    await env.full_sync()
+    del ws.failing["issues"]
+
     await env.assert_matches_linear()
 
 

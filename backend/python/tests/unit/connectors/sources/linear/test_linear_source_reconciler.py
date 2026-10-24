@@ -603,7 +603,7 @@ class TestRemoveStaleTeams:
     async def test_synced_teams_are_left_alone_without_asking(self) -> None:
         env = _make(lambda operation, variables: _failed(), record_groups=_groups("team-1", "team-2"))
 
-        removed = await env.reconciler.remove_stale_teams({"team-1", "team-2"}, lambda team_id: True)
+        removed = await env.reconciler.remove_stale_teams({"team-1", "team-2"})
 
         assert removed == []
         assert env.linear.requests == []
@@ -618,36 +618,28 @@ class TestRemoveStaleTeams:
         groups = [{"externalGroupId": "team-gone", "isDeletedAtSource": True}]
         env = _make(lambda operation, variables: _failed(), record_groups=groups)
 
-        removed = await env.reconciler.remove_stale_teams(set(), lambda team_id: True)
+        removed = await env.reconciler.remove_stale_teams(set())
 
         assert removed == []
         assert env.linear.requests == []
         env.remover.remove_group.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_the_unsynced_parent_of_a_synced_team_keeps_its_group(self) -> None:
-        """The parent's group holds the sub-team's group, and a restricted sub-team is open
-        to the parent's members: only records filed under the parent itself go."""
-        env = _make(lambda operation, variables: _failed(), record_groups=_groups("team-sub", "team-parent"))
+    async def test_a_team_the_filter_leaves_out_is_kept(self) -> None:
+        """A deselected team, or the unsynced parent of a synced team, is still in Linear.
+        Nothing of it is removed: the full sync that a filter change runs unlinks it."""
+        env = _make(
+            lambda operation, variables: _ok({"team": {"id": variables["id"], "archivedAt": None}}),
+            record_groups=_groups("team-1", "team-off"),
+        )
         env.remover.remove_group_records = AsyncMock(return_value=0)
 
-        removed = await env.reconciler.remove_stale_teams(
-            {"team-sub"}, lambda team_id: team_id != "team-sub", {"team-parent"})
+        removed = await env.reconciler.remove_stale_teams({"team-1"})
 
         assert removed == []
         env.remover.remove_group.assert_not_awaited()
-        env.remover.remove_group_records.assert_awaited_once_with("team-parent")
-        assert env.linear.requests == []
-
-    @pytest.mark.asyncio
-    async def test_deselected_team_is_removed_on_the_filters_word_alone(self) -> None:
-        env = _make(lambda operation, variables: _failed(), record_groups=_groups("team-1", "team-off"))
-
-        removed = await env.reconciler.remove_stale_teams({"team-1"}, lambda team_id: team_id == "team-off")
-
-        assert removed == ["team-off"]
-        env.remover.remove_group.assert_awaited_once_with("team-off")
-        assert env.linear.requests == []
+        env.remover.remove_group_records.assert_not_awaited()
+        assert env.linear.asked("team") == [{"id": "team-off"}]
 
     @pytest.mark.asyncio
     async def test_team_linear_no_longer_has_is_removed(self) -> None:
@@ -657,7 +649,7 @@ class TestRemoveStaleTeams:
 
         env = _make(respond, record_groups=_groups("team-gone"))
 
-        removed = await env.reconciler.remove_stale_teams(set(), lambda team_id: False)
+        removed = await env.reconciler.remove_stale_teams(set())
 
         assert removed == ["team-gone"]
         assert env.linear.asked("team") == [{"id": "team-gone"}]
@@ -667,7 +659,7 @@ class TestRemoveStaleTeams:
     async def test_team_that_comes_back_empty_is_removed(self, data) -> None:
         env = _make(lambda operation, variables: _ok(data), record_groups=_groups("team-hidden"))
 
-        assert await env.reconciler.remove_stale_teams(set(), lambda team_id: False) == ["team-hidden"]
+        assert await env.reconciler.remove_stale_teams(set()) == ["team-hidden"]
 
     @pytest.mark.asyncio
     async def test_archived_team_is_removed(self) -> None:
@@ -676,7 +668,7 @@ class TestRemoveStaleTeams:
             record_groups=_groups("team-old"),
         )
 
-        assert await env.reconciler.remove_stale_teams(set(), lambda team_id: False) == ["team-old"]
+        assert await env.reconciler.remove_stale_teams(set()) == ["team-old"]
         env.remover.remove_group.assert_awaited_once_with("team-old")
 
     @pytest.mark.asyncio
@@ -686,7 +678,7 @@ class TestRemoveStaleTeams:
             record_groups=_groups("team-missed"),
         )
 
-        removed = await env.reconciler.remove_stale_teams(set(), lambda team_id: False)
+        removed = await env.reconciler.remove_stale_teams(set())
 
         assert removed == []
         env.remover.remove_group.assert_not_awaited()
@@ -700,7 +692,7 @@ class TestRemoveStaleTeams:
         env = _make(lambda operation, variables: response, record_groups=_groups("team-1"))
 
         with pytest.raises(expected):
-            await env.reconciler.remove_stale_teams(set(), lambda team_id: False)
+            await env.reconciler.remove_stale_teams(set())
 
         env.remover.remove_group.assert_not_awaited()
 
@@ -710,6 +702,7 @@ class TestRemoveStaleTeams:
             "team-gone": GraphQLResponse(success=False, message="Entity not found: Team", status_code=400),
             "team-archived": _ok({"team": {"id": "team-archived", "archivedAt": "2024-06-01T00:00:00.000Z"}}),
             "team-missed": _ok({"team": {"id": "team-missed", "archivedAt": None}}),
+            "team-off": _ok({"team": {"id": "team-off", "archivedAt": None}}),
         }
         env = _make(
             lambda operation, variables: answers[variables["id"]],
@@ -717,11 +710,11 @@ class TestRemoveStaleTeams:
                            {"externalGroupId": None}, {}],
         )
 
-        removed = await env.reconciler.remove_stale_teams({"team-synced"}, lambda team_id: team_id == "team-off")
+        removed = await env.reconciler.remove_stale_teams({"team-synced"})
 
-        assert removed == ["team-off", "team-gone", "team-archived"]
+        assert removed == ["team-gone", "team-archived"]
         assert [c.args[0] for c in env.remover.remove_group.await_args_list] == removed
-        assert [v["id"] for v in env.linear.asked("team")] == ["team-gone", "team-archived", "team-missed"]
+        assert [v["id"] for v in env.linear.asked("team")] == ["team-off", "team-gone", "team-archived", "team-missed"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stored", [None, []])
@@ -729,4 +722,4 @@ class TestRemoveStaleTeams:
         env = _make(lambda operation, variables: _failed())
         env.processor.get_nodes_by_filters.return_value = stored
 
-        assert await env.reconciler.remove_stale_teams({"team-1"}, lambda team_id: True) == []
+        assert await env.reconciler.remove_stale_teams({"team-1"}) == []

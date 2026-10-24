@@ -75,6 +75,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.linear.api_gateway import (
     Invoke,
     LinearApiError,
@@ -441,16 +442,16 @@ class LinearConnector(BaseConnector):
         self._reconciler = SourceReconciler(
             self._api, data_entities_processor, self._remover, self.reconcile_sync_point,
             connector_id, logger, now=self._now,
-            narrow=lambda linear_filter: self._apply_date_filters_to_linear_filter(linear_filter, None),
         )
         # Per-run state
         self._full_member_emails: set[str] = set()
         self._refreshed_issue_ids: set[str] = set()
         self._refreshed_project_ids: set[str] = set()
         self._team_visibility: dict[str, str] = {}
-        # Teams outside the sync that a synced team still needs: as the parent of a
-        # sub-team, and for the members a restricted team is open to
-        self._unsynced_parent_team_ids: set[str] = set()
+        # False once this run skipped something after an error; see full_sync_coverage
+        self._read_everything = True
+        # Parents of the issues this run wrote; see _sweep_placeholder_records
+        self._issue_parent_ids: set[str] = set()
 
     @staticmethod
     def _now() -> int:
@@ -733,6 +734,8 @@ class LinearConnector(BaseConnector):
             self.logger.info(f"📋 Loaded filters - Sync: {self.sync_filters}, Indexing: {self.indexing_filters}")
             self._refreshed_issue_ids = set()
             self._refreshed_project_ids = set()
+            self._read_everything = True
+            self._issue_parent_ids = set()
 
             # Step 1: Get active users from system
             users = await self.data_entities_processor.get_all_active_users()
@@ -798,11 +801,8 @@ class LinearConnector(BaseConnector):
                 g.external_group_id for g, _ in team_record_groups if g.external_group_id
             }
 
-            # Step 6c: Remove teams that were deleted, hidden from this account or deselected
-            await self._run_step(
-                "remove deleted or deselected teams",
-                self._remove_stale_teams(synced_team_ids, team_ids, team_ids_operator),
-            )
+            # Step 6c: Remove teams that were deleted or hidden from this account
+            await self._run_step("remove deleted teams", self._remove_stale_teams(synced_team_ids))
 
             # Step 7: Sync issues for teams
             full_sync_team_ids, failed_issue_team_keys = await self._sync_issues_for_teams(team_record_groups)
@@ -898,6 +898,11 @@ class LinearConnector(BaseConnector):
         allowance is spent; every other failure is local to the step that hit it."""
         return isinstance(error, (LinearAuthError, LinearRateLimited))
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that skipped something after an error (a team, a page, a step) did
+        not read all of Linear, so nothing it did not write may be unlinked after it."""
+        return FullSyncCoverage(complete=self._read_everything)
+
     async def _run_step[T](self, name: str, step: Awaitable[T]) -> T | None:
         """Run one optional step of the sync. Its failure is reported, not fatal."""
         try:
@@ -905,6 +910,7 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             if self._stops_the_sync(e):
                 raise
+            self._read_everything = False
             self.logger.error(f"❌ Linear sync step '{name}' failed: {e}", exc_info=True)
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
@@ -943,25 +949,13 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"Team key changed from {old_key} to {group.short_name}; re-reading its issues")
                 await self._team_issue_checkpoint(group.external_group_id).reset()
 
-    async def _remove_stale_teams(
-        self,
-        synced_team_ids: set[str],
-        filter_team_ids: list[str] | None,
-        filter_operator: FilterOperatorType | None,
-    ) -> None:
-        """Remove teams that are gone or deselected, and forget their checkpoints so a
-        team that comes back is read from the beginning."""
-        selected = set(filter_team_ids or [])
-        operator = filter_operator.value if hasattr(filter_operator, "value") else str(filter_operator or "in")
-        excluding = operator == "not_in"
+    async def _remove_stale_teams(self, synced_team_ids: set[str]) -> None:
+        """Remove teams Linear deleted or no longer shows this account, and forget their
+        checkpoints so a team that comes back is read from the beginning.
 
-        def is_deselected(team_id: str) -> bool:
-            if not selected:
-                return False
-            return (team_id in selected) if excluding else (team_id not in selected)
-
-        for team_id in await self._reconciler.remove_stale_teams(
-                synced_team_ids, is_deselected, self._unsynced_parent_team_ids):
+        A team the filter leaves out is not removed: a filter change runs a full sync,
+        after which the platform unlinks what that sync did not write."""
+        for team_id in await self._reconciler.remove_stale_teams(synced_team_ids):
             await self._team_issue_checkpoint(team_id).reset()
 
     async def _reconcile(self, synced_team_ids: set[str], *, forced: bool) -> None:
@@ -1102,9 +1096,6 @@ class LinearConnector(BaseConnector):
         teams_by_id = {t["id"]: t for t in all_teams if t.get("id")}
         synced_team_ids = set(teams_by_id)
         await self._add_missing_ancestor_teams(teams_by_id)
-        self._unsynced_parent_team_ids = (
-            set(teams_by_id) | {(t.get("parent") or {}).get("id") for t in teams_by_id.values()}
-        ) - synced_team_ids - {None}
 
         # Convert teams to both UserGroups and RecordGroups
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
@@ -1292,12 +1283,16 @@ class LinearConnector(BaseConnector):
                     for record, _ in batch_records:
                         if isinstance(record, TicketRecord):
                             total_tickets += 1
+                            if parent_id := getattr(record, "parent_external_record_id", None):
+                                self._issue_parent_ids.add(parent_id)
                         elif isinstance(record, FileRecord):
                             total_files += 1
 
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
+                if failures:
+                    self._read_everything = False
                 if failures and await self._hold_checkpoint(checkpoint, team_key, failures):
                     failed_team_keys.append(team_record_group.name or team_key)
                 else:
@@ -1318,6 +1313,7 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 if self._stops_the_sync(e):
                     raise
+                self._read_everything = False
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
                 failed_team_keys.append(team_name)
@@ -1386,6 +1382,16 @@ class LinearConnector(BaseConnector):
             visited.add(stub.external_record_id)
             frontier.append(stub)
 
+        # A parent stored in full that the date filters now leave out becomes a stub too
+        # once one of its sub-issues is synced. Written, it stays linked after a full sync
+        # (which unlinks what it did not write), and the sub-issue stays under it.
+        for parent_id in sorted(self._issue_parent_ids - visited):
+            parent = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=parent_id)
+            if parent is not None and self._dated_out(parent, synced_team_ids):
+                visited.add(parent_id)
+                frontier.append(parent)
+
         if not frontier:
             return 0
 
@@ -1425,7 +1431,8 @@ class LinearConnector(BaseConnector):
                     connector_id=self.connector_id,
                     external_record_id=parent_ext_id,
                 )
-                if parent_record is None or not parent_record.is_placeholder:
+                if parent_record is None or not (
+                        parent_record.is_placeholder or self._dated_out(parent_record, synced_team_ids)):
                     continue
                 next_frontier.append(parent_record)
 
@@ -1997,9 +2004,11 @@ class LinearConnector(BaseConnector):
                         )
                         parent_node_id = parent_record.id if parent_record else None
 
-                        if not parent_node_id:
+                        if not parent_node_id or getattr(parent_record, "is_placeholder", False) is True:
                             # Parent issue not synced yet, skip this attachment
                             self.logger.debug(f"⚠️ Skipping attachment {attachment_id}: parent issue {issue_id} not synced")
+                            continue
+                        if not self._in_date_scope(parent_record):
                             continue
 
                         # Check if attachment already exists
@@ -2047,6 +2056,8 @@ class LinearConnector(BaseConnector):
                 await checkpoint.advance(run, end_cursor)
 
             # An attachment that could not be stored is read again next time
+            if failures:
+                self._read_everything = False
             if failures and await self._hold_checkpoint(checkpoint, "attachments", failures):
                 raise RuntimeError(f"{len(failures)} attachment(s) could not be stored")
             await checkpoint.finish(run)
@@ -2059,6 +2070,7 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             if self._stops_the_sync(e):
                 raise
+            self._read_everything = False
             self.logger.error(f"❌ Error syncing attachments: {e}", exc_info=True)
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
@@ -2135,6 +2147,8 @@ class LinearConnector(BaseConnector):
                         if parent_record is None or getattr(parent_record, "is_placeholder", False):
                             self.logger.debug(f"⚠️ Skipping document {document_id}: parent {parent_id} not synced")
                             continue
+                        if not self._in_date_scope(parent_record):
+                            continue
 
                         team_id = parent_record.external_record_group_id or ""
                         if team_id not in team_ids:
@@ -2175,6 +2189,8 @@ class LinearConnector(BaseConnector):
                 await checkpoint.advance(run, end_cursor)
 
             # A document that could not be stored is read again next time
+            if failures:
+                self._read_everything = False
             if failures and await self._hold_checkpoint(checkpoint, "documents", failures):
                 raise RuntimeError(f"{len(failures)} document(s) could not be stored")
             await checkpoint.finish(run)
@@ -2187,6 +2203,7 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             if self._stops_the_sync(e):
                 raise
+            self._read_everything = False
             self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
@@ -2248,6 +2265,8 @@ class LinearConnector(BaseConnector):
                         failures.append(project_ref)
                 await checkpoint.advance(run, end_cursor)
 
+            if failures:
+                self._read_everything = False
             if failures and await self._hold_checkpoint(checkpoint, "projects", failures):
                 raise RuntimeError(f"{len(failures)} project(s) could not be synced: {', '.join(failures[:5])}")
             await checkpoint.finish(run)
@@ -2260,6 +2279,7 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             if self._stops_the_sync(e):
                 raise
+            self._read_everything = False
             self.logger.error(f"❌ Error syncing projects: {e}", exc_info=True)
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
@@ -2455,6 +2475,10 @@ class LinearConnector(BaseConnector):
                 known = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=issue_data.get("id", ""))
                 records = await self._issue_to_records(issue_data, team_id)
+                if not self._in_date_scope(records[0][0]):
+                    continue
+                if records[0][0].parent_external_record_id:
+                    self._issue_parent_ids.add(records[0][0].parent_external_record_id)
                 await self.data_entities_processor.on_new_records(records)
                 if known is not None and not getattr(known, "is_placeholder", False):
                     await self.data_entities_processor.on_record_content_update(records[0][0])
@@ -2464,7 +2488,7 @@ class LinearConnector(BaseConnector):
             known = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=project_id)
             records = await self._project_to_records(project_id, scope)
-            if not records:
+            if not records or not self._in_date_scope(records[-1][0]):
                 continue
             await self.data_entities_processor.on_new_records(records)
             if known is not None:
@@ -3078,6 +3102,7 @@ class LinearConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"❌ Error processing file {file_info.get('url', 'unknown')}: {e}", exc_info=True)
+                self._read_everything = False
                 continue
 
         return file_records, existing_file_children
@@ -3901,6 +3926,40 @@ class LinearConnector(BaseConnector):
             linear_datetime = self._linear_datetime_from_timestamp(last_sync_time)
             if linear_datetime:
                 linear_filter["updatedAt"] = {"gt": linear_datetime}
+
+    def _in_date_scope(self, record: Record) -> bool:
+        """Whether the date filters cover an issue or project. One they leave out may still
+        be stored (a full sync left it unlinked, readable by nobody); nothing under it is synced."""
+        if not self.sync_filters:
+            return True
+        for key, stamp in ((SyncFilterKey.CREATED, record.source_created_at),
+                           (SyncFilterKey.MODIFIED, record.source_updated_at)):
+            date_filter = self.sync_filters.get(key)
+            if not date_filter or stamp is None:
+                continue
+            after, before = date_filter.get_value(default=(None, None))
+            if (after and stamp < after) or (before and stamp > before):
+                return False
+        return True
+
+    def _team_in_filter(self, team_id: str) -> bool:
+        """Whether the team filter covers a team (every team when it is unset or empty)."""
+        team_filter = self.sync_filters.get("team_ids") if self.sync_filters else None
+        selected = set(team_filter.get_value(default=[]) or []) if team_filter else set()
+        if not selected:
+            return True
+        operator = team_filter.get_operator()
+        excluding = getattr(operator, "value", operator) == "not_in"
+        return (team_id not in selected) if excluding else (team_id in selected)
+
+    def _dated_out(self, record: Record, synced_team_ids: set[str]) -> bool:
+        """A full issue of a synced team that the date filters leave out."""
+        return (
+            record.record_type == RecordType.TICKET
+            and getattr(record, "is_placeholder", False) is not True
+            and record.external_record_group_id in synced_team_ids
+            and not self._in_date_scope(record)
+        )
 
     def _apply_date_filters_to_linear_filter(
         self,
@@ -5305,6 +5364,12 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             await self._get_fresh_datasource()
+            # A reindex writes what changed at the source; what the filters leave out must not be
+            try:
+                self.sync_filters, self.indexing_filters = await load_connector_filters(
+                    self.config_service, "linear", self.connector_id, self.logger)
+            except Exception as e:
+                self.logger.warning(f"Could not read the sync filters; reindexing with the last ones read: {e}")
 
             # Check records at source for updates
             updated_records = []
@@ -5469,15 +5534,19 @@ class LinearConnector(BaseConnector):
             if team_id != record.external_record_group_id:
                 group = await self.data_entities_processor.get_record_group_by_external_id(
                     connector_id=self.connector_id, external_id=team_id)
-                if group is None:
+                if group is None or not self._team_in_filter(team_id):
                     # Moved to a team this connector does not sync: it must not stay
                     # readable through its old team.
                     self.logger.info(f"Issue {issue_id} moved to a team outside the sync; removing it")
                     await self._remover.remove_record(record)
                     return None
+            elif not self._team_in_filter(team_id):
+                return None  # its team is left out by the filter; the record stays unlinked
 
             # Transform issue to ticket record
             ticket_record = self._transform_issue_to_ticket_record(issue_data, team_id, record)
+            if not self._in_date_scope(ticket_record):
+                return None  # left out by the date filters; the record stays unlinked
 
             # Extract permissions (empty list for now, Linear doesn't have explicit permissions)
             permissions = []
