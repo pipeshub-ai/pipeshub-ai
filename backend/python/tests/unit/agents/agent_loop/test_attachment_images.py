@@ -1,5 +1,5 @@
 """The person's attached images go through the request's image admission and
-survive the transport's image cap (docs/context-engineering/REPORT.md CE-10).
+survive the transport's image cap (docs/context-engineering.md CE-10).
 
 Before: `resolve_attachments_for_goal` built its own permissive admission, so an
 attachment skipped the model's per-image limits (a 3000x2000 PNG went to Ollama

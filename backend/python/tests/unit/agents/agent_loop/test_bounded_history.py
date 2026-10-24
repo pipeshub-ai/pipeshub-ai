@@ -1,4 +1,4 @@
-"""Bounded and faithful history (docs/context-engineering/REPORT.md CE-09).
+"""Bounded and faithful history (docs/context-engineering.md CE-09).
 
 Node sends every saved turn on every request, and every earlier attachment was
 re-rendered in full into its replayed question. A 200-turn chat replayed about

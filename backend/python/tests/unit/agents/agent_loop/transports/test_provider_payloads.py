@@ -4,7 +4,7 @@
   the person speaking; it is wrapped as a context note.
 - TP-02: a tool result carrying an image formats on every transport.
 - TP-04: a turn that failed before an answer never merges with the current question into one
-  human turn (docs/context-engineering/REPORT.md, CE-05, CE-06, CE-11).
+  human turn (docs/context-engineering.md, CE-05, CE-06, CE-11).
 """
 
 from __future__ import annotations

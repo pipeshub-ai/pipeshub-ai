@@ -137,3 +137,34 @@ A change to a layer must keep `test_protected_messages.py` and the scenario prop
   - one stable pipeline (P2);
   - citation and artifact correctness (P3a);
   - bounded history and attachments (P3b).
+
+### Finding ids
+
+Tests and comments cite these ids. Case labels next to them (`E2E-03`, `TP-05`, `HG-04`, …) name the test cases in the files that carry them.
+
+| Id | Finding | Fixed in |
+|---|---|---|
+| CE-01 | Compaction protected `messages[0]`, the chat's first question, instead of the current request | P0 |
+| CE-02 | The sliding window evicted before extractive compaction could make the request fit | P0 |
+| CE-03 | An over-budget request was sent instead of failing | P0 |
+| CE-04 | Current-turn images were attached to the first user message, and shaping changed stored history | P0 |
+| CE-05 | Text the loop adds reached providers as plain user turns | P1 |
+| CE-06 | Failed turns were dropped from history and stopped turns carried no marker | P1 |
+| CE-07 | Outside `quick` mode the intent briefing replaced the person's words | P1 |
+| CE-08 | The current request had no second anchor in the system prompt | P1 |
+| CE-09 | Attachments and history were replayed with no size budget | P3b |
+| CE-10 | Attachments skipped image admission, and the transport cap dropped the user's own image first | P3b |
+| CE-11 | Direct transports crashed on a tool result with an image | P1 |
+| CE-12 | Compaction changed the sent prefix from call to call and re-ran the summariser | P2 |
+| CE-13 | Pinned messages and protected tools were honoured by only some layers | P2 |
+| CE-14 | The follow-up heuristic matched substrings and pulled short questions back to old topics | P1 |
+| CE-15 | Per-request `refN` ids survived in replayed text and resolved to other records | P3a |
+| CE-16 | Sub-agents got a paraphrase of the request and shared the root's image stash | P2 |
+| CE-17 | Retrieved images were delivered twice on non-multipart providers | P2 |
+| CE-18 | `retrieve_artifact_content` could not page and was cut in the middle | P3a |
+| CE-19 | Client-supplied `previousConversations` was accepted on create | #4560 |
+| CE-20 | Direct transports split parallel tool results | #4561 |
+| CE-21 | Reasoning is not replayed between steps of a run | open (measured on FRAMES first) |
+| CE-22 | The token estimator ignored step footers and thinking | P2 |
+| CE-23 | The factory and `ControlPlane` wired the layers differently | P2 |
+| CE-24 | Smaller items: an unused `pin_first_n`, live and replayed tool-call ids colliding, dependency results read from the first user message | P2, P3a |

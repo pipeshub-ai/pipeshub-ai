@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-# D8 (docs/context-engineering/REPORT.md): replayed history may use at most this
+# Replayed history (docs/context-engineering.md, §4) may use at most this
 # share of the message budget, so the current request and the run's own tool
 # results always have the rest.
 HISTORY_SHARE = 0.30

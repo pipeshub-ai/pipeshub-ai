@@ -5,7 +5,7 @@ In a chat the history is seeded oldest-first, so the first user message the
 model sees is the conversation's FIRST question. The context shapers used to
 protect that message, so when the current turn's tool results filled the
 window they summarised or evicted the CURRENT question, and the model answered
-the old one (docs/context-engineering/REPORT.md, CE-01, cases E2E-01/03/05).
+the old one (docs/context-engineering.md, CE-01, cases E2E-01/03/05).
 
 Everything below the HTTP route runs for real, as in
 `test_agent_turn_limit_e2e.py`: `run_chat_stream()`, `PipesHubAgentFactory`
