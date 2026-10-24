@@ -2,8 +2,8 @@
 
 """Gmail (personal) integration fixtures (DESIGN.md in connectors/gmail/).
 
-``gmail_personal`` is class-scoped: it builds a simulated mailbox for the Drive personal suite's account, registers
-that suite's OAuth client and refresh token with the simulator, creates a personal Gmail connector with the same
+``gmail_personal`` is class-scoped: it builds a simulated mailbox for gmail_sim.env's personal account, registers
+that file's OAuth client and refresh token with the simulator, creates a personal Gmail connector with the same
 client, exchanges the refresh token at the simulator's token endpoint (never Google's), runs the first sync, and on
 teardown deletes the connector and checks its graph is gone.
 """
@@ -22,6 +22,7 @@ from connectors.gmail.gmail_env import (
     ENV_CLIENT_ID,
     ENV_CLIENT_SECRET,
     ENV_REFRESH_TOKEN,
+    PERSONAL_VARS,
     personal_env,
 )
 from connectors.gmail.gmail_sim import GmailSim, personal_oauth
@@ -64,10 +65,9 @@ async def gmail_personal(
     try:
         env = personal_env()
     except ValueError as e:
-        source_unavailable(f"The Google OAuth credentials the Drive personal suite uses are not configured: {e}")
+        source_unavailable(f"The simulated Gmail account is not configured: {e}", secrets=PERSONAL_VARS)
     sim = GmailSim()
-    if not sim.reachable():
-        source_unavailable(f"The Gmail simulator is not reachable at {sim.base_url} (compose profile gmail-sim)")
+    sim.require_reachable()
     sim.load({**personal_scenario(env.user), "oauth": personal_oauth(env, "me")})
     user_id, _ = ensure_pipeshub_user_exists(users_client, env.user)
 
