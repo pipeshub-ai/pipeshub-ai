@@ -225,6 +225,64 @@ async def test_attachment_image_goes_on_the_current_question() -> None:
     assert [m.model_dump() for m in stored[: len(before)]] == before
 
 
+
+SEARCH = "knowledgegraph__search"
+_TAIL = "\nCite each fact with its [refN] id; ids r9 and r10 were unavailable."
+
+
+def _tailed_round(stored: list, n: int, chars: int, tool: str) -> str:
+    call = ToolCall(id=f"t{n}", name=tool, arguments={"query": f"sms reminders {n}"})
+    stored.append(AssistantMessage(content=[TextPart(text=f"Searching {n}.")], tool_calls=[call]))
+    stored.append(ToolMessage(content=_text(chars - len(_TAIL)) + _TAIL, tool_call_id=call.id))
+    return call.id
+
+
+def _result(sent: list, call_id: str) -> ToolMessage | None:
+    return next((m for m in sent if isinstance(m, ToolMessage) and m.tool_call_id == call_id), None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", [SEARCH, FETCH])
+async def test_a_small_window_shortens_the_newest_result_instead_of_dropping_it(tool) -> None:
+    """SC-11: the nightly 24K-window chat. The message budget was 4293 tokens;
+    budget reduction capped a 6778-token search result to 4412, still over the
+    budget, so the sliding window evicted it with its call down to the
+    29-token question, and the model never saw a result on any of 15 calls."""
+    hooks = _chain()
+    budget = _budget(24_000, 15_414)
+    assert budget.effective_max_tokens == 4_293
+    stored = [UserMessage(content=CURRENT)]
+    call_id = _tailed_round(stored, 1, 27_100, tool)
+    assert count_tokens(stored) > 6_700
+
+    sent = await _send(hooks, stored, budget, 1)
+
+    result = _result(sent, call_id)
+    assert result is not None, "the newest result was evicted with its call"
+    assert result.content.endswith(_TAIL), "the cut must keep the result's closing instructions"
+    assert count_tokens(sent) <= budget.effective_max_tokens
+    _assert_current_question_sent(sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", [SEARCH, FETCH])
+async def test_a_small_window_evicts_older_results_and_keeps_the_newest(tool) -> None:
+    """SC-12: call after call at that window, each call carries the result the
+    model just asked for; the older ones go, oldest first."""
+    hooks = _chain()
+    budget = _budget(24_000, 15_414)
+    stored = [UserMessage(content=CURRENT)]
+    call_ids: list[str] = []
+    for turn in range(1, 7):
+        call_ids.append(_tailed_round(stored, turn, 27_100, tool))
+        sent = await _send(hooks, stored, budget, turn)
+        assert _result(sent, call_ids[-1]) is not None, f"call {turn}: the newest result was evicted"
+        assert count_tokens(sent) <= budget.effective_max_tokens
+        _assert_current_question_sent(sent)
+    kept = [cid for cid in call_ids if _result(sent, cid) is not None]
+    assert kept == call_ids[len(call_ids) - len(kept):], f"older results outlived newer ones: {kept}"
+    assert call_ids[0] not in kept
+
 _SETTINGS = settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 
 

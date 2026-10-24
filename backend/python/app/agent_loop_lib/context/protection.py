@@ -19,8 +19,9 @@ Protected on every call:
   citation ids or a plan.
 
 Protected messages are never summarised or shortened, but a tool result is
-still capped by budget reduction (L1, never more than the whole message
-budget), the one bound that keeps protected content able to fit. When even that does not fit, the sliding window evicts
+still capped by budget reduction (L1: its call group fits beside the messages
+listed above under the sliding window's low-water mark), the one bound that
+keeps protected content able to fit. When even that does not fit, the sliding window evicts
 protected tool groups, oldest first, after every unprotected message: a
 citation the model can no longer read is better than a request the provider
 rejects. The current request, pinned and system messages are never evicted;
