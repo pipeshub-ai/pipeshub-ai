@@ -59,7 +59,10 @@ from app.agent_loop_lib.transport.content_filter import (
     gemini_prompt_block_reason,
 )
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
-from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    split_system_prompt,
+)
 from app.agent_loop_lib.transport.provider_conflicts import (
     API_SHAPE_CONFLICT_MARKERS,
     REASONING_MANDATORY_CONFLICT_MARKERS,
@@ -303,14 +306,6 @@ def responses_api_copy(llm: "BaseChatModel") -> "BaseChatModel":
         "reasoning": {"effort": effort} if effort else None,
         "reasoning_effort": None,
     })
-
-
-def _system_prompt(system: str | None, system_blocks: list[str] | None) -> tuple[str, str]:
-    """`(stable, volatile)`: the agent's blocks when given (the first is the
-    stable one), else the whole `system` as one stable block."""
-    if system_blocks:
-        return system_blocks[0] or "", "\n\n".join(block for block in system_blocks[1:] if block)
-    return system or "", ""
 
 
 class LangChainTransport(LLMTransport):
@@ -755,7 +750,7 @@ class LangChainTransport(LLMTransport):
         # configured once at model-construction time in PipesHub's existing
         # LLM factory, not per-call — silently ignored here per the
         # LLMTransport contract ("unsupported knobs must not raise").
-        prompt = _system_prompt(system, system_blocks)
+        prompt = split_system_prompt(system, system_blocks)
         # Bound up front so a bind failure surfaces as itself, not as a
         # provider error; the binding is cached for the calls below.
         self._bind_tools(tools, tool_choice=tool_choice)
@@ -947,7 +942,7 @@ class LangChainTransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        prompt = _system_prompt(system, system_blocks)
+        prompt = split_system_prompt(system, system_blocks)
         lc_messages, call_kwargs = self._request(messages, prompt)
         lc_llm = self._bind_tools(tools, tool_choice=tool_choice)
         relocate: bool | None = None

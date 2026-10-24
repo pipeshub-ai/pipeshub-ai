@@ -263,6 +263,33 @@ class TestOpenAIBreakpoint:
         assert system["content"] == f"{STABLE}\n\n{VOLATILE}"
         assert _breakpoints(endpoint.last) == []
 
+    @pytest.mark.parametrize("responses", [False, True])
+    @pytest.mark.parametrize(
+        ("prompt", "marked"),
+        [({"system": STABLE}, 1), ({"system_blocks": ["", VOLATILE]}, 0)],
+        ids=["one-string", "no-stable-block"],
+    )
+    async def test_the_direct_transport_marks_what_langchain_marks(
+        self, endpoint: Any, responses: bool, prompt: dict[str, Any], marked: int,  # noqa: ANN401
+    ) -> None:
+        """A prompt passed as one string (a sub-agent's, a builtin role's) is
+        the stable block on both paths."""
+        from app.agent_loop_lib.core.messages import UserMessage
+        from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+        from app.agents.agent_loop.langchain_transport import LangChainTransport
+
+        plan = OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True)
+        langchain = LangChainTransport(_gpt(endpoint, azure=False, responses=responses), model_name="gpt-6.1-sol",
+                                       cache_strategy=OpenAICacheStrategy(plan))
+        direct = OpenAITransport(api_key="test", model="gpt-6.1-sol", base_url=endpoint.url, max_retries=0,
+                                 defaults=RequestDefaults(model="gpt-6.1-sol", use_responses_api=responses),
+                                 cache_plan=plan)
+        for transport in (langchain, direct):
+            await transport.complete([UserMessage(content="hi")], **prompt)
+        via_langchain, via_direct = (_system_items(body, responses=responses) for body in endpoint.bodies)
+        assert via_direct == via_langchain
+        assert len(_breakpoints(via_direct)) == marked
+
     def test_dropping_a_refused_parameter_keeps_the_rest(self) -> None:
         strategy = OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "k", "prompt_cache_retention": "24h"}, breakpoint=True))
         narrowed = strategy.without(frozenset({"prompt_cache_breakpoint"}))
