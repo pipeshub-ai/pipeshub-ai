@@ -255,6 +255,21 @@ class TestForeignKeyTables:
         assert [rel["record_id"] for rel in enriched["fk_child_record_ids"]] == shown
 
 
+class TestForeignKeyTablesWhenTheCheckFails:
+    @pytest.mark.asyncio
+    async def test_a_failed_limit_check_names_no_related_table_and_the_turn_goes_on(self) -> None:
+        records = {"v": {"record_type": "SQL_TABLE", "id": "t-hit"}}
+        flattened = [{"virtual_record_id": "v"}]
+        readable, live = TestForeignKeyTables._readable()
+
+        with readable, live, patch(OUTSIDE, AsyncMock(side_effect=RuntimeError("graph down"))):
+            await enrich_virtual_record_id_to_result_with_fk_children(
+                records, MagicMock(), "o", _fk_graph(), flattened, user_id="u", connection_sources=FILE_LIMIT,
+            )
+
+        assert flattened[0]["fk_child_relations"] == []
+
+
 class TestLiveJiraFields:
     @staticmethod
     async def _upgrade(limit: dict | None, app_id: str = "jira-app") -> str:
@@ -272,6 +287,21 @@ class TestLiveJiraFields:
                 connection_sources=limit,
             )
         return record["context_metadata"]
+
+    @pytest.mark.asyncio
+    async def test_a_naming_line_the_record_already_held_goes_too(self) -> None:
+        base = "Record ID: t\nTicket Information:\n* Status: Open\n* Parent: PROJ-1 — Secret plans"
+        ticket = MagicMock(spec=TicketRecord)
+        ticket.to_llm_context_with_live_fields = AsyncMock(return_value=base)
+        record = {"id": "t", "record_type": "TICKET", "connector_id": "jira-app", "context_metadata": base}
+        with patch("app.utils.fetch_full_record.create_record_instance_from_dict", return_value=ticket):
+            await _apply_live_ticket_context_metadata(
+                record, config_service=MagicMock(), graph_provider=None, frontend_url=None,
+                connection_sources=FILE_LIMIT,
+            )
+
+        assert "Secret plans" not in record["context_metadata"]
+        assert "* Status: Open" in record["context_metadata"]
 
     @pytest.mark.asyncio
     async def test_under_a_narrow_limit_lines_naming_other_issues_go(self) -> None:

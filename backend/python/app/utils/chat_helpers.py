@@ -2717,7 +2717,12 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     if connection_sources is not None and allowed:
         from app.modules.retrieval.selection_scope import outside_connection
 
-        allowed -= await outside_connection(graph_provider, user_id, org_id, allowed, connection_sources)
+        try:
+            allowed -= await outside_connection(graph_provider, user_id, org_id, allowed, connection_sources)
+        except Exception as exc:
+            # The related tables are extra context: name none, and the turn goes on.
+            logger.warning("FK enrichment: limit check unavailable, naming no related table: %s", exc)
+            allowed = set()
     related_record_ids &= allowed
     for relations in record_id_to_fk_relations.values():
         for key in ("children", "parents"):

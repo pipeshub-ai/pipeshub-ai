@@ -646,6 +646,43 @@ class TestParentsOutsideTheLimit:
         assert record["parentNodeId"] == "folder-in" and record["externalParentId"] == "ext-folder"
         assert record["recordGroupId"] is None  # the collection is only partly shared
 
+    @staticmethod
+    async def _search_with_paths(limit: dict | None) -> dict:
+        graph = _graph_under(limit if limit and limit.get("records") else FILE_LIMIT)
+        doc = {**_file_doc(), "filePath": "src/billing/secret/a.py",
+               "fileRecord": {"path": "/Finance/Board/budget.xlsx", "webUrl": "https://files.example/b"}}
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body)
+
+    @pytest.mark.asyncio
+    async def test_a_narrow_limits_search_names_no_source_path(self) -> None:
+        body = await self._search_with_paths(FILE_LIMIT)
+
+        (record,) = body["records"]
+        assert record["filePath"] is None and record["fileRecord"]["path"] is None
+        assert record["fileRecord"]["webUrl"] == "https://files.example/b"
+        assert "secret" not in json.dumps(body) and "Board" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, LIMIT])
+    async def test_a_search_keeps_source_paths_without_a_limit_or_under_a_whole_app_one(self, limit) -> None:
+        body = await self._search_with_paths(limit)
+
+        (record,) = body["records"]
+        assert record["filePath"] == "src/billing/secret/a.py"
+        assert record["fileRecord"]["path"] == "/Finance/Board/budget.xlsx"
+
     @pytest.mark.asyncio
     async def test_an_unlimited_search_is_unchanged(self) -> None:
         body, graph = await self._search(None)

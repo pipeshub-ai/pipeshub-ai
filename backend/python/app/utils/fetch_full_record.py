@@ -105,17 +105,16 @@ async def _apply_live_ticket_context_metadata(
     if not isinstance(record_instance, TicketRecord):
         return
 
-    before = record.get("context_metadata")
     live = await record_instance.to_llm_context_with_live_fields(
         frontend_url=frontend_url,
         config_service=config_service,
     )
     app_id = record.get("connector_id") or record.get("connectorId")
     if connection_sources is not None and app_id not in set(connection_sources.get("apps") or ()):
-        known = set((before or "").split("\n")) if isinstance(before, str) else set()
+        # Every such line goes, the ones the record already held included: a
+        # record read earlier, unlimited, may carry them in from the live fields.
         live = "\n".join(
-            line for line in live.split("\n")
-            if line in known or not line.lstrip().startswith(_LIVE_LINES_NAMING_OTHERS)
+            line for line in live.split("\n") if not line.lstrip().startswith(_LIVE_LINES_NAMING_OTHERS)
         )
     record["context_metadata"] = live
 

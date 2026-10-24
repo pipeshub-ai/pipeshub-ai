@@ -7508,6 +7508,29 @@ components:
             Parent node ID, or `null` at the root browse level. Also `null`
             for a connected app whose limit leaves the parent out: the node is
             listed, and the folder above it is not named.
+        parent:
+          type: object
+          nullable: true
+          description: |
+            The parent this node is listed under, with what a client needs to
+            open it and name it; `null` exactly when `parentId` is. It is the
+            node's placement parent: an ancestor the user cannot open is
+            replaced, never named.
+          required:
+            - id
+            - nodeType
+          properties:
+            id:
+              type: string
+              description: Parent node ID.
+            nodeType:
+              type: string
+              enum: [app, recordGroup, folder, record]
+              description: Parent node type; opened as `/nodes/{nodeType}/{id}`.
+            name:
+              type: string
+              nullable: true
+              description: Parent display name.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
@@ -31565,8 +31588,9 @@ paths:
 
         When `include=breadcrumbs` is set, the response contains a
         `breadcrumbs` array tracing the path from the root to the current
-        node. The `currentNode` and `parentNode` objects are always populated
-        for non-root requests.
+        node. The `currentNode` object is always populated for non-root
+        requests. `parentNode` is too, except at the top of a source and for
+        a connected app whose limit leaves that parent out: it is `null` then.
 
         **Access control**
 

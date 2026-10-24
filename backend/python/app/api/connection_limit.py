@@ -239,6 +239,32 @@ def _clear_source_paths(value: object) -> None:
             _clear_source_paths(child)
 
 
+def _docs_with_an_app(value: object) -> Iterable[dict[str, Any]]:
+    """Every dict under ``value`` that names its app (a record document)."""
+    if isinstance(value, dict):
+        if "connectorId" in value:
+            yield value
+        for child in value.values():
+            yield from _docs_with_an_app(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _docs_with_an_app(child)
+
+
+def hide_record_source_paths(request: Request, payload: object) -> None:
+    """``hide_source_paths`` for a payload of record documents from many apps
+    (a search response): each one keeps its source paths only when the limit
+    covers its own app whole. Nothing changes without a limit, and nothing is
+    asked of the graph."""
+    limit = connection_limit(request.state.user)
+    if limit is None:
+        return
+    whole_apps = set(limit.get("apps") or ())
+    for doc in list(_docs_with_an_app(payload)):
+        if doc.get("connectorId") not in whole_apps:
+            _clear_source_paths(doc)
+
+
 def hide_source_paths(request: Request, payload: object, app_id: str | None) -> None:
     """Clear every source path under ``payload``, all of it in app ``app_id``,
     unless the calling app's limit covers that app whole: a path names the
