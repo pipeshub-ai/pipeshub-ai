@@ -761,7 +761,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
 
     @pytest.mark.parametrize("connector", ["GMAIL", "GMAIL WORKSPACE"])
     @pytest.mark.asyncio
-    async def test_graph_fallback_opens_gmail_link_as_the_viewer(self, connector):
+    async def test_graph_fallback_opens_gmail_link_as_the_viewer(self, connector) -> None:
         """A record read by id comes straight from the graph; its Gmail link must
         carry the viewer's email, not the ``{user.email}`` placeholder."""
         from app.utils import fetch_full_record as ffr
@@ -775,7 +775,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         )
         seen: list[str | None] = []
 
-        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs):
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
             seen.append(graph_map[vrid].get("webUrl"))
             results_map[vrid] = {"id": "r1", "weburl": graph_map[vrid].get("webUrl")}
 
@@ -791,7 +791,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         assert seen == ["https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"]
 
     @pytest.mark.asyncio
-    async def test_pattern_match_map_entry_opens_gmail_link_as_the_viewer(self):
+    async def test_pattern_match_map_entry_opens_gmail_link_as_the_viewer(self) -> None:
         """Pattern match leaves raw graph documents in the map; fetching one
         resolves its link too."""
         from app.utils import fetch_full_record as ffr
@@ -806,7 +806,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         }}
         seen: list[str | None] = []
 
-        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs):
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
             seen.append(graph_map[vrid].get("webUrl"))
             results_map[vrid] = {"id": "r1", "record_name": "Hi"}
 
@@ -822,7 +822,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         assert seen == ["https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"]
 
     @pytest.mark.asyncio
-    async def test_graph_fallback_leaves_other_connectors_links_alone(self):
+    async def test_graph_fallback_leaves_other_connectors_links_alone(self) -> None:
         from app.utils import fetch_full_record as ffr
 
         url = "https://drive.google.com/file/d/{user.email}/view"
@@ -832,7 +832,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         })
         seen: list[str | None] = []
 
-        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs):
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
             seen.append(graph_map[vrid].get("webUrl"))
             results_map[vrid] = {"id": "r1"}
 
