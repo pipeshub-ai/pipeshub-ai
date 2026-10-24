@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from app.services.artifact_registry import ArtifactMetadata
 
 from app.models.entities import ArtifactVisibility
+from app.utils.citations import rewrite_request_refs
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +124,14 @@ def _extract_conversation_metadata(
             info: dict[str, Any] = {}
             args = entry.get("args")
             if isinstance(args, dict) and args:
-                info["args"] = args
+                # Citation refs of the request that saved them would resolve
+                # to whatever this request numbers the same.
+                info["args"] = json.loads(
+                    rewrite_request_refs(json.dumps(args, default=str, ensure_ascii=False), None)[0]
+                )
             summary = entry.get("result_summary") or entry.get("result") or ""
             if isinstance(summary, str) and summary:
-                info["summary"] = summary
+                info["summary"] = rewrite_request_refs(summary, None)[0]
             if info:
                 meta[aid] = info
     return meta

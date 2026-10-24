@@ -34,13 +34,18 @@ kept too, within a per-reply budget (`result_views.py`).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
-from app.utils.citations import kept_citation_link_text, sub_in_order
+from app.utils.citations import (
+    kept_citation_link_text,
+    rewrite_request_refs,
+    sub_in_order,
+)
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -56,10 +61,14 @@ _NON_NUMBERED_CITATION_LINK_RE = re.compile(
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 
 __all__ = ["MessagePart", "TranscriptCollector"]
+
+logger = logging.getLogger(__name__)
 
 # Tool args are already bounded by whatever the model produced this turn;
 # this is a defensive cap, not the primary truncation mechanism (that's
@@ -70,6 +79,20 @@ _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 # Longest single argument value kept verbatim. Anything longer is shortened
 # in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
 _MAX_ARG_VALUE_CHARS = 1200
+
+# A URL that runs to the end of a preview's head: cutting there would leave a shorter URL that can
+# name a different block ("blockIndex=1" of "=12").
+_URL_AT_END_RE = re.compile(r"https?://[^\s\"'<>()\[\]]*\Z")
+_URL_END_CHARS = frozenset(" \t\n\"'<>()[]")
+
+
+def _head_outside_url(text: str, size: int) -> str:
+    """The first `size` characters of `text`, shorter if they would end inside a URL."""
+    head = text[:size]
+    url = _URL_AT_END_RE.search(head)
+    if url is not None and size < len(text) and text[size] not in _URL_END_CHARS:
+        return head[: url.start()]
+    return head
 
 
 def _serialize_tool_args(args: object) -> str:
@@ -98,7 +121,7 @@ def _serialize_tool_args(args: object) -> str:
     for key, value in args.items():
         if isinstance(value, str) and len(value) > _MAX_ARG_VALUE_CHARS:
             shortened[str(key)] = (
-                f"{value[:_MAX_ARG_VALUE_CHARS]}"
+                f"{_head_outside_url(value, _MAX_ARG_VALUE_CHARS)}"
                 f"… [truncated, {_MAX_ARG_VALUE_CHARS} of {len(value)} chars]"
             )
         else:
@@ -162,7 +185,11 @@ class TranscriptCollector(EventEmitter):
     `run_id`-keyed bookkeeping exactly, just building `MessagePart`s
     instead of wire frames."""
 
-    def __init__(self) -> None:
+    def __init__(self, ref_to_url: Callable[[], Mapping[str, str] | None] | None = None) -> None:
+        """`ref_to_url` reads this request's citation refs when a tool part is
+        saved: the saved text is replayed to later requests, which number
+        their refs afresh, so each ref is stored as the URL it stands for."""
+        self._ref_to_url = ref_to_url
         self.parts: list[MessagePart] = []
         # run_id -> the ordered list this run's own parts append to: the
         # top-level `self.parts` for the root run, or a parent `sub_agent`
@@ -259,6 +286,47 @@ class TranscriptCollector(EventEmitter):
                 return raw
         return ""
 
+    def _rewrite_refs(self, text: str) -> tuple[str, int, int]:
+        return rewrite_request_refs(text, self._ref_to_url() if self._ref_to_url is not None else None)
+
+    @staticmethod
+    def _log_rewrites(expanded: int, unresolved: int, tool_call_id: str) -> None:
+        if expanded or unresolved:
+            logger.info(
+                "transcript: stored %d citation ref(s) as URLs, %d made uncitable (tool_call_id=%s)",
+                expanded, unresolved, tool_call_id,
+            )
+
+    def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
+        """`text` with this request's citation refs replaced by their URLs,
+        within `cap` characters and never ending inside a URL."""
+        text, expanded, unresolved = self._rewrite_refs(text)
+        self._log_rewrites(expanded, unresolved, tool_call_id)
+        if cap is None or len(text) <= cap:
+            return text
+        return _head_outside_url(text, cap - 1) + "…"
+
+    def _durable_args(self, args: object, tool_call_id: str) -> str:
+        """Tool arguments as saved: refs replaced in every string value before any value is cut,
+        so a cut ref ("ref1" of "ref12") is never resolved as a shorter one."""
+        counts = [0, 0]
+
+        def _walk(value: object) -> object:
+            if isinstance(value, str):
+                text, expanded, unresolved = self._rewrite_refs(value)
+                counts[0] += expanded
+                counts[1] += unresolved
+                return text
+            if isinstance(value, dict):
+                return {key: _walk(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [_walk(item) for item in value]
+            return value
+
+        rewritten = _walk(args)
+        self._log_rewrites(counts[0], counts[1], tool_call_id)
+        return _serialize_tool_args(rewritten)
+
     def _container_for(self, run_id: str) -> list[MessagePart]:
         return self._containers.setdefault(run_id, self.parts)
 
@@ -294,7 +362,7 @@ class TranscriptCollector(EventEmitter):
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
                 "toolName": payload.get("tool", "tool"),
-                "args": _serialize_tool_args(payload.get("args", {})),
+                "args": self._durable_args(payload.get("args", {}), tool_call_id),
                 "status": "running",
                 "runId": run_id,
             }
@@ -329,10 +397,12 @@ class TranscriptCollector(EventEmitter):
                     part["approval"] = payload["approval"]
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
-                part["resultPreview"] = str(payload.get("content", ""))[:_MAX_TOOL_RESULT_CHARS]
+                part["resultPreview"] = self._durable(
+                    str(payload.get("content", "")), tool_call_id, _MAX_TOOL_RESULT_CHARS,
+                )
                 result_summary = payload.get("result_summary")
                 if isinstance(result_summary, str):
-                    part["resultSummary"] = result_summary
+                    part["resultSummary"] = self._durable(result_summary, tool_call_id)
                 if result_view := self._view_budget.admit(payload.get("result_view")):
                     part["resultView"] = result_view
                 artifact_id = payload.get("artifact_id")

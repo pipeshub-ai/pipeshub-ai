@@ -745,25 +745,27 @@ class TestRetrieveArtifactContentTool:
         assert "not found" in output.error.lower()
 
     @pytest.mark.asyncio
-    async def test_max_lines_limit(self):
+    async def test_limit_returns_a_page_with_a_footer(self):
         store = InMemoryArtifactStore()
         aid = await store.store("line1\nline2\nline3\nline4\nline5", tool_name="t")
 
         tool = RetrieveArtifactContentTool(store=store)
-        output = await tool.execute(artifact_id=aid, max_lines=2)
+        output = await tool.execute(artifact_id=aid, limit=12)
         assert output.success is True
-        assert output.data.count("\n") <= 2
+        assert output.data.startswith("line1\nline2\n")
+        assert "line3" not in output.data
+        assert f'retrieve_artifact_content(artifact_id="{aid}", offset=12)' in output.data
 
     @pytest.mark.asyncio
-    async def test_truncation_hint(self):
+    async def test_a_large_artifact_is_paged_under_the_result_cap(self):
         store = InMemoryArtifactStore()
         aid = await store.store("x" * 200_000, tool_name="t")
 
-        tool = RetrieveArtifactContentTool(store=store, max_content_tokens=100)
+        tool = RetrieveArtifactContentTool(store=store, max_result_chars=1_000)
         output = await tool.execute(artifact_id=aid)
         assert output.success is True
-        assert "truncated" in output.data
-        assert "Filter and curate" in output.data
+        assert len(output.data) <= 1_000
+        assert "of 200,000" in output.data
 
 
 # ═══════════════════════════════════════════════════════

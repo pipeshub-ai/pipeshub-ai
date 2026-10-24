@@ -61,6 +61,10 @@ from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     shape_tool_result_clearing,
 )
+from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+    RETRIEVE_ARTIFACT_TOOL_NAME,
+    refit_artifact_page,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -123,6 +127,7 @@ def build_context_pipeline(profile: ContextProfile) -> list[Middleware[ModelCall
     if "budget_reduction" in on:
         layers.append(shape_budget_reduction(
             max_result_chars=profile.max_result_chars, tool_caps=dict(profile.tool_caps) or None,
+            refitters={RETRIEVE_ARTIFACT_TOOL_NAME: refit_artifact_page},
         ))
     if "artifact_compaction" in on:
         layers.append(shape_artifact_compaction(

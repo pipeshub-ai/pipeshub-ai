@@ -8,11 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_loop_lib.context.manager import ContextManager
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+    dedupe_tool_call_ids,
+)
 from app.agent_loop_lib.tools.decorators import _default_terminal_outcome
 from app.agents.agent_loop.factory import (
     _convert_conversation_turn,
-    _dedupe_tool_call_ids,
     inject_ask_user_question_resume,
     is_ask_user_question_resume_query,
     last_real_user_query,
@@ -340,7 +345,7 @@ def test_replayed_tool_call_ids_stay_unique_across_turns() -> None:
         {"role": "bot_response", "content": "", "tool_results": [_ask_result("ask_user_question")]},
     ):
         messages = _convert_conversation_turn(turn)
-        _dedupe_tool_call_ids(messages, seen)
+        dedupe_tool_call_ids(messages, seen)
         replayed.extend(messages)
 
     call_ids = [c.id for m in replayed if isinstance(m, AssistantMessage) for c in (m.tool_calls or [])]
@@ -529,7 +534,7 @@ def test_replayed_ids_stay_unique_when_turns_fall_back_to_positional_ids() -> No
             "content": "",
             "tool_results": [{"tool_name": "search", "result": "a"}, {"tool_name": "search", "result": "b"}],
         })
-        _dedupe_tool_call_ids(messages, seen)
+        dedupe_tool_call_ids(messages, seen)
         replayed.extend(messages)
 
     call_ids = [c.id for m in replayed if isinstance(m, AssistantMessage) for c in (m.tool_calls or [])]
@@ -547,7 +552,7 @@ def test_replayed_ids_stay_unique_when_one_turn_repeats_an_id() -> None:
     })
     messages[1].content = "first"
     messages[2].content = "second"
-    _dedupe_tool_call_ids(messages, set())
+    dedupe_tool_call_ids(messages, set())
 
     call_ids = [c.id for c in messages[0].tool_calls]
     assert len(set(call_ids)) == 2
@@ -561,7 +566,7 @@ def test_replaying_an_untouched_history_leaves_ids_alone() -> None:
         "tool_results": [_tool_result(0), _ask_result("ask_a")],
     })
     before = [m.model_dump_json() for m in messages]
-    _dedupe_tool_call_ids(messages, set())
+    dedupe_tool_call_ids(messages, set())
 
     assert [m.model_dump_json() for m in messages] == before
 
