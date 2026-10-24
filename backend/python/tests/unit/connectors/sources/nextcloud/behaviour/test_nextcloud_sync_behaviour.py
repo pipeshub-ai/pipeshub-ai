@@ -41,7 +41,7 @@ from app.connectors.sources.nextcloud.connector import (
     NextcloudNoFilesystemAccessError,
     NextcloudSyncError,
 )
-from app.models.entities import FileRecord
+from app.models.entities import AppUser, FileRecord
 from app.services.notification.types import NotificationType
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
@@ -2287,6 +2287,21 @@ class TestChecklistAudit:
 
         assert {"Docs", "Reports", "q1.pdf", "notes.txt"} <= db.names(), "what was under it is kept"
         assert db.by_name("readme.txt").external_revision_id == server.nodes["readme.txt"].etag
+
+    # ---- only the creator is linked to the app ----
+
+    async def test_a_full_sync_unlinks_a_user_an_older_worker_linked_after_the_migration(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        # What an older version's worker, still running during a rolling upgrade, writes again.
+        await db.on_new_app_users([AppUser(
+            app_name=connector.connector_name, connector_id=CONNECTOR_ID, source_user_id="alice",
+            email="alice@example.com", full_name="Alice", org_id=db.org_id, is_active=True,
+        )])
+        due_for_full_listing(store)
+
+        assert await sync(connector)
+
+        assert [u.email for u in db.app_users] == [CREATOR_EMAIL], "the profile email's owner loses the drive"
 
     # ---- a folder that moves or is deleted between its parent's listing and its own ----
 

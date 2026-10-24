@@ -1609,10 +1609,13 @@ class NextcloudConnector(BaseConnector):
             raise
 
     async def _link_creator_to_app(self) -> None:
-        """Give the app's only user edge to the person who created this connector.
+        """Give the app's only user edge to the person who created this connector, and take
+        it from anyone else.
 
         Never to the email in the Nextcloud profile: whoever owns that address in PipesHub
-        would reach every record this personal connector syncs.
+        would reach every record this personal connector syncs. Earlier versions linked that
+        user, and one still running beside this one during a rolling upgrade can link them
+        again after the startup migration removed the edge, so every full sync removes it.
         """
         if not self.creator_email:
             await self._load_creator_email()
@@ -1631,6 +1634,13 @@ class NextcloudConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id,
             is_active=True,
         )])
+        linked = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        others = [u for u in linked if (u.email or "").lower() != self.creator_email.lower()]
+        if others:
+            self.logger.warning(
+                f"Removing {len(others)} user(s) other than the connector's creator from this personal connector"
+            )
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
 
     async def _newest_activity_id(self) -> str | None:
         """The newest activity id, "0" when the feed is empty, None when it can't be read."""

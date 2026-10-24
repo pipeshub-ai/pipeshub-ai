@@ -676,7 +676,16 @@ class FakeRecordsDb:
         return 1 if self.edges.pop(record_id, None) else 0
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        self.app_users.extend(users)
+        # One user-to-app edge per user, as in the graph.
+        for user in users:
+            self.app_users = [u for u in self.app_users if u.email != user.email] + [user]
+
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return list(self.app_users)
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.email for u in users}
+        self.app_users = [u for u in self.app_users if u.email not in gone]
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
