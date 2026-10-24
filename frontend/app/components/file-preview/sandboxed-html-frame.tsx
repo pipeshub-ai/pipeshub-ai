@@ -38,12 +38,21 @@ export function SandboxedHtmlFrame({
     onClickRef.current = onHighlightClick;
   }, [onHighlightClick]);
 
-  const srcDoc = useMemo(
-    () => buildPreviewDocument({ sanitizedHtml, nonce: createPreviewNonce(), dark, citations, baseCss }),
-    [sanitizedHtml, dark, citations, baseCss],
-  );
+  // Keyed on what the highlights use, not the array's identity: a rebuild
+  // reloads the frame, losing its scroll position and the active citation.
+  const citationsKey = JSON.stringify((citations ?? []).map((c) => [c.id, c.content]));
 
-  const knownIds = useMemo(() => new Set((citations ?? []).map((c) => c.id)), [citations]);
+  const srcDoc = useMemo(() => {
+    const highlighted = (JSON.parse(citationsKey) as Array<[string, string]>).map(
+      ([id, content]): PreviewCitation => ({ id, content }),
+    );
+    return buildPreviewDocument({ sanitizedHtml, nonce: createPreviewNonce(), dark, citations: highlighted, baseCss });
+  }, [sanitizedHtml, dark, citationsKey, baseCss]);
+
+  const knownIds = useMemo(
+    () => new Set((JSON.parse(citationsKey) as Array<[string, string]>).map(([id]) => id)),
+    [citationsKey],
+  );
 
   // The frame's origin is opaque ('null'), so '*' is the only usable target;
   // only a citation id is ever sent.

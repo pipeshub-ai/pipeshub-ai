@@ -193,6 +193,17 @@ describe('HTML preview citation bridge', () => {
     expect(post).toHaveBeenCalledWith({ type: SET_ACTIVE_CITATION, id: 'c2' }, '*');
   });
 
+  it('keeps the document when the citations are a new array with the same content', () => {
+    const { iframe, rerender, base } = renderFrame();
+    const before = iframe.getAttribute('srcdoc');
+
+    rerender(h(SandboxedHtmlFrame, { ...base, citations: CITATIONS.map((c) => ({ ...c })) }));
+    expect(iframe.getAttribute('srcdoc')).toBe(before);
+
+    rerender(h(SandboxedHtmlFrame, { ...base, citations: [{ ...CITATIONS[0], content: 'Quarterly report' }] }));
+    expect(iframe.getAttribute('srcdoc')).not.toBe(before);
+  });
+
   it('forwards a highlight click only when it comes from its own frame', () => {
     const { iframe, onHighlightClick } = renderFrame();
     const send = (source: MessageEventSource | null, data: unknown) =>
