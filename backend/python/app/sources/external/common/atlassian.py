@@ -49,35 +49,31 @@ ATLASSIAN_CLOUD_SITE_SUFFIXES = (".atlassian.net", ".jira.com")
 ALLOWED_SITE_HOSTS_ENV = "PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS"
 
 
-def require_atlassian_cloud_site_url(site_url: str) -> None:
-    """Refuse a Cloud API-token site URL that is not ``https://<site>.atlassian.net``.
+def atlassian_cloud_site_root(site_url: str) -> str:
+    """The root of the Atlassian site a Cloud API token may be sent to: ``https://<site>.atlassian.net``.
 
-    Raises ``ValueError`` with a message the admin can act on. Only the site root is
-    accepted: the client appends ``/rest/api/...`` to it.
+    Raises ``ValueError`` with a message the admin can act on unless the host is an Atlassian
+    site (or an operator-allowed host, kept as given). For a site, a missing scheme or ``http``
+    becomes ``https`` and anything after the host is dropped: Jira also answers under
+    ``/jira/...``, so a pasted link like ``https://acme.atlassian.net/jira/software/...``
+    synced before this check and must keep syncing.
     """
-    parsed = urlparse((site_url or "").strip())
+    raw = (site_url or "").strip()
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
     host = (parsed.hostname or "").lower()
-    allowed = {h.strip().lower() for h in os.getenv(ALLOWED_SITE_HOSTS_ENV, "").split(",") if h.strip()}
-    if host and host in allowed and parsed.scheme in ("http", "https"):
-        return
     try:
         port = parsed.port
     except ValueError:
         port = -1
-    if (
-        parsed.scheme != "https"
-        or not host.endswith(ATLASSIAN_CLOUD_SITE_SUFFIXES)
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "The Jira Cloud site URL must be your Atlassian site, like "
-            "https://your-company.atlassian.net, with nothing after the host name"
-        )
+    allowed = {h.strip().lower() for h in os.getenv(ALLOWED_SITE_HOSTS_ENV, "").split(",") if h.strip()}
+    if parsed.username is None and parsed.password is None and parsed.scheme in ("http", "https") and port != -1:
+        if host and host in allowed:
+            return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+        if host.endswith(ATLASSIAN_CLOUD_SITE_SUFFIXES) and port in (None, 443):
+            return f"https://{host}"
+    raise ValueError(
+        "The Jira Cloud site URL must be your Atlassian site, like https://your-company.atlassian.net"
+    )
 
 
 def dedupe_atlassian_cloud_resources(

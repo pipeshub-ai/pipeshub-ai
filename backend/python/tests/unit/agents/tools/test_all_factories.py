@@ -4,9 +4,13 @@ Each factory's create_client delegates to the respective client's build_from_too
 These tests mock that call and verify the factory correctly passes through config.
 """
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from app.sources.client.jira.jira import JiraClient
 
 
 class TestDropboxFactory:
@@ -189,12 +193,12 @@ class TestJiraSiteUrlCheck:
     """PP-205: an email + API token is sent to the toolset's base URL itself."""
 
     @staticmethod
-    def _client(base_url):
+    def _client(base_url: str) -> "JiraClient":
         from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
         return JiraClient(JiraRESTClientViaApiKey(base_url, "me@acme.com", "token"))
 
     @pytest.mark.asyncio
-    async def test_the_cloud_toolset_refuses_a_site_that_is_not_atlassian_cloud(self):
+    async def test_the_cloud_toolset_refuses_a_site_that_is_not_atlassian_cloud(self) -> None:
         from app.agents.tools.factories.jira import JiraClientFactory
         with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset",
                    AsyncMock(return_value=self._client("http://10.0.0.5:8080"))):
@@ -204,16 +208,18 @@ class TestJiraSiteUrlCheck:
                 )
 
     @pytest.mark.asyncio
-    async def test_the_cloud_toolset_accepts_an_atlassian_site(self):
+    @pytest.mark.parametrize("base_url", ["https://acme.atlassian.net", "https://acme.atlassian.net/jira/your-work"])
+    async def test_the_cloud_toolset_talks_to_the_atlassian_site_root(self, base_url: str) -> None:
         from app.agents.tools.factories.jira import JiraClientFactory
-        client = self._client("https://acme.atlassian.net")
+        client = self._client(base_url)
         with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset", AsyncMock(return_value=client)):
             assert await JiraClientFactory().create_client(
                 config_service=MagicMock(), logger=MagicMock(), toolset_config={"authType": "API_TOKEN"}, state=None,
             ) is client
+        assert client.get_client().get_base_url() == "https://acme.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_the_data_center_toolset_keeps_its_private_address(self):
+    async def test_the_data_center_toolset_keeps_its_private_address(self) -> None:
         from app.agents.tools.factories.jira import JiraDataCenterClientFactory
         client = self._client("http://jira.corp.internal:8080")
         with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset", AsyncMock(return_value=client)):

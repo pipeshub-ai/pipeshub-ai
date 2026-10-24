@@ -9,7 +9,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
 from app.sources.external.common.atlassian import (
     AtlassianMultiSiteError,
-    require_atlassian_cloud_site_url,
+    atlassian_cloud_site_root,
     resolve_preferred_site_with_fallback,
 )
 
@@ -55,7 +55,9 @@ class JiraClientFactory(ClientFactory):
                 config_service=config_service,
             )
             if self._CLOUD_SITE_ONLY and isinstance(client.get_client(), JiraRESTClientViaApiKey):
-                require_atlassian_cloud_site_url(client.get_client().get_base_url())
+                rest_client = client.get_client()
+                rest_client.base_url = atlassian_cloud_site_root(rest_client.get_base_url())
+                client.site_url = rest_client.base_url
             return client
         except AtlassianMultiSiteError as e:
             # Translate the provider-specific error to the generic toolset error the

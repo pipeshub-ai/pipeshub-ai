@@ -133,7 +133,7 @@ from app.services.notification.types import (
 from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
 from app.sources.external.common.atlassian import (
     AtlassianMultiSiteError,
-    require_atlassian_cloud_site_url,
+    atlassian_cloud_site_root,
 )
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -510,7 +510,7 @@ class JiraConnector(BaseConnector):
         # Internal ids of updated issues whose own permissions must be rewritten after saving.
         self._permission_refresh_ids: set[str] = set()
         # Keys of the projects this sync covers; None outside run_sync (a reindex keeps what is stored).
-        self._synced_project_keys: Optional[set[str]] = None
+        self._synced_project_keys: set[str] | None = None
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -618,7 +618,8 @@ class JiraConnector(BaseConnector):
             rest_client = client.get_client()
             if isinstance(rest_client, JiraRESTClientViaApiKey):
                 # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
-                require_atlassian_cloud_site_url(rest_client.get_base_url())
+                rest_client.base_url = atlassian_cloud_site_root(rest_client.get_base_url())
+                client.site_url = rest_client.base_url
             self.external_client = client
             self.data_source = JiraDataSource(client)
             # Site already resolved in build_from_services (multi-site OAuth rejected there)
@@ -1484,7 +1485,7 @@ class JiraConnector(BaseConnector):
 
     async def _handle_issue_deletions(
         self,
-        global_last_sync_time: Optional[int],
+        global_last_sync_time: int | None,
         projects: list[RecordGroup] | None = None,
         covered_project_ids: set[str] | None = None,
     ) -> None:
