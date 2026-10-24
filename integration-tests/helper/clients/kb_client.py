@@ -169,24 +169,39 @@ class KBClient(APIClient):
         kb_id: str,
         folder_name: str,
         parent_id: str | None = None,
+        use_subfolder_route: bool = True,
     ) -> dict[str, Any]:
         """Create a folder in a knowledge base.
 
         Args:
             kb_id: KB ID
             folder_name: Folder name
-            parent_id: Optional parent folder ID
+            parent_id: Optional parent folder ID. None creates at root.
+            use_subfolder_route: Whether to use the dedicated subfolder route
+                (default: True). Set False to exercise the legacy ?folderId= query.
 
         Returns:
             Response body from the API
+
+        Raises:
+            ValueError: If parent_id is an empty string.
         """
         payload: dict[str, Any] = {"folderName": folder_name}
-        # A parentId in the body is ignored — the create-folder endpoint reads
-        # only the name. Nesting is done with the ?folderId= query parameter,
-        # which the gateway routes to the connector's /folder/{id}/subfolder
-        # (kb_controllers.ts:511-518).
-        params = {"folderId": parent_id} if parent_id else None
-        resp = self.post(f"/{kb_id}/folder", json=payload, params=params)
+        if parent_id is None:
+            resp = self.post(f"/{kb_id}/folder", json=payload)
+        elif not parent_id.strip():
+            raise ValueError("parent_id cannot be an empty string")
+        elif use_subfolder_route:
+            resp = self.post(
+                f"/{kb_id}/folder/{quote(parent_id, safe='')}/subfolder",
+                json=payload,
+            )
+        else:
+            resp = self.post(
+                f"/{kb_id}/folder",
+                json=payload,
+                params={"folderId": parent_id},
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -227,5 +242,33 @@ class KBClient(APIClient):
             Response body from the API
         """
         resp = self.post(f"/record/{record_id}/restore")
+        resp.raise_for_status()
+        return resp.json()
+
+    def rename_kb(self, kb_id: str, name: str) -> dict[str, Any]:
+        resp = self.put(f"/{kb_id}", json={"kbName": name})
+        resp.raise_for_status()
+        return resp.json()
+
+    def rename_folder(self, kb_id: str, folder_id: str, name: str) -> dict[str, Any]:
+        resp = self.put(f"/{kb_id}/folder/{folder_id}", json={"folderName": name})
+        resp.raise_for_status()
+        return resp.json()
+
+    def rename_record(self, record_id: str, name: str) -> dict[str, Any]:
+        """Rename a file record. The route takes multipart form data, as for a new version."""
+        self._client._ensure_access_token()
+        resp = requests.put(
+            f"{self._client.base_url}{self.BASE}/record/{record_id}",
+            headers={"Authorization": f"Bearer {self._client._access_token}"},
+            files={"recordName": (None, name)},
+            timeout=self._client.timeout_seconds,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def move_record(self, kb_id: str, record_id: str, new_parent_id: str | None) -> dict[str, Any]:
+        """Move a file or folder to another folder, or to the root with ``None``."""
+        resp = self.put(f"/{kb_id}/record/{record_id}/move", json={"newParentId": new_parent_id})
         resp.raise_for_status()
         return resp.json()

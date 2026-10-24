@@ -3,7 +3,7 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Flex, Text, Button, IconButton, Box, DropdownMenu, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
 import type { ViewMode, PageViewMode, Breadcrumb, NodeType } from '../types';
@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { PermissionLockIcon } from '@/config';
+import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
 
 
 // Radix offsets ghost buttons by their own padding; these set their own, so the
@@ -230,6 +231,8 @@ export function Header({
 }: KBHeaderProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  // Tablets fold the secondary actions too, so the collection name keeps room.
+  const foldActions = useIsBelowDesktop();
   const { viewMode, setViewMode, tableData } = useKnowledgeBaseStore();
   const isCollectionsMode = pageViewMode === 'collections';
 
@@ -263,6 +266,15 @@ export function Header({
     //     </Flex>
     //   );
     // }
+
+    // The root has no trail; name the page so the toolbar is not blank.
+    if (!breadcrumbs || breadcrumbs.length === 0) {
+      return (
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap' }}>
+          {isCollectionsMode ? t('nav.collections') : t('nav.allRecords')}
+        </Text>
+      );
+    }
 
     const items: React.ReactNode[] = [];
 
@@ -372,14 +384,14 @@ export function Header({
         style={{
           overflowX: isMobile ? 'auto' : 'hidden',
           overflowY: 'hidden',
-          minWidth: 0,
+          minWidth: isMobile ? 0 : 160,
           flex: 1,
         }}
       >
         {isSearchActive ? (
           <Flex align="center" gap="2">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Results
+              {t('kb.searchResults')}
             </Text>
           </Flex>
         ) : (
@@ -392,7 +404,7 @@ export function Header({
         {/* Common actions - always shown. Icon-only on mobile to save room. */}
         <Flex align="center" gap={isMobile ? '1' : '2'}>
           {isMobile ? (
-            <IconButton variant="ghost" size="2" color="gray" onClick={onFind} style={HEADER_ICON_BUTTON} aria-label={t('action.find')}>
+            <IconButton className="touch-hit" variant="ghost" size="3" color="gray" onClick={onFind} style={HEADER_ICON_BUTTON} aria-label={t('action.find')}>
               <MaterialIcon name="search" size={18} color="var(--slate-11)" />
             </IconButton>
           ) : (
@@ -401,65 +413,35 @@ export function Header({
               {t('action.find')}
             </Button>
           )}
-          {isMobile ? (
-            <IconButton variant="ghost" size="2" color="gray" onClick={onRefresh} style={HEADER_ICON_BUTTON} aria-label={t('action.refresh')}>
-              <MaterialIcon name="refresh" size={18} color="var(--slate-11)" />
-            </IconButton>
-          ) : (
+          {!foldActions && (
             <Button variant="ghost" size="1" color="gray" onClick={onRefresh} style={HEADER_TEXT_BUTTON}>
               <MaterialIcon name="refresh" size={14} color="var(--neutral-11)" />
               {t('action.refresh')}
             </Button>
           )}
-          {showIndexingStatus && onIndexingStatusClick && (
-            isMobile ? (
-              <IconButton
-                variant="ghost"
-                size="2"
-                color="gray"
-                onClick={onIndexingStatusClick}
-                style={HEADER_ICON_BUTTON}
-                aria-label={t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
-              >
-                <MaterialIcon name="analytics" size={18} color="var(--slate-11)" />
-              </IconButton>
-            ) : (
-              <Button
-                variant="ghost"
-                size="1"
-                color="gray"
-                onClick={onIndexingStatusClick}
-                style={HEADER_TEXT_BUTTON}
-              >
-                <MaterialIcon name="analytics" size={14} color="var(--slate-11)" />
-                {t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
-              </Button>
-            )
+          {!foldActions && showIndexingStatus && onIndexingStatusClick && (
+            <Button
+              variant="ghost"
+              size="1"
+              color="gray"
+              onClick={onIndexingStatusClick}
+              style={HEADER_TEXT_BUTTON}
+            >
+              <MaterialIcon name="analytics" size={14} color="var(--slate-11)" />
+              {t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
+            </Button>
           )}
-          {onRecentlyDeletedClick && (
-            isMobile ? (
-              <IconButton
-                variant="ghost"
-                size="2"
-                color="gray"
-                onClick={onRecentlyDeletedClick}
-                style={HEADER_ICON_BUTTON}
-                aria-label={t('collections.trash.menuLabel')}
-              >
-                <MaterialIcon name="delete_outline" size={18} color="var(--slate-11)" />
-              </IconButton>
-            ) : (
-              <Button
-                variant="ghost"
-                size="1"
-                color="gray"
-                onClick={onRecentlyDeletedClick}
-                style={HEADER_TEXT_BUTTON}
-              >
-                <MaterialIcon name="delete_outline" size={14} color="var(--slate-11)" />
-                {t('collections.trash.menuLabel')}
-              </Button>
-            )
+          {!foldActions && onRecentlyDeletedClick && (
+            <Button
+              variant="ghost"
+              size="1"
+              color="gray"
+              onClick={onRecentlyDeletedClick}
+              style={HEADER_TEXT_BUTTON}
+            >
+              <MaterialIcon name="delete_outline" size={14} color="var(--slate-11)" />
+              {t('collections.trash.menuLabel')}
+            </Button>
           )}
         </Flex>
 
@@ -473,8 +455,9 @@ export function Header({
                 <DropdownMenu.Trigger>
                   {isMobile ? (
                     <IconButton
+                      className="touch-hit"
                       variant="solid"
-                      size="2"
+                      size="3"
                       style={{ cursor: createPermissionDenied ? 'not-allowed' : 'pointer' }}
                       aria-label={t('action.new')}
                       data-testid="new-dropdown-trigger"
@@ -532,8 +515,24 @@ export function Header({
               </DropdownMenu.Root>
             )}
 
-            {/* Share group — hide on mobile to avoid cramming; users can share from item menu */}
-            {onShare && !isMobile && (
+            {/* Share: the full avatar group on desktop, a single icon button on phones */}
+            {onShare && (isMobile ? (
+              <Flex align="center" gap="1">
+                <IconButton
+                  className="touch-hit"
+                  variant="ghost"
+                  size="3"
+                  color="gray"
+                  onClick={sharePermissionDenied ? () => undefined : onShare}
+                  aria-disabled={sharePermissionDenied || undefined}
+                  style={HEADER_ICON_BUTTON}
+                  aria-label={t('dialog.shareCollection')}
+                >
+                  <MaterialIcon name="person_add" size={18} color="var(--slate-11)" />
+                </IconButton>
+                {sharePermissionDenied && <PermissionLockIcon />}
+              </Flex>
+            ) : (
               <Flex align="center" gap="1">
                 <ShareHeaderGroup
                   members={sharedMembers}
@@ -541,28 +540,45 @@ export function Header({
                 />
                 {sharePermissionDenied && <PermissionLockIcon />}
               </Flex>
-            )}
+            ))}
           </>
         )}
 
-        {/* View toggle - shown in both modes */}
-        <SegmentedControl.Root
-          value={viewMode}
-          onValueChange={(value) => setViewMode(value as ViewMode)}
-          size="1"
-          data-icon-only=""
-        >
-          <SegmentedControl.Item value="grid">
-            <Flex align="center" justify="center">
-              <MaterialIcon name="grid_on" size={16} />
-            </Flex>
-          </SegmentedControl.Item>
-          <SegmentedControl.Item value="list">
-            <Flex align="center" justify="center">
-              <MaterialIcon name="view_list" size={16} />
-            </Flex>
-          </SegmentedControl.Item>
-        </SegmentedControl.Root>
+        {/* Below desktop: secondary actions and the view toggle live in one overflow menu so the title keeps room */}
+        {foldActions ? (
+          <HeaderOverflowMenu
+            items={[
+              { label: t('action.refresh'), icon: 'refresh', onSelect: onRefresh },
+              ...(showIndexingStatus && onIndexingStatusClick
+                ? [{ label: t('collections.stats.menuLabel', { defaultValue: 'Analytics' }), icon: 'analytics', onSelect: onIndexingStatusClick }]
+                : []),
+              ...(onRecentlyDeletedClick
+                ? [{ label: t('collections.trash.menuLabel'), icon: 'delete_outline', onSelect: onRecentlyDeletedClick }]
+                : []),
+              viewMode === 'grid'
+                ? { label: t('artifacts.listView'), icon: 'view_list', onSelect: () => setViewMode('list') }
+                : { label: t('artifacts.gridView'), icon: 'grid_on', onSelect: () => setViewMode('grid') },
+            ]}
+          />
+        ) : (
+          <SegmentedControl.Root
+            value={viewMode}
+            onValueChange={(value) => setViewMode(value as ViewMode)}
+            size="1"
+            data-icon-only=""
+          >
+            <SegmentedControl.Item value="grid">
+              <Flex align="center" justify="center">
+                <MaterialIcon name="grid_on" size={16} />
+              </Flex>
+            </SegmentedControl.Item>
+            <SegmentedControl.Item value="list">
+              <Flex align="center" justify="center">
+                <MaterialIcon name="view_list" size={16} />
+              </Flex>
+            </SegmentedControl.Item>
+          </SegmentedControl.Root>
+        )}
       </Flex>
     </Flex>
   );

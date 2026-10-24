@@ -289,7 +289,7 @@ test.describe('Chat — web tools (mocked backend)', () => {
     await deep.click();
     await expect(deep).toBeChecked();
 
-    await page.getByRole('switch', { name: /^Web Search$/i }).click();
+    await page.getByRole('switch', { name: /^Web search$/i }).click();
     await expect(deep).toBeDisabled();
   });
 

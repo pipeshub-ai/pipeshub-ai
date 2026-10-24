@@ -886,7 +886,7 @@ class TestSafeApiCallExtended:
         c = _make_connector()
         async def fail():
             raise Exception("400 badrequest invalid hostname")
-        result = await c._safe_api_call(fail(), max_retries=0, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=0, retry_delay=0.01)
         assert result is None
 
     @pytest.mark.asyncio
@@ -899,20 +899,17 @@ class TestSafeApiCallExtended:
             if call_count == 1:
                 raise Exception("429 throttle")
             return "ok"
-        # Can't retry an already-awaited coroutine directly,
-        # but _safe_api_call accepts a coroutine. We test the pattern:
-        result = await c._safe_api_call(throttle_then_ok(), max_retries=1, retry_delay=0.01)
-        # First call fails with throttle, but retry also calls the same coroutine
-        # The actual implementation awaits api_call directly, so retry won't help for coroutines.
-        # This tests the error path:
-        assert result is None
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await c._safe_api_call(throttle_then_ok, max_retries=1, retry_delay=0.01)
+        assert result == "ok"
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_generic_error_exhausts_retries(self):
         c = _make_connector()
         async def fail():
             raise Exception("something weird")
-        result = await c._safe_api_call(fail(), max_retries=1, retry_delay=0.01)
+        result = await c._safe_api_call(fail, max_retries=1, retry_delay=0.01)
         assert result is None
 
 

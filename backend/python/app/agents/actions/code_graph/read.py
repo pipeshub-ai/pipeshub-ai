@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
@@ -54,7 +55,7 @@ async def read_code_impl(
 ) -> dict[str, Any]:
     """Source for one symbol, one line range, or a whole file.
 
-    All three modes cost the same single blob fetch -- ``get_record_from_storage``
+    All three modes cost the same single blob fetch -- ``read_record``
     returns every block of the file regardless -- so reading five symbols from
     one file should be one call, not five downloads of the same blob.
 
@@ -184,9 +185,7 @@ async def _load_blob(
         return {"error": f"No stored content for {file_path!r}"}
 
     try:
-        record = await blob_store.get_record_from_storage(
-            virtual_record_id=virtual_record_id, org_id=org_id
-        )
+        record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id)
     except Exception as exc:
         logger.warning("Blob fetch failed for %s: %s", virtual_record_id, exc)
         return {"error": f"Failed to read stored content for {file_path!r}"}

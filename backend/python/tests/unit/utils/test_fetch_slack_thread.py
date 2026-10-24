@@ -1450,3 +1450,55 @@ async def test_a_refused_thread_read_now_reads(case: dict[str, Any]):
     assert sorted(ids[1:]) == expected_replies
     assert len(out["threads"]) == len(case["thread_groups"])
     assert out["note"].startswith("No replies") == (not case["thread_groups"])
+
+
+_THREAD_LIMIT = {"apps": [], "recordGroups": [], "records": ["burst"]}
+_LIMITED_TURN = {"filters": {"connectionApps": [], "connectionRecordGroups": [], "connectionRecords": ["burst"]}}
+
+
+@pytest.mark.asyncio
+class TestAConnectedAppsLimit:
+    """A thread read under a connection limit names no linked record, and no
+    source parent, outside it."""
+
+    @staticmethod
+    def _patched() -> tuple:
+        return (
+            patch("app.utils.chat_helpers.enrich_read_records_with_address_links", new_callable=AsyncMock),
+            patch("app.utils.chat_helpers.keep_record_text_inside_connection", new_callable=AsyncMock),
+            patch("app.agents.actions.knowledge_graph.ops.scope.ids_within_scope",
+                  AsyncMock(side_effect=lambda _s, _g, _k, _o, ids: set(ids))),
+        )
+
+    @pytest.mark.parametrize(("scope_state", "limit"), [(None, None), (_LIMITED_TURN, _THREAD_LIMIT)])
+    async def test_a_thread_read_passes_the_limit_on(self, scope_state, limit):
+        links, text, scoped = self._patched()
+        with links as mock_links, text as mock_text, scoped, \
+                patch.object(fst, "_resolve_thread_record_group", AsyncMock(return_value={
+                    "record_group_id": "trg", "connector_id": "c", "org_id": "org-1",
+                })), \
+                patch.object(fst, "resolve_user_key", AsyncMock(return_value="ukey")), \
+                patch.object(fst, "user_can_access_node", AsyncMock(return_value=True)), \
+                patch.object(fst, "_fetch_record_by_id", AsyncMock(return_value={"id": "reply", "source_created_at": 1})):
+            graph = _allowing(AsyncMock())
+            graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "reply"}])
+            out = await fst._fetch_thread_records_impl(
+                "rid", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org-1",
+                user_id="u1", scope_state=scope_state,
+            )
+
+        assert out["ok"] is True
+        assert mock_links.await_args.kwargs["connection_sources"] == limit
+        assert mock_text.await_args.args[4] == limit
+
+    @pytest.mark.parametrize(("scope_state", "limit"), [(None, None), (_LIMITED_TURN, _THREAD_LIMIT)])
+    async def test_a_channel_record_read_passes_the_limit_on(self, scope_state, limit):
+        records = {"burst": _slack_meta(external_record_id="burst_C1_cd34")}
+        hydrated = {"burst": _hydrated("burst", ("1700000000.000100", False))}
+        links, text, scoped = self._patched()
+        with links as mock_links, text as mock_text, scoped:
+            out = await _read_thread(_slack_graph(records), "burst", hydrated, scope_state=scope_state)
+
+        assert out["ok"] is True and [r["id"] for r in out["records"]] == ["burst"]
+        assert mock_links.await_args.kwargs["connection_sources"] == limit
+        assert mock_text.await_args.args[4] == limit

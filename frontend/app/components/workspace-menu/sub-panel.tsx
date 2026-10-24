@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ============================================================
 // SubPanel — shared floating container for expanded sub-panels
@@ -10,15 +12,28 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 interface SubPanelProps {
   isOpen: boolean;
+  /** Sheet title on mobile */
+  title: string;
+  /** Returns to the main menu (mobile back and close) */
+  onBack: () => void;
   children: React.ReactNode;
 }
 
 /**
  * Floating panel that appears to the right of the workspace menu.
- * Renders nothing when closed.
+ * On mobile it opens as a bottom sheet instead. Renders nothing when closed.
  */
-export function SubPanel({ isOpen, children }: SubPanelProps) {
+export function SubPanel({ isOpen, title, onBack, children }: SubPanelProps) {
+  const isMobile = useIsMobile();
   if (!isOpen) return null;
+
+  if (isMobile) {
+    return (
+      <MobileBottomSheet open title={title} onBack={onBack} onOpenChange={onBack}>
+        {children}
+      </MobileBottomSheet>
+    );
+  }
 
   return (
     <Box

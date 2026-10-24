@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +26,7 @@ from app.agents.actions.storage_search.storage_search import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.models.entities import USER_EMAIL_PLACEHOLDER, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
@@ -249,13 +250,12 @@ _STOP_WORDS = frozenset({
 
 _ALLOWED_GREP_BINARIES = frozenset({"grep", "egrep", "fgrep", "rg"})
 _MAX_GREP_COMMAND_LENGTH = 1000
-_MAX_GREP_OUTPUT_LINES = 200
 # Caps the FIRST pipeline stage, which for `grep -rliZ a . | xargs grep b` is the
 # list of every file matching `a`. Too small and stage 2 only ever sees the first
 # few hundred files in directory-walk order; the overall timeout bounds latency.
 _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
-# so the tool's default 8K cap would keep only a few dozen of the 200 lines.
+# so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
@@ -1144,19 +1144,19 @@ def _ensure_null_delimited_pipeline(command: str) -> str:
 
 
 def _cap_grep_output(command: str) -> str:
-    """Drop ``file:0`` lines, then cap at ``_MAX_GREP_OUTPUT_LINES``.
+    """Drop ``file:0`` lines, and any head/tail cut.
 
     ``grep -c`` prints a line for every file it reads, matching or not. Unless
-    those are dropped first, they fill the line and byte caps in directory-walk
-    order and real matches later in the walk are never seen.
+    those are dropped first, they fill the output caps in directory-walk order
+    and real matches later in the walk are never seen.
+
+    find_records refuses a head/tail cut (records the user cannot read could
+    fill it and push readable ones out) and bounds the output itself, ranking
+    every line it keeps by match count.
     """
     stages = [s.strip() for s in _split_pipeline(command)]
-    cut = next(
-        (i for i, s in enumerate(stages) if i > 0 and re.match(r"(head|tail)\b", s)),
-        len(stages),
-    )
-    limit = stages[cut:] or [f"head -{_MAX_GREP_OUTPUT_LINES}"]
-    return " | ".join(stages[:cut] + [_ZERO_COUNT_FILTER] + limit)
+    stages = [s for i, s in enumerate(stages) if i == 0 or not re.match(r"(head|tail)\b", s)]
+    return " | ".join(stages + [_ZERO_COUNT_FILTER])
 
 
 async def run_pattern_match_with_llm_grep(
@@ -1628,7 +1628,6 @@ async def run_pattern_match(
                 max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
-                max_output_lines=_MAX_GREP_OUTPUT_LINES,
             )
         except Exception:
             logger_instance.warning(
@@ -2125,6 +2124,7 @@ async def merge_pattern_match_results(
             return []
 
     matches = _best_match_by_vrid(raw_records)
+    viewer_email = await _viewer_email_for(graph_by_vrid.values(), graph_provider, user_id, logger_instance)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -2133,6 +2133,10 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
+        if graph_rec.get("webUrl"):
+            graph_rec["webUrl"] = substitute_user_email(
+                graph_rec["webUrl"], viewer_email, graph_rec.get("connectorName")
+            )
         mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
@@ -2154,6 +2158,27 @@ async def merge_pattern_match_results(
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
     return results
+
+
+async def _viewer_email_for(
+    graph_records: Iterable[dict],
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    logger_instance: logging.Logger,
+) -> str | None:
+    """The searcher's email, read only when a record's link waits on it.
+
+    These records come from the graph, not from search, so a shared Gmail
+    link still holds the placeholder search fills in for the viewer.
+    """
+    if not any(USER_EMAIL_PLACEHOLDER in (r.get("webUrl") or "") for r in graph_records):
+        return None
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception:
+        logger_instance.warning("Pattern match: user unreadable; mail links keep the placeholder", exc_info=True)
+        return None
+    return user.get("email") if isinstance(user, dict) else None
 
 
 def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:

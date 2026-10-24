@@ -1476,7 +1476,7 @@ export const addMessageStream =
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(
         confirmedConversation._id as mongoose.Types.ObjectId,
-        {},
+        { orgId: confirmedConversation.orgId },
         session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
@@ -2377,6 +2377,7 @@ export const getConversationById =
       ...EXCLUDE_AGENT,
     })
       .select({
+          orgId: 1,
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -2419,6 +2420,7 @@ export const getConversationById =
 
     const totalMessages = await ChatSessionMessage.countDocuments({
       sessionId,
+        orgId: session.orgId,
     });
 
     const { skip, limit: effectiveLimit } = olderMessagesWindow(
@@ -2428,6 +2430,7 @@ export const getConversationById =
     );
 
     const messages = await getMessages(sessionId, {
+        orgId: session.orgId,
       skip,
       limit: effectiveLimit,
       populateCitations: true,
@@ -2586,7 +2589,7 @@ const deleteConversation = async (
 
       // Perform soft delete on the conversation
       const updatedConversation = await ChatSession.findOneAndUpdate(
-        { _id: conversationId, ...EXCLUDE_AGENT },
+        { _id: conversationId, orgId, ...EXCLUDE_AGENT },
         {
           $set: {
             isDeleted: true,
@@ -3468,7 +3471,7 @@ async function regenerateAnswersInternal(
     // regenerated is not necessarily the newest message.
     const recentMessages = (await getMessages(
       conversation._id as mongoose.Types.ObjectId,
-      { limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
+      { orgId: conversation.orgId, limit: REGENERATE_TAIL_MESSAGES, sort: -1 },
       session,
     )) as Array<IMessage & { _id: mongoose.Types.ObjectId }>;
 
@@ -3641,7 +3644,7 @@ async function regenerateAnswersInternal(
     // response and the user query that triggered it)
     const allMessagesForRegen = (await getMessages(
       existingConversation._id as mongoose.Types.ObjectId,
-      {},
+      { orgId: existingConversation.orgId },
       session,
     )) as Array<IMessage & { _id?: mongoose.Types.ObjectId }>;
     // The turn being regenerated (its user query, its answer, and any
@@ -3725,6 +3728,7 @@ async function regenerateAnswersInternal(
       try {
         await deleteMessagesById(
           replacedTurnIds,
+          existingConversation.orgId,
           session,
           existingConversation._id,
         );
@@ -3958,7 +3962,7 @@ async function regenerateAnswersInternal(
             if (updatedConversation) {
               const messages = await getMessages(
                 updatedConversation._id as mongoose.Types.ObjectId,
-                {},
+                { orgId: updatedConversation.orgId },
                 session,
               );
               const plainConversation = attachMessages(
@@ -4020,7 +4024,7 @@ async function regenerateAnswersInternal(
             if (updatedConversation) {
               const messages = await getMessages(
                 updatedConversation._id as mongoose.Types.ObjectId,
-                {},
+                { orgId: updatedConversation.orgId },
                 session,
               );
               const plainConversation = attachMessages(
@@ -4621,7 +4625,7 @@ async function performFeedbackUpdate(params: {
   }
 
   const message = await ChatSessionMessage.findOne(
-    { _id: messageId, sessionId: conversation._id },
+    { _id: messageId, sessionId: conversation._id, orgId: conversation.orgId },
     null,
     session ? { session } : undefined,
   );
@@ -4647,6 +4651,7 @@ async function performFeedbackUpdate(params: {
 
   const updatedMessage = await appendMessageFeedback(
     messageId,
+    conversation.orgId,
     feedbackEntry,
     session,
   );
@@ -5516,9 +5521,9 @@ export const searchHistory = async (
         .skip(skip)
         .limit(limit)
         .exec(),
-      EnterpriseSemanticSearch.countDocuments({
-        filter,
-      }),
+      EnterpriseSemanticSearch.countDocuments(
+        filter as Record<string, unknown>,
+      ),
     ]);
 
     const response = {
@@ -7243,7 +7248,7 @@ export const addMessageStreamToAgentConversation =
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(
         confirmedConversation._id as mongoose.Types.ObjectId,
-        {},
+        { orgId: confirmedConversation.orgId },
         session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
@@ -8126,6 +8131,7 @@ const getAgentConversationByIdOf = async (
       ...ONLY_AGENT,
     })
       .select({
+        orgId: 1,
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -8167,6 +8173,7 @@ const getAgentConversationByIdOf = async (
 
     const totalMessages = await ChatSessionMessage.countDocuments({
       sessionId,
+      orgId: session.orgId,
     });
 
     const { skip, limit: effectiveLimit } = olderMessagesWindow(
@@ -8176,6 +8183,7 @@ const getAgentConversationByIdOf = async (
     );
 
     const messages = await getMessages(sessionId, {
+      orgId: session.orgId,
       skip,
       limit: effectiveLimit,
       populateCitations: true,

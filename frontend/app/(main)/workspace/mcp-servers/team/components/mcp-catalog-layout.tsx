@@ -1,17 +1,21 @@
 'use client';
 
-import { useMemo } from 'react';
+import { asArray, lower } from '@/lib/utils/safe';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { WorkspaceHeaderIconButton } from '../../../components';
+import { WorkspaceHeaderIconButton, HeaderOverflowMenu } from '../../../components';
 import { McpAddServerButton } from '../../components';
 import type { McpMyServerEntry, McpServerTemplate } from '../../types';
 import { isOfferedForNewServers, replacementFor } from '../../catalog-replacement';
 import { McpInstanceCard } from './mcp-instance-card';
 import { McpServerCard } from './mcp-server-card';
 import { EnterpriseFeatureNotice } from '@/config';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Types
@@ -39,7 +43,12 @@ interface McpCatalogLayoutProps {
   onEditInstance: (instance: McpMyServerEntry) => void;
   onDeleteInstance: (instance: McpMyServerEntry) => void;
   onRefresh: () => void;
+  /** "Your MCP servers →" link to the personal page, as on the other team catalogs. */
+  onOpenPersonal?: () => void;
 }
+
+const TABS = ['all', 'configured', 'notConfigured'] as const;
+type Tab = (typeof TABS)[number];
 
 // ========================================
 // Component
@@ -58,8 +67,11 @@ export function McpCatalogLayout({
   onEditInstance,
   onDeleteInstance,
   onRefresh,
+  onOpenPersonal,
 }: McpCatalogLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
+  const [tab, setTab] = useState<Tab>('all');
 
   // Group instances by typeId — custom instances (no typeId) never merge into a template card.
   const { templateRows, customInstances } = useMemo(() => {
@@ -91,9 +103,9 @@ export function McpCatalogLayout({
       ? templateRows
       : templateRows.filter(
           ({ template }) =>
-            template.displayName.toLowerCase().includes(q) ||
-            template.description.toLowerCase().includes(q) ||
-            template.tags.some((tag) => tag.toLowerCase().includes(q))
+            lower(template.displayName).includes(q) ||
+            lower(template.description).includes(q) ||
+            asArray(template.tags).some((tag) => lower(tag).includes(q))
         );
 
     const active = rows
@@ -119,10 +131,30 @@ export function McpCatalogLayout({
   }, [templateRows, customInstances, searchQuery]);
 
   const hasAnyContent = templateRows.length > 0 || instances.length > 0;
-  const hasResults =
-    activeTemplateRows.length > 0 ||
-    inactiveTemplateRows.length > 0 ||
-    filteredCustomInstances.length > 0;
+  const configuredCount = activeTemplateRows.length + filteredCustomInstances.length;
+  const counts: Record<Tab, number> = {
+    all: configuredCount + inactiveTemplateRows.length,
+    configured: configuredCount,
+    notConfigured: inactiveTemplateRows.length,
+  };
+  const showConfigured = tab !== 'notConfigured';
+  const showNotConfigured = tab !== 'configured';
+  const hasResults = counts[tab] > 0;
+
+  // Phones get a light text link; wider screens keep the soft button.
+  const personalLink = onOpenPersonal && (
+    <Button
+      size="2"
+      variant={isMobile ? 'ghost' : 'soft'}
+      color="gray"
+      className="touch-hit"
+      onClick={onOpenPersonal}
+      style={{ cursor: 'pointer' }}
+    >
+      {t('workspace.sidebar.nav.yourMcpServers')}
+      <MaterialIcon name="arrow_forward" size={16} color="var(--gray-11)" />
+    </Button>
+  );
 
   return (
     <Flex
@@ -131,16 +163,15 @@ export function McpCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         overflowY: 'auto',
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
-      <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
-        <Flex direction="column" gap="2" style={{ flex: 1 }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.mcpServers.team.title')}
           </Heading>
@@ -149,25 +180,58 @@ export function McpCatalogLayout({
           </Text>
         </Flex>
 
-        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          <McpAddServerButton onClick={onAddCustom} />
-          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
-        </Flex>
+        {/* Phones: compact actions under the subtitle, link on the right */}
+        {isMobile && (
+          <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ width: '100%' }}>
+            <Flex align="center" gap="2">
+              <McpAddServerButton onClick={onAddCustom} />
+              <HeaderOverflowMenu items={[{ label: t('action.refresh'), icon: 'refresh', onSelect: onRefresh }]} />
+            </Flex>
+            {personalLink}
+          </Flex>
+        )}
+
+        {hasAnyContent && (
+          <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
+            <TextField.Root
+              size="2"
+              placeholder={t('workspace.mcpServers.searchPlaceholder')}
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <TextField.Slot>
+                <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              </TextField.Slot>
+            </TextField.Root>
+          </Box>
+        )}
       </Flex>
 
-      {hasAnyContent && (
-        <TextField.Root
-          size="2"
-          placeholder={t('workspace.mcpServers.searchPlaceholder')}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          style={{ maxWidth: 360 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-          </TextField.Slot>
-        </TextField.Root>
-      )}
+      <Flex align="center" justify="between" gap="3" wrap="wrap" style={{ width: '100%' }}>
+        {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
+        <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <SegmentedControl.Root
+            value={tab}
+            onValueChange={(value) => setTab(value as Tab)}
+            size="2"
+            style={{ minWidth: 'max-content' }}
+          >
+            {TABS.map((id) => (
+              <SegmentedControl.Item key={id} value={id}>
+                {t(`workspace.actions.tabs.${id}`)} ({counts[id]})
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+        </Box>
+        {!isMobile && (
+          <Flex align="center" gap="2" wrap="wrap" style={{ flexShrink: 0 }}>
+            {personalLink}
+            <McpAddServerButton onClick={onAddCustom} />
+            <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
+          </Flex>
+        )}
+      </Flex>
 
       {isLoading ? (
         <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
@@ -177,11 +241,13 @@ export function McpCatalogLayout({
         <EmptyState onAdd={onAddCustom} />
       ) : !hasResults ? (
         <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.mcpServers.noResults')}</Text>
+          <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            {searchQuery.trim() ? t('workspace.mcpServers.noResults') : t('workspace.mcpServers.personal.noneInTab')}
+          </Text>
         </Flex>
       ) : (
-        <Grid columns={{ initial: '2', md: '3', lg: '4' }} gap="4" style={{ width: '100%' }}>
-          {activeTemplateRows.map(({ template, instances: templateInstances }) => (
+        <Grid columns={{ initial: '1', sm: '2', lg: '3', xl: '4' }} gap="4" style={{ width: '100%' }}>
+          {showConfigured && activeTemplateRows.map(({ template, instances: templateInstances }) => (
             <McpServerCard
               key={template.typeId}
               title={template.displayName}
@@ -202,7 +268,7 @@ export function McpCatalogLayout({
               }
             />
           ))}
-          {filteredCustomInstances.map((instance) => (
+          {showConfigured && filteredCustomInstances.map((instance) => (
             <McpInstanceCard
               key={instance._id}
               instance={instance}
@@ -210,7 +276,7 @@ export function McpCatalogLayout({
               onDelete={() => onDeleteInstance(instance)}
             />
           ))}
-          {inactiveTemplateRows.map(({ template }) => (
+          {showNotConfigured && inactiveTemplateRows.map(({ template }) => (
             <McpServerCard
               key={template.typeId}
               title={template.displayName}

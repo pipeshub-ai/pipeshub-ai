@@ -111,6 +111,7 @@ class TestBuildRedisStreamsConfig:
     @patch("app.services.messaging.utils.messaging_env")
     def test_builds_config(self, mock_env):
         mock_env.redis_streams_maxlen = 5000
+        mock_env.redis_streams_retention_mode = "after_ack"
         redis_cfg = _make_redis_config()
         result = MessagingUtils._build_redis_streams_config(
             redis_cfg, "my-client", "my-group", ["topic-a", "topic-b"]
@@ -205,6 +206,7 @@ class TestCreateConsumerConfig:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_redis_path(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_consumer_config(
             container, "c", "g", ["t"]
@@ -264,6 +266,7 @@ class TestCreateProducerConfig:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_redis_path(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_producer_config(container)
         assert isinstance(config, RedisStreamsConfig)
@@ -318,6 +321,7 @@ class TestCreateProducerConfigFromService:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_redis_path(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         redis_cfg = _make_redis_config()
         config_service = AsyncMock()
         config_service.get_redis_config = AsyncMock(return_value=redis_cfg)
@@ -398,6 +402,7 @@ class TestConvenienceConsumerConfigs:
         """The Redis twin of the Kafka assertion: a regression that only hit Redis
         Streams would otherwise go green."""
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         mock_env.message_batch_size_simple = 10
         container = _make_app_container()
         config = await MessagingUtils.create_aiconfig_consumer_config(container)
@@ -421,6 +426,7 @@ class TestConvenienceConsumerConfigs:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_entity_consumer_config_redis(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_entity_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
@@ -433,6 +439,7 @@ class TestConvenienceConsumerConfigs:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_sync_consumer_config_redis(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_sync_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
@@ -445,6 +452,7 @@ class TestConvenienceConsumerConfigs:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_record_consumer_config_redis(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_record_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
@@ -465,6 +473,7 @@ class TestConvenienceConsumerConfigs:
     @patch("app.services.messaging.utils.messaging_env")
     async def test_aiconfig_consumer_config_redis(self, mock_env, _mock_broker):
         mock_env.redis_streams_maxlen = 10000
+        mock_env.redis_streams_retention_mode = "after_ack"
         container = _make_app_container()
         config = await MessagingUtils.create_aiconfig_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)

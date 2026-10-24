@@ -1717,7 +1717,7 @@ class TestSafeApiCall:
         async def api():
             return "result"
 
-        result = await connector._safe_api_call(api())
+        result = await connector._safe_api_call(api)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -1730,7 +1730,7 @@ class TestSafeApiCall:
             call_count += 1
             raise Exception("403 forbidden accessdenied")
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
         assert result is None
         assert call_count == 1
 
@@ -1741,7 +1741,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("404 notfound")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
@@ -1751,17 +1751,12 @@ class TestSafeApiCall:
         async def api():
             raise Exception("400 badrequest invalid")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_throttle_retries(self):
         connector = _make_connector()
-        # _safe_api_call receives a single coroutine object which can only be
-        # awaited once.  After the first await raises, subsequent retry
-        # iterations will encounter a RuntimeError ("cannot reuse already
-        # awaited coroutine") which eventually exhausts retries and returns
-        # None.
         call_count = 0
 
         async def api():
@@ -1771,8 +1766,10 @@ class TestSafeApiCall:
                 raise Exception("429 throttle")
             return "ok"
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
-        assert result is None
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
+        assert result == "ok"
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_generic_error_retries_then_fails(self):
@@ -1781,7 +1778,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("unknown error")
 
-        result = await connector._safe_api_call(api(), max_retries=1, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=1, retry_delay=0.001)
         assert result is None
 
 

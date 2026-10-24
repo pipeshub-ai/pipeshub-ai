@@ -6,6 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { McpInstanceRow } from './mcp-instance-row';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -63,6 +66,7 @@ export function McpServerDetailsLayout({
   toolsState,
   onDiscoverTools,
 }: McpServerDetailsLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
 
   return (
@@ -72,10 +76,9 @@ export function McpServerDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         overflowY: 'auto',
       }}
     >
@@ -109,7 +112,7 @@ export function McpServerDetailsLayout({
       </Flex>
 
       {/* Header: icon + name + actions */}
-      <Flex justify="between" align="start" gap="4" style={{ width: '100%' }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="4" style={{ width: '100%' }}>
         <Flex align="center" gap="4">
           <HeaderIcon header={header} />
           <Flex direction="column" gap="1">

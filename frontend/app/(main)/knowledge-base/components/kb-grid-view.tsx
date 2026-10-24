@@ -5,6 +5,7 @@ import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/t
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { EmptyBadge } from './empty-badge';
+import { KbPaginationFooter } from './kb-pagination';
 import { rowRevealDelay } from '../utils/row-reveal';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
@@ -18,6 +19,7 @@ import {
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import {
   getReindexMenuState,
   getReindexNodeForTableItem,
@@ -74,6 +76,7 @@ function GridCard({
 }: GridCardProps) {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  const canHover = useCanHover();
   const [isFocused, setIsFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -412,7 +415,8 @@ function GridCard({
       aria-selected={isSelected}
       aria-label={item.name}
       style={{
-        height: '156px',
+        // minHeight: a two-line name grows the card instead of pushing the status out of it.
+        minHeight: '156px',
         animationDelay: rowRevealDelay(revealIndex),
         backgroundColor: isSelected
           ? 'var(--accent-3)'
@@ -447,7 +451,7 @@ function GridCard({
           paddingTop: 'var(--space-1)',
           paddingBottom: 'var(--space-1)',
           flexShrink: 0,
-          visibility: showCheckbox && (isHovered || isSelected) ? 'visible' : 'hidden',
+          visibility: showCheckbox && (isHovered || isSelected || !canHover) ? 'visible' : 'hidden',
         }}
       >
         {showCheckbox && (
@@ -506,18 +510,18 @@ function GridCard({
                 <DropdownMenu.Content onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu.Item onClick={(e) => { e.stopPropagation(); onOpen(); }}>
                     <MaterialIcon name="folder_open" size={16} />
-                    Open
+                    {t('kb.rowActions.open')}
                   </DropdownMenu.Item>
                   {!isFolder && onDownload && shouldShowDownloadForTableItem(item) && (
                     <DropdownMenu.Item onClick={(e) => { e.stopPropagation(); onDownload(item); }}>
                       <MaterialIcon name="file_download" size={16} />
-                      Download
+                      {t('action.download')}
                     </DropdownMenu.Item>
                   )}
                   {onRename && canEditItem && (
                     <DropdownMenu.Item onClick={() => startEditing()}>
                       <MaterialIcon name="edit" size={16} />
-                      Rename
+                      {t('menu.rename')}
                     </DropdownMenu.Item>
                   )}
                   {showReindexMenu &&
@@ -536,20 +540,20 @@ function GridCard({
                   {!isFolder && onReplace && canEditItem && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />
-                      Replace
+                      {t('action.replace')}
                     </DropdownMenu.Item>
                   )}
                   {onMove && canEditItem && !isCollectionNode && (
                     <DropdownMenu.Item onClick={() => onMove(item)}>
                       <MaterialIcon name="drive_file_move" size={16} />
-                      Move
+                      {t('action.move')}
                     </DropdownMenu.Item>
                   )}
                   {/* Collections can only be deleted by OWNER */}
                   {onDelete && canDeleteItem && (
                       <DropdownMenu.Item onClick={() => onDelete(item)} color="red">
                         <MaterialIcon name="delete" size={16} />
-                        Delete
+                        {t('action.delete')}
                       </DropdownMenu.Item>
                   )}
                 </DropdownMenu.Content>
@@ -606,19 +610,24 @@ function GridCard({
               <Text
                 size="2"
                 weight="medium"
-                onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
+                title={item.name}
+                onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
                   e.stopPropagation();
                   startEditing();
                 } : undefined}
                 style={{
                   color: 'var(--slate-12)',
+                  // Two lines at most, so the status badge stays inside the fixed-height card.
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   lineHeight: 'var(--line-height-2)',
-                  cursor: onRename && canEditItem ? 'text' : 'default',
-                  padding: 'var(--space-1) var(--space-2)',
+                  cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+                  // Vertical room only: the name lines up with the icon and the size.
+                  padding: 'var(--space-1) 0',
                   border: '1px solid transparent',
                 }}
               >
@@ -737,11 +746,11 @@ export function KbGridView({
           padding: 'var(--space-4)',
         }}
       >
-        {/* Grid container - 3 columns with gap */}
+        {/* Grid container - as many 200px+ columns as fit */}
         <Box
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
             gap: 'var(--space-3)',
           }}
         >
@@ -770,117 +779,7 @@ export function KbGridView({
 
       {/* Pagination */}
       {pagination && (
-        <Flex
-          justify="between"
-          align="center"
-          style={{
-            position: 'relative',
-            zIndex: 16,
-            padding: 'var(--space-2) var(--space-4)',
-            borderTop: '1px solid var(--olive-3)',
-            background: 'var(--olive-2)',
-            flexShrink: 0,
-          }}
-        >
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 400, lineHeight: '20px' }}>
-            Showing {pagination.startIndex ?? 0}-{pagination.endIndex ?? 0} of {pagination.totalItems} Items
-          </Text>
-          <Flex gap="2" align="center">
-            {/* Previous Button */}
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: 32,
-                padding: '0 12px',
-                borderRadius: 'var(--radius-2)',
-                cursor: pagination.hasPrev ? 'pointer' : 'not-allowed',
-                color: pagination.hasPrev ? 'var(--neutral-11)' : 'var(--neutral-a8)',
-              }}
-              onClick={() => {
-                if (!pagination.hasPrev) return;
-                onCursorChange?.(pagination.prevCursor ?? null, 'prev');
-              }}
-            >
-              <MaterialIcon name="chevron_left" size={16} />
-              <Text size="2">Previous</Text>
-            </Flex>
-
-            {/* Derived position — see kb-list-view for why it is not a page number. */}
-            <Box
-              style={{
-                height: 32,
-                padding: '0 12px',
-                backgroundColor: 'var(--neutral-a5)',
-                borderRadius: 'var(--radius-2)',
-                minWidth: '32px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.92,
-              }}
-            >
-              <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
-                {Math.floor(((pagination.startIndex ?? 1) - 1) / Math.max(1, pagination.limit)) + 1}
-              </Text>
-            </Box>
-
-            {/* Next Button */}
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: 32,
-                padding: '0 12px',
-                borderRadius: 'var(--radius-2)',
-                cursor: pagination.hasNext ? 'pointer' : 'not-allowed',
-                color: pagination.hasNext ? 'var(--neutral-11)' : 'var(--neutral-a8)',
-              }}
-              onClick={() => {
-                if (!pagination.hasNext) return;
-                onCursorChange?.(pagination.nextCursor ?? null, 'next');
-              }}
-            >
-              <Text size="2">Next</Text>
-              <MaterialIcon name="chevron_right" size={16} />
-            </Flex>
-
-            {/* Separator */}
-            <Box style={{ width: '1px', height: '8px', backgroundColor: 'var(--neutral-9)' }} />
-
-            {/* Rows per page selector */}
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger>
-                <Flex
-                  align="center"
-                  gap="1"
-                  style={{
-                    cursor: 'pointer',
-                    height: 32,
-                    padding: '0 12px',
-                    backgroundColor: 'var(--neutral-a3)',
-                    borderRadius: 'var(--radius-2)',
-                  }}
-                >
-                  <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
-                    {pagination.limit}
-                  </Text>
-                  <MaterialIcon name="expand_less" size={16} color="var(--neutral-11)" />
-                </Flex>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="end" sideOffset={4}>
-                {[10, 25, 50, 100].map((limit) => (
-                  <DropdownMenu.Item
-                    key={limit}
-                    onClick={() => onLimitChange?.(limit)}
-                  >
-                    {limit} per page
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-          </Flex>
-        </Flex>
+        <KbPaginationFooter pagination={pagination} onCursorChange={onCursorChange} onLimitChange={onLimitChange} />
       )}
     </Flex>
   );

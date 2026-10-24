@@ -5,8 +5,10 @@ import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip } 
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { ItemActionMenu } from './item-action-menu';
+import { KbPaginationFooter } from './kb-pagination';
 import type {
   KnowledgeBaseItem,
   KnowledgeHubNode,
@@ -70,6 +72,9 @@ function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
 
 // Room for the preview, go-to-parent and more buttons.
 const ACTIONS_WIDTH = '104px';
+/** Phones keep only the 40px menu button (Open in the menu previews), plus go-to-parent on search results. */
+const actionsWidth = (isMobile: boolean, hasGoToParent: boolean): string =>
+  !isMobile ? ACTIONS_WIDTH : hasGoToParent ? '88px' : '56px';
 const ACTION_SLOT: React.CSSProperties = { width: 24, display: 'flex', justifyContent: 'center', flexShrink: 0 };
 const ROW_ACTION_BUTTON: React.CSSProperties = {
   cursor: 'pointer',
@@ -168,6 +173,8 @@ interface TableRowProps {
   showSourceColumn?: boolean;
   showCheckbox?: boolean;
   isMobile: boolean;
+  /** Below desktop the Size and Created columns (and any extra column) are dropped to keep the name readable. */
+  belowDesktop: boolean;
   extraColumns?: KbListExtraColumns | null;
   onSelect: () => void;
   onClick: () => void;
@@ -189,6 +196,7 @@ function TableRow({
   showSourceColumn,
   showCheckbox = true,
   isMobile,
+  belowDesktop,
   extraColumns = null,
   onSelect,
   onClick,
@@ -204,6 +212,7 @@ function TableRow({
   revealIndex = 0,
 }: TableRowProps) {
   const { t } = useTranslation();
+  const canHover = useCanHover();
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -435,6 +444,16 @@ function TableRow({
     }
   };
 
+  // Phones show the status and source as text under the name instead of in their own columns.
+  const mobileSubtitle = isMobile
+    ? [
+        getStatusLabel(),
+        showSourceColumn && isAllRecordDisplayRow(item) ? item.sourceName : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+
   // Keyboard event handler
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isEditing) return;
@@ -461,10 +480,9 @@ function TableRow({
           : isHovered
           ? 'var(--olive-2)'
           : 'var(--olive-1)',
-        borderTop: isFocused ? '1px solid var(--accent-5)' : 'none',
-        borderRight: isFocused ? '1px solid var(--accent-5)' : 'none',
-        borderBottom: isFocused ? '1px solid var(--accent-5)' : '1px solid var(--olive-3)',
-        borderLeft: isFocused ? '1px solid var(--accent-5)' : 'none',
+        // An inset ring, not a border, so focusing a row does not shift its content.
+        borderBottom: '1px solid var(--olive-3)',
+        boxShadow: isFocused ? 'inset 0 0 0 1px var(--accent-5)' : undefined,
         cursor: 'pointer',
         userSelect: 'none',
         outline: 'none',
@@ -483,13 +501,17 @@ function TableRow({
         align="center"
         justify="center"
         style={{ width: '36px', padding: '0 8px', cursor: showCheckbox ? 'pointer' : 'default' }}
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
+        onClick={(e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (showCheckbox) onSelect();
+        }}
       >
         {showCheckbox && (
           <Checkbox
             size="1"
             checked={isSelected}
             onCheckedChange={() => onSelect()}
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
             style={{cursor: 'pointer'}}
           />
         )}
@@ -558,6 +580,7 @@ function TableRow({
             />
           </>
         ) : (
+          <Flex direction="column" style={{ minWidth: 0, flex: '0 1 auto' }}>
           <Tooltip
             content={item.name}
             delayDuration={200}
@@ -566,7 +589,7 @@ function TableRow({
             <Text
               ref={nameRef}
               size="2"
-              onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
+              onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
                 e.stopPropagation();
                 startEditing();
               } : undefined}
@@ -579,12 +602,19 @@ function TableRow({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                cursor: onRename && canEditItem ? 'text' : 'default',
+                cursor: onRename && canEditItem && canHover ? 'text' : 'default',
               }}
             >
               {item.name}
             </Text>
           </Tooltip>
+          {/* Phones drop the Status and Source columns; their text moves under the name. */}
+          {isMobile && mobileSubtitle && (
+            <Text size="1" style={{ color: 'var(--neutral-9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {mobileSubtitle}
+            </Text>
+          )}
+          </Flex>
         )}
         {!isEditing && isKnowledgeHubNode(item) && (
           <DemoSourceBadge connectorId={item.connectorId} />
@@ -593,6 +623,7 @@ function TableRow({
       </Flex>
 
       {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
+      {!isMobile && (
       <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
@@ -614,9 +645,10 @@ function TableRow({
           );
         })()}
       </Flex>
+      )}
 
       {/* Source — All Records rows only; icon + source name on hover */}
-      {showSourceColumn && isAllRecordDisplayRow(item) && (
+      {!isMobile && showSourceColumn && isAllRecordDisplayRow(item) && (
         <Flex align="center" justify="start" gap="2" style={{ width: '60px', padding: '0 var(--space-2)' }}>
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -631,7 +663,7 @@ function TableRow({
       )}
 
       {/* Size — hidden on mobile to keep the row readable */}
-      {!isMobile && (
+      {!belowDesktop && (
         <Flex align="center" style={{ width: '89px', padding: '0 var(--space-2)' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
             {isKnowledgeHubNode(item)
@@ -643,11 +675,11 @@ function TableRow({
       )}
 
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
-      {!isMobile && (
+      {!belowDesktop && (
         <Flex align="center" style={{ width: '147px', padding: '0 var(--space-2)' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
             {isKnowledgeHubNode(item)
-              ? (item.createdAt ? formatDate(new Date(item.createdAt).toISOString()) : '-')
+              ? (item.createdAt ? formatDate(item.createdAt) : '-')
               : (item.createdAt ? formatDate(item.createdAt) : '-')
             }
           </Text>
@@ -659,27 +691,27 @@ function TableRow({
         <Flex align="center" style={{ width: '146px', padding: '0 var(--space-2)' }}>
           <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500 }}>
             {isKnowledgeHubNode(item)
-              ? (item.updatedAt ? formatDate(new Date(item.updatedAt).toISOString()) : '-')
+              ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
               : (item.updatedAt ? formatDate(item.updatedAt) : '-')
             }
           </Text>
         </Flex>
       )}
 
-      {!isMobile && extraColumns ? extraColumns.cell(item) : null}
+      {!belowDesktop && extraColumns ? extraColumns.cell(item) : null}
 
       {/* Actions */}
       {/* A slot per action the list offers, filled or not, so the icons line up from row to row. */}
-      <Flex align="center" justify="center" gap="2" style={{ width: ACTIONS_WIDTH, padding: '0 var(--space-2)' }}>
-        {onPreview && (
+      <Flex align="center" justify="center" gap="2" style={{ width: actionsWidth(isMobile, !!onGoToParent), padding: '0 var(--space-2)' }}>
+        {onPreview && !isMobile && (
           <Box style={ACTION_SLOT}>
             {canPreview && (
-              <Tooltip content="Preview" side="top" delayDuration={200}>
+              <Tooltip content={t('kb.rowActions.preview')} side="top" delayDuration={200}>
                 <IconButton
                   variant="ghost"
                   size="1"
                   color="gray"
-                  aria-label="Preview"
+                  aria-label={t('kb.rowActions.preview')}
                   onClick={(e) => {
                     e.stopPropagation();
                     onPreview!(item);
@@ -696,7 +728,7 @@ function TableRow({
           <Box style={ACTION_SLOT}>
             {parentTarget && (
               <Tooltip
-                content={parentTarget.parent?.name ? `Go to ${parentTarget.parent.name}` : 'Go to parent'}
+                content={parentTarget.parent?.name ? t('kb.rowActions.goToNamed', { name: parentTarget.parent.name }) : t('kb.rowActions.goToParent')}
                 side="top"
                 delayDuration={200}
               >
@@ -704,7 +736,7 @@ function TableRow({
                   variant="ghost"
                   size="1"
                   color="gray"
-                  aria-label="Go to parent"
+                  aria-label={t('kb.rowActions.goToParent')}
                   onClick={(e) => {
                     e.stopPropagation();
                     onGoToParent!(parentTarget);
@@ -717,24 +749,25 @@ function TableRow({
             )}
           </Box>
         )}
-        <Box style={ACTION_SLOT}>
+        <Box style={isMobile ? { ...ACTION_SLOT, width: 40 } : ACTION_SLOT}>
           <ItemActionMenu
+            triggerSize={isMobile ? '3' : '1'}
             open={isMenuOpen}
             onOpenChange={setIsMenuOpen}
             actions={[
-              { icon: 'folder_open', label: 'Open', onClick: onOpen },
-              !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
-              onRename && canEditItem && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
+              { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: onOpen },
+              !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => onDownload(item) },
+              onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: () => startEditing() },
               ...(showReindexMenu
                 ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
                     onReindex!(item, statusFilters),
                   )
                 : []),
-              !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
+              !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => onReplace(item) },
               // Move relocates an item within its collection — a collection itself has nothing to move into.
-              onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
+              onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: t('action.move'), onClick: () => onMove(item) },
               // Collections can only be deleted by OWNER
-              onDelete && canDeleteItem && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
+              onDelete && canDeleteItem && { icon: 'delete', label: t('action.delete'), onClick: () => onDelete(item), color: 'red' as const },
             ]}
           />
         </Box>
@@ -815,6 +848,7 @@ export function KbListView({
     hasCollectionContext || !needsCollectionContext(item, action);
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const belowDesktop = useIsBelowDesktop();
   // After a load the skeleton stays under the rows while they land one by one,
   // so each placeholder is replaced in place instead of the body going blank.
   const [revealing, setRevealing] = useState(false);
@@ -855,35 +889,35 @@ export function KbListView({
         </Flex>
 
         {/* File Name */}
-        <TableHeaderCell label="File Name" field="name" flex={1} sort={sort} onSort={onSort} />
+        <TableHeaderCell label={t('table.fileName')} field="name" flex={1} sort={sort} onSort={onSort} />
 
-        {/* Status */}
-        <TableHeaderCell label="Status" width="60px" sort={sort} onSort={onSort} />
+        {/* Status — on phones it moves under the name */}
+        {!isMobile && <TableHeaderCell label={t('table.status')} width="60px" sort={sort} onSort={onSort} />}
 
-        {/* Source - Only shown in All Records mode */}
-        {showSourceColumn && (
-          <TableHeaderCell label="Source" width="60px" sort={sort} onSort={onSort} />
+        {/* Source - Only shown in All Records mode, under the name on phones */}
+        {showSourceColumn && !isMobile && (
+          <TableHeaderCell label={t('table.source')} width="60px" sort={sort} onSort={onSort} />
         )}
 
-        {/* Size — hidden on mobile */}
-        {!isMobile && (
-          <TableHeaderCell label="Size" field="size" sortable width="89px" sort={sort} onSort={onSort} />
+        {/* Size — hidden below desktop */}
+        {!belowDesktop && (
+          <TableHeaderCell label={t('table.size')} field="size" sortable width="89px" sort={sort} onSort={onSort} />
         )}
 
-        {/* Created — hidden on mobile */}
-        {!isMobile && (
-          <TableHeaderCell label="Created" field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
+        {/* Created — hidden below desktop */}
+        {!belowDesktop && (
+          <TableHeaderCell label={t('table.created')} field="createdAt" sortable width="147px" sort={sort} onSort={onSort} />
         )}
 
         {/* Updated — hidden on mobile */}
         {!isMobile && (
-          <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
+          <TableHeaderCell label={t('table.updated')} field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
         )}
 
-        {!isMobile && extraColumns ? extraColumns.header : null}
+        {!belowDesktop && extraColumns ? extraColumns.header : null}
 
         {/* Actions */}
-        <Box style={{ width: ACTIONS_WIDTH }} />
+        <Box style={{ width: actionsWidth(isMobile, !!onGoToParent) }} />
       </Flex>
 
       {/* Table Body */}
@@ -909,18 +943,13 @@ export function KbListView({
             rows={SKELETON_ROWS}
             rowHeight={60}
             checkboxWidth={36}
-            actionsWidth={104}
+            actionsWidth={parseInt(actionsWidth(isMobile, !!onGoToParent), 10)}
             columns={[
               { barWidth: 0.62 },
-              { width: '60px', barWidth: 0.45 },
-              ...(showSourceColumn ? [{ width: '60px', barWidth: 0.45 }] : []),
-              ...(!isMobile
-                ? [
-                    { width: '89px', barWidth: 0.55 },
-                    { width: '147px', barWidth: 0.7 },
-                    { width: '146px', barWidth: 0.7 },
-                  ]
-                : []),
+              ...(!isMobile ? [{ width: '60px', barWidth: 0.45 }] : []),
+              ...(showSourceColumn && !isMobile ? [{ width: '60px', barWidth: 0.45 }] : []),
+              ...(!belowDesktop ? [{ width: '89px', barWidth: 0.55 }, { width: '147px', barWidth: 0.7 }] : []),
+              ...(!isMobile ? [{ width: '146px', barWidth: 0.7 }] : []),
             ]}
           />
         </Box>
@@ -938,6 +967,7 @@ export function KbListView({
             showSourceColumn={showSourceColumn}
             showCheckbox={showCheckbox}
             isMobile={isMobile}
+            belowDesktop={belowDesktop}
             extraColumns={extraColumns}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
@@ -960,118 +990,7 @@ export function KbListView({
 
       {/* Pagination */}
       {pagination && (
-        <Flex
-          justify="between"
-          align="center"
-          style={{
-            position: 'relative',
-            zIndex: 16,
-            padding: 'var(--space-2) var(--space-4)',
-            borderTop: '1px solid var(--olive-3)',
-            background: 'var(--olive-2)',
-            flexShrink: 0,
-          }}
-        >
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 400, lineHeight: '20px' }}>
-            Showing {pagination.startIndex ?? 0}-{pagination.endIndex ?? 0} of {pagination.totalItems} Items
-          </Text>
-          <Flex gap="2" align="center">
-            {/* Previous Button */}
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: 32,
-                padding: '0 12px',
-                borderRadius: 'var(--radius-2)',
-                cursor: pagination.hasPrev ? 'pointer' : 'not-allowed',
-                color: pagination.hasPrev ? 'var(--neutral-11)' : 'var(--neutral-a8)',
-              }}
-              onClick={() => {
-                if (!pagination.hasPrev) return;
-                onCursorChange?.(pagination.prevCursor ?? null, 'prev');
-              }}
-            >
-              <MaterialIcon name="chevron_left" size={16} />
-              <Text size="2">Previous</Text>
-            </Flex>
-
-            {/* Position, derived from the item index: keyset paging has no page
-                number of its own, and inventing one server-side would be a lie. */}
-            <Box
-              style={{
-                height: 32,
-                padding: '0 12px',
-                backgroundColor: 'var(--neutral-a5)',
-                borderRadius: 'var(--radius-2)',
-                minWidth: '32px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.92,
-              }}
-            >
-              <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
-                {Math.floor(((pagination.startIndex ?? 1) - 1) / Math.max(1, pagination.limit)) + 1}
-              </Text>
-            </Box>
-
-            {/* Next Button */}
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: 32,
-                padding: '0 12px',
-                borderRadius: 'var(--radius-2)',
-                cursor: pagination.hasNext ? 'pointer' : 'not-allowed',
-                color: pagination.hasNext ? 'var(--neutral-11)' : 'var(--neutral-a8)',
-              }}
-              onClick={() => {
-                if (!pagination.hasNext) return;
-                onCursorChange?.(pagination.nextCursor ?? null, 'next');
-              }}
-            >
-              <Text size="2">Next</Text>
-              <MaterialIcon name="chevron_right" size={16} />
-            </Flex>
-
-            {/* Separator */}
-            <Box style={{ width: '1px', height: '8px', backgroundColor: 'var(--neutral-9)' }} />
-
-            {/* Rows per page selector */}
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger>
-                <Flex
-                  align="center"
-                  gap="1"
-                  style={{
-                    cursor: 'pointer',
-                    height: 32,
-                    padding: '0 12px',
-                    backgroundColor: 'var(--neutral-a3)',
-                    borderRadius: 'var(--radius-2)',
-                  }}
-                >
-                  <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
-                    {pagination.limit}
-                  </Text>
-                  <MaterialIcon name="expand_less" size={16} color="var(--neutral-11)" />
-                </Flex>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="end" sideOffset={4}>
-                {[10, 25, 50, 100].map((limit) => (
-                  <DropdownMenu.Item
-                    key={limit}
-                    onClick={() => onLimitChange?.(limit)}
-                  >
-                    {limit} per page
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-          </Flex>
-        </Flex>
+        <KbPaginationFooter pagination={pagination} onCursorChange={onCursorChange} onLimitChange={onLimitChange} />
       )}
     </>
   );

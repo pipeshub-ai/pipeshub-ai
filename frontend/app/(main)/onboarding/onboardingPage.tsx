@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, Suspense } from 'react';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +27,8 @@ function OnboardingPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
   const [onboardingGate, setOnboardingGate] = useState<'checking' | 'allowed'>('checking');
   const [embeddingDefaultDialog, setEmbeddingDefaultDialog] = useState(false);
   const [embeddingRegistryHasDefault, setEmbeddingRegistryHasDefault] = useState(false);
@@ -162,14 +165,6 @@ function OnboardingPageInner() {
     // the user will click "Enter Pipeshub" in the footer when ready.
   };
 
-  // ---- System config step numbering ----
-
-  // System config steps are all steps except the terminal 'loading' step
-  const systemConfigSteps = steps.filter((s) => s.id !== 'loading');
-  const systemStepIndex =
-    systemConfigSteps.findIndex((s) => s.id === stepFromUrl) + 1;
-  const totalSystemSteps = systemConfigSteps.length;
-
   // ---- Footer visibility ----
 
   const isFirstStep = currentIndex === 0;
@@ -205,16 +200,12 @@ function OnboardingPageInner() {
       case 'ai-model':
         return (
           <StepAiModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             nextGateRef={nextGateRef}
           />
         );
       case 'embedding-model':
         return (
           <StepEmbeddingModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             embeddingDefaultDialog={embeddingDefaultDialog}
             setEmbeddingDefaultDialog={setEmbeddingDefaultDialog}
             onRegistryHasSystemDefaultEmbedding={setEmbeddingRegistryHasDefault}
@@ -224,8 +215,6 @@ function OnboardingPageInner() {
         return (
           <StepStorage
             onSuccess={handleStepSuccess}
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
           />
         );
       case 'loading':
@@ -234,8 +223,6 @@ function OnboardingPageInner() {
         // return <StepOrgProfile onSuccess={handleStepSuccess} />;
         return (
           <StepAiModel
-            systemStepIndex={systemStepIndex}
-            totalSystemSteps={totalSystemSteps}
             nextGateRef={nextGateRef}
           />
         );
@@ -260,9 +247,10 @@ function OnboardingPageInner() {
   return (
     <Flex
       direction="column"
+      className="viewport-height"
       style={{
-        height: '100vh',
-        overflow: 'hidden',
+        // Phones scroll the whole page so the card and nav row are never clipped.
+        overflow: isMobile ? 'auto' : 'hidden',
         backgroundColor: 'var(--color-background)',
       }}
     >
@@ -293,14 +281,15 @@ function OnboardingPageInner() {
         <Box
           style={{
             maxWidth: '1228px',
-            width: '100%',
+            width: isBelowDesktop ? 'calc(100% - 32px)' : '100%',
             margin: '24px auto 0',
-            border: '1px solid var(--gray-4)',
-            flex: 1,
+            // Phones keep only the step card's frame; a second border squeezes it.
+            border: isMobile ? 'none' : '1px solid var(--gray-4)',
+            flex: isMobile ? '1 0 auto' : 1,
             minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
+            overflow: isMobile ? 'visible' : 'hidden',
           }}
         >
           {/* Tab strip — fixed, never scrolls */}
@@ -311,7 +300,7 @@ function OnboardingPageInner() {
             align="center"
             justify="center"
             className="no-scrollbar"
-            style={{ flex: 1, minHeight: 0, overflow: 'hidden', padding: '8px 16px' }}
+            style={{ flex: 1, minHeight: 0, overflow: isMobile ? 'visible' : 'hidden', padding: isMobile ? '8px 0' : '8px 16px' }}
           >
             {renderStep()}
           </Flex>
@@ -327,7 +316,7 @@ function OnboardingPageInner() {
             maxWidth: '1228px',
             width: '100%',
             margin: '0 auto',
-            padding: '8px 0',
+            padding: isBelowDesktop ? '8px 16px' : '8px 0',
             flexShrink: 0,
           }}
         >

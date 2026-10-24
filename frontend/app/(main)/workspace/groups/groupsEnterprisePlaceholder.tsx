@@ -1,6 +1,9 @@
 'use client';
 
 import { Flex, Heading, Text } from '@radix-ui/themes';
+import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -10,6 +13,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
  */
 export default function GroupsEnterprisePlaceholder() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   return (
     <Flex
@@ -17,12 +21,15 @@ export default function GroupsEnterprisePlaceholder() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: '40px',
-        paddingRight: '40px',
+        paddingInline: PAGE_PADDING_X,
       }}
     >
-      <Flex direction="column" gap="1" style={{ paddingTop: 32, paddingBottom: 24 }}>
-        <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+      <Flex
+        direction="column"
+        gap="1"
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 24 }}
+      >
+        <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.groups.title')}
         </Heading>
         <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -72,15 +79,14 @@ export default function GroupsEnterprisePlaceholder() {
               'Upgrade to the Enterprise Edition to use group permissions.'
             )}
           </Text>
-          <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: '20px' }}>
-            {t('workspace.groups.enterpriseContact', 'Contact')}{' '}
+          <Text size="2" style={{ lineHeight: '20px' }}>
             <a
               href="https://docs.pipeshub.com/contact-us"
               target="_blank"
               rel="noreferrer"
               style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
             >
-              @pipeshub.com
+              {t('workspace.groups.enterpriseContact')}
             </a>
           </Text>
         </Flex>

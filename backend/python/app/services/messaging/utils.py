@@ -86,6 +86,7 @@ class MessagingUtils:
             "port": redis_config.port,
             "password": redis_config.password,
             "db": redis_config.db,
+            "retention_mode": messaging_env.redis_streams_retention_mode,
             "max_len": messaging_env.redis_streams_maxlen,
             "client_id": client_id,
             "group_id": group_id,

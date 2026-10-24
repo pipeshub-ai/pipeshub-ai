@@ -62,6 +62,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -208,6 +209,11 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
             return operation()
         conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {}}
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
         return conn
 
 
@@ -308,7 +314,8 @@ def _make_existing_record(
 
 
 def _make_app_user(email="user@example.com", source_user_id="guser-1", full_name="Test User",
-                   source_created_at=None):
+                   source_created_at=None, is_active=True):
+    # Workspace users are listed with their status; an account that can sign in is active.
     return AppUser(
         app_name=Connectors.GOOGLE_DRIVE_WORKSPACE,
         connector_id="drive-team-cov",
@@ -316,6 +323,7 @@ def _make_app_user(email="user@example.com", source_user_id="guser-1", full_name
         email=email,
         full_name=full_name,
         source_created_at=source_created_at,
+        is_active=is_active,
     )
 
 
@@ -1018,7 +1026,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        assert perms == []
+        # A refusal that lasts keeps the grant this reader demonstrably has.
+        assert [p.email for p in perms] == ["u@x.com"]
         assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
@@ -1031,9 +1040,9 @@ class TestFetchPermissions:
         http_error = HttpError(mock_resp, b"server error")
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is True, "a failed read keeps the stored grants"
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await conn._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_http_error_for_drive_raises(self):
@@ -1050,12 +1059,12 @@ class TestFetchPermissions:
             await conn._fetch_permissions("drive-1", is_drive=True)
 
     @pytest.mark.asyncio
-    async def test_generic_error_for_file_returns_empty(self):
+    async def test_generic_error_for_file_raises(self):
         conn = _make_connector()
-        conn.drive_data_source.permissions_list = AsyncMock(side_effect=Exception("fail"))
-        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is True, "a failed read keeps the stored grants"
+        conn.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("fail"))
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await conn._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_generic_error_for_drive_raises(self):
@@ -1134,7 +1143,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        assert perms == []
+        # A refusal that lasts keeps the grant this reader demonstrably has.
+        assert [p.email for p in perms] == ["u@x.com"]
         assert is_fallback is True, "a failed read keeps the stored grants"
 
 
@@ -2075,6 +2085,9 @@ class TestProcessDriveItem:
         record, added = conn.data_entities_processor.add_permission_to_record.call_args.args
         assert record is existing
         assert [(p.email, p.type) for p in added] == [("u@x.com", PermissionType.READ)]
+        # Written as a metadata update, not as a new record: in a full sync the first write of a new record
+        # replaces its stored grants, and this reader's grant is not the file's list.
+        assert result.is_updated is True and result.metadata_changed is True
 
     @pytest.mark.asyncio
     async def test_permission_fetch_error(self):
@@ -2083,8 +2096,9 @@ class TestProcessDriveItem:
 
         metadata = _make_file_metadata(parents=["d1"])
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "d1")
-        # Should still return a record despite permission error
-        assert result is not None
+        # Not stored without its grants: skipped, counted, and read again next run.
+        assert result is None
+        assert conn._sync_ledger.item_failures == 1
 
     @pytest.mark.asyncio
     async def test_no_timestamps(self):
@@ -4018,6 +4032,7 @@ class TestCheckAndFetchUpdatedRecord:
         mock_update = MagicMock()
         mock_update.is_deleted = False
         mock_update.is_updated = False
+        mock_update.content_changed = False
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch("app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource",
@@ -5038,7 +5053,7 @@ class TestExternalCollaborators:
         committed -- it resolves principals rather than creating them."""
         import inspect
 
-        src = inspect.getsource(_make_connector().__class__.run_sync)
+        src = inspect.getsource(_make_connector().__class__._run_sync_steps)
         assert "self._external_emails = set()" in src
         assert "await self._flush_external_app_users()" in src
         assert src.index("self._external_emails = set()") < src.index(

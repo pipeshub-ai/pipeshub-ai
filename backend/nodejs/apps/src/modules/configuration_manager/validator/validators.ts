@@ -147,16 +147,6 @@ export const azureAdConfigSchema = z.object({
   }),
 });
 
-export const ssoConfigSchema = z.object({
-  body: z.object({
-    entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
-    certificate: z.string().min(1, { message: 'SSO certificate is required' }),
-    emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
-    enableJit: z.boolean().optional().default(true),
-    samlPlatform: z.string().optional(),
-  }),
-});
-
 export const googleAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Google client ID is required' }),
@@ -168,20 +158,6 @@ export const githubAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'GitHub client ID is required' }),
     clientSecret: z.string().min(1, { message: 'GitHub client secret is required' }),
-  }),
-});
-
-export const oauthConfigSchema = z.object({
-  body: z.object({
-    providerName: z.string().min(1, { message: 'Provider name is required' }),
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().optional(),
-    authorizationUrl: z.string().url().optional().or(z.literal('')),
-    tokenEndpoint: z.string().url().optional().or(z.literal('')),
-    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
-    scope: z.string().optional(),
-    redirectUri: z.string().url().optional().or(z.literal('')),
-    enableJit: z.boolean().optional().default(true),
   }),
 });
 

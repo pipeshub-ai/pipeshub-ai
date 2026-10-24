@@ -120,6 +120,10 @@ if built:
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
 
+## Query instruction (BGE, experimental, off by default)
+
+Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchanged. Ranking evidence is mixed (dense gains, hybrid neutral, one slice regressed), so it stays opt-in. When on, BGE v1/v1.5 English embedding models (`bge-small|base|large[-en][-v1.5]`, local or hosted, by the configured model id) expect `Represent this sentence for searching relevant passages: ` in front of search *queries*. `app/utils/query_instruction.py` (`instruct_query`) adds it on the dense query embedding in chunk search (`retrieval_service.py`), entity search and the skill index. Passages and chunks are embedded as-is at index time, so stored vectors are unchanged, and the sparse (BM25) query is never prefixed. bge-m3 and the zh models are left alone, as is every non-BGE model. New query-embedding paths should call `instruct_query`.
+
 ## Where to change it
 
 | Concern | Location |

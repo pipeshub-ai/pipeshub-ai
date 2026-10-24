@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import {
@@ -71,7 +72,24 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
-import { StorageError } from '../../../libs/errors/storage.errors';
+import {
+  StorageError,
+  StorageNotFoundError,
+} from '../../../libs/errors/storage.errors';
+
+const TREE_MOVE_WRITE_BATCH = 1000;
+
+// Per-org locks for local storage, held only within this process: enough,
+// since only one Node process uses a local mount (Compose).
+const treeMoveLocks = new Map<string, Mutex>();
+function treeMoveLock(orgId: string): Mutex {
+  let lock = treeMoveLocks.get(orgId);
+  if (!lock) {
+    lock = new Mutex();
+    treeMoveLocks.set(orgId, lock);
+  }
+  return lock;
+}
 
 // Shape of a document row selected for a moveTree operation. documentPath is
 // non-optional here (unlike the base Document type) because every row comes
@@ -547,13 +565,21 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
-      const document = await DocumentModel.findOne({
-        _id: req.params.documentId,
-        orgId,
-      });
-      const documents = document ? [document] : [];
-      await this.purgeDocuments(documents, orgId, req);
-      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+      // Read under the lock: a move running now would leave the row stale.
+      const purged = await this.withLocalStorageLock(
+        req,
+        String(orgId),
+        async () => {
+          const document = await DocumentModel.findOne({
+            _id: req.params.documentId,
+            orgId,
+          });
+          const documents = document ? [document] : [];
+          await this.purgeDocuments(documents, orgId, req);
+          return documents.length;
+        },
+      );
+      res.status(HTTP_STATUS.OK).json({ purged });
     } catch (error) {
       next(error);
     }
@@ -575,10 +601,18 @@ export class StorageController {
       const orgIdText = extractOrgId(req);
       const orgId = new mongoose.Types.ObjectId(orgIdText);
       const virtualRecordId = String(req.params.virtualRecordId);
-      const documents = await DocumentModel.find(
-        virtualRecordDocumentsFilter(orgIdText, orgId, virtualRecordId),
+      // Read under the lock: a move running now would leave these rows stale.
+      const documents = await this.withLocalStorageLock(
+        req,
+        orgIdText,
+        async () => {
+          const found = await DocumentModel.find(
+            virtualRecordDocumentsFilter(orgIdText, orgId, virtualRecordId),
+          );
+          await this.purgeDocuments(found, orgId, req);
+          return found;
+        },
       );
-      await this.purgeDocuments(documents, orgId, req);
       res.status(HTTP_STATUS.OK).json({ purged: documents.length });
     } catch (error) {
       next(error);
@@ -610,6 +644,97 @@ export class StorageController {
       });
       await this.purgeDocuments(documents, orgId, req);
       res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Lists a virtual record's live `record_{id}` / `metadata_{id}` documents,
+   * newest first, so a writer whose mapping was never recorded (it died
+   * between storing and mapping) can reuse what it stored instead of adding
+   * a second copy.
+   */
+  async listVirtualRecordDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const virtualRecordId = String(req.params.virtualRecordId);
+      const documents = await DocumentModel.find({
+        orgId,
+        documentName: {
+          $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
+        },
+        isDeleted: { $ne: true },
+      })
+        .select('_id documentName documentPath createdAt')
+        .sort({ createdAt: -1 })
+        .lean();
+      res.status(HTTP_STATUS.OK).json({
+        documents: documents.map((d) => ({
+          _id: String(d._id),
+          documentName: d.documentName,
+          documentPath: d.documentPath,
+          createdAt: d.createdAt,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * One page of this org's documents still filed under the flat layout older
+   * records used, `records/{virtualRecordId}`, oldest first, for the one-off
+   * move into the hierarchical layout. Paged by `_id` (`after`).
+   */
+  async listFlatRecordDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
+      const after =
+        typeof req.query.after === 'string' ? req.query.after : undefined;
+      const flatPrefix = getFullDocumentPath(orgIdText, 'records/');
+      // documentPath == "<prefix><vrid>" where vrid is the name after "record_"/"metadata_".
+      const flatPathOf = (nameOffset: number): Record<string, unknown> => ({
+        $eq: [
+          '$documentPath',
+          {
+            $concat: [
+              flatPrefix,
+              { $substrCP: ['$documentName', nameOffset, 200] },
+            ],
+          },
+        ],
+      });
+      const documents = await DocumentModel.find({
+        orgId,
+        ...(after ? { _id: { $gt: new mongoose.Types.ObjectId(after) } } : {}),
+        isDeleted: { $ne: true },
+        $or: ENVELOPE_PREFIXES.map((p) => ({
+          documentName: new RegExp(`^${p}`),
+          $expr: flatPathOf(p.length),
+        })),
+      })
+        .select('_id documentName documentPath')
+        .sort({ _id: 1 })
+        .limit(limit)
+        .lean();
+      res.status(HTTP_STATUS.OK).json({
+        documents: documents.map((d) => ({
+          _id: String(d._id),
+          documentName: d.documentName,
+          documentPath: d.documentPath,
+        })),
+      });
     } catch (error) {
       next(error);
     }
@@ -894,49 +1019,57 @@ export class StorageController {
       const moved: string[] = [];
       const failed: string[] = [];
       const missing: string[] = [];
-      for (const move of moves) {
-        const newFullPath = getFullDocumentPath(orgIdText, move.newPath);
-        const docs = await DocumentModel.find(
-          virtualRecordDocumentsFilter(orgIdText, orgId, move.virtualRecordId),
-        )
-          .select(
-            '_id documentPath documentName extension isVersionedFile versionHistory customMetadata',
-          )
-          .lean<MatchedTreeDocument[]>();
-        const handedOver = (d: MatchedTreeDocument): boolean =>
-          d.documentPath === newFullPath &&
-          tagOf(d, 'connectorId') === move.connectorId;
-        const toMove = docs.filter((d) => !handedOver(d) && isInScope(d));
-        if (toMove.length === 0) {
-          (docs.some(handedOver) ? moved : missing).push(move.virtualRecordId);
-          continue;
-        }
-        let ok = true;
-        for (const doc of toMove) {
-          const tags = (doc.customMetadata ?? []).filter(
-            (m) => m.key !== 'connectorId' && m.key !== 'recordGroupId',
-          );
-          tags.push({ key: 'connectorId', value: move.connectorId });
-          if (move.recordGroupId !== undefined) {
-            tags.push({ key: 'recordGroupId', value: move.recordGroupId });
-          }
-          if (
-            !(await this.relocateDocument(
-              adapter,
-              storageType,
-              doc,
-              newFullPath,
+      await this.withLocalStorageLock(req, orgIdText, async () => {
+        for (const move of moves) {
+          const newFullPath = getFullDocumentPath(orgIdText, move.newPath);
+          const docs = await DocumentModel.find(
+            virtualRecordDocumentsFilter(
               orgIdText,
-              {
-                customMetadata: tags,
-              },
-            ))
-          ) {
-            ok = false;
+              orgId,
+              move.virtualRecordId,
+            ),
+          )
+            .select(
+              '_id documentPath documentName extension isVersionedFile versionHistory customMetadata',
+            )
+            .lean<MatchedTreeDocument[]>();
+          const handedOver = (d: MatchedTreeDocument): boolean =>
+            d.documentPath === newFullPath &&
+            tagOf(d, 'connectorId') === move.connectorId;
+          const toMove = docs.filter((d) => !handedOver(d) && isInScope(d));
+          if (toMove.length === 0) {
+            (docs.some(handedOver) ? moved : missing).push(
+              move.virtualRecordId,
+            );
+            continue;
           }
+          let ok = true;
+          for (const doc of toMove) {
+            const tags = (doc.customMetadata ?? []).filter(
+              (m) => m.key !== 'connectorId' && m.key !== 'recordGroupId',
+            );
+            tags.push({ key: 'connectorId', value: move.connectorId });
+            if (move.recordGroupId !== undefined) {
+              tags.push({ key: 'recordGroupId', value: move.recordGroupId });
+            }
+            if (
+              !(await this.relocateDocument(
+                adapter,
+                storageType,
+                doc,
+                newFullPath,
+                orgIdText,
+                {
+                  customMetadata: tags,
+                },
+              ))
+            ) {
+              ok = false;
+            }
+          }
+          (ok ? moved : failed).push(move.virtualRecordId);
         }
-        (ok ? moved : failed).push(move.virtualRecordId);
-      }
+      });
 
       this.logger.info('relocate: shared virtual records handed over', {
         fromConnectorId,
@@ -950,6 +1083,23 @@ export class StorageController {
     }
   }
 
+  /**
+   * Runs `fn` alone among this org's moves, relocations and purges when storage
+   * is local. A directory rename and the row rewrite after it must not
+   * interleave with another of those, or rows end up pointing where the files
+   * no longer are. Object stores move one object at a time, so they need no lock.
+   */
+  private async withLocalStorageLock<T>(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    orgId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if ((await this.getConfiguredStorageType(req)) !== 'local') {
+      return fn();
+    }
+    return treeMoveLock(orgId).runExclusive(fn);
+  }
+
   async moveTree(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -957,12 +1107,13 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = extractOrgId(req);
-      const { oldPath, newPath, virtualRecordId, virtualRecordIds } = req.body as {
-        oldPath: string;
-        newPath: string;
-        virtualRecordId?: string;
-        virtualRecordIds?: string[];
-      };
+      const { oldPath, newPath, virtualRecordId, virtualRecordIds } =
+        req.body as {
+          oldPath: string;
+          newPath: string;
+          virtualRecordId?: string;
+          virtualRecordIds?: string[];
+        };
 
       if (!oldPath) {
         throw new BadRequestError('oldPath is required');
@@ -974,7 +1125,9 @@ export class StorageController {
       // Whole segments only: folder names such as "Q1..Q2" are legitimate.
       const hasParentSegment = (p: string) => p.split(/[\\/]/).includes('..');
       if (hasParentSegment(oldPath) || hasParentSegment(newPath)) {
-        throw new BadRequestError('oldPath/newPath must not contain ".." segments');
+        throw new BadRequestError(
+          'oldPath/newPath must not contain ".." segments',
+        );
       }
 
       const oldFullPath = getFullDocumentPath(String(orgId), oldPath);
@@ -984,151 +1137,145 @@ export class StorageController {
       // post-move delete of the old root also wipe the freshly-written new
       // objects nested beneath it. Reject rather than corrupt.
       if (newFullPath.startsWith(`${oldFullPath}/`)) {
-        throw new BadRequestError('newPath must not be a descendant of oldPath');
-      }
-
-      // '/' (0x2F) is immediately followed by '0' (0x30) in ASCII -- this
-      // range covers every documentPath that starts with "oldFullPath/"
-      // without also matching an unrelated sibling like "oldFullPath2/...".
-      const descendantLower = `${oldFullPath}/`;
-      const descendantUpper = `${oldFullPath}0`;
-
-      // The query matches only on documentPath, so every result is guaranteed
-      // to have one -- .lean<T>() reflects that, unlike the base Document
-      // type where documentPath is optional. Org isolation comes from the
-      // "${orgId}/PipesHub/" prefix baked into oldFullPath (orgId is not a
-      // declared schema field, so it can't be filtered on reliably).
-      // Soft-deleted rows are kept in underPrefix: a local renameTree moves
-      // their files too, so their paths must be rewritten with the rest.
-      const underPrefix = await DocumentModel.find({
-        $or: [
-          { documentPath: oldFullPath },
-          { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
-        ],
-      })
-        .select('_id documentPath documentName extension isVersionedFile versionHistory isDeleted')
-        .lean<MatchedTreeDocument[]>();
-      const matched = underPrefix.filter((d) => d.isDeleted !== true);
-
-      if (matched.length === 0) {
-        res.status(HTTP_STATUS.OK).json({ moved: 0 });
-        return;
-      }
-
-      // Collision detection: when the caller identifies a specific record
-      // (via virtualRecordId), check whether OTHER records' documents share
-      // the exact same documentPath.  A single record owns both
-      // "record_<vrid>" and "metadata_<vrid>" docs — both must move.  If
-      // a different record's docs also sit at this path, a prefix-based
-      // move would accidentally relocate a sibling record's blobs — fall
-      // back to per-document moves for just this record's files instead.
-      let collision = false;
-      let docsToMove = matched;
-
-      if (virtualRecordId) {
-        const vridSuffix = `_${virtualRecordId}`;
-        const isMyDoc = (d: MatchedTreeDocument) =>
-          d.documentName?.endsWith(vridSuffix) ?? false;
-
-        const otherDocsAtExactPath = matched.filter(
-          (d) => d.documentPath === oldFullPath && !isMyDoc(d),
+        throw new BadRequestError(
+          'newPath must not be a descendant of oldPath',
         );
-        if (otherDocsAtExactPath.length > 0) {
-          collision = true;
-          docsToMove = matched.filter(
-            (d) => d.documentPath !== oldFullPath || isMyDoc(d),
-          );
+      }
+
+      await this.withLocalStorageLock(req, orgId, async () => {
+        // '/' (0x2F) is immediately followed by '0' (0x30) in ASCII -- this
+        // range covers every documentPath that starts with "oldFullPath/"
+        // without also matching an unrelated sibling like "oldFullPath2/...".
+        const descendantLower = `${oldFullPath}/`;
+        const descendantUpper = `${oldFullPath}0`;
+
+        // The query matches only on documentPath, so every result is guaranteed
+        // to have one -- .lean<T>() reflects that, unlike the base Document
+        // type where documentPath is optional. Org isolation comes from the
+        // "${orgId}/PipesHub/" prefix baked into oldFullPath, and the orgId
+        // condition below enforces it independently of the path string.
+        // Soft-deleted rows are kept in underPrefix: a local renameTree moves
+        // their files too, so their paths must be rewritten with the rest.
+        const underPrefix = await DocumentModel.find({
+          orgId,
+          $or: [
+            { documentPath: oldFullPath },
+            { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
+          ],
+        })
+          .select(
+            '_id documentPath documentName extension isVersionedFile versionHistory isDeleted',
+          )
+          .lean<MatchedTreeDocument[]>();
+        const matched = underPrefix.filter((d) => d.isDeleted !== true);
+
+        if (matched.length === 0) {
+          res.status(HTTP_STATUS.OK).json({ moved: 0 });
+          return;
         }
-      } else if (virtualRecordIds) {
-        // A folder: the caller lists every vrid stored beneath it. A sibling
-        // whose name sanitizes the same ("a/b" vs "a_b") shares this prefix,
-        // so anything not listed is its content and must stay put.
-        const owned = new Set(virtualRecordIds);
-        const isOwnedDoc = (d: MatchedTreeDocument) => {
-          const name = d.documentName ?? '';
-          return owned.has(name.slice(name.indexOf('_') + 1));
+
+        // When the caller names what it owns, anything else under oldPath
+        // belongs to a twin whose name sanitizes to the same path (a Doc
+        // "Reports" next to a folder "Reports", two emails "Invoice") and must
+        // stay put. Soft-deleted rows count too: a directory rename would carry
+        // their files away from the paths their rows record.
+        let collision = false;
+        let docsToMove = matched;
+
+        if (virtualRecordId) {
+          // Callers use this form only when they cannot list what the record
+          // holds, so everything below oldPath moves; only another record's
+          // documents at the exact path are known not to be its own.
+          const vridSuffix = `_${virtualRecordId}`;
+          const isMyDoc = (d: MatchedTreeDocument): boolean =>
+            d.documentName.endsWith(vridSuffix);
+          if (
+            underPrefix.some(
+              (d) => d.documentPath === oldFullPath && !isMyDoc(d),
+            )
+          ) {
+            collision = true;
+            docsToMove = matched.filter(
+              (d) => d.documentPath !== oldFullPath || isMyDoc(d),
+            );
+          }
+        } else if (virtualRecordIds) {
+          const owned = new Set(virtualRecordIds);
+          const isOwnedDoc = (d: MatchedTreeDocument): boolean => {
+            const name = d.documentName;
+            return owned.has(name.slice(name.indexOf('_') + 1));
+          };
+          if (underPrefix.some((d) => !isOwnedDoc(d))) {
+            collision = true;
+            docsToMove = matched.filter(isOwnedDoc);
+          }
+        }
+        const reportsCollision =
+          Boolean(virtualRecordId) || virtualRecordIds !== undefined;
+
+        if (docsToMove.length === 0) {
+          const resp: { moved: number; collision?: boolean } = { moved: 0 };
+          if (reportsCollision) resp.collision = collision;
+          res.status(HTTP_STATUS.OK).json(resp);
+          return;
+        }
+
+        const storageType = await this.getConfiguredStorageType(req);
+        const adapter = await this.initializeStorageAdapter(req);
+
+        let failedIds: string[];
+        if (collision) {
+          // Per-document moves regardless of storage type — a directory
+          // rename would catch the sibling's blobs too.
+          ({ failedIds } = await this.moveTreeRemote(
+            adapter,
+            storageType,
+            oldFullPath,
+            newFullPath,
+            docsToMove,
+            orgId,
+          ));
+        } else if (storageType === 'local') {
+          ({ failedIds } = await this.moveTreeLocal(
+            adapter,
+            oldFullPath,
+            newFullPath,
+            underPrefix,
+            orgId,
+          ));
+        } else {
+          ({ failedIds } = await this.moveTreeRemote(
+            adapter,
+            storageType,
+            oldFullPath,
+            newFullPath,
+            docsToMove,
+            orgId,
+          ));
+        }
+
+        // `failed` is only present when at least one document's blob could not
+        // be relocated -- those documents were left fully unmoved (see
+        // moveTreeRemote) and the caller should surface/retry them explicitly
+        // rather than assume the whole tree moved cleanly.
+        const response: {
+          moved: number;
+          failed?: string[];
+          collision?: boolean;
+        } = {
+          moved: docsToMove.length - failedIds.length,
         };
-        if (matched.some((d) => !isOwnedDoc(d))) {
-          collision = true;
-          docsToMove = matched.filter(isOwnedDoc);
+        if (failedIds.length > 0) {
+          response.failed = failedIds;
         }
-      }
-      const reportsCollision = Boolean(virtualRecordId) || virtualRecordIds !== undefined;
-
-      if (docsToMove.length === 0) {
-        const resp: { moved: number; collision?: boolean } = { moved: 0 };
-        if (reportsCollision) resp.collision = collision;
-        res.status(HTTP_STATUS.OK).json(resp);
-        return;
-      }
-
-      const storageType = await this.getConfiguredStorageType(req);
-      const adapter = await this.initializeStorageAdapter(req);
-
-      let failedIds: string[] = [];
-      if (collision) {
-        // Per-document moves regardless of storage type — a directory
-        // rename would catch the sibling's blobs too.
-        ({ failedIds } = await this.moveTreeRemote(
-          adapter,
-          storageType,
-          oldFullPath,
-          newFullPath,
-          docsToMove,
-          orgId,
-        ));
-      } else if (storageType === 'local') {
-        await this.moveTreeLocal(adapter, oldFullPath, newFullPath, underPrefix, orgId);
-      } else {
-        ({ failedIds } = await this.moveTreeRemote(
-          adapter,
-          storageType,
-          oldFullPath,
-          newFullPath,
-          docsToMove,
-          orgId,
-        ));
-      }
-
-      // `failed` is only present when at least one document's blob could not
-      // be relocated -- those documents were left fully unmoved (see
-      // moveTreeRemote) and the caller should surface/retry them explicitly
-      // rather than assume the whole tree moved cleanly.
-      const response: { moved: number; failed?: string[]; collision?: boolean } = {
-        moved: docsToMove.length - failedIds.length,
-      };
-      if (failedIds.length > 0) {
-        response.failed = failedIds;
-      }
-      if (reportsCollision) {
-        response.collision = collision;
-      }
-      res.status(HTTP_STATUS.OK).json(response);
+        if (reportsCollision) {
+          response.collision = collision;
+        }
+        res.status(HTTP_STATUS.OK).json(response);
+      });
     } catch (error) {
       next(error);
     }
-  }
-
-  // The server-side aggregation expression that rewrites a document's
-  // `documentPath` by swapping the oldFullPath prefix for newFullPath while
-  // preserving each row's own descendant suffix. Shared by the local and
-  // remote bulk updates.
-  private documentPathRewriteExpr(
-    oldFullPath: string,
-    newFullPath: string,
-  ): Record<string, unknown> {
-    return {
-      $concat: [
-        newFullPath,
-        {
-          $substrCP: [
-            '$documentPath',
-            oldFullPath.length,
-            { $subtract: [{ $strLenCP: '$documentPath' }, oldFullPath.length] },
-          ],
-        },
-      ],
-    };
   }
 
   private async moveTreeLocal(
@@ -1137,43 +1284,98 @@ export class StorageController {
     newFullPath: string,
     matched: MatchedTreeDocument[],
     orgId: string | undefined,
-  ): Promise<void> {
-    await adapter.renameTree(oldFullPath, newFullPath);
-
-    // Single bulkWrite: documentPath rewrite (updateMany) + per-doc
-    // local.localPath rewrite (updateOne each) in one MongoDB round-trip.
-    // This eliminates the N+1 pattern and shrinks the TOCTOU window
-    // between disk rename and Mongo update to a single operation.
-    const bulkOps: Parameters<typeof DocumentModel.bulkWrite>[0] = [
-      {
-        updateMany: {
-          filter: { _id: { $in: matched.map((m) => m._id) } },
-          update: [{ $set: { documentPath: this.documentPathRewriteExpr(oldFullPath, newFullPath) } }],
-        },
-      },
-    ];
-
-    for (const doc of matched) {
-      const docNewFullPath = `${newFullPath}${doc.documentPath.slice(oldFullPath.length)}`;
-      const set = this.buildStorageUrlSet(
-        adapter,
-        StorageVendor.Local,
-        doc,
-        docNewFullPath,
-        doc.documentName,
-        orgId,
-      );
-      if (Object.keys(set).length > 0) {
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: doc._id },
-            update: { $set: set },
-          },
-        });
-      }
+  ): Promise<{ failedIds: string[] }> {
+    let renamed = true;
+    try {
+      await adapter.renameTree(oldFullPath, newFullPath);
+    } catch (error) {
+      // A retry after a rename that went through while its row updates did not:
+      // the files are already at newFullPath, so only the rows need fixing.
+      if (!(error instanceof StorageNotFoundError)) throw error;
+      renamed = false;
     }
 
-    await DocumentModel.bulkWrite(bulkOps);
+    // Rows written under oldFullPath after the snapshot moved with the directory.
+    const seen = new Set(matched.map((m) => String(m._id)));
+    const late = (
+      await DocumentModel.find({
+        ...(orgId && { orgId }),
+        $or: [
+          { documentPath: oldFullPath },
+          { documentPath: { $gte: `${oldFullPath}/`, $lt: `${oldFullPath}0` } },
+        ],
+      })
+        .select(
+          '_id documentPath documentName extension isVersionedFile versionHistory isDeleted',
+        )
+        .lean<MatchedTreeDocument[]>()
+    ).filter((d) => !seen.has(String(d._id)));
+    const rows = [...matched, ...late];
+
+    // Each row is rewritten to where its folder actually is, not where this
+    // move expected it, so a file another move or writer touched in between
+    // is never pointed at a path it is not at.
+    const located = await adapter.locateDocuments(
+      newFullPath,
+      rows.map((r) => String(r._id)),
+    );
+    if (!renamed && located.size === 0) {
+      throw new StorageNotFoundError(
+        'Source prefix does not exist in local storage',
+        {
+          src: oldFullPath,
+        },
+      );
+    }
+
+    const bulkOps: Parameters<typeof DocumentModel.bulkWrite>[0] = [];
+    for (const doc of rows) {
+      const actualPath = located.get(String(doc._id));
+      if (actualPath === undefined) continue;
+      bulkOps.push({
+        updateOne: {
+          filter: { _id: doc._id },
+          update: {
+            $set: {
+              documentPath: actualPath,
+              ...this.buildStorageUrlSet(
+                adapter,
+                StorageVendor.Local,
+                doc,
+                actualPath,
+                doc.documentName,
+                orgId,
+              ),
+            },
+          },
+        },
+      });
+    }
+    // Live rows of this move whose folder is not under the new path were not
+    // moved; the caller is told, as for object stores, so it can repair them.
+    const failedIds = matched
+      .filter((d) => d.isDeleted !== true && !located.has(String(d._id)))
+      .map((d) => String(d._id));
+    const missing = rows.length - bulkOps.length;
+    if (missing > 0) {
+      this.logger.warn(
+        'moveTree: documents not found under the new path were left as they were',
+        {
+          oldFullPath,
+          newFullPath,
+          missing,
+        },
+      );
+    }
+    // Bounded round trips for a large tree; each op names its own row, so the
+    // batches are independent.
+    for (let i = 0; i < bulkOps.length; i += TREE_MOVE_WRITE_BATCH) {
+      await DocumentModel.bulkWrite(
+        bulkOps.slice(i, i + TREE_MOVE_WRITE_BATCH),
+        { ordered: false },
+      );
+    }
+    return { failedIds };
   }
 
   // For S3/Azure, renameObject is copy-then-delete-the-source: the old blob

@@ -21,6 +21,7 @@ import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, last
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
 import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -59,6 +60,7 @@ export function InstanceCard({
   isRefreshing = false,
   renderExtraActions,
 }: InstanceCardProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
@@ -175,7 +177,7 @@ export function InstanceCard({
         overflow: 'hidden',
       }}
     >
-      <Flex direction="column" gap="4" style={{ padding: 16, minWidth: 325 }}>
+      <Flex direction="column" gap="4" style={{ padding: 16 }}>
         <Flex align="center" gap="2" style={{ width: '100%' }}>
           <Flex
             align="center"
@@ -214,7 +216,7 @@ export function InstanceCard({
           />
 
           {onRefresh ? (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="outline"
               color="gray"
               size="1"
@@ -244,10 +246,11 @@ export function InstanceCard({
 
           {renderExtraActions?.(instance)}
 
-          <IconButton
+          <IconButton className="touch-hit"
             variant="outline"
             color="gray"
             size="1"
+            aria-label={t('workspace.skills.cta.manage')}
             onClick={() => onChevronClick?.(instance)}
             style={{ cursor: 'pointer', borderRadius: 'var(--radius-2)', width: 32, height: 32, flexShrink: 0 }}
           >
@@ -260,11 +263,11 @@ export function InstanceCard({
         <InstanceSetupStatusRow instance={instance} config={config} />
 
         {syncStrategy ? (
-          <Flex align="center" gap="4">
+          <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
             <Text
               size="1"
               weight="medium"
-              style={{ color: 'var(--gray-10)', width: 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+              style={{ color: 'var(--gray-10)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
               {t('workspace.connectors.instanceCard.syncStrategy')}
             </Text>
@@ -287,11 +290,11 @@ export function InstanceCard({
         )}
 
         {enabledByName ? (
-          <Flex align="center" gap="4">
+          <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
             <Text
               size="1"
               weight="medium"
-              style={{ color: 'var(--gray-10)', width: 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+              style={{ color: 'var(--gray-10)', width: isMobile ? 'auto' : 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
             >
               {t('workspace.connectors.settingsTab.enabledBy')}
             </Text>
@@ -317,13 +320,13 @@ export function InstanceCard({
         <InfoRow label={t('workspace.connectors.instanceCard.lastSynced')} value={lastSynced} />
 
         {instance._key && instance.supportsSync && (
-          <Flex align="center" gap="4" style={{ marginTop: 2 }}>
+          <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'} style={{ marginTop: 2 }}>
             <Text
               size="1"
               weight="medium"
               style={{
                 color: 'var(--gray-10)',
-                width: 164,
+                width: isMobile ? 'auto' : 164,
                 flexShrink: 0,
                 textTransform: 'uppercase',
                 letterSpacing: '0.04px',

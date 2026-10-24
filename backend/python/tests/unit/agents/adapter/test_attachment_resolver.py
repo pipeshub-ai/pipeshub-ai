@@ -540,12 +540,14 @@ class TestShapeImageInjection:
         ctx = SimpleNamespace(messages=[assistant_msg, user_msg])
         await mw(ctx, _noop_next)
 
+        assert ctx.messages[0] is assistant_msg
         assert assistant_msg.content == [TextPart(text="I am the assistant")]
-        parts = user_msg.content
+        parts = ctx.messages[1].content
         assert isinstance(parts, list)
         assert any(
             getattr(p, "type", None) == "image" for p in parts
         )
+        assert user_msg.content == "query", "the stored message must not be modified"
 
     async def test_deferred_block_pickup(self):
         """Blocks set after registration are picked up on first dispatch."""

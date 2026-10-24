@@ -1,7 +1,10 @@
 import React from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { ConversationHeaderOverlay } from '../conversation-header-overlay';
+
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
 
 const chip = <span data-testid="chip">Ada</span>;
 const share = <span data-testid="share">Share</span>;
@@ -11,7 +14,18 @@ function box(testId: string): HTMLElement {
 }
 
 describe('ConversationHeaderOverlay', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    viewport.isMobile = false;
+  });
+
+  it('leaves the agent chip out on a phone, where it would cover the header', () => {
+    viewport.isMobile = true;
+    render(<ConversationHeaderOverlay conversationId="c1" agentChip={chip} shareGroup={share} />);
+
+    expect(screen.queryByTestId('chip')).toBeNull();
+    expect(screen.getByTestId('share')).toBeTruthy();
+  });
 
   it('keeps the agent chip left of the share group, both pinned top-right', () => {
     render(<ConversationHeaderOverlay conversationId="c1" agentChip={chip} shareGroup={share} />);

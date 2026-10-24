@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, DropdownMenu } from '@radix-ui/themes';
+import { Flex, Box, Text, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 
@@ -22,7 +22,7 @@ export interface EntityPaginationProps {
  * EntityPagination — pagination footer for entity list pages.
  *
  * Matches the Figma design:
- * - Left: "Showing X-Y of Z Item"
+ * - Left: "Showing X-Y of Z items"
  * - Right: "< Previous | page | Next > | limit selector"
  */
 export function EntityPagination({
@@ -55,27 +55,22 @@ export function EntityPagination({
         rowGap: 'var(--space-2)',
       }}
     >
-      {/* Left: showing count */}
-      <Text size="2" style={{ color: 'var(--slate-9)' }}>
-        {t('workspace.pagination.showing', { from, to, total: totalCount })}
-      </Text>
+      {/* Left: showing count (hidden with no rows; the table's empty state says so) */}
+      {totalCount > 0 ? (
+        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+          {t('workspace.pagination.showing', { from, to, count: totalCount })}
+        </Text>
+      ) : (
+        <span />
+      )}
 
       {/* Right: pagination controls */}
       <Flex gap="3" align="center">
         {/* Previous */}
-        <Flex
-          align="center"
-          gap="1"
-          onClick={() => hasPrev && onPageChange(page - 1)}
-          style={{
-            cursor: hasPrev ? 'pointer' : 'not-allowed',
-            opacity: hasPrev ? 1 : 0.5,
-            color: 'var(--slate-11)',
-          }}
-        >
+        <Button variant="ghost" size="2" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)}>
           <MaterialIcon name="chevron_left" size={16} />
-          <Text size="2">{t('workspace.pagination.previous')}</Text>
-        </Flex>
+          {t('workspace.pagination.previous')}
+        </Button>
 
         {/* Page number */}
         <Box
@@ -93,19 +88,10 @@ export function EntityPagination({
         </Box>
 
         {/* Next */}
-        <Flex
-          align="center"
-          gap="1"
-          onClick={() => hasNext && onPageChange(page + 1)}
-          style={{
-            cursor: hasNext ? 'pointer' : 'not-allowed',
-            opacity: hasNext ? 1 : 0.5,
-            color: 'var(--slate-11)',
-          }}
-        >
-          <Text size="2">{t('workspace.pagination.next')}</Text>
+        <Button variant="ghost" size="2" color="gray" disabled={!hasNext} onClick={() => onPageChange(page + 1)}>
+          {t('workspace.pagination.next')}
           <MaterialIcon name="chevron_right" size={16} />
-        </Flex>
+        </Button>
 
         {/* Separator */}
         <Box style={{ width: '1px', height: '20px', backgroundColor: 'var(--slate-6)' }} />
@@ -137,7 +123,7 @@ export function EntityPagination({
                   key={value}
                   onClick={() => onLimitChange(value)}
                 >
-                  {value} per page
+                  {t('common.pagination.perPage', { value })}
                 </DropdownMenu.Item>
               ))}
             </DropdownMenu.Content>

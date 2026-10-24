@@ -1278,7 +1278,9 @@ class TestVectorDbOnlyReindex:
         sink.index.assert_awaited_once()
         assert sink.index.await_args.args[0].settings["skip_blob"] is True
         # The stored extraction rebuilds the named entities on the same context.
-        sink.reproject_named_entities.assert_awaited_once_with(sink.index.await_args.args[0])
+        sink.reproject_named_entities.assert_awaited_once_with(
+            sink.index.await_args.args[0], content_rev=graph_doc.get("contentRev")
+        )
         handler._download_from_signed_url.assert_not_awaited()
         stream_call.assert_not_awaited()
         assert all(e.event != "start_parsing" for e in events)
@@ -1726,7 +1728,7 @@ class TestSoftDeleteRecordsEvent:
         events = await _collect_events(handler, EventTypes.SOFT_DELETE_RECORDS.value, payload)
 
         assert [e.event for e in events] == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["v1", "v2"], keep_mapping=True)
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["v1", "v2"], org_id="o1", keep_mapping=True)
         pipeline.purge_connector_by_virtual_record_ids.assert_not_called()
         pipeline.purge_connector.assert_not_called()
         handler.event_processor.graph_provider.get_document.assert_not_called()
@@ -2461,7 +2463,7 @@ class TestUpdateRecordEvent:
             mock_dl.return_value = b"file content"
             events = await _collect_events(handler, EventTypes.UPDATE_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
         assert len(events) == 2
 
 
@@ -5077,7 +5079,7 @@ class TestReconciliationPath:
             mock_dl.return_value = b"pptx"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
 
 
 # ===================================================================
@@ -5702,6 +5704,53 @@ class TestStageRedrive:
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
     @pytest.mark.asyncio
+    async def test_the_entities_stage_re_runs_alone(self) -> None:
+        handler, gp, ingress = self._handler(["vr1:rev-1:entities@1"])
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"]))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_retry_for_a_revision_the_record_left_does_nothing(self) -> None:
+        """Selected on rev-0, consumed after a re-index moved the record to rev-1: the new
+        revision runs its own stages, and no full reindex starts beside it."""
+        handler, gp, ingress = self._handler(None)
+        events = await _collect_events(
+            handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"], stageRev="rev-0")
+        )
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_not_awaited()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_retry_selected_before_the_record_had_a_revision_leaves_a_new_one_alone(self) -> None:
+        """Selected with no revision (indexed before revisions existed), consumed after a re-index
+        gave it rev-1: that revision was not selected, so nothing re-runs on it."""
+        handler, gp, ingress = self._handler(None)
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_retry_selected_with_no_revision_runs_while_the_record_still_has_none(self) -> None:
+        handler, gp, ingress = self._handler(["vr1:?:classify@1"])
+        gp.get_document.return_value.pop("contentRev")
+        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
+        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"])
+
+    @pytest.mark.asyncio
+    async def test_a_retry_for_the_current_revision_re_runs_its_stage(self) -> None:
+        handler, gp, ingress = self._handler(["vr1:rev-1:entities@1"])
+        await _collect_events(
+            handler, EventTypes.REINDEX_RECORD.value, self._payload(stages=["entities"], stageRev="rev-1")
+        )
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["entities"])
+
+    @pytest.mark.asyncio
     async def test_a_failed_retry_never_writes_the_records_statuses(self) -> None:
         handler, gp, ingress = self._handler(None)
         ingress.redrive = AsyncMock(side_effect=ConnectionError("graph unavailable"))
@@ -5717,7 +5766,7 @@ class TestStageRedrive:
         await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload())
         ingress.redrive.assert_awaited_once()
         # Past the stage branch: the regular reindex path clears the old vectors.
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -5785,3 +5834,80 @@ class TestRecoveryExhausted:
 
         graph.update_node.assert_not_awaited()
         trigger.assert_not_awaited()
+
+
+def _refused(too_large: bool) -> Exception:
+    from app.exceptions.storage_exceptions import StorageRequestRejectedError
+
+    refusal = StorageRequestRejectedError(
+        "Failed to upload record: the storage service refused it (HTTP 400): "
+        "This file is larger than the 30 MB limit", 400, too_large=too_large,
+    )
+    try:
+        raise IndexingError("Failed to save record to storage") from refusal
+    except IndexingError as wrapped:
+        return wrapped
+
+
+class TestRejectedTooLargeCounter:
+    """pipeshub_record_storage_rejected_too_large_total counts records, not attempts or look-alikes."""
+
+    async def _fail(
+        self, error: Exception, *, final: bool, counter_error: Exception | None = None
+    ) -> tuple[MagicMock, dict | None]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {"_key": "r1", "virtualRecordId": "vr1",
+                  "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf"}
+        gp.get_document = AsyncMock(return_value=record)
+        gp.update_node = AsyncMock(return_value=True)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        handler.event_processor.on_event = lambda _event: _failing_async_gen(error)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+                   "mimeType": "application/pdf", "extension": "pdf", "is_final_failure": final}
+        kind = MessageErrorType.TERMINAL if final else MessageErrorType.TRANSIENT
+        with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"), \
+             patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF"}), \
+             patch.object(record_module.MessageErrorClassifier, "classify_by_exception", return_value=kind), \
+             patch.object(record_module, "record_rejected_too_large", side_effect=counter_error) as counter:
+            handler.config_service.get_config = AsyncMock(
+                return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+            )
+            with pytest.raises(Exception):  # noqa: B017 - unknown errors are re-raised wrapped
+                await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+        updates = gp.update_node.call_args.args[2] if gp.update_node.await_count else None
+        return counter, updates
+
+    @pytest.mark.asyncio
+    async def test_final_failure_refused_as_too_large_counts_once(self) -> None:
+        counter, updates = await self._fail(_refused(too_large=True), final=True)
+        counter.assert_called_once_with(400)
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+    @pytest.mark.asyncio
+    async def test_attempt_that_will_be_retried_is_not_counted(self) -> None:
+        counter, _ = await self._fail(_refused(too_large=True), final=False)
+        counter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refusal_for_another_reason_is_not_counted(self) -> None:
+        counter, _ = await self._fail(_refused(too_large=False), final=True)
+        counter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_out_of_memory_reads_too_large_but_is_not_counted(self) -> None:
+        counter, updates = await self._fail(MemoryError(), final=True)
+        counter.assert_not_called()
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+    @pytest.mark.asyncio
+    async def test_a_failing_counter_still_marks_the_record_failed(self) -> None:
+        counter, updates = await self._fail(
+            _refused(too_large=True), final=True, counter_error=ValueError("metrics broken")
+        )
+        counter.assert_called_once_with(400)
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE

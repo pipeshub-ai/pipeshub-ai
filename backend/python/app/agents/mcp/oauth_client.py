@@ -192,6 +192,37 @@ async def exchange_code_for_token(
     )
 
 
+async def request_client_credentials_token(
+    token_url: str,
+    client_id: str,
+    client_secret: Optional[str],
+    *,
+    allow_private: bool,
+    scopes: Optional[list[str]] = None,
+    auth_method: Optional[str] = None,
+) -> OAuthTokens:
+    """RFC 6749 §4.4: a token for the client itself, not for a user."""
+    data: dict[str, Any] = {"grant_type": "client_credentials"}
+    used_method, headers = _authenticate_client(data, client_id, client_secret, auth_method)
+    if scopes:
+        data["scope"] = " ".join(scopes)
+
+    token_data = await _post_token_request(token_url, data, allow_private=allow_private, headers=headers)
+    if "access_token" not in token_data:
+        raise MCPOAuthError("OAuth token response missing access_token")
+
+    return OAuthTokens(
+        access_token=token_data["access_token"],
+        token_type=token_data.get("token_type") or "Bearer",
+        expires_in=token_data.get("expires_in"),
+        scope=token_data.get("scope"),
+        token_url=token_url,
+        client_id=client_id,
+        token_endpoint_auth_method=used_method,
+        created_at=utcnow(),
+    )
+
+
 async def refresh_access_token(
     token_url: str,
     client_id: str,

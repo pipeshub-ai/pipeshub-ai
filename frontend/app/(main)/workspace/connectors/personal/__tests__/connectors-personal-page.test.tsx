@@ -86,7 +86,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
 
     expect(await screen.findByTestId('connector-card-Gmail')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Your Personal Connectors' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Your connectors' })).toBeTruthy();
     expect(api.getRegistryConnectors).toHaveBeenCalledWith('personal');
     expect(api.getActiveConnectors).toHaveBeenCalledWith('personal');
     expect(nav.replace).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Gmail');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     expect(await screen.findByRole('dialog', { name: 'Set up Gmail' })).toBeTruthy();
     expect(useConnectorsStore.getState().selectedScope).toBe('personal');
@@ -122,7 +122,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
     const card = await screen.findByTestId('connector-card-LOCAL_FS');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     await waitFor(() => expect(toasts()).toHaveLength(1));
     expect(toasts()[0]).toMatchObject({

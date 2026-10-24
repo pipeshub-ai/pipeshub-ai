@@ -40,6 +40,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -114,7 +115,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    # No issue security scheme: unsecured issues are unchanged
+    connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return connector
 
 
 def _make_mock_response(status=200, data=None):
@@ -3285,10 +3289,37 @@ class TestFetchProjectPermissionSchemeCoverage:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        permissions = await connector._fetch_project_permission_scheme("PROJ", {})
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
-        assert permissions[0].external_id == "all_licensed_users"
+        mapping = {
+            "jira-software": [{"groupId": "g-sw"}, {"groupId": "g-shared"}],
+            "jira-servicedesk": [{"groupId": "g-sd"}, {"groupId": "g-shared"}],
+        }
+        permissions = await connector._fetch_project_permission_scheme("PROJ", mapping)
+        # "Any logged in user" = the union of the product-access groups, never an ORG grant
+        assert {(p.entity_type, p.external_id) for p in permissions} == {
+            (EntityType.GROUP, "g-sw"), (EntityType.GROUP, "g-shared"), (EntityType.GROUP, "g-sd")}
+        assert len(permissions) == 3
+
+        # No application roles known: nothing is granted (an unlicensed account must not get in)
+        assert await connector._fetch_project_permission_scheme("PROJ", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_application_role_no_param_with_a_role_unread_keeps_the_stored_access(self) -> None:
+        """The union needs every role: with one unread it is partial, so the project is held back."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {
+            "permissions": [{
+                "permission": "BROWSE_PROJECTS",
+                "holder": {"type": "applicationRole", "parameter": None},
+            }],
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._app_roles_unread = True
+
+        await connector._fetch_project_permission_scheme("PROJ", {"jira-software": [{"groupId": "g-sw"}]})
+        assert "PROJ" in connector._projects_naming_unread_roles
+        assert connector._project_access_may_be_partial("PROJ")
 
 
 # ===========================================================================

@@ -155,3 +155,29 @@ def test_full_record_id_passes_the_shortener_unchanged():
     # The pattern-match hint prints full ids even when shortening is on.
     shortener = RecordIdShortener()
     assert shortener.resolve(RECORD_ID) == RECORD_ID
+
+
+async def test_grep_hit_on_shared_mail_shows_the_viewers_gmail_link() -> None:
+    """The hint shows a graph record, not a search result, so the link must be
+    filled in here or the LLM cites ``authuser={user.email}``."""
+    mail = {
+        **_graph_record("id", name="Hi"),
+        "recordType": "MAIL",
+        "connectorName": "GMAIL WORKSPACE",
+        "webUrl": "https://mail.google.com/mail?authuser={user.email}#all/m1",
+    }
+    graph = _graph_provider(mail)
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key", "email": "viewer@acme.com"})
+
+    _entries, vr_map = await _merge(graph)
+
+    assert vr_map[VRID]["webUrl"] == "https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"
+    assert mail["webUrl"].endswith("{user.email}#all/m1"), "the graph's own record must stay a template"
+
+
+async def test_grep_hits_without_a_placeholder_skip_the_user_lookup() -> None:
+    graph = _graph_provider(_graph_record("id"))
+
+    await _merge(graph)
+
+    graph.get_user_by_user_id.assert_not_awaited()

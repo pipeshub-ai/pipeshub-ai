@@ -9,6 +9,10 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KnowledgeLimitSummary } from '@/app/components/knowledge-limit';
 import { EntityEmptyState, ConfirmationDialog } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { asArray } from '@/lib/utils/safe';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { CATALOG_MAX_WIDTH } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '../../components/settings-page-container';
 import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
@@ -38,6 +42,7 @@ function formatExpiry(value: string, locale: string | undefined, neverLabel: str
 
 function PersonalAccessTokensPageContent() {
   const { t, i18n } = useTranslation();
+  const isMobile = useIsMobile();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
 
@@ -97,7 +102,26 @@ function PersonalAccessTokensPageContent() {
     return null;
   }
 
-  const pagePaddingX = 'clamp(var(--space-4), 4vw, 40px)';
+  const scopeSummary = (token: PatListItem): string =>
+    asArray(token.scopes).length === 1
+      ? token.scopes[0]
+      : t('workspace.personalAccessTokens.scopeCount', { count: asArray(token.scopes).length });
+
+  /** Created, Expires, Last used: table cells on wide screens, labelled pairs on a phone card. */
+  const tokenDates = (token: PatListItem): [string, string][] => [
+    [t('workspace.personalAccessTokens.columnCreated'), formatDate(token.createdAt, i18n.language)],
+    [
+      t('workspace.personalAccessTokens.columnExpires'),
+      formatExpiry(token.expiresAt, i18n.language, t('workspace.personalAccessTokens.neverExpires')),
+    ],
+    [
+      t('workspace.personalAccessTokens.columnLastUsed'),
+      token.lastUsedAt
+        ? formatDate(token.lastUsedAt, i18n.language)
+        : t('workspace.personalAccessTokens.neverUsed'),
+    ],
+  ];
+
   const isEmpty = !isLoading && !error && tokens.length === 0;
 
   return (
@@ -106,19 +130,20 @@ function PersonalAccessTokensPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: pagePaddingX,
-        paddingRight: pagePaddingX,
+        paddingInline: pageInlinePadding(CATALOG_MAX_WIDTH),
         boxSizing: 'border-box',
         minWidth: 0,
       }}
     >
       <Flex
         justify="between"
-        align="end"
-        style={{ paddingTop: '64px', paddingBottom: 'var(--space-4)' }}
+        align="start"
+        wrap="wrap"
+        gap="3"
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 'var(--space-5)' }}
       >
-        <Flex direction="column" gap="1">
-          <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.personalAccessTokens.title')}
           </Heading>
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -127,6 +152,7 @@ function PersonalAccessTokensPageContent() {
         </Flex>
         <Button
           size="2"
+          className="touch-hit"
           style={{ cursor: 'pointer' }}
           onClick={() => setCreatePanelOpen(true)}
         >
@@ -191,9 +217,51 @@ function PersonalAccessTokensPageContent() {
               style={{
                 border: '1px solid var(--olive-3)',
                 borderRadius: 'var(--radius-3)',
-                overflow: 'hidden',
+                overflowX: 'auto',
+                overflowY: 'hidden',
               }}
             >
+              {isMobile ? (
+                tokens.map((token) => (
+                  <Flex
+                    key={token.id}
+                    direction="column"
+                    gap="2"
+                    style={{ padding: 'var(--space-3) var(--space-4)', borderBottom: '1px solid var(--olive-3)' }}
+                  >
+                    <Flex align="start" justify="between" gap="3">
+                      <Flex direction="column" style={{ minWidth: 0 }}>
+                        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+                          {token.name}
+                        </Text>
+                        <KnowledgeLimitSummary limit={token.knowledgeLimit} />
+                      </Flex>
+                      <Button
+                        type="button"
+                        variant="soft"
+                        color="red"
+                        size="2"
+                        aria-label={t('workspace.personalAccessTokens.revokeAria', { name: token.name })}
+                        onClick={() => setRevokeTarget(token)}
+                        style={{ cursor: 'pointer', flexShrink: 0, minHeight: 44 }}
+                      >
+                        {t('workspace.personalAccessTokens.revoke.confirmButton')}
+                      </Button>
+                    </Flex>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                      {scopeSummary(token)}
+                    </Text>
+                    <Flex gap="4" wrap="wrap">
+                      {tokenDates(token).map(([label, value]) => (
+                        <Text key={label} size="1" style={{ color: 'var(--slate-11)' }}>
+                          <span style={{ color: 'var(--slate-10)' }}>{label}</span> {value}
+                        </Text>
+                      ))}
+                    </Flex>
+                  </Flex>
+                ))
+              ) : (
+              <Flex direction="column" style={{ minWidth: 720 }}>
               <Flex
                 style={{
                   padding: 'var(--space-3) var(--space-4)',
@@ -241,27 +309,13 @@ function PersonalAccessTokensPageContent() {
                     <KnowledgeLimitSummary limit={token.knowledgeLimit} />
                   </Flex>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 2 }}>
-                    {token.scopes.length === 1
-                      ? token.scopes[0]
-                      : t('workspace.personalAccessTokens.scopeCount', {
-                          count: token.scopes.length,
-                        })}
+                    {scopeSummary(token)}
                   </Text>
-                  <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
-                    {formatDate(token.createdAt, i18n.language)}
-                  </Text>
-                  <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
-                    {formatExpiry(
-                      token.expiresAt,
-                      i18n.language,
-                      t('workspace.personalAccessTokens.neverExpires'),
-                    )}
-                  </Text>
-                  <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
-                    {token.lastUsedAt
-                      ? formatDate(token.lastUsedAt, i18n.language)
-                      : t('workspace.personalAccessTokens.neverUsed')}
-                  </Text>
+                  {tokenDates(token).map(([label, value]) => (
+                    <Text key={label} size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
+                      {value}
+                    </Text>
+                  ))}
                   <Flex style={{ width: 40, justifyContent: 'flex-end' }}>
                     <IconButton
                       type="button"
@@ -279,6 +333,8 @@ function PersonalAccessTokensPageContent() {
                   </Flex>
                 </Flex>
               ))}
+              </Flex>
+              )}
             </Flex>
           </Flex>
         )}

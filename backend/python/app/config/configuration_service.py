@@ -201,7 +201,7 @@ class ConfigurationService:
                 return {
                     "host": qdrant_host,
                     "port": int(os.getenv("QDRANT_PORT", "6333")),
-                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
+                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT") or "6334"),
                     "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
                 }
         elif key == config_node_constants.OPENSEARCH.value:

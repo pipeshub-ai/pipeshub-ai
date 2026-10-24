@@ -4,10 +4,10 @@ The admin-route suite keeps its own table of routes and how to call each one.
 This module is what checks that table against the code: it reads the Express
 routers under ``backend/nodejs/apps/src``, finds each route whose handler chain
 includes an admin middleware (or that is registered after a
-``router.use(<admin middleware>)``), and joins its path to the prefix
-``app.ts`` mounts the router at. A new admin route that nobody added to the
-table then fails a test, instead of shipping with no check that members are
-refused.
+``router.use(<admin middleware>)``), and joins its path to the prefix the
+router is mounted at, in ``app.ts`` or in a module that mounts routers on the
+app itself. A new admin route that nobody added to the table then fails a test,
+instead of shipping with no check that members are refused.
 
 The Python services have no admin middleware: a handler calls a check such as
 ``_validate_admin_only`` or ``fetch_caller_role(...).is_admin`` itself, and
@@ -37,7 +37,8 @@ ADMIN_MIDDLEWARES = frozenset({"userAdminCheck", "adminValidator"})
 _METHODS = ("get", "post", "put", "patch", "delete")
 _ROUTE_CALL = re.compile(r"\brouter\s*\.\s*(get|post|put|patch|delete|use)\s*\(")
 _FACTORY = re.compile(r"export\s+(?:function\s+|const\s+)(create\w+Router)\b")
-_MOUNT = re.compile(r"this\.app\.use\(\s*'([^']+)'\s*,\s*(create\w+Router)\s*\(", re.S)
+_MOUNT = re.compile(r"\bapp\.use\(\s*'([^']+)'\s*,\s*(create\w+Router)\s*\(", re.S)
+_CONST_ARRAY = re.compile(r"\bconst\s+(\w+)\s*=\s*\[")
 _STRING = re.compile(r"""^\s*(['"`])(.*?)\1\s*$""", re.S)
 
 
@@ -101,10 +102,33 @@ def _is_admin(arg: str) -> bool:
     return _middleware_name(arg) in ADMIN_MIDDLEWARES
 
 
-def router_mounts(node_src: Path = NODE_SRC) -> dict[str, str]:
-    """Router factory name -> the prefix ``app.ts`` mounts it at."""
-    app_ts = (node_src / "app.ts").read_text(encoding="utf-8")
-    return {factory: prefix for prefix, factory in _MOUNT.findall(app_ts)}
+def _sources(node_src: Path) -> list[Path]:
+    return [
+        path for path in sorted(node_src.rglob("*.ts"))
+        if "/tests/" not in str(path) and not path.name.endswith((".test.ts", ".spec.ts"))
+    ]
+
+
+def router_mounts(node_src: Path = NODE_SRC) -> dict[str, set[str]]:
+    """Router factory name -> every prefix the app mounts it at.
+
+    Most routers are mounted in ``app.ts``, but a module may mount its own on
+    the app it is handed, so every source file is read.
+    """
+    mounts: dict[str, set[str]] = {}
+    for path in _sources(node_src):
+        text = path.read_text(encoding="utf-8")
+        if "app.use(" not in text:
+            continue
+        for match in _MOUNT.finditer(text):
+            line = text[text.rfind("\n", 0, match.start()) + 1:match.start()].lstrip()
+            # Not _strip_comments: app.ts has a `//` comment holding `/*`, which
+            # it reads as a block comment that blanks most mounts. A mount quoted
+            # in a doc comment is skipped here instead.
+            if line.startswith(("*", "//", "/*")):
+                continue
+            mounts.setdefault(match.group(2), set()).add(match.group(1))
+    return mounts
 
 
 def _join(prefix: str, path: str) -> str:
@@ -114,13 +138,23 @@ def _join(prefix: str, path: str) -> str:
 
 def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
     text = _strip_comments(path.read_text(encoding="utf-8"))
+    # Middleware lists spread into a route (``...guard``), by the const name.
+    lists = {m.group(1): _call_arguments(text, m.end() - 1) for m in _CONST_ARRAY.finditer(text)}
+
+    def spread(args: list[str]) -> list[str]:
+        out: list[str] = []
+        for arg in args:
+            name = arg[3:].strip() if arg.startswith("...") else None
+            out.extend(lists[name] if name in lists else [arg])
+        return out
+
     found: list[DiscoveredRoute] = []
     # Express applies router.use() middleware to the routes registered after it.
     admin_from_here = False
     used_before: list[str] = []
     for match in _ROUTE_CALL.finditer(text):
         method = match.group(1)
-        args = _call_arguments(text, match.end() - 1)
+        args = spread(_call_arguments(text, match.end() - 1))
         if method == "use":
             if args and _STRING.match(args[0]):
                 continue  # a sub-path mount, not a middleware for every route
@@ -158,16 +192,14 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
     mounts = router_mounts(node_src)
     routes: list[DiscoveredRoute] = []
     unmounted: list[str] = []
-    for path in sorted(node_src.rglob("*.ts")):
-        if "/tests/" in str(path) or path.name.endswith((".test.ts", ".spec.ts")):
-            continue
+    for path in _sources(node_src):
         text = path.read_text(encoding="utf-8")
         if not any(name in text for name in ADMIN_MIDDLEWARES):
             continue
         factories = _FACTORY.findall(text)
         if not factories or not _ROUTE_CALL.search(text):
             continue
-        prefixes = {mounts[f] for f in factories if f in mounts}
+        prefixes = set().union(*(mounts.get(f, set()) for f in factories))
         if len(prefixes) != 1:
             unmounted.append(f"{path.relative_to(REPO)} (factories {factories})")
             continue
@@ -175,7 +207,7 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
     if unmounted:
         raise AssertionError(
             "Router files that use an admin middleware but whose mount prefix "
-            "could not be read from app.ts: " + ", ".join(unmounted)
+            "could not be read from the source: " + ", ".join(unmounted)
         )
     return routes
 

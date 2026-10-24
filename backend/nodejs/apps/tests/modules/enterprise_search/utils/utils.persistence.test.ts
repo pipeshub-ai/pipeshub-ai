@@ -261,7 +261,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
     it('replaceMessageWithError still marks the conversation failed when the message is gone', async () => {
       const conversation = makeConversation()
-      sinon.stub(ChatSessionMessage, 'findById').resolves(null)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
       const messageId = new mongoose.Types.ObjectId()
 

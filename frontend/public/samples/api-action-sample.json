@@ -1,0 +1,703 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Acme Helpdesk API",
+    "version": "1.0.0",
+    "description": "Support tickets for Acme's internal helpdesk. Use it to find, open and update tickets, and to add comments.\n"
+  },
+  "servers": [
+    {
+      "url": "{scheme}://{host}:{port}",
+      "description": "Any Acme Helpdesk deployment.",
+      "variables": {
+        "scheme": {
+          "default": "http",
+          "enum": [
+            "http",
+            "https"
+          ]
+        },
+        "host": {
+          "default": "localhost",
+          "description": "Hostname the PipesHub backend can reach."
+        },
+        "port": {
+          "default": "8098"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "apiKeyAuth": []
+    },
+    {
+      "bearerAuth": []
+    },
+    {
+      "basicAuth": []
+    },
+    {
+      "oauth2ClientCredentials": [
+        "tickets:read",
+        "tickets:write"
+      ]
+    },
+    {
+      "oauth2SignIn": [
+        "tickets:read",
+        "tickets:write"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "tickets"
+    },
+    {
+      "name": "users"
+    },
+    {
+      "name": "announcements"
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "operationId": "list_tickets",
+        "tags": [
+          "tickets"
+        ],
+        "summary": "List helpdesk tickets, optionally filtered.",
+        "description": "Returns ticket summaries, newest first. Use it to find tickets by status, assignee or tag before reading or updating one. Combine filters to narrow the list; all filters must match.\n",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Only tickets in this state.",
+            "schema": {
+              "$ref": "#/components/schemas/TicketStatus"
+            }
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "description": "Only tickets assigned to this username, e.g. noor.rahimi.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Only tickets that carry every one of these tags.",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of tickets to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching tickets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_ticket",
+        "tags": [
+          "tickets"
+        ],
+        "summary": "Open a new helpdesk ticket.",
+        "description": "Creates a ticket in the open state with no assignee. Send the same Idempotency-Key again to get the original ticket back instead of a duplicate.\n",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Any unique string. Repeating it returns the ticket created the first time.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new ticket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The ticket already created with this Idempotency-Key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/tickets/{ticketId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TicketId"
+        }
+      ],
+      "get": {
+        "operationId": "get_ticket",
+        "tags": [
+          "tickets"
+        ],
+        "summary": "Read one ticket with its comments.",
+        "responses": {
+          "200": {
+            "description": "The ticket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "update_ticket",
+        "tags": [
+          "tickets"
+        ],
+        "summary": "Change a ticket's status, priority or assignee.",
+        "description": "Send only the fields to change. Set assignee to null to unassign.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated ticket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/tickets/{ticketId}/comments": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TicketId"
+        }
+      ],
+      "post": {
+        "operationId": "add_ticket_comment",
+        "tags": [
+          "tickets"
+        ],
+        "summary": "Add a comment to a ticket.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new comment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/users/me": {
+      "get": {
+        "operationId": "get_current_user",
+        "tags": [
+          "users"
+        ],
+        "summary": "Show which Acme user the credentials belong to.",
+        "responses": {
+          "200": {
+            "description": "The current user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/announcements": {
+      "get": {
+        "operationId": "list_announcements",
+        "tags": [
+          "announcements"
+        ],
+        "summary": "Read the helpdesk's latest announcements.",
+        "description": "Office hours, planned changes and outages, newest first. Needs no credentials.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Announcements, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementList"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Demo key acme-demo-key."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Demo token acme-demo-token."
+      },
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Demo user acme with password acme-demo-password."
+      },
+      "oauth2ClientCredentials": {
+        "type": "oauth2",
+        "description": "Demo client acme-client with secret acme-client-secret.",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "/oauth/token",
+            "scopes": {
+              "tickets:read": "Read tickets.",
+              "tickets:write": "Open and change tickets."
+            }
+          }
+        }
+      },
+      "oauth2SignIn": {
+        "type": "oauth2",
+        "description": "A person signs in on Acme's page (user acme, password acme-demo-password) and allows the app. Same OAuth app as above; PKCE is checked, and tokens refresh.\n",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/oauth/authorize",
+            "tokenUrl": "/oauth/token",
+            "refreshUrl": "/oauth/token",
+            "scopes": {
+              "tickets:read": "Read tickets.",
+              "tickets:write": "Open and change tickets."
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "TicketId": {
+        "name": "ticketId",
+        "in": "path",
+        "required": true,
+        "description": "Ticket id such as ACME-7311.",
+        "schema": {
+          "type": "string",
+          "pattern": "^ACME-[0-9]+$",
+          "examples": [
+            "ACME-7311"
+          ]
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid credentials.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No ticket with that id.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "A parameter or body field is invalid. details says which.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "TicketStatus": {
+        "type": "string",
+        "enum": [
+          "open",
+          "pending",
+          "closed"
+        ],
+        "description": "open = new or being worked on, pending = waiting on the requester, closed = done."
+      },
+      "Priority": {
+        "type": "string",
+        "enum": [
+          "low",
+          "normal",
+          "high",
+          "urgent"
+        ]
+      },
+      "TicketSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "priority",
+          "assignee",
+          "tags"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "examples": [
+              "ACME-7311"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TicketStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Username of the person working on it, or null."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Ticket": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TicketSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "comments"
+            ],
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "comments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TicketList": {
+        "type": "object",
+        "required": [
+          "tickets",
+          "total"
+        ],
+        "properties": {
+          "tickets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TicketSummary"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "description": "How many tickets matched, before limit was applied."
+          }
+        }
+      },
+      "TicketCreate": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-line summary of the problem."
+          },
+          "description": {
+            "type": "string",
+            "description": "Full details, steps to reproduce, who is affected."
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TicketUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/TicketStatus"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Username to assign, or null to unassign."
+          }
+        }
+      },
+      "Comment": {
+        "type": "object",
+        "required": [
+          "id",
+          "author",
+          "body"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        }
+      },
+      "CommentCreate": {
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": [
+          "username",
+          "displayName",
+          "team"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "team": {
+            "type": "string"
+          }
+        }
+      },
+      "Announcement": {
+        "type": "object",
+        "required": [
+          "id",
+          "date",
+          "title",
+          "body"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        }
+      },
+      "AnnouncementList": {
+        "type": "object",
+        "required": [
+          "announcements"
+        ],
+        "properties": {
+          "announcements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Announcement"
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

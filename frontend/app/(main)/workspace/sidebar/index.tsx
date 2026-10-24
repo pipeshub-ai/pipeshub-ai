@@ -3,13 +3,14 @@
 import { useState, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { WorkspaceSidebarItem } from './sidebar-item';
 import { SectionHeader } from './section-header';
 import { CollapsibleSection } from './collapsible-section';
+import { SidebarHeaderActions } from '@/app/(main)/chat/sidebar/header';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   useFeatureFlagsStore,
@@ -20,6 +21,8 @@ import {
 } from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -104,6 +107,9 @@ export default function WorkspaceSidebar() {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const isMobile = useIsMobile();
+  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
@@ -152,8 +158,20 @@ export default function WorkspaceSidebar() {
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
   return (
-    <SidebarBase>
-      <Flex direction="column" gap="4">
+    <SidebarBase
+      header={<WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} />}
+      isMobile={isMobile}
+      mobileOpen={isMobileOpen}
+      onMobileClose={closeMobileSidebar}
+    >
+      {/* On mobile any link tap closes the drawer, even to the page already shown. */}
+      <Flex
+        direction="column"
+        gap="4"
+        onClick={(e) => {
+          if (isMobile && (e.target as HTMLElement).closest('a')) closeMobileSidebar();
+        }}
+      >
         {/* ── Back to app ── */}
         <WorkspaceSidebarItem
           icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
@@ -249,5 +267,17 @@ export default function WorkspaceSidebar() {
         </Flex>
       </Flex>
     </SidebarBase>
+  );
+}
+
+/** Title row with inbox and collapse; on the mobile drawer SidebarBase adds the close button beside it. */
+export function WorkspaceSidebarMobileHeader({ title }: { title: string }) {
+  return (
+    <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: '0 var(--space-4)' }}>
+      <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        {title}
+      </Text>
+      <SidebarHeaderActions />
+    </Flex>
   );
 }

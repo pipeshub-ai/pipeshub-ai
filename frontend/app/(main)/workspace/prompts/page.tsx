@@ -17,6 +17,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ============================================================
 // Sub-components
@@ -282,10 +283,10 @@ export default function PromptsPage() {
   return (
     <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
+      <SettingsPageContainer>
 
         {/* ── Page Header ── */}
-        <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
+        <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.prompts.customInstructionsTitle')}
@@ -348,7 +349,7 @@ export default function PromptsPage() {
         {/* ── Prompt Configuration Callout ── */}
         <PromptConfigCallout />
 
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Settings Save Bar ── */}
       <SettingsSaveBar

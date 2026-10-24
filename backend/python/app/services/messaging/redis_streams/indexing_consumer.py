@@ -47,6 +47,13 @@ from app.services.messaging.lanes.assignment import read_lane_map, write_lane_co
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
+from app.services.messaging.redis_streams.retention import (
+    DEFAULT_INTERVAL_SECONDS,
+    LEADER_KEY,
+    StreamRetention,
+    retained_streams,
+    run_retention_loop,
+)
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -192,6 +199,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.redis: Redis | None = None
         self.running = False
         self.consume_task: asyncio.Task | None = None
+        self._retention_task: asyncio.Task | None = None
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()
@@ -462,11 +470,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         renewer, self.lease_renewer = self.lease_renewer, None
         return renewer
 
+    def _stop_taking_work(self) -> None:
+        """Called on the shared loop's thread when it dies: stops reads, dispatch and PEL recovery,
+        so no XAUTOCLAIM spends a delivery attempt on work no loop can run."""
+        self.running = False
+
     def _start_worker_thread(self) -> None:
         if self._shared_worker is not None:
             self.worker_loop_ready.clear()
             loop = self._shared_worker.start()
             self.worker_loop = loop
+            self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
             self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
@@ -536,6 +550,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 await self.initialize()
 
             self.consume_task = asyncio.create_task(self._consume_loop())
+            if self.config.retention_mode == "after_ack":
+                self._retention_task = asyncio.create_task(self.__run_retention())
             self.logger.info(
                 "Started Redis Streams consumer task with parsing_ceiling=%d, "
                 "light_parsing_ceiling=%d, indexing_ceiling=%d",
@@ -547,6 +563,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
             raise
 
+    async def __run_retention(self) -> None:
+        # Imported here: the leader lock lives with the indexing sweeps.
+        from app.modules.indexing.vector_membership_backfill import (
+            VectorMembershipBackfillLeaderLock,
+        )
+
+        lock = VectorMembershipBackfillLeaderLock(
+            self.logger, self.config, f"stream-retention:{uuid.uuid4().hex}",
+            ttl_seconds=int(DEFAULT_INTERVAL_SECONDS) * 3, key=LEADER_KEY,
+        )
+        try:
+            await run_retention_loop(
+                StreamRetention(self.redis, self.logger, lock, no_group_maxlen=self.config.max_len),  # type: ignore[arg-type]
+                retained_streams(),
+            )
+        finally:
+            await lock.release()
+            await lock.close()
+
     async def stop(  # type: ignore[override]
         self,
         message_handler: IndexingMessageHandler | None = None,
@@ -554,6 +589,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.logger.info("Stopping Redis Streams consumer...")
         self.running = False
 
+        if self._retention_task:
+            self._retention_task.cancel()
+            self._retention_task = None
         if self.consume_task:
             self.consume_task.cancel()
             try:
@@ -660,6 +698,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._wait_for_active_futures()
         if self._shared_worker is not None:
             # The loop is shared: release only what this consumer started on it.
+            self._shared_worker.remove_exit_listener(self._stop_taking_work)
             if self.worker_loop is not None and self.worker_loop.is_running():
                 renewer = self._shared_worker.call(self._take_lease_renewer)
                 if renewer is not None:

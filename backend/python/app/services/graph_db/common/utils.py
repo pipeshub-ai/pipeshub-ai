@@ -92,6 +92,61 @@ PATH_MAX_CANDIDATES = 64
 KB_MAX_FOLDER_DEPTH = 20
 
 
+# Bound on the chains enumerated by ancestor_chain_rows; chains only branch on
+# graph anomalies, so this is a safety net, not a tuning knob.
+ANCESTOR_CHAIN_ENUMERATION_CAP = 10_000
+
+
+class AncestorChainLimitError(ValueError):
+    """More ancestor chains than ANCESTOR_CHAIN_ENUMERATION_CAP: a cut list could
+    leave out the canonical chain, so no chain is picked."""
+
+
+def ancestor_chain_rows(
+    start: str,
+    links: list[dict[str, str]] | None,
+    *,
+    max_depth: int,
+) -> list[list[str]]:
+    """Every maximal ancestor chain from *start*, as id lists ``[start, parent, ...]``.
+
+    *links* are distinct ``{"child", "parent"}`` pairs, so parallel edges between
+    the same two nodes count once (the path count no longer doubles per level).
+    A chain never repeats a node and has at most *max_depth* steps, matching the
+    path traversals this replaces; ``select_canonical_chain_names`` picks one.
+    Raises AncestorChainLimitError past ANCESTOR_CHAIN_ENUMERATION_CAP chains.
+    """
+    parents: dict[str, list[str]] = {}
+    for link in links or []:
+        child, parent = link.get("child"), link.get("parent")
+        if child and parent and parent not in parents.setdefault(child, []):
+            parents[child].append(parent)
+    for ids in parents.values():
+        ids.sort()
+    rows: list[list[str]] = []
+    path = [start]
+    on_path = {start}
+
+    def walk() -> None:
+        nexts = [p for p in parents.get(path[-1], []) if p not in on_path] if len(path) <= max_depth else []
+        if not nexts:
+            if len(rows) >= ANCESTOR_CHAIN_ENUMERATION_CAP:
+                raise AncestorChainLimitError(
+                    f"{start} has more than {ANCESTOR_CHAIN_ENUMERATION_CAP} ancestor chains"
+                )
+            rows.append(list(path))
+            return
+        for parent in nexts:
+            path.append(parent)
+            on_path.add(parent)
+            walk()
+            on_path.discard(parent)
+            path.pop()
+
+    walk()
+    return rows
+
+
 def select_canonical_chain_names(
     rows: list[Any] | None,
     name_fields: tuple[str, ...],
@@ -315,6 +370,33 @@ TRASH_STATE_FIELDS = (
     "purgeLastError",
     "trashedExternalRecordId",
 )
+
+# Bookkeeping the services keep on a stored record for their own use: the trash
+# state (the record endpoint refuses a trashed record, and a restore clears it),
+# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# taxonomy copy. No client reads them, and the record endpoint's response
+# schema rejects fields it does not list, so the endpoint leaves these out.
+# `deletedByUserId` predates the trash and is documented, so it stays in.
+INTERNAL_RECORD_FIELDS = frozenset({
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+    "rateLimitedSince",
+    "lastRepublishedAt",
+    "republishCount",
+    "duplicateReconcilePending",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+})
+
+
+def api_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
 TRASH_LIST_OTHER_ROOT_NAMES = 3

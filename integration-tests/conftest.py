@@ -336,9 +336,11 @@ def _tag_requests_with_test_id(request: pytest.FixtureRequest) -> Generator[None
 def local_oauth_credentials() -> None:
     """
     When running in local mode without CLIENT_ID/CLIENT_SECRET, obtain them from the backend
-    (initAuth -> authenticate -> create OAuth app) and set in env so PipeshubClient works.
+    (initAuth -> authenticate -> create OAuth app) and set them in env for the tests that
+    exercise client_credentials. The app acts as a service account; PipeshubClient itself
+    signs in as the admin test user on the local stack.
     """
-    if os.getenv("PIPESHUB_TEST_ENV") != "local":
+    if os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() != "local":
         return
     if os.getenv("CLIENT_ID") and os.getenv("CLIENT_SECRET"):
         return
@@ -428,7 +430,8 @@ def user_session_client(pipeshub_client: PipeshubClient) -> SessionClient:
     """The test user logged in with a password, for session-only routes.
 
     OAuth client management, OAuth consent and personal access tokens refuse
-    the client-credentials token ``pipeshub_client`` holds (#3626).
+    OAuth and personal access tokens (#3626). Against a remote instance
+    ``pipeshub_client`` holds a client-credentials token.
     """
     if not (os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv("PIPESHUB_TEST_USER_PASSWORD")):
         pytest.skip(

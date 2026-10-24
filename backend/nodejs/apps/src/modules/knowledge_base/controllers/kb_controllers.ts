@@ -725,7 +725,18 @@ export const createFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params as { kbId: string };
-      const { folderId } = req.query as { folderId?: string };
+      // For the subfolder route (/:kbId/folder/:folderId/subfolder) the parent
+      // id is a path parameter; the root-folder route passes it as a query
+      // param. If both are passed, verify they do not conflict to avoid creating
+      // the folder under the wrong parent.
+      const pathFolderId = (req.params as { folderId?: string }).folderId;
+      const queryFolderId = (req.query as { folderId?: string }).folderId;
+      if (pathFolderId && queryFolderId && pathFolderId !== queryFolderId) {
+        throw new BadRequestError(
+          'Conflicting folderId in path and query parameters',
+        );
+      }
+      const folderId: string | undefined = pathFolderId ?? queryFolderId;
       const { folderName } = req.body;
 
       if (!userId || !orgId) {

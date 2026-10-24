@@ -6,11 +6,6 @@ import { useAuthStore } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { desktopOAuthErrorMessage, isElectron, runDesktopOAuth } from '@/lib/electron';
-import { createPkcePair, makeDesktopState } from '@/lib/auth/desktop-oauth';
-import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
-import { SAML_WEB_VERIFIER_KEY } from '@/lib/auth/saml-web-signin';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -131,7 +126,7 @@ export interface UseAuthActionsOptions {
  * useAuthActions — single source of truth for all sign-in actions.
  *
  * Handles: password sign-in (API → token storage → redirect),
- * forgot-password (API → toast), SSO / Google / Microsoft redirects.
+ * forgot-password (API → toast), email OTP, Google and Microsoft.
  *
  * Every form screen pulls from this hook instead of reimplementing auth logic.
  */
@@ -143,14 +138,11 @@ export function useAuthActions({
   const router = useRouter();
   const setTokens = useAuthStore((s) => s.setTokens);
   const setUser = useAuthStore((s) => s.setUser);
-  const logout = useAuthStore((s) => s.logout);
 
   const [loading, setLoading] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [ssoLoading, setSsoLoading] = useState(false);
   const [microsoftLoading, setMicrosoftLoading] = useState(false);
-  const [oauthLoading, setOauthLoading] = useState(false);
   const [otpSendLoading, setOtpSendLoading] = useState(false);
   const [otpVerifyLoading, setOtpVerifyLoading] = useState(false);
   const [error, setError] = useState<AuthError | null>(null);
@@ -256,96 +248,7 @@ export function useAuthActions({
     }
   }, [email, forgotLoading]);
 
-  // ── OAuth / SSO redirects ───────────────────────────────────────────────────
-
-  /**
-   * SAML SSO redirect.
-   * Uses the /api/v1/saml/signIn endpoint and appends the current auth session
-   * token (if present) as a `sessionToken` query parameter so the backend can
-   * correlate the SAML assertion with this auth session.
-   */
-  const redirectToSSO = useCallback(() => {
-    const sessionToken =
-      typeof window !== 'undefined'
-        ? sessionStorage.getItem('auth_session_token')
-        : null;
-    const params = new URLSearchParams({ email });
-    if (sessionToken) params.set('sessionToken', sessionToken);
-    const samlSignInHref = () => {
-      const dest = new URL(
-        '/api/v1/saml/signIn',
-        getApiBaseUrl() || window.location.origin,
-      );
-      params.forEach((value, key) => {
-        dest.searchParams.set(key, value);
-      });
-      return dest.href;
-    };
-
-    if (!isElectron()) {
-      void (async () => {
-        try {
-          const { verifier, challenge } = await createPkcePair();
-          sessionStorage.setItem(SAML_WEB_VERIFIER_KEY, verifier);
-          params.set('client', 'web');
-          params.set('code_challenge', challenge);
-          window.location.assign(samlSignInHref());
-        } catch {
-          toast.error('SSO sign-in failed', {
-            description: 'Your browser could not start a secure sign-in. Please try again.',
-          });
-        }
-      })();
-      return;
-    }
-
-    if (ssoLoading) return;
-    setSsoLoading(true);
-    setError(null);
-    void (async () => {
-      try {
-        const { verifier, challenge } = await createPkcePair();
-        const random = Array.from(window.crypto.getRandomValues(new Uint8Array(16)))
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('');
-        const state = makeDesktopState(random);
-        params.set('client', 'desktop');
-        params.set('state', state);
-        params.set('code_challenge', challenge);
-
-        const result = await runDesktopOAuth({
-          provider: 'saml',
-          authUrl: samlSignInHref(),
-          expectedState: state,
-        }).promise;
-
-        if (result.saml_error) {
-          toast.error('Error in logging in with SAML', {
-            description: getSamlErrorDescription(result.saml_error),
-          });
-          return;
-        }
-        if (!result.code) throw new Error('No sign-in code was returned.');
-
-        const response = await AuthApi.exchangeSamlDesktopCode(result.code, verifier);
-        if (!response.accessToken || !response.refreshToken) {
-          throw new Error('SSO sign-in did not return a session.');
-        }
-        setTokens(response.accessToken, response.refreshToken);
-        if (!(await fetchAndSetCurrentUser())) {
-          logout();
-          throw new Error('Could not load your account after SSO sign-in.');
-        }
-        localStorage.setItem('pipeshub_last_email', email);
-        router.push(postAuthRedirectTo);
-      } catch (err: unknown) {
-        const message = desktopOAuthErrorMessage(err, 'SSO');
-        if (message) toast.error('SSO sign-in failed', { description: message });
-      } finally {
-        setSsoLoading(false);
-      }
-    })();
-  }, [email, ssoLoading, postAuthRedirectTo, router, setTokens, logout]);
+  // ── Google / Microsoft ──────────────────────────────────────────────────────
 
   /**
    * Google sign-in via custom popup flow.
@@ -403,77 +306,6 @@ export function useAuthActions({
       }
     },
     [email, googleLoading, postAuthRedirectTo, router, setTokens, setUser],
-  );
-
-  /**
-   * Generic OAuth sign-in via popup flow.
-   * Receives the provider access token from OAuthSignInButton (after the
-   * callback page exchanged the authorization code) and authenticates it
-   * against the backend with method: 'oauth'.
-   */
-  const signInWithOAuth = useCallback(
-    async (accessToken: string) => {
-      if (oauthLoading) return;
-      setOauthLoading(true);
-      setError(null);
-      try {
-        const response = await AuthApi.signInWithOAuth(accessToken);
-        if (response.accessToken && response.refreshToken) {
-          setTokens(response.accessToken, response.refreshToken);
-          if (response.user) setUser(response.user);
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('pipeshub_last_email', email);
-          }
-          router.push(postAuthRedirectTo);
-        } else if (
-          response.nextStep !== undefined &&
-          response.allowedMethods &&
-          response.allowedMethods.length > 0
-        ) {
-          toast.info('Additional verification required', {
-            description: response.message ?? 'Complete the next step to continue.',
-          });
-          setError({
-            type: 'generic',
-            message: response.message ?? 'Additional verification required.',
-          });
-        } else {
-          setError({
-            type: 'generic',
-            message: response.message ?? 'OAuth sign-in failed. Please try again.',
-          });
-        }
-      } catch (err: unknown) {
-        const kind = classifyAuthError(err);
-        const bodyMsg = getUserAccountApiResponseMessage(err);
-        const apiMsg = getUserAccountApiErrorMessage(
-          err,
-          'OAuth sign-in failed. Please try again.',
-        );
-        if (kind === 'accessRevoked') {
-          const blockedUntilDescription = getBlockedUntilDescription(err);
-          if (bodyMsg) {
-            toast.error(bodyMsg, {
-              description: blockedUntilDescription,
-              duration: null,
-              showCloseButton: true,
-            });
-          } else {
-            toast.error('Your account has been disabled.', {
-              description: blockedUntilDescription ?? 'Please contact your administrator.',
-              duration: null,
-              showCloseButton: true,
-            });
-          }
-        } else {
-          toast.error(bodyMsg ?? apiMsg, { showCloseButton: true });
-        }
-        setError({ type: kind, message: kind === 'generic' ? apiMsg : undefined });
-      } finally {
-        setOauthLoading(false);
-      }
-    },
-    [email, oauthLoading, postAuthRedirectTo, router, setTokens, setUser],
   );
 
   const sendLoginOtp = useCallback(async (): Promise<boolean> => {
@@ -587,16 +419,13 @@ export function useAuthActions({
   );
 
   const signInWithMicrosoft = useCallback(
-    async (
-      credentials: { accessToken: string; idToken: string },
-      method: 'microsoft' | 'azureAd' = 'microsoft',
-    ) => {
+    async (credentials: { accessToken: string; idToken: string }) => {
       if (microsoftLoading || microsoftSignInInFlightRef.current) return;
       microsoftSignInInFlightRef.current = true;
       setMicrosoftLoading(true);
       setError(null);
       try {
-        const response = await AuthApi.signInWithMicrosoft(credentials, method);
+        const response = await AuthApi.signInWithMicrosoft(credentials);
         if (response.accessToken && response.refreshToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) setUser(response.user);
@@ -647,10 +476,8 @@ export function useAuthActions({
   return {
     signInWithPassword,
     forgotPassword,
-    redirectToSSO,
     signInWithGoogle,
     signInWithMicrosoft,
-    signInWithOAuth,
     sendLoginOtp,
     signInWithOtp,
     checkUserSession,
@@ -658,9 +485,7 @@ export function useAuthActions({
     loading,
     forgotLoading,
     googleLoading,
-    ssoLoading,
     microsoftLoading,
-    oauthLoading,
     otpSendLoading,
     otpVerifyLoading,
     error,

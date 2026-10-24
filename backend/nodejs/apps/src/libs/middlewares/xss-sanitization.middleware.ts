@@ -423,6 +423,18 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    // API Toolsets carry an OpenAPI spec, which must reach the parser byte for byte
+    // (sanitizing turns YAML's `>` into `&gt;`), and credentials, which must not be
+    // altered. Python validates every field; the web app renders them as React text.
+    if (
+      (req.path === '/api/v1/api-toolsets' ||
+        req.path.startsWith('/api/v1/api-toolsets/')) &&
+      (req.method === 'POST' || req.method === 'PUT')
+    ) {
+      next();
+      return;
+    }
+
     // Validate request body
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)

@@ -167,8 +167,8 @@ describe('PlusMenuContent', () => {
       Content,
     );
     expect(screen.getByText('Attach files')).toBeTruthy();
-    expect(screen.getByText('Internal Search')).toBeTruthy();
-    expect(screen.getByText('Web Search')).toBeTruthy();
+    expect(screen.getByText('Internal search')).toBeTruthy();
+    expect(screen.getByText('Web search')).toBeTruthy();
   });
 
   it('calls onAttachFiles when the attach files row is clicked', async () => {
@@ -201,7 +201,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const internalSwitch = screen.getByRole('switch', { name: 'Internal Search' }) as HTMLButtonElement;
+    const internalSwitch = screen.getByRole('switch', { name: 'Internal search' }) as HTMLButtonElement;
     expect(internalSwitch.disabled).toBe(true);
   });
 
@@ -218,7 +218,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const webSwitch = screen.getByRole('switch', { name: 'Web Search' }) as HTMLButtonElement;
+    const webSwitch = screen.getByRole('switch', { name: 'Web search' }) as HTMLButtonElement;
     expect(webSwitch.disabled).toBe(true);
   });
 
@@ -235,7 +235,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
     expect(toggle).toHaveBeenCalled();
   });
 
@@ -253,7 +253,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
     expect(toggle).not.toHaveBeenCalled();
   });
 
@@ -270,7 +270,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Web Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Web search' }));
     expect(toggle).toHaveBeenCalled();
   });
 });

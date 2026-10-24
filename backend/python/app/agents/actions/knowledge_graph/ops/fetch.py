@@ -14,6 +14,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
+from app.modules.retrieval.selection_scope import connection_sources_of
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -329,6 +330,7 @@ async def execute_fetch_record(
         org_id=context.org_id,
         graph_provider=context.graph_provider,
         user_id=context.user_id,
+        connection_sources=connection_sources_of((context.tool_state or {}).get("filters")),
     )
     try:
         # A record outside what the turn is limited to is answered like one

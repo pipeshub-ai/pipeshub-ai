@@ -35,7 +35,7 @@ export interface EditionBoot {
   mountRawRoutes(app: Express): void;
   mountRoutes(app: Express, containers: EditionContainers): void;
   startWorkers(logger: Logger): void;
-  /** After the HTTP server listens and SAML strategies are loaded. */
+  /** After the HTTP server listens. */
   afterListen(logger: Logger, containers: EditionContainers): Promise<void>;
   stop(logger: Logger, containers: EditionContainers): Promise<void>;
   dispose(): Promise<void>;

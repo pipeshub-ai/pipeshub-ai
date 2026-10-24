@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Flex, Heading, Text, Button, TextField, Tooltip } from '@radix-ui/themes';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 export interface EntityPageHeaderProps {
@@ -27,6 +28,8 @@ export interface EntityPageHeaderProps {
   ctaDisabled?: boolean;
   /** Tooltip shown on hover — most useful to explain why the CTA is disabled */
   ctaTooltip?: string;
+  /** Space above the title (default 64px). Pass a smaller value when a back link already sits above the header. */
+  paddingTop?: React.CSSProperties['paddingTop'];
 }
 
 /**
@@ -47,10 +50,13 @@ export function EntityPageHeader({
   additionalActions,
   ctaDisabled = false,
   ctaTooltip,
+  paddingTop = '64px',
 }: EntityPageHeaderProps) {
+  const canHover = useCanHover();
   const ctaButton = (
     <Button
       size="2"
+      className="touch-hit"
       onClick={onCtaClick}
       disabled={ctaDisabled}
       style={{ cursor: ctaDisabled ? 'not-allowed' : 'pointer' }}
@@ -62,10 +68,12 @@ export function EntityPageHeader({
 
   return (
     <Flex
+      direction={{ initial: 'column', md: 'row' }}
       justify="between"
-      align="end"
+      align={{ initial: 'start', md: 'end' }}
+      gap="3"
       style={{
-        paddingTop: '64px',
+        paddingTop,
         paddingBottom: 'var(--space-4)',
       }}
     >
@@ -80,18 +88,19 @@ export function EntityPageHeader({
       </Flex>
 
       {/* Right: Search + CTA */}
-      <Flex align="center" gap="3">
-        <TextField.Root
-          size="2"
-          placeholder={searchPlaceholder}
-          value={searchValue}
-          onChange={(e) => onSearchChange(e.target.value)}
-          style={{ width: '224px' }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--slate-9)" />
-          </TextField.Slot>
-        </TextField.Root>
+      <Flex align="center" gap="3" wrap="wrap" width={{ initial: '100%', md: 'auto' }} style={{ maxWidth: '100%' }}>
+        <Box width={{ initial: '100%', sm: '224px' }}>
+          <TextField.Root
+            size="2"
+            placeholder={searchPlaceholder}
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+          >
+            <TextField.Slot>
+              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+            </TextField.Slot>
+          </TextField.Root>
+        </Box>
 
         {additionalActions}
 
@@ -101,6 +110,11 @@ export function EntityPageHeader({
           </Tooltip>
         ) : (
           ctaButton
+        )}
+        {ctaTooltip && !canHover && (
+          <Text size="1" style={{ color: 'var(--slate-11)', width: '100%' }}>
+            {ctaTooltip}
+          </Text>
         )}
       </Flex>
     </Flex>

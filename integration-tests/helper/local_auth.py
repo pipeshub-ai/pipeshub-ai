@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import time
+import uuid
 from typing import Tuple
 
 import requests
@@ -17,7 +18,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 
 # Every scope the backend defines (OAuthScopeNames in oauth-scopes.enum.ts):
-# the test client is a full admin. unit/test_local_auth_scopes.py fails when a
+# the test client may call any route its service account can.
+# unit/test_local_auth_scopes.py fails when a
 # new backend scope is missing here, instead of the tests using it getting 403s.
 TEST_CLIENT_SCOPES = (
     "openid",
@@ -81,8 +83,67 @@ def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> tuple[st
     """
     base_url = base_url.rstrip("/")
     access_token = obtain_user_session_token(base_url, timeout)
-    client_id, client_secret = _create_oauth_app(base_url, access_token, timeout)
+    service_account_id = session_service_account_id(base_url, access_token, timeout)
+    client_id, client_secret = _create_oauth_app(
+        base_url, access_token, service_account_id, timeout
+    )
     return client_id, client_secret
+
+
+# Cached in the environment rather than a module global: this module is
+# imported both as ``local_auth`` and ``helper.local_auth``, which gives two
+# copies of any global, and every copy should bind to the same account.
+SERVICE_ACCOUNT_ENV = "IT_SERVICE_ACCOUNT_ID"
+
+
+def session_service_account_id(
+    base_url: str | None = None, session_jwt: str | None = None, timeout: int = 30
+) -> str:
+    """The service account this session's client_credentials apps act as.
+
+    An app that allows client_credentials must name one (#4517); without it the
+    app would act as whoever created it. Created once per process on first use.
+    The account is a member, never an admin, so tokens from these apps no longer
+    carry the test user's admin rights.
+
+    ``session_jwt`` must be a login session: OAuth tokens are refused here.
+    """
+    cached = os.getenv(SERVICE_ACCOUNT_ENV)
+    if cached:
+        return cached
+    base_url = (base_url or os.getenv("PIPESHUB_BASE_URL", "")).rstrip("/")
+    if not base_url:
+        raise RuntimeError("PIPESHUB_BASE_URL must be set to create a service account")
+    session_jwt = session_jwt or obtain_user_session_token(base_url, timeout)
+    account_id = create_service_account(base_url, session_jwt, timeout=timeout)
+    os.environ[SERVICE_ACCOUNT_ENV] = account_id
+    return account_id
+
+
+def create_service_account(
+    base_url: str, session_jwt: str, slug: str | None = None, timeout: int = 30
+) -> str:
+    """Create a service account and return its id. Needs an admin login session.
+
+    Slugs stay taken after deletion, so each call uses a fresh one.
+    """
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/v1/service-accounts",
+        headers={"Authorization": f"Bearer {session_jwt}"},
+        json={
+            "slug": slug or f"it-{uuid.uuid4().hex[:16]}",
+            "fullName": "Integration Tests",
+        },
+        timeout=timeout,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"create service account failed: HTTP {resp.status_code}: {resp.text[:300]}"
+        )
+    account_id = resp.json().get("id")
+    if not account_id:
+        raise RuntimeError("create service account response has no id")
+    return str(account_id)
 
 
 def obtain_user_session_token(base_url: str, timeout: int = 30) -> str:
@@ -219,7 +280,11 @@ def _authenticate(
 
 
 def _create_oauth_app(
-    base_url: str, access_token: str, timeout: int, attempts: int = 4
+    base_url: str,
+    access_token: str,
+    service_account_id: str,
+    timeout: int,
+    attempts: int = 4,
 ) -> tuple[str, str]:
     """Create the OAuth app this session authenticates with.
 
@@ -241,7 +306,9 @@ def _create_oauth_app(
     last_detail = ""
     attempt = 0
     for attempt in range(1, attempts + 1):
-        status, detail, parsed = _post_oauth_app(base_url, access_token, timeout)
+        status, detail, parsed = _post_oauth_app(
+            base_url, access_token, service_account_id, timeout
+        )
         if status < 400:
             return parsed
         last_detail = detail
@@ -275,7 +342,7 @@ def _is_duplicate_slug(detail: str) -> bool:
 
 
 def _post_oauth_app(
-    base_url: str, access_token: str, timeout: int
+    base_url: str, access_token: str, service_account_id: str, timeout: int
 ) -> tuple[int, str, tuple[str, str]]:
     """POST the app. Returns (status, detail, (client_id, client_secret))."""
     resp = requests.post(
@@ -288,6 +355,7 @@ def _post_oauth_app(
             "name": "Integration Test Client",
             "allowedGrantTypes": ["client_credentials"],
             "allowedScopes": list(TEST_CLIENT_SCOPES),
+            "tokenIdentityUserId": service_account_id,
         },
         timeout=timeout,
     )

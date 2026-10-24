@@ -6,7 +6,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sidebar-load-more-button';
 import { createPortal } from 'react-dom';
@@ -151,8 +151,8 @@ export function NotificationsPanel() {
     return () => ro.disconnect();
   }, [isVisible]);
 
-  const handleResizeMouseDown = useCallback(
-    (e: ReactMouseEvent) => {
+  const handleResizePointerDown = useCallback(
+    (e: ReactPointerEvent) => {
       e.preventDefault();
       const el = panelRef.current;
       if (!el) return;
@@ -163,23 +163,25 @@ export function NotificationsPanel() {
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
-      const onMouseMove = (ev: MouseEvent) => {
+      const onPointerMove = (ev: PointerEvent) => {
         const next = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, ev.clientX - rect.left));
         widthRef.current = next;
         el.style.width = `${next}px`;
       };
 
-      const onMouseUp = () => {
+      const onPointerUp = () => {
         setIsResizingPanel(false);
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+        document.removeEventListener('pointercancel', onPointerUp);
         setPanelWidth(widthRef.current);
       };
 
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', onPointerUp);
+      document.addEventListener('pointercancel', onPointerUp);
     },
     [setPanelWidth],
   );
@@ -492,6 +494,18 @@ export function NotificationsPanel() {
           visibility: hidden;
           pointer-events: none;
         }
+        @media (hover: none) {
+          [data-ph-notification-row] [data-ph-notification-row-actions] {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+          }
+          [data-ph-notification-row] [data-ph-notification-row-time] {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+          }
+        }
         [data-ph-notification-row] [data-ph-notification-row-title-link] {
           text-decoration: none;
         }
@@ -510,12 +524,13 @@ export function NotificationsPanel() {
           top: 0,
           left: `${leftOffset}px`,
           bottom: 0,
-          width: `${panelWidth}px`,
+          width: isMobile ? '100%' : `${panelWidth}px`,
+          maxWidth: `calc(100vw - ${leftOffset}px)`,
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
           background: 'var(--olive-1)',
-          borderRight: '1px solid var(--olive-4)',
+          borderRight: isMobile ? 'none' : '1px solid var(--olive-4)',
           boxShadow: '4px 0 20px rgba(0, 0, 0, 0.09)',
           animation: isClosing
             ? `notif-panel-slide-out ${TRANSITION} forwards`
@@ -523,8 +538,9 @@ export function NotificationsPanel() {
         }}
       >
         {/* Resize handle — right edge */}
+        {!isMobile && (
         <Box
-          onMouseDown={handleResizeMouseDown}
+          onPointerDown={handleResizePointerDown}
           onMouseEnter={() => setResizeHandleHovered(true)}
           onMouseLeave={() => setResizeHandleHovered(false)}
           aria-hidden
@@ -535,6 +551,7 @@ export function NotificationsPanel() {
             width: 4,
             height: '100%',
             cursor: 'col-resize',
+            touchAction: 'none',
             zIndex: 20,
           }}
         >
@@ -552,6 +569,7 @@ export function NotificationsPanel() {
             }}
           />
         </Box>
+        )}
         {/* ── Header ──────────────────────────────────────────── */}
         <Flex
           align="center"
@@ -596,6 +614,7 @@ export function NotificationsPanel() {
               >
                 <IconButton
                   variant="ghost"
+                  className="touch-hit"
                   size="1"
                   color="gray"
                   disabled={unreadCount === 0 || markingAllRead}
@@ -615,6 +634,16 @@ export function NotificationsPanel() {
               </Tooltip>
             </Box>
             <NotificationFilterMenu value={listFilter} onChange={handleFilterChange} />
+            <IconButton
+              variant="ghost"
+              className="touch-hit"
+              size="1"
+              color="gray"
+              aria-label={t('notifications.close')}
+              onClick={closePanel}
+            >
+              <MaterialIcon name="close" size={18} color="var(--slate-11)" />
+            </IconButton>
           </Flex>
         </Flex>
 

@@ -293,43 +293,6 @@ class TestToQdrantSparse:
 
 
 # ============================================================================
-# _preprocess_query
-# ============================================================================
-
-class TestPreprocessQuery:
-    @pytest.mark.asyncio
-    async def test_adds_bge_prefix(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="BAAI/bge-large-en-v1.5"
-        )
-        result = await retrieval_service._preprocess_query("  hello  ")
-        assert result.startswith("Represent this document for retrieval:")
-        assert "hello" in result
-
-    @pytest.mark.asyncio
-    async def test_no_prefix_for_non_bge(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="text-embedding-3-small"
-        )
-        result = await retrieval_service._preprocess_query("  hello  ")
-        assert result == "hello"
-
-    @pytest.mark.asyncio
-    async def test_strips_whitespace(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(return_value=None)
-        result = await retrieval_service._preprocess_query("  query with spaces  ")
-        assert result == "query with spaces"
-
-    @pytest.mark.asyncio
-    async def test_error_returns_stripped_query(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            side_effect=Exception("config error")
-        )
-        result = await retrieval_service._preprocess_query("  fallback  ")
-        assert result == "fallback"
-
-
-# ============================================================================
 # get_embedding_model_name
 # ============================================================================
 
@@ -2229,13 +2192,31 @@ class TestSearchWithFilters:
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio
+    async def test_the_search_apis_links_keep_to_a_connected_apps_limit(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """The limit the request's filters carry reaches the links named on each record."""
+        limit = {"apps": [], "recordGroups": [], "records": ["rec1"]}
+        described = AsyncMock()
+        with patch("app.modules.retrieval.retrieval_service.describe_search_records", new=described), \
+             patch("app.modules.retrieval.retrieval_service.connection_sources_of", return_value=limit) as read:
+            await self._knowledge_search_over_a_thread(retrieval_service, mock_graph_provider, passages=4, hit=2)
+
+        described.assert_awaited_once()
+        assert described.await_args.kwargs["connection_sources"] is limit
+        assert read.call_args.args[0] == {}  # the search's own filter groups
+
+    @pytest.mark.asyncio
     async def test_search_api_records_carry_status_and_links(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
     ) -> None:
         """An API caller gets each record's status and the records it links to,
         as the assistant does in its record headers, read for the asking user."""
 
-        async def describe(records: list, graph: object, org_id: str, *, user_id: str) -> None:
+        async def describe(
+            records: list, graph: object, org_id: str, *, user_id: str, connection_sources: object = None,
+        ) -> None:
+            assert connection_sources is None  # the search carried no connection limit
             for record in records:
                 record["statusSummary"] = f"seen by {user_id} in {org_id}"
 
@@ -3311,3 +3292,22 @@ class TestSearchWithFiltersGroupFlattening:
         assert result["status"] == "success", result.get("message")
         contents = [r["content"] for r in result["searchResults"]]
         assert sorted(contents) == ["def a(): pass", "def b(): pass"]
+
+
+# ============================================================================
+# query instruction
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_retrieval_embeds_instructed_query_only_for_bge(retrieval_service, monkeypatch):
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    for model, expected in [("BAAI/bge-large-en-v1.5", "Represent this sentence for searching relevant passages: hi"), ("text-embedding-3-small", "hi")]:
+        emb = MagicMock()
+        emb.model = model
+        emb.aembed_query = AsyncMock(return_value=[0.0])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=emb)
+        retrieval_service._ensure_sparse_embedder = AsyncMock(return_value=None)
+        retrieval_service._run_searches = AsyncMock(return_value=[])
+        retrieval_service._cached_embedding_is_local = True
+        await retrieval_service._execute_parallel_searches(["hi"], None, 5, "org")
+        emb.aembed_query.assert_awaited_once_with(expected)

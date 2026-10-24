@@ -71,12 +71,15 @@ class DriveWorkspaceAdapter(ScenarioAdapter):
 
     async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
         parent = self.filtered_id if role is Role.FILTERED else self.main_id
+        extra: dict[str, Any] = {}
+        if role is Role.FOLDER:
+            parent = extra["folder_id"] = await create_drive_folder(self.drive, f"dir-{token}", parent_id=parent)
         name = f"{role.value}-{token}.txt"
         file_id = await create_drive_text_file(self.drive, name, parent_id=parent, content=text)
         # The connector reads the user-corpus listing, whose index lags a create.
         await wait_until_drive_files_listed(self.drive, [file_id])
         return SourceItem(role=role, key=file_id, record_name=name, text=text, token=token,
-                          external_id=file_id)
+                          external_id=file_id, extra=extra)
 
     async def update_content(self, item: SourceItem, text: str, token: str) -> SourceItem:
         self.drive.client.files().update(  # type: ignore[attr-defined]
@@ -92,6 +95,23 @@ class DriveWorkspaceAdapter(ScenarioAdapter):
         await rename_drive_item(self.drive, item.key, name)
         return SourceItem(role=item.role, key=item.key, record_name=name, text=item.text,
                           token=item.token, external_id=item.external_id, extra=dict(item.extra))
+
+    async def move_item(self, item: SourceItem) -> SourceItem:
+        folder = f"moved-{item.token}"
+        folder_id = await create_drive_folder(self.drive, folder, parent_id=self.main_id)
+        self.drive.client.files().update(  # type: ignore[attr-defined]
+            fileId=item.key, addParents=folder_id, removeParents=self.main_id, supportsAllDrives=True,
+        ).execute()
+        return SourceItem(role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+                          token=item.token, external_id=item.external_id,
+                          extra={**item.extra, "folder": folder})
+
+    async def rename_folder(self, item: SourceItem) -> SourceItem:
+        new = f"dir-{item.token}-renamed"
+        await rename_drive_item(self.drive, item.extra["folder_id"], new)
+        return SourceItem(role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+                          token=item.token, external_id=item.external_id,
+                          extra={**item.extra, "folder": new})
 
     async def change_permission(self, item: SourceItem, sharee: SecondUser, *, grant: bool) -> None:
         if grant:
@@ -218,4 +238,5 @@ async def scenario_adapter(
 @pytest.mark.google_drive_workspace
 class TestDriveWorkspaceScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Google Drive Workspace"
+    TREE_MOVES = True
     KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { AIModelsApi } from '../api';
 import type { ConfiguredModel, ModelRoleAssignment } from '../types';
 import { MODEL_ROLE_NAMES } from '../types';
@@ -47,6 +48,7 @@ export function ModelRolesSection({
   onAcknowledgedChange,
 }: ModelRolesSectionProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
@@ -148,7 +150,7 @@ export function ModelRolesSection({
       size="2"
     >
       <Select.Trigger
-        style={{ minWidth: 190, maxWidth: '100%', cursor: 'pointer' }}
+        style={{ minWidth: isMobile ? 0 : 190, width: isMobile ? '100%' : undefined, maxWidth: '100%', cursor: 'pointer' }}
         placeholder={t('workspace.aiModels.roles.selectModel')}
       />
       <Select.Content>
@@ -356,6 +358,7 @@ export function ModelRolesSection({
       <Flex
         align="center"
         gap="2"
+        wrap="wrap"
         style={{
           padding: '12px 20px',
           borderBottom: '1px solid var(--gray-4)',
@@ -373,9 +376,10 @@ export function ModelRolesSection({
 
       <Box style={{ padding: '0 20px' }}>
         <Flex
-          align="center"
+          direction={{ initial: 'column', sm: 'row' }}
+          align={{ initial: 'stretch', sm: 'center' }}
           justify="between"
-          gap="6"
+          gap={{ initial: '3', sm: '6' }}
           style={{ padding: '14px 0', minHeight: 60 }}
         >
           <Flex align="center" gap="3" style={{ flex: 1, minWidth: 0 }}>
@@ -403,7 +407,7 @@ export function ModelRolesSection({
                   lineHeight: '1.5',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: isMobile ? 'normal' : 'nowrap',
                 }}
               >
                 {t('workspace.aiModels.roles.indexingRoleDescription')}
@@ -411,7 +415,7 @@ export function ModelRolesSection({
             </Flex>
           </Flex>
 
-          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          <Flex align="center" gap="2" style={{ flexShrink: 0, minWidth: 0 }}>
             {(loading || saving) && <Spinner size={14} />}
             {!loading && indexingSelect}
           </Flex>

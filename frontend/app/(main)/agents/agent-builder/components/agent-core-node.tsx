@@ -16,6 +16,7 @@ import {
   AGENT_LLM_FALLBACK_ICON,
   AGENT_TOOLSET_FALLBACK_ICON,
   normalizeDisplayName,
+  normalizePaletteLabel,
   resolveNodeConnectorType,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
@@ -79,7 +80,7 @@ function toolsetConnectionChipLabel(n: FlowNodeData): string {
   const c = (n.config || {}) as Record<string, unknown>;
   const inst = String(c.instanceName ?? '').trim();
   const disp = String(c.displayName ?? '').trim();
-  return normalizeDisplayName(inst || disp || n.label);
+  return normalizePaletteLabel(inst || disp || n.label);
 }
 
 /** MCP server instances are named at attach time (no logical "type" grouping to fall back to). */

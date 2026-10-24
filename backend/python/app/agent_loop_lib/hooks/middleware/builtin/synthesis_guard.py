@@ -7,15 +7,18 @@ aggressively strips content until it fits:
 2. Clear ALL non-recent tool results (regardless of artifact status).
 3. Truncate remaining tool results from the tail.
 
-If none of these steps bring the context under budget, the guard raises
-``ContextBudgetExceeded`` so the caller fails loudly rather than sending
-an oversized context to the provider.
+If none of these steps bring the context under budget, a context that still
+fits the model's window is sent with less room for the reply (logged); one
+past the window raises ``ContextBudgetExceeded``, which the PRE_MODEL pipeline
+lets through so the run fails loudly rather than sending a request the
+provider rejects.
 """
 
 from __future__ import annotations
 
 import logging
 
+from app.agent_loop_lib.context.errors import ContextBudgetExceeded
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     TextPart,
@@ -27,18 +30,6 @@ from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 logger = logging.getLogger(__name__)
-
-
-class ContextBudgetExceeded(Exception):
-    """Raised when the synthesis guard cannot fit context under budget."""
-
-    def __init__(self, token_count: int, budget: int) -> None:
-        self.token_count = token_count
-        self.budget = budget
-        super().__init__(
-            f"Context ({token_count} tokens) exceeds budget ({budget} tokens) "
-            "after all compaction attempts"
-        )
 
 
 def shape_synthesis_guard(
@@ -84,14 +75,19 @@ def shape_synthesis_guard(
             return
 
         messages, total = _truncate_tool_results(messages, budget, total)
-        if total > budget:
+        if total > ctx.budget.hard_limit_tokens:
             logger.error(
-                "synthesis_guard: could not fit context under budget "
-                "(%d tokens > %d budget)",
-                total,
-                budget,
+                "synthesis_guard: context does not fit the model window "
+                "(%d tokens > %d limit, budget %d, turn=%d)",
+                total, ctx.budget.hard_limit_tokens, budget, ctx.turn_index,
             )
-            raise ContextBudgetExceeded(total, budget)
+            raise ContextBudgetExceeded(total, ctx.budget.hard_limit_tokens)
+        if total > budget:
+            logger.warning(
+                "synthesis_guard: context over budget but inside the window, sent "
+                "with less room for the reply (%d tokens > %d budget, limit %d, turn=%d)",
+                total, budget, ctx.budget.hard_limit_tokens, ctx.turn_index,
+            )
 
         ctx.messages = messages
         await next_fn()

@@ -19,6 +19,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { SmtpApi } from './api';
 import { SmtpConfigurePanel } from './components/smtp-configure-panel';
 import type { SmtpConfig } from './types';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ============================================================
 // Page
@@ -99,11 +100,11 @@ export default function MailPage() {
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '4em 6.25em 5em' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mail.title')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
@@ -218,6 +219,8 @@ export default function MailPage() {
                   variant="ghost"
                   color="gray"
                   size="2"
+                  className="touch-hit"
+                  aria-label={t('workspace.mail.serverConfig')}
                   onClick={() => setPanelOpen(true)}
                   style={{ cursor: 'pointer', flexShrink: 0 }}
                 >
@@ -226,7 +229,7 @@ export default function MailPage() {
               </Flex>
           </Box>
         </Flex>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── SMTP Configure Panel ── */}
       <SmtpConfigurePanel

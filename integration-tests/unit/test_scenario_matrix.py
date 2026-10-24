@@ -302,6 +302,8 @@ def _run(src: _Source, unsupported: dict[str, str], adapter: _Adapter | None = N
 _NO_SHARE_OR_FILTER = {
     Action.CHANGE_PERMISSION.value: "no shares",
     Action.SET_FILTER.value: "no filters",
+    Action.MOVE.value: "no folders",
+    Action.RENAME_FOLDER.value: "no folders",
 }
 
 
@@ -589,3 +591,89 @@ async def test_filter_footprint_looks_where_indexing_filed_the_record() -> None:
     assert footprint.virtual_record_id == view.virtual_record_id
     assert footprint.connector_id == CONNECTOR
     assert (vendor, run.mongo.vendor_asked) == ("s3", [filed])
+
+
+def test_folder_moves_are_skipped_until_a_connector_says_its_adapter_does_them() -> None:
+    from connectors.scenario_matrix import (
+        TREE_MOVES_NOT_WRITTEN,
+        ConnectorScenarioMatrix,
+        declared_unsupported,
+        static_marks_for,
+    )
+
+    class Plain(ConnectorScenarioMatrix):
+        UNSUPPORTED = {Action.DELETE.value: "read-only"}
+
+    class Moves(ConnectorScenarioMatrix):
+        TREE_MOVES = True
+
+    assert declared_unsupported(Plain) == {
+        Action.DELETE.value: "read-only",
+        Action.MOVE.value: TREE_MOVES_NOT_WRITTEN,
+        Action.RENAME_FOLDER.value: TREE_MOVES_NOT_WRITTEN,
+    }
+    assert declared_unsupported(Moves) == {}
+    [skip] = static_marks_for(Plain, ConnectorScenarioMatrix.test_matrix_incr_move)
+    assert TREE_MOVES_NOT_WRITTEN in skip.kwargs["reason"]
+    assert static_marks_for(Moves, ConnectorScenarioMatrix.test_matrix_incr_rename_folder) == []
+
+
+class _Probe:
+    """Storage as MongoDB and the blob store see it: one record copy at *path*."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.left: list[str] = []
+
+    async def assert_stored_at(self, vrid: str, expected: str) -> None:
+        assert self.path == expected, f"{vrid} is stored at {self.path!r}, not {expected!r}"
+
+    async def assert_nothing_under(self, path: str) -> None:
+        assert not self.path.startswith(path), f"{path!r} still holds {self.path!r}"
+
+
+def _moved_run(stored_at: str, graph_path: str) -> MatrixRun:
+    view = RecordView(id="r1", name="move-x.txt", virtual_record_id="v1", indexing_status="COMPLETED",
+                      version=1, revision=None, external_id=None)
+    adapter = SimpleNamespace(source="Fake", record_ids_survive_sync=True, owner=None,
+                              client=None, graph=None, connector_id="c")
+    run = MatrixRun(adapter, unsupported={}, vector=None, storage_layout_exempt="no stores here")  # type: ignore[arg-type]
+    run.added[Role.MOVE] = view
+    run.items[Role.MOVE] = SourceItem(role=Role.MOVE, key="k", record_name="move-x.txt", text="t",
+                                      token="x", extra={"folder": "moved-x"})
+    run.paths_before_move[Role.MOVE] = "records/c/kept/move-x.txt"
+    probe = _Probe(stored_at)
+
+    async def wait_indexed(item: SourceItem) -> RecordView:
+        return view
+
+    async def path_of(_view: RecordView) -> str:
+        return graph_path
+
+    run.wait_indexed = wait_indexed  # type: ignore[method-assign]
+    run.graph_path = path_of  # type: ignore[method-assign]
+    run._probe = lambda: probe  # type: ignore[method-assign]
+    return run
+
+
+async def test_content_that_followed_the_move_passes(monkeypatch) -> None:
+    async def found(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(sm, "_admin_can_find", found)
+    new = "records/c/kept/moved-x/move-x.txt"
+    await _moved_run(new, new).assert_content_followed(Role.MOVE)
+
+
+async def test_content_left_at_the_old_path_fails_the_move(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "_admin_can_find", lambda *a, **k: None)
+    run = _moved_run("records/c/kept/move-x.txt", "records/c/kept/moved-x/move-x.txt")
+    with pytest.raises(AssertionError, match="is stored at"):
+        await run.assert_content_followed(Role.MOVE)
+
+
+async def test_a_graph_that_never_saw_the_move_fails_it(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "_admin_can_find", lambda *a, **k: None)
+    old = "records/c/kept/move-x.txt"
+    with pytest.raises(AssertionError, match="not in folder"):
+        await _moved_run(old, old).assert_content_followed(Role.MOVE)

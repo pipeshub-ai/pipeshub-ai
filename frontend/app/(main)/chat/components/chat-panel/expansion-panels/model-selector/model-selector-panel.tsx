@@ -212,7 +212,7 @@ export function ModelSelectorPanel({
       {!hideHeader && (
         <Flex align="center" justify="between">
           <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('chat.configuredModels', 'Configured Models')}
+            {t('chat.configuredModels', 'Configured models')}
           </Text>
           {isAdmin && (
             <span
@@ -231,7 +231,7 @@ export function ModelSelectorPanel({
                 lineHeight: 'inherit',
               }}
             >
-              {t('chat.openModels', 'Open Models')}
+              {t('chat.openModels', 'Manage models')}
             </span>
           )}
         </Flex>
@@ -294,7 +294,7 @@ export function ModelSelectorPanel({
                 }}
               >
                 <MaterialIcon name="settings" size={16} />
-                {t('chat.openModels', 'Open Models')}
+                {t('chat.openModels', 'Manage models')}
               </Button>
             )}
           </Flex>

@@ -71,6 +71,7 @@ from app.modules.retrieval.result_merging import (
     ReciprocalRankFusionMerger,
     search_hit_identity,
 )
+from app.modules.retrieval.selection_scope import connection_sources_of
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -78,6 +79,8 @@ from app.utils.chat_helpers import (
     ImageBudget,
     get_record_id_shortener_if_enabled,
     is_base64_image,
+    keep_graph_docs_inside_connection,
+    keep_record_text_inside_connection,
     merge_into_records_map,
 )
 from app.utils.image_admission import admission_from_state
@@ -1025,6 +1028,7 @@ async def _execute_search(
             org_id=org_id,
             user_id=user_id,
             config_service=config_service,
+            connection_sources=connection_sources_of(agent_filters),
         ).build(
             search_results,
             virtual_to_record_map,
@@ -1056,6 +1060,21 @@ async def _execute_search(
                 if pm_record_entries:
                     logger_instance.info(
                         "Pattern match: %d record(s) found via grep", len(pm_record_entries),
+                    )
+                    # A grep hit is rendered from its loaded record's text, or
+                    # from its graph document when only that was read.
+                    grep_records = [
+                        virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+                        for entry in pm_record_entries
+                    ]
+                    limit_sources = connection_sources_of(agent_filters)
+                    await keep_record_text_inside_connection(
+                        [r for r in grep_records if isinstance(r, dict) and "block_containers" in r],
+                        graph_provider, user_id, org_id, limit_sources,
+                    )
+                    await keep_graph_docs_inside_connection(
+                        [r for r in grep_records if isinstance(r, dict) and "block_containers" not in r],
+                        graph_provider, user_id, org_id, limit_sources,
                     )
             except Exception as exc:
                 logger_instance.warning(

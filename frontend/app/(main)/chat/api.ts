@@ -248,6 +248,7 @@ export const ChatApi = {
       id: string;
       title: string;
       initiator: string;
+      createdAt?: string;
       messages: ConversationMessage[];
       status: string;
       modelInfo: ModelInfo;

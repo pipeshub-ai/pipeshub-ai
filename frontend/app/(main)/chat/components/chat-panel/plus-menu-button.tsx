@@ -181,14 +181,14 @@ export function PlusMenuContent({
       <Separator size="4" style={{ margin: 'var(--space-1) 0' }} />
 
       <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal Search' })}
+        label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal search' })}
         checked={internalSearch}
         disabled={agentHasInternalSearch === false}
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleInternalSearch}
       />
       <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web Search' })}
+        label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web search' })}
         checked={webSearch}
         disabled={agentHasWebSearch === false}
         disabledTooltip={notConfiguredLabel}

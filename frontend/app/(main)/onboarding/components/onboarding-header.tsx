@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Box, Text, Avatar } from '@radix-ui/themes';
 import { BrandMark } from '@/config';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 interface OnboardingHeaderProps {
   // User info (right side)
@@ -26,6 +27,7 @@ export function OnboardingHeader({
   orgInitial = '',
   showOrgBadge = false,
 }: OnboardingHeaderProps) {
+  const isMobile = useIsMobile();
   return (
     <Box
       style={{
@@ -39,13 +41,13 @@ export function OnboardingHeader({
           maxWidth: '1228px',
           width: '100%',
           margin: '0 auto',
-          padding: '12px 0',
+          padding: isMobile ? '12px 16px' : '12px 0',
           minHeight: '80px',
         }}
       >
         {/* Left — Org badge (hidden before org is created) */}
-        <Box style={{ width: '220px', flexShrink: 0 }}>
-        {showOrgBadge && orgDisplayName ? (
+        <Box style={isMobile ? { flex: 1, minWidth: 0 } : { width: '220px', flexShrink: 0 }}>
+        {!isMobile && showOrgBadge && orgDisplayName ? (
           <Flex align="center" gap="2">
             <Avatar
               size="2"
@@ -79,9 +81,10 @@ export function OnboardingHeader({
       </Flex>
 
       {/* Right — User Avatar + Name */}
-      <Flex align="center" gap="2" justify="end" style={{ width: '220px', flexShrink: 0 }}>
+      <Flex align="center" gap="2" justify="end" style={isMobile ? { flex: 1, minWidth: 0 } : { width: '220px', flexShrink: 0 }}>
         {(userName || userEmail) && (
           <>
+            {!isMobile && (
             <Flex direction="column" align="end" gap="0">
               {userName && (
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', lineHeight: '1.3' }}>
@@ -94,6 +97,7 @@ export function OnboardingHeader({
                 </Text>
               )}
             </Flex>
+            )}
             <Avatar
               size="2"
               fallback={userInitials}

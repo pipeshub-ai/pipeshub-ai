@@ -116,3 +116,116 @@ def test_a_loop_that_has_not_finished_stopping_cannot_be_started_again() -> None
         assert new_loop is not loop
     finally:
         worker.stop()
+
+
+def kill_worker_loop(worker: WorkerLoop, error: BaseException | None = None) -> None:
+    """Exit the loop from inside, with no stop() request, and wait for its thread."""
+    loop, thread = worker.loop, worker._thread
+    assert loop is not None and thread is not None
+
+    def die() -> None:
+        if error is None:
+            loop.stop()
+        else:
+            raise error
+
+    loop.call_soon_threadsafe(die)
+    thread.join(5)
+    assert loop.is_closed()
+
+
+# The loop's thread re-raises what killed it, as an unhandled thread exception.
+_DIES = pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+
+
+@_DIES
+def test_an_unrequested_exit_is_recorded_logged_and_stops_the_listeners(caplog) -> None:
+    """Left running, consumers hand each message to the closed loop and re-claim the same
+    entries until the delivery backstop dead-letters healthy records."""
+    worker = WorkerLoop(_LOGGER)
+    called_on: list[str] = []
+    worker.add_exit_listener(lambda: called_on.append(threading.current_thread().name))
+    worker.start()
+    error = SystemExit("boom")
+
+    with caplog.at_level(logging.CRITICAL, logger=_LOGGER.name):
+        kill_worker_loop(worker, error)
+
+    assert worker.failure is error
+    assert called_on == ["indexing-worker"]
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert len(critical) == 1
+    assert critical[0].exc_info is not None and critical[0].exc_info[1] is error
+
+
+def test_a_loop_stopped_from_inside_is_a_failure_and_skips_removed_listeners() -> None:
+    worker = WorkerLoop(_LOGGER)
+    kept, removed = threading.Event(), threading.Event()
+    worker.add_exit_listener(kept.set)
+    worker.add_exit_listener(removed.set)
+    worker.remove_exit_listener(removed.set)
+    worker.start()
+
+    kill_worker_loop(worker)
+
+    assert isinstance(worker.failure, RuntimeError)
+    assert kept.is_set() and not removed.is_set()
+
+
+def test_a_requested_stop_is_not_a_failure(caplog) -> None:
+    worker = WorkerLoop(_LOGGER)
+    called = threading.Event()
+    worker.add_exit_listener(called.set)
+    worker.start()
+
+    with caplog.at_level(logging.CRITICAL, logger=_LOGGER.name):
+        worker.stop()
+
+    assert worker.failure is None
+    assert not called.is_set()
+    assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
+
+
+@_DIES
+def test_a_dead_loop_is_not_replaced() -> None:
+    """A consumer starting late must not run on a second loop and hide the failure."""
+    worker = WorkerLoop(_LOGGER)
+    worker.start()
+    kill_worker_loop(worker, SystemExit())
+
+    with pytest.raises(RuntimeError, match="died"):
+        worker.start()
+    worker.stop()
+
+
+def test_a_loop_exiting_on_its_own_is_not_replaced_before_its_exit_is_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Between run_forever() returning and the failure being recorded, a start() must not open
+    a second loop: it would hold the lock the exiting thread needs to record the failure."""
+    worker = WorkerLoop(_LOGGER)
+    loop = worker.start()
+    thread = worker._thread
+    assert thread is not None
+    exiting, release = threading.Event(), threading.Event()
+    record_exit = worker._on_exit
+
+    def held_exit(error: BaseException | None) -> None:
+        exiting.set()
+        release.wait(5)
+        record_exit(error)
+
+    monkeypatch.setattr(worker, "_on_exit", held_exit)
+    loop.call_soon_threadsafe(loop.stop)
+    assert exiting.wait(5)
+    try:
+        with pytest.raises(RuntimeError, match="still shutting down"):
+            worker.start()
+    finally:
+        release.set()
+    thread.join(5)
+
+    assert isinstance(worker.failure, RuntimeError)
+    with pytest.raises(RuntimeError, match="died"):
+        worker.start()
+    worker.stop()

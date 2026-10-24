@@ -33,7 +33,6 @@ import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
-// import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
@@ -117,7 +116,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
-import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
@@ -598,25 +597,35 @@ function KnowledgeBasePageContent() {
   // Superseded table fetches are aborted so a slower earlier response cannot
   // overwrite the latest one, or clear its loading flag.
   const allRecordsFetchRef = useRef<AbortController | null>(null);
+  const [allRecordsRefused, setAllRecordsRefused] = useState(false);
+  // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
+  const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const allRecordsBusyTries = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
+      if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
       allRecordsFetchRef.current?.abort();
       collectionsFetchRef.current?.abort();
     };
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
     allRecordsFetchRef.current?.abort();
+    // Each request the user makes gets its own retries; only the timer's retries share them.
+    if (!busyRetry) allRecordsBusyTries.current = 0;
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
+    if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
     const fetchGeneration = ++allRecordsFetchGeneration;
     const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
+      setAllRecordsRefused(false);
 
       // Get fresh state from store to avoid stale closure
       const currentState = useKnowledgeBaseStore.getState();
@@ -646,7 +655,7 @@ function KnowledgeBasePageContent() {
           nodeType as NodeType,
           nodeId,
           params,
-          { signal: controller.signal }
+          { signal: controller.signal, quietRefusals: true }
         );
       } else {
         // Root level - fetch all records
@@ -654,6 +663,7 @@ function KnowledgeBasePageContent() {
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
+      allRecordsBusyTries.current = 0;
       // Sync what the response decided (totals, indices, the two cursors)
       // without touching the cursor the user asked for — overwriting that would
       // re-trigger the effect watching it.
@@ -672,7 +682,29 @@ function KnowledgeBasePageContent() {
         return;
       }
       console.error('Error fetching all records:', error);
-      setAllRecordsTableError('Failed to load records');
+      // Busy (503): say so, count down the seconds the server asked for, and ask again (at most 3 times).
+      if (isProcessedError(error) && error.statusCode === 503 && allRecordsBusyTries.current < 3) {
+        allRecordsBusyTries.current += 1;
+        const headers = (error.originalError as { response?: { headers?: Record<string, unknown> } } | undefined)?.response?.headers;
+        let left = parseRetryAfter(headers?.['retry-after']) ?? 5;
+        const say = () => setAllRecordsTableError(t('kb.allRecordsBusy', { count: left }));
+        setAllRecordsRefused(true);
+        say();
+        allRecordsBusyTimer.current = setInterval(() => {
+          left -= 1;
+          if (left > 0) {
+            say();
+            return;
+          }
+          if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true);
+        }, 1000);
+        return;
+      }
+      // A view too large to list answers 422 with the sentence to show; asking again cannot change that.
+      const refused = isProcessedError(error) && error.statusCode === 422;
+      setAllRecordsRefused(refused);
+      setAllRecordsTableError(refused ? error.message : t('kb.allRecordsLoadFailed'));
     } finally {
       if (
         allRecordsFetchRef.current === controller &&
@@ -691,7 +723,9 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    t,
   ]);
+  fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
 
   // Extract stable primitive values from URL to avoid re-firing effects
   // when router.replace() updates pagination/filter params in the URL.
@@ -2911,34 +2945,26 @@ function KnowledgeBasePageContent() {
     }
   }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
-  // Derive current title based on mode
+  // Derive current title based on mode. A search keeps the scope's name, so the
+  // chat box still says what it searches ("Ask in 'Docs'", not "Ask in 'Results'").
   const currentTitle = useMemo(() => {
-    // Show "Results" when actively searching
-    const activeSearchQuery = isAllRecordsMode ? allRecordsSearchQuery : searchQuery;
-    if (activeSearchQuery && activeSearchQuery.trim()) {
-      return 'Results';
-    }
-
     if (isAllRecordsMode) {
-      if (allRecordsSidebarSelection.type === 'all') {
-        return 'All Records';
-      } else if (allRecordsSidebarSelection.type === 'collection') {
+      if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
       } else if (allRecordsSidebarSelection.type === 'explorer') {
-        return allRecordsTableData?.currentNode?.name || 'All Records';
+        return allRecordsTableData?.currentNode?.name || t('nav.allRecords');
       }
-      return 'All';
+      return t('nav.allRecords');
     }
-    return tableData?.currentNode?.name || 'Collections';
+    return tableData?.currentNode?.name || t('nav.collections');
   }, [
     isAllRecordsMode,
     allRecordsSidebarSelection,
     tableData,
-    allRecordsSearchQuery,
-    searchQuery,
     allRecordsTableData?.currentNode?.name,
+    t,
   ]);
 
   const chatScopeNode = useMemo((): MentionNode | null => {
@@ -2992,12 +3018,12 @@ function KnowledgeBasePageContent() {
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {
     const rootCrumb: Breadcrumb = {
       id: 'all-records-root',
-      name: 'All Records',
+      name: t('nav.allRecords'),
       nodeType: 'all-records',
     };
     const apiBreadcrumbs = allRecordsTableData?.breadcrumbs || [];
     return [rootCrumb, ...apiBreadcrumbs];
-  }, [allRecordsTableData?.breadcrumbs]);
+  }, [allRecordsTableData?.breadcrumbs, t]);
 
   return (
     <Flex style={{ height: '100%', width: '100%' }}>
@@ -3072,6 +3098,7 @@ function KnowledgeBasePageContent() {
           isLoading={isAllRecordsMode ? isLoadingAllRecordsTable : isLoadingTableData}
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
+          errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
@@ -3079,6 +3106,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          onClearSearch={handleSearchClose}
           extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}

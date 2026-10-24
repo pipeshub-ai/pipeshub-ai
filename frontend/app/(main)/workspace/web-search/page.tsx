@@ -22,6 +22,7 @@ import {
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
 } from './types';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 /** After the default is deleted the server promotes the next search provider; name whichever it chose. */
 async function newDefaultNotice(): Promise<string> {
@@ -263,11 +264,11 @@ export default function WebSearchPage() {
   return (
     <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.webSearch.heading')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
@@ -352,7 +353,7 @@ export default function WebSearchPage() {
           )}
         </Flex>
 
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Configure side panel ── */}
       <ConfigurePanel

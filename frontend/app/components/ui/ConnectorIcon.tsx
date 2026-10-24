@@ -94,6 +94,7 @@ export type ConnectorType =
   | 'brave'
   // Generic / Fallback
   | 'web'
+  | 'api'
   | 'generic';
 
 interface ConnectorIconProps {
@@ -189,6 +190,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
+  // API toolsets (admin-uploaded OpenAPI specs)
+  'api': { svg: null, fallback: 'api' },
   'generic': { svg: svg('default'), fallback: 'extension' },
 };
 
@@ -198,6 +201,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * Patterns are matched via .includes() against normalized input.
  */
 const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
+  // Chat groups of API actions (`api_action:<instanceId>`).
+  ['api-action:', 'api'],
   // Google suite — specific first (google-cloud-storage before google-cloud)
   ['google-cloud-storage', 'gcs'],
   ['google-drive', 'google-drive'], ['gdrive', 'google-drive'],

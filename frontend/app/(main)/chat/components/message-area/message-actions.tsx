@@ -15,6 +15,8 @@ import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
 import { ChatMessageExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
@@ -125,6 +127,7 @@ export function MessageActions({
   feedbackInfo,
   canRegenerate = true,
 }: MessageActionsProps) {
+  const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [copiedTooltipOpen, setCopiedTooltipOpen] = useState(false);
@@ -386,6 +389,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleLikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -525,6 +529,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleDislikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -672,6 +677,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   style={{
+                    ...touchTarget(isMobile),
                     margin: 0,
                     cursor: 'pointer',
                     color: 'var(--slate-9)',
@@ -748,6 +754,7 @@ export function MessageActions({
               onClick={handleFork}
               aria-label={forkLabel}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: isForking ? 'default' : 'pointer',
                 color: 'var(--slate-9)',
@@ -774,6 +781,7 @@ export function MessageActions({
               aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: messageId ? 'pointer' : 'default',
                 color: 'var(--slate-9)',
@@ -796,6 +804,7 @@ export function MessageActions({
               onMouseEnter={() => setReadAloudHovered(true)}
               onMouseLeave={() => setReadAloudHovered(false)}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-1)',

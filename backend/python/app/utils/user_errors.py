@@ -520,6 +520,19 @@ def _file_problem(chain: list[BaseException]) -> str | None:
     return None
 
 
+def too_large_refusal(exc: BaseException | None) -> StorageRequestRejectedError | None:
+    """The storage service's refusal of the record's content for its size, if that is what failed.
+
+    Narrower than ``to_user_reason(exc) == FILE_TOO_LARGE``, which also covers
+    running out of memory and parser messages about size.
+    """
+    if exc is None:
+        return None
+    return next(
+        (e for e in _chain(exc) if isinstance(e, StorageRequestRejectedError) and e.too_large), None
+    )
+
+
 def to_user_reason(exc: BaseException | None) -> str:
     """The reason to store on a record that failed to index because of ``exc``.
 

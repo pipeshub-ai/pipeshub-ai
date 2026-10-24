@@ -188,7 +188,7 @@ export function FilePreviewMobile({
             />
           )}
           {!hideFileDetails && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -209,7 +209,7 @@ export function FilePreviewMobile({
             </Button>
           )}
           {canDownload && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -226,7 +226,7 @@ export function FilePreviewMobile({
               <MaterialIcon name="download" size={16} color="var(--slate-11)" />
             </IconButton>
           )}
-          <IconButton
+          <IconButton className="touch-hit"
             variant="ghost"
             color="gray"
             size="1"
@@ -256,7 +256,7 @@ export function FilePreviewMobile({
                 flexShrink: 0,
               }}
             >
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -367,7 +367,7 @@ export function FilePreviewMobile({
                   pointerEvents: 'auto',
                 }}
               >
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -393,7 +393,7 @@ export function FilePreviewMobile({
                     {Math.round(pdfScale * 100)}%
                   </Text>
                 </Box>
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -405,7 +405,7 @@ export function FilePreviewMobile({
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -432,7 +432,7 @@ export function FilePreviewMobile({
                   aria-hidden
                 />
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -456,7 +456,7 @@ export function FilePreviewMobile({
                   </Text>
                 </Box>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -526,7 +526,7 @@ export function FilePreviewMobile({
               <Text size="1" weight="medium" style={{ color: 'var(--neutral-a12)' }}>
                 {t('chat.citations')}
               </Text>
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="2"

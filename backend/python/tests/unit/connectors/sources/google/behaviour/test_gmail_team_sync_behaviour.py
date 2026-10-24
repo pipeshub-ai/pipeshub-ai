@@ -23,6 +23,7 @@ from google_behaviour_fakes import (
     FakeSyncPointStore,
 )
 
+from app.connectors.sources.google.common.gmail_sync_health import GmailSyncIncomplete
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.models.entities import RecordType
 from app.models.permission import PermissionType
@@ -132,11 +133,6 @@ async def test_a_failed_member_read_keeps_the_stored_group_and_the_rest_sync(ws:
     assert {m.email for m in ws.records.user_groups["other@example.com"][1]} == {ALICE, BOB}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A group whose last member left is skipped instead of being saved as empty, so the people "
-    "who left keep the group's access in PipesHub.",
-)
 async def test_a_group_whose_members_all_left_is_emptied(ws: Harness) -> None:
     ws.directory.add_group("team@example.com", [ALICE])
     await ws.sync()
@@ -181,7 +177,9 @@ async def test_a_user_the_service_account_may_not_impersonate_does_not_stop_the_
     ws.gmail.deliver(BOB, "b-1", sender=OUTSIDER)
     ws.http.refused_subjects.add(BOB)
 
-    await ws.sync()
+    # Alice's mailbox syncs; the run itself does not claim success while Bob's could not be read.
+    with pytest.raises(GmailSyncIncomplete):
+        await ws.sync()
 
     assert ws.mail_ids() == {"a-1"}
     assert ws.checkpoint(ALICE) is not None
@@ -198,18 +196,13 @@ async def test_full_sync_reads_every_thread_page_per_user(ws: Harness) -> None:
     assert len(ws.http.calls("GET", "/gmail/v1/users/alice@example.com/threads")) == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A full sync that fails partway saves a history position before it finishes, so the next "
-    "run only looks for new mail; that mailbox's older mail (even what was read before the failure, "
-    "which was still waiting to be saved) is never synced.",
-)
 async def test_a_full_sync_that_fails_partway_is_completed_on_the_next_run(ws: Harness) -> None:
     for n in range(5):
         ws.gmail.deliver(ALICE, f"a{n}", sender=OUTSIDER, date_ms=1_700_000_000_000 + n)
     ws.http.fail("GET", "/gmail/v1/users/alice@example.com/threads", 500, "backendError", when=lambda r: r.query.get("pageToken") == "4")
 
-    await ws.sync()
+    with pytest.raises(GmailSyncIncomplete):
+        await ws.sync()
     ws.http.clear_faults()
     await ws.sync()
 
@@ -258,8 +251,9 @@ async def test_a_failed_history_read_keeps_the_history_id_and_recovers_next_run(
     ws.gmail.deliver(BOB, "bob-unaffected", sender=OUTSIDER)
     ws.http.fail("GET", "/gmail/v1/users/alice@example.com/history", 500, "backendError")
 
-    await ws.sync()
-    assert len(backoff_sleeps) == 3
+    with pytest.raises(GmailSyncIncomplete):
+        await ws.sync()
+    assert len(backoff_sleeps) >= 3
     assert ws.checkpoint(ALICE) == checkpoint
     assert "during-outage" not in ws.mail_ids()
     assert "bob-unaffected" in ws.mail_ids()
@@ -280,18 +274,14 @@ async def test_history_quota_errors_are_retried_with_backoff(ws: Harness, backof
     assert len(backoff_sleeps) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="If saving a user's newly arrived mail to the database fails, the error is logged and that "
-    "user's history position still moves forward, so the mail is never retried.",
-)
 async def test_a_database_failure_saving_new_mail_keeps_the_history_id(ws: Harness) -> None:
     await ws.sync()
     checkpoint = ws.checkpoint(ALICE)
     ws.gmail.deliver(ALICE, "unsaved", sender=OUTSIDER)
     ws.records.fail_writes_for.add("unsaved")
 
-    await ws.sync()
+    with pytest.raises(GmailSyncIncomplete):
+        await ws.sync()
 
     assert ws.checkpoint(ALICE) == checkpoint
 

@@ -26,7 +26,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+from app.agent_loop_lib.transport.openai import (
+    OpenAITransport,
+    RequestDefaults,
+    client_timeout,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -90,7 +94,7 @@ class AzureOpenAITransport(OpenAITransport):
         # Left unset the SDK applies its own (longer) default; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn must fail at the same point.
         if timeout is not None:
-            client_kwargs["timeout"] = timeout
+            client_kwargs["timeout"] = client_timeout(timeout)
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
         if http_client is not None:

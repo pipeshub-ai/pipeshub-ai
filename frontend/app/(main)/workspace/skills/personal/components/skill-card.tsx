@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import type { SkillMetadata } from '../types';
 import { canToggleSkillAvailability } from '../skill-availability';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 
 // ========================================
 // Status -> badge color
@@ -44,6 +46,7 @@ interface SkillCardProps {
 
 export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const isAdmin = useUserStore(selectIsAdmin) === true;
   const [isHovered, setIsHovered] = useState(false);
   const [toggling, setToggling] = useState(false);
@@ -87,23 +90,38 @@ export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardPr
           </Flex>
           <Flex align="center" gap="2">
             {canToggleAvailability && (
-              <Switch
-                checked={!isDisabled}
-                disabled={toggling}
+              // A visible caption, not just the screen-reader name; the label row is the tap area on phones.
+              <Text
+                as="label"
                 size="1"
-                aria-label={t('workspace.skills.availability.label')}
-                style={{ cursor: toggling ? 'default' : 'pointer' }}
                 onClick={(e) => e.stopPropagation()}
-                onCheckedChange={async (nextEnabled) => {
-                  if (toggling) return;
-                  setToggling(true);
-                  try {
-                    await onToggleAvailability?.(skill, nextEnabled);
-                  } finally {
-                    setToggling(false);
-                  }
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 'var(--space-2)',
+                  color: 'var(--gray-11)',
+                  cursor: toggling ? 'default' : 'pointer',
+                  ...touchTarget(isMobile),
                 }}
-              />
+              >
+                {t('workspace.skills.availability.short')}
+                <Switch
+                  checked={!isDisabled}
+                  disabled={toggling}
+                  size="1"
+                  aria-label={t('workspace.skills.availability.label')}
+                  style={{ cursor: toggling ? 'default' : 'pointer' }}
+                  onCheckedChange={async (nextEnabled) => {
+                    if (toggling) return;
+                    setToggling(true);
+                    try {
+                      await onToggleAvailability?.(skill, nextEnabled);
+                    } finally {
+                      setToggling(false);
+                    }
+                  }}
+                />
+              </Text>
             )}
             {skill.status !== 'active' && (
               <Badge color={STATUS_COLOR[skill.status] ?? 'gray'} size="1">
@@ -151,6 +169,7 @@ export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardPr
 
 function ManageButton({ onClick, readOnly }: { onClick: () => void; readOnly: boolean }) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -173,7 +192,7 @@ function ManageButton({ onClick, readOnly }: { onClick: () => void; readOnly: bo
         justifyContent: 'center',
         gap: 'var(--space-2)',
         width: '100%',
-        height: 'var(--space-6)',
+        height: isMobile ? 44 : 'var(--space-6)',
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--accent-a4)' : 'var(--accent-a3)',
         cursor: 'pointer',

@@ -759,6 +759,93 @@ class TestFetchMultipleRecordsImplGraphFallback:
         assert result["records"][0]["content"] == "blob-content"
         mock_get_record.assert_awaited_once()
 
+    @pytest.mark.parametrize("connector", ["GMAIL", "GMAIL WORKSPACE"])
+    @pytest.mark.asyncio
+    async def test_graph_fallback_opens_gmail_link_as_the_viewer(self, connector) -> None:
+        """A record read by id comes straight from the graph; its Gmail link must
+        carry the viewer's email, not the ``{user.email}`` placeholder."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(document={
+            "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1", "connectorName": connector,
+            "webUrl": "https://mail.google.com/mail?authuser={user.email}#all/m1",
+        })
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key", "email": "viewer@acme.com"},
+        )
+        seen: list[str | None] = []
+
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
+            seen.append(graph_map[vrid].get("webUrl"))
+            results_map[vrid] = {"id": "r1", "weburl": graph_map[vrid].get("webUrl")}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(config_service=graph_provider.config_service)
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+            )
+
+        assert result["ok"] is True
+        assert seen == ["https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"]
+
+    @pytest.mark.asyncio
+    async def test_pattern_match_map_entry_opens_gmail_link_as_the_viewer(self) -> None:
+        """Pattern match leaves raw graph documents in the map; fetching one
+        resolves its link too."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key", "email": "viewer@acme.com"},
+        )
+        results_map = {"vrid-1": {
+            "id": "r1", "virtualRecordId": "vrid-1", "connectorName": "GMAIL WORKSPACE",
+            "webUrl": "https://mail.google.com/mail?authuser={user.email}#all/m1",
+        }}
+        seen: list[str | None] = []
+
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
+            seen.append(graph_map[vrid].get("webUrl"))
+            results_map[vrid] = {"id": "r1", "record_name": "Hi"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(config_service=graph_provider.config_service)
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], results_map, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+            )
+
+        assert result["ok"] is True
+        assert seen == ["https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"]
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_leaves_other_connectors_links_alone(self) -> None:
+        from app.utils import fetch_full_record as ffr
+
+        url = "https://drive.google.com/file/d/{user.email}/view"
+        graph_provider = self._make_graph_provider(document={
+            "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1", "connectorName": "DRIVE",
+            "webUrl": url,
+        })
+        seen: list[str | None] = []
+
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
+            seen.append(graph_map[vrid].get("webUrl"))
+            results_map[vrid] = {"id": "r1"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(config_service=graph_provider.config_service)
+            await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+            )
+
+        assert seen == [url]
+
     @pytest.mark.asyncio
     async def test_graph_fallback_endpoint_config_exception(self):
         """If fetching endpoints config raises, we still proceed with frontend_url=None."""
