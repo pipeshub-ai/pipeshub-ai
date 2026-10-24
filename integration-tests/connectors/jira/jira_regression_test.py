@@ -108,13 +108,36 @@ TRASH_KEY = os.getenv("JIRA_IT_TRASH_PROJECT_KEY", "").strip()
 # =============================================================================
 
 
+def _media_adf(text: str, *, images: tuple[str, ...] = (), files: tuple[str, ...] = ()) -> dict[str, Any]:
+    """ADF that shows ``images`` inline and links ``files``, each naming its attachment by
+    ``alt`` the way Jira Cloud's own editor does (the connector reads those names)."""
+    content: list[dict[str, Any]] = [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]
+    for name in images:
+        content.append({"type": "mediaSingle", "attrs": {"layout": "align-start"}, "content": [
+            {"type": "media", "attrs": {"type": "file", "id": str(uuid.uuid4()), "collection": "", "alt": name}}]})
+    if files:
+        content.append({"type": "mediaGroup", "content": [
+            {"type": "media", "attrs": {"type": "file", "id": str(uuid.uuid4()), "collection": "", "alt": name}}
+            for name in files]})
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def _wiki(text: str, *, images: tuple[str, ...] = (), files: tuple[str, ...] = ()) -> str:
+    return "\n\n".join([text, *(f"!{name}!" for name in images), *(f"[^{name}]" for name in files)])
+
+
 class JiraRaw:
-    """Basic-auth calls on the test's own URL: v2 wiki markup (the only way text can name an
-    attachment), multipart uploads, bulk move and project key changes."""
+    """Basic-auth calls on the test's own URL: bodies that name attachments, multipart uploads,
+    bulk move and project key changes.
+
+    A body goes as v2 wiki markup where the site serves v2, which on a real site is the one way
+    text can name an attachment, and as v3 ADF with media nodes where it does not (the
+    simulator serves only v3)."""
 
     def __init__(self) -> None:
         self.base = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
         self.auth = aiohttp.BasicAuth(os.getenv("JIRA_TEST_EMAIL") or "", os.getenv("JIRA_TEST_API_TOKEN") or "")
+        self.v3_only = False
 
     async def call(self, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
         headers = {"Accept": "application/json", **kwargs.pop("headers", {})}
@@ -128,14 +151,40 @@ class JiraRaw:
                     return resp.status, body
         return 429, None
 
-    async def comment(self, key: str, text: str, *, role: Optional[str] = None) -> tuple[int, Any]:
-        payload: dict[str, Any] = {"body": text}
-        if role:
-            payload["visibility"] = {"type": "role", "value": role}
-        return await self.call("POST", f"/rest/api/2/issue/{key}/comment", json=payload)
+    async def _v2_or_v3(
+        self, method: str, path: str, text: str, place: Any, extra: dict[str, Any],
+        images: tuple[str, ...], files: tuple[str, ...],
+    ) -> tuple[int, Any]:
+        """``place(body)`` puts the body where the request carries it."""
+        if not self.v3_only:
+            status, body = await self.call(
+                method, f"/rest/api/2{path}", json={**place(_wiki(text, images=images, files=files)), **extra})
+            if status != 404:
+                return status, body
+        status, body = await self.call(
+            method, f"/rest/api/3{path}", json={**place(_media_adf(text, images=images, files=files)), **extra})
+        # A 404 on v2 that v3 answers means the site has no v2, not that the issue is missing.
+        self.v3_only = self.v3_only or status < 300
+        return status, body
 
-    async def describe(self, key: str, wiki: str) -> int:
-        status, _ = await self.call("PUT", f"/rest/api/2/issue/{key}", json={"fields": {"description": wiki}})
+    async def comment(
+        self, key: str, text: str, *, role: Optional[str] = None, files: tuple[str, ...] = (),
+    ) -> tuple[int, Any]:
+        extra = {"visibility": {"type": "role", "value": role}} if role else {}
+        return await self._v2_or_v3(
+            "POST", f"/issue/{key}/comment", text, lambda body: {"body": body}, extra, (), files)
+
+    async def edit_comment(self, key: str, comment_id: str, text: str, *, role: str | None = None) -> int:
+        extra = {"visibility": {"type": "role", "value": role}} if role else {}
+        status, _ = await self._v2_or_v3(
+            "PUT", f"/issue/{key}/comment/{comment_id}", text, lambda body: {"body": body}, extra, (), ())
+        return status
+
+    async def describe(
+        self, key: str, text: str, *, images: tuple[str, ...] = (), files: tuple[str, ...] = (),
+    ) -> int:
+        status, _ = await self._v2_or_v3(
+            "PUT", f"/issue/{key}", text, lambda body: {"fields": {"description": body}}, {}, images, files)
         return status
 
     async def attach(self, key: str, name: str, content: bytes, mime: str = "text/plain") -> Optional[str]:
@@ -322,9 +371,9 @@ class TestJiraServedContent:
             secret_file = await raw.attach(key, f"{secret}.txt", b"secret file")
             if not public_file or not secret_file:
                 pytest.skip("the source does not accept attachments")
-            status, _ = await raw.comment(key, f"{public} see [^{public}.txt]")
+            status, _ = await raw.comment(key, f"{public} see", files=(f"{public}.txt",))
             assert status in (200, 201), f"public comment: HTTP {status}"
-            status, _ = await raw.comment(key, f"{secret} see [^{secret}.txt]", role="Administrators")
+            status, _ = await raw.comment(key, f"{secret} see", files=(f"{secret}.txt",), role="Administrators")
             if status not in (200, 201):
                 pytest.skip(f"the source refuses a role-restricted comment (HTTP {status})")
 
@@ -376,8 +425,8 @@ class TestJiraServedContent:
             made.append((issue_id, key))
             if not await raw.attach(key, f"{tag}.png", png, "image/png") or not await raw.attach(key, f"{tag}.txt", b"report"):
                 pytest.skip("the source does not accept attachments")
-            if await raw.describe(key, f"{tag} the chart\n\n!{tag}.png!\n\nand [^{tag}.txt]") not in (200, 204):
-                pytest.skip("the source does not take a v2 wiki description")
+            if await raw.describe(key, f"{tag} the chart", images=(f"{tag}.png",), files=(f"{tag}.txt",)) not in (200, 204):
+                pytest.skip("the source does not take a description that names its attachments")
             async with _connector(pipeshub_client, graph_provider, "image", [reg_scope["mutation_key"]]) as cid:
                 await _poll(lambda: _record_present(graph_provider, cid, issue_id), f"{key} synced")
                 await _poll(lambda: _has_file(graph_provider, cid, issue_id, f"{tag}.txt"), "the linked file")
@@ -730,12 +779,10 @@ class TestJiraLaterChanges:
                 assert all(m in served for m in (restricted, original, deleted)), "a public comment is missing"
                 before = await graph_provider.get_record_by_external_id(cid, issue_id)
 
-                status, _ = await raw.call("PUT", f"/rest/api/2/issue/{key}/comment/{comment_ids[restricted]}",
-                                           json={"body": restricted, "visibility": {"type": "role", "value": "Administrators"}})
+                status = await raw.edit_comment(key, comment_ids[restricted], restricted, role="Administrators")
                 if status != 200:
                     pytest.skip(f"the source refuses to restrict a comment (HTTP {status})")
-                status, _ = await raw.call("PUT", f"/rest/api/2/issue/{key}/comment/{comment_ids[original]}",
-                                           json={"body": edited})
+                status = await raw.edit_comment(key, comment_ids[original], edited)
                 assert status == 200, f"comment edit: HTTP {status}"
                 status, _ = await raw.call("DELETE", f"/rest/api/3/issue/{key}/comment/{comment_ids[deleted]}")
                 assert status == 204, f"comment delete: HTTP {status}"
