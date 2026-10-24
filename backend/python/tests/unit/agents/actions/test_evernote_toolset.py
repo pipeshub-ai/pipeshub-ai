@@ -220,11 +220,14 @@ async def test_list_results_are_valid_responses(evernote, stores) -> None:
     assert response.data == [{"guid": "nb1", "name": "Work"}]
 
 
-def test_the_registry_discovers_all_ten_tools() -> None:
+def test_the_registry_discovers_all_ten_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     # The module is off by default in the registry's standard list; loading it
     # explicitly must work and expose every tool.
     from app.agents.registry.toolset_registry import ToolsetRegistry
 
+    # The registry is a process-wide singleton. Left holding only Evernote, it
+    # makes tool_surface treat every internal toolset as a live connector.
+    monkeypatch.setattr(ToolsetRegistry, "_instance", None)
     registry = ToolsetRegistry()
     registry.discover_toolsets(["app.agents.actions.evernote.evernote"])
     metadata = registry.get_toolset_metadata("evernote")
