@@ -222,7 +222,7 @@ export function AgentBuilderHeader(props: {
               ) : null}
             </Box>
             {isServiceAccount ? (
-              <Tooltip content={t('agentBuilder.serviceAccountBadgeTooltip')}>
+              <Tooltip content={t('agentBuilder.serviceAgentBadgeTooltip')}>
                 <Badge
                   size="2"
                   color="jade"
@@ -237,7 +237,7 @@ export function AgentBuilderHeader(props: {
                   }}
                 >
                   <MaterialIcon name="admin_panel_settings" size={16} style={{ color: 'var(--accent-11)' }} />
-                  {t('agentBuilder.serviceAccountBadge')}
+                  {t('agentBuilder.serviceAgentBadge')}
                 </Badge>
               </Tooltip>
             ) : null}
@@ -348,7 +348,7 @@ export function AgentBuilderHeader(props: {
           <Tooltip
             content={
               isServiceAccount
-                ? t('agentBuilder.serviceAccountShareTooltip')
+                ? t('agentBuilder.serviceAgentShareTooltip')
                 : t('agentBuilder.shareWithOrgTooltip')
             }
           >
@@ -379,8 +379,8 @@ export function AgentBuilderHeader(props: {
           <Tooltip
             content={
               editing
-                ? t('agentBuilder.convertToServiceAccountTooltip')
-                : t('agentBuilder.convertToServiceAccountTooltipNewAgent')
+                ? t('agentBuilder.convertToServiceAgentTooltip')
+                : t('agentBuilder.convertToServiceAgentTooltipNewAgent')
             }
           >
             <Button

@@ -508,7 +508,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     const q = new URLSearchParams(window.location.search);
     if (q.get('sa') !== '1') return;
     saWelcomeShownRef.current = true;
-    setSuccess(t('agentBuilder.serviceAccountCreated'));
+    setSuccess(t('agentBuilder.serviceAgentCreated'));
     q.delete('sa');
     const path = window.location.pathname;
     const rest = q.toString();
@@ -765,7 +765,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           agentName: agentName.trim(),
           shareWithOrg: true,
         });
-        setSuccess(t('agentBuilder.serviceAccountConverted'));
+        setSuccess(t('agentBuilder.serviceAgentConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
         invalidateModelsForContext(created._key);
@@ -885,7 +885,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           ? undefined
           : (ts) => {
               if (!effectiveAgentKey) {
-                setBanner(t('agentBuilder.saveAsServiceAccountFirst'));
+                setBanner(t('agentBuilder.saveAsServiceAgentFirst'));
                 return;
               }
               if (!ts.instanceId) return;
