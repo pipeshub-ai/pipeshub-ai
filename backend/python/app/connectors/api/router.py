@@ -111,7 +111,7 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
-from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
+from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -560,6 +560,13 @@ async def _resolve_record_content_response(
     new agent-facing internal content endpoint, so the routing decision lives
     in exactly one place.
     """
+    # A placeholder is a navigation stub with no content of its own.
+    if getattr(record, "is_placeholder", False) is True:
+        raise not_downloadable(
+            "This item is a placeholder and has no content to open.",
+            connector=getattr(record.connector_name, "value", None),
+        )
+
     if convert_to == MimeTypes.PDF.value:
         # Before fetching, so a failed fetch cannot hide why there is no preview.
         _refuse_epub_pdf_preview(get_pdf_conversion_info(record)[2])

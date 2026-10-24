@@ -452,10 +452,13 @@ class IssuesSync:
             if not isinstance(item, dict) or not item.get("number"):
                 continue
             target_repo_id = (item.get("repository") or {}).get("id") or repo.id
+            # Another repository's title is not ours to copy: its stub can end up
+            # in this repository's group. Cross-repo links fall back to the id.
+            same_repo = str(target_repo_id) == str(repo.id)
             related.append(RelatedExternalRecord(
                 external_record_id=f"{target_repo_id}/issues/{item['number']}",
                 record_type=RecordType.TICKET,
-                record_name=item.get("title"),
+                record_name=item.get("title") if same_repo else None,
                 relation_type=RecordRelations.BLOCKS,
             ))
         return related
