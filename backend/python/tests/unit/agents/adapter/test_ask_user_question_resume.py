@@ -33,7 +33,7 @@ def test_detects_synthetic_resume_query() -> None:
 def test_last_real_user_query_skips_resume_rows() -> None:
     previous = [
         {"role": "user_query", "content": "See below attached file(s)."},
-        {"role": "bot_response", "content": "Which editor?"},
+        {"role": "bot_response", "content": "Which editor?", "tool_results": [_ask_result()]},
         {"role": "user_query", "content": 'User selections:\n1. "Which?" → Vim'},
     ]
     assert last_real_user_query(previous, "fallback") == "See below attached file(s)."
@@ -580,7 +580,7 @@ def test_resume_prefix_is_found_after_leading_whitespace_only() -> None:
 def test_goal_survives_several_cards_in_a_row() -> None:
     previous = [
         {"role": "user_query", "content": "Compare Asana Q3 vs Q4"},
-        {"role": "bot_response", "content": ""},
+        {"role": "bot_response", "content": "", "tool_results": [_ask_result()]},
         {"role": "user_query", "content": 'User selections:\n1. "FY?" → FY2024'},
         {"role": "bot_response", "content": ""},
         {"role": "user_query", "content": 'User selections:\n1. "Scope?" → Revenue'},
@@ -696,6 +696,7 @@ def test_goal_is_the_latest_real_message_when_history_has_no_card() -> None:
 
 @pytest.mark.parametrize("previous", [None, [], [{"role": "bot_response", "content": "hi"}],
                                       [{"role": "user_query", "content": "   "}],
-                                      [{"role": "user_query", "content": 'User selections:\n1. "A?" → B'}]])
+                                      [{"role": "bot_response", "content": "", "tool_results": [_ask_result()]},
+                                       {"role": "user_query", "content": 'User selections:\n1. "A?" → B'}]])
 def test_goal_falls_back_when_history_has_no_real_question(previous) -> None:
     assert last_real_user_query(previous, "fallback") == "fallback"
