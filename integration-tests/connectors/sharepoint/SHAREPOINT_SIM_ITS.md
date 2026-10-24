@@ -64,6 +64,14 @@ catches a stack where Microsoft's names do not lead to the simulator.
 - `sharepoint_sim_sync_test.py`, `sharepoint_sim_access_test.py`, `sharepoint_sim_deletion_test.py`,
   `sharepoint_sim_failure_test.py`: the tests.
 
+## In CI
+
+`.github/workflows/integration-tests.yml` runs the suite on shard `connectors-2` (and on a dispatch of
+`sharepoint_sim`). The simulator image is built from `CONNSIM_REF`, like the Atlassian and Gmail
+simulators. The "Use the SharePoint simulator" step makes the TLS material, loads `sharepoint_sim.env`, and
+sets `SHAREPOINT_SIM_COMPOSE`, which adds the override to every compose call of that job. Only that shard
+gets the override, so the live `sharepoint` suite (shard 1) never meets the simulator.
+
 ## Running it locally
 
 1. Build the simulator image from connectors-simulator (`docker build -t pipeshub/connectors-simulator:it .`).

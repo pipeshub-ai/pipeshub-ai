@@ -29,6 +29,7 @@ on:
             - bookstack
             - minio
             - sharepoint
+            - sharepoint_sim
             - confluence
             - jira
             - zendesk
@@ -316,8 +317,9 @@ jobs:
       # integration-tests/connectors/atlassian_sim.env, loaded by the
       # "Use the Atlassian simulators" step. CONNSIM_REF pins the simulator commit
       # the image is built from and CONNSIM_PACK_* the content pack it serves;
-      # together they fix every fixture value in that env file.
-      CONNSIM_REF: fcfe407746e1ecd254b30731a8d78479c58f59d9
+      # together they fix every fixture value in that env file. The pinned commit is
+      # the Atlassian simulators exactly as fcfe407 had them, plus the SharePoint simulator.
+      CONNSIM_REF: 7ae65ec0b4eb37bdaf1682a5a4ebef8156bd7408
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-1.tar.gz
       CONNSIM_PACK_SHA256: d39e021dc029ebd3c6e8af29b7dc8de161020ecc0818411204d6ce585db2d725
@@ -325,6 +327,12 @@ jobs:
       # Google credentials; connectors/gmail_sim.env points the Gmail connectors at it.
       NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
       NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
+      # The sharepoint_sim suite runs against the SharePoint simulator on shard 2. It is not a profile: the
+      # connector calls Microsoft's fixed host names over HTTPS, so docker-compose.integration.sharepoint-sim.yml
+      # answers them through a TLS front under those names and has the app trust its CA. The "Use the SharePoint
+      # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE. No other suite on
+      # shard 2 reaches Microsoft Graph or Entra ID; the live sharepoint suite stays on shard 1.
+      NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -400,7 +408,7 @@ jobs:
       # A new connector suite goes on CONN_SHARD_4; shards 1-3 are full.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or sharepoint_sim"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual or gmail_workspace or gmail_individual"
       # Routed through env (never interpolated into the shell) so untrusted
@@ -452,7 +460,7 @@ jobs:
       # read it (CONNSIM_REPO_TOKEN). Without one the step fails rather than letting
       # the Confluence and Jira suites skip on a missing source.
       - name: Check out the Atlassian simulators
-        if: env.NEEDS_ATLASSIAN_SIM == 'true' || env.NEEDS_GMAIL_SIM == 'true'
+        if: env.NEEDS_ATLASSIAN_SIM == 'true' || env.NEEDS_GMAIL_SIM == 'true' || env.NEEDS_SHAREPOINT_SIM == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: pipeshub-ai/connectors-simulator
@@ -490,6 +498,19 @@ jobs:
             docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
           fi
           grep -Ev '^\s*(#|$)' integration-tests/connectors/gmail_sim.env >> "$GITHUB_ENV"
+
+      # The SharePoint simulator is in the same image and needs no dataset: each test loads its own tenant.
+      # make-certs.sh makes a CA for this run only (its key is deleted, both certificates expire in two days).
+      - name: Use the SharePoint simulator
+        if: env.NEEDS_SHAREPOINT_SIM == 'true'
+        run: |
+          if [ "$NEEDS_ATLASSIAN_SIM" != "true" ] && [ "$NEEDS_GMAIL_SIM" != "true" ]; then
+            docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
+          fi
+          deployment/docker-compose/sharepoint-sim/make-certs.sh "$RUNNER_TEMP/sharepoint-sim-tls"
+          echo "SHAREPOINT_SIM_TLS_DIR=$RUNNER_TEMP/sharepoint-sim-tls" >> "$GITHUB_ENV"
+          echo "SHAREPOINT_SIM_COMPOSE=-f docker-compose.integration.sharepoint-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/sharepoint_sim.env >> "$GITHUB_ENV"
 
       - name: Pull pre-built base images
         run: |
@@ -561,7 +582,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -730,23 +751,23 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
 
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -890,17 +911,17 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
-            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
 
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'
