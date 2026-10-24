@@ -3772,7 +3772,10 @@ class ConfluenceConnector(BaseConnector):
     async def _with_current_access(
         self, item_data: dict[str, Any], record_type: RecordType, existing_record: Record
     ) -> tuple[Record, list[Permission]] | None:
-        """A stored page, blog post or folder with its access read again; None when that could not be read."""
+        """A stored page, blog post or folder with its access read again.
+
+        None when the item could not be read into a record; raises when its restrictions could not be read.
+        """
         item_id = str(item_data.get("id"))
         # Transform to WebpageRecord (a folder is a FileRecord)
         record = (
@@ -3781,14 +3784,12 @@ class ConfluenceConnector(BaseConnector):
             else self._transform_to_webpage_record(item_data, record_type, existing_record)
         )
         if not record:
-            self.logger.warning(f"Could not read {item_id} to update its access; keeping what is stored")
             return None
         # A stub of an item the filters leave out stays a stub: only its access changes.
         record.is_placeholder = bool(getattr(existing_record, "is_placeholder", False))
         permissions = await self._fetch_page_permissions(item_id)
         if permissions is None:
-            self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
-            return None
+            raise ValueError(f"Restrictions for {item_id} could not be read; keeping what is stored")
         # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
         record.access_rule = (
             AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
@@ -3850,7 +3851,13 @@ class ConfluenceConnector(BaseConnector):
                 for item in results:
                     item_id = str(item.get("id")) if isinstance(item, dict) else None
                     if item_id in stored:
-                        refreshed = await self._with_current_access(item, record_type, stored[item_id])
+                        try:
+                            refreshed = await self._with_current_access(item, record_type, stored[item_id])
+                        except AtlassianQuotaExhausted:
+                            raise
+                        except Exception as e:
+                            self.logger.warning(f"Could not update the access of {item_id}: {e}")
+                            continue
                         if refreshed is not None:
                             batch.append(refreshed)
                             failed.discard(item_id)
@@ -4037,7 +4044,6 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
                             refreshed = await self._with_current_access(item_data, record_type, existing_record)
                             if refreshed is None:
-                                has_failures = True
                                 continue
                             total_permissions += len(refreshed[1])
                             records_with_permissions.append(refreshed)
