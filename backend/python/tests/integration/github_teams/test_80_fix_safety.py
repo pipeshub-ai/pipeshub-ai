@@ -13,7 +13,8 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
-from tests.integration.github_teams.helpers import fail_from_nth
+from tests.integration.github_teams.helpers import fail_from_nth, on
+from tests.integration.github_teams.sim.model import Fault
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 BOTH_TRASH_MODES = True
@@ -188,6 +189,25 @@ async def test_issue_listing_answering_empty_removes_nothing(world, org) -> None
     await _forget_issue_total(world, repo)  # so the number sweep runs
     await world.sync()
     assert len(await world.names("TICKET")) == 3
+
+
+async def test_issue_count_that_could_not_be_read_holds_the_checkpoint_back(world, org) -> None:
+    """The removal check compares GitHub's issue count with the last one plus the issues
+    created since the checkpoint. If the count cannot be read, the checkpoint must not
+    move: an issue created then and one deleted later would cancel out, and the deleted
+    issue would stay in PipesHub."""
+    gh, repo = world.gh, org["repo"]
+    old = [gh.add_issue(repo, f"I{n}") for n in range(3)]
+    await world.sync()
+    gh.add_issue(repo, "New")
+    graphql_down = Fault(on("api.github.com/graphql", method="POST"), kind="status", status=502, times=None)
+    gh.faults.append(graphql_down)
+    await world.sync(expect_error=True)
+    gh.faults.remove(graphql_down)
+    gh.delete_issue(old[0])
+    await world.sync()
+    diff = await world.diff()
+    assert diff.clean(), diff
 
 
 async def test_repository_shifted_out_of_an_org_listing_is_not_removed(world, org) -> None:

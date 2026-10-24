@@ -297,12 +297,14 @@ class IssuesSync:
             await c.comments.settle_stored_attachments(group_id)
             await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
         new_checkpoint = dict(checkpoint)
-        if watermarks.get(group_id):
-            new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]
         ok, total = await self._reconcile_removed_issues(
             repo, group_id, checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value), len(created),
             datetime_to_epoch_ms(window_dt),
         )
+        # The watermark moves only with the total: the next count check adds the issues
+        # created since the watermark to the stored total, so the two must stay paired.
+        if ok and watermarks.get(group_id):
+            new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]
         if total is not None:
             new_checkpoint[GitHubLiterals.ISSUE_TOTAL.value] = total
         if new_checkpoint != checkpoint:
