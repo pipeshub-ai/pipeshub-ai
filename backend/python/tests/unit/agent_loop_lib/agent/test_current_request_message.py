@@ -3,7 +3,7 @@ CE-07), and every default system prompt says what a context note is (CE-05)."""
 
 from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent import goal as goal_module
@@ -16,6 +16,9 @@ from app.agent_loop_lib.core.types import Goal, Intent
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _spec() -> AgentSpec:
