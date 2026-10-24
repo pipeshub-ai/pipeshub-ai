@@ -56,6 +56,8 @@ class TestEnvInt:
         assert env_int(_VAR) is None
         assert env_int(_VAR, default=None) is None
         assert env_int(_VAR, default=42) == 42
+        assert env_int(_VAR, default=2, lo=5, hi=10) == 2
+        assert env_int(_VAR, default=12, lo=5, hi=10) == 12
 
     @pytest.mark.parametrize("raw_val", ["", " "])
     def test_blank_or_whitespace_returns_default(
