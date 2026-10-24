@@ -156,7 +156,7 @@ describe('OAuthAppService', () => {
         message = error.message ?? ''
       }
 
-      expect(message).to.contain('Service account not found')
+      expect(message).to.contain('was not found in this organisation')
       expect(createStub.called).to.equal(false)
     })
 

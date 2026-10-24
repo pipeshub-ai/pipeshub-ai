@@ -129,7 +129,7 @@ describe('pointing an OAuth app at a service account', () => {
       await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
       expect.fail('expected a non-service account to be refused');
     } catch (error) {
-      expect((error as Error).message).to.equal('Service account not found');
+      expect((error as Error).message).to.contain('was not found in this organisation');
     }
     expect(findOne.firstCall.args[0]).to.include({ kind: 'service' });
   });

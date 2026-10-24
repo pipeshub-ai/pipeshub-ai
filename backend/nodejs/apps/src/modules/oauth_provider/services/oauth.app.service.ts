@@ -246,7 +246,10 @@ export class OAuthAppService {
     orgId: string,
   ): Promise<Types.ObjectId> {
     if (!Types.ObjectId.isValid(serviceAccountId)) {
-      throw new NotFoundError('Service account not found');
+      throw new NotFoundError(
+        'That service account was not found in this organisation. Choose one ' +
+          'from Workspace → Service accounts, or create one there first.',
+      );
     }
 
     const serviceAccount = await Users.findOne({
@@ -260,7 +263,10 @@ export class OAuthAppService {
       .exec();
 
     if (!serviceAccount) {
-      throw new NotFoundError('Service account not found');
+      throw new NotFoundError(
+        'That service account was not found in this organisation. Choose one ' +
+          'from Workspace → Service accounts, or create one there first.',
+      );
     }
     if (serviceAccount.isDisabled === true) {
       throw new BadRequestError(

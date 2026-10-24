@@ -119,11 +119,14 @@ export class AuthMiddleware {
     // identity the token acts as.
     //
     // Read from the app record every time, rather than trusting the
-    // `createdBy` the token was minted with. An administrator can point an
-    // app at a service account, and that has to take effect for tokens
-    // already issued: the whole reason to do it is to stop those tokens
-    // acting as a person, and a change that waits for every outstanding token
-    // to be re-minted would not stop anything.
+    // `createdBy` the token was minted with: the record is the authority on
+    // whose documents these tokens reach.
+    //
+    // A token that disagrees with it is refused below rather than honoured
+    // under the identity it was minted with. It is not re-pointed at the
+    // current one — pointing an app at a different service account revokes
+    // the tokens it has already issued, so a disagreeing claim should not
+    // arrive at all.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
       try {
