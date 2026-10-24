@@ -40390,7 +40390,8 @@ paths:
         Treat breadcrumb entries as labels, not as nodes guaranteed to be
         navigable.
 
-        **A connected app with a limit:** the opened record's `context_block` names nothing
+        **A connected app with a limit:** the opened record's `context_block`, and each row's
+        `context_summary`, names nothing
         outside the limit beside the record. Its `External Parent ID` reads
         `N/A` for a parent the limit leaves out, and a code file's `Path:`
         line is left out unless the limit covers the whole app. Linked
