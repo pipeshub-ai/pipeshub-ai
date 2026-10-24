@@ -652,7 +652,7 @@ async def _root_inside_connection(
     return response
 
 
-def _offer_whole_apps_only(response: Any, whole_apps: list[str]) -> None:
+def _offer_whole_apps_only(response: KnowledgeHubNodesResponse, whole_apps: list[str]) -> None:
     """A filter option carries its app's or collection's own name, so a
     connected app with a limit is offered only those its limit covers whole:
     not one it covers in part, nor one outside it. The root listing is read
