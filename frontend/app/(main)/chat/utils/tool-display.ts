@@ -126,16 +126,23 @@ export function toolStatusLabel(toolName: string, displayName?: string): string 
  * `tool_summarizer.py`) and in chat modes (`execute_sql_query`). */
 const SQL_QUERY_TOOL_NAMES = new Set(['sql__execute_sql_query', 'execute_sql_query']);
 
-/** Reads a JSON string field out of JSON that may be cut off: the client and
- * server both cap `args`, so a long query can leave invalid JSON behind. */
+/** Ends a value read out of cut-off JSON, the way the server marks a value it
+ * shortens, so a prefix such as `... WHERE active = true` never reads as the whole query. */
+const CUT_OFF_MARKER = '… [truncated]';
+
+/** Reads a JSON string field out of JSON that may be cut off: args streamed by a
+ * server that sends no `argsPreview`, or saved before the server shortened values
+ * in place. A value the cut reached ends in `CUT_OFF_MARKER`. */
 function extractTruncatedJsonStringField(text: string, key: string): string | undefined {
-  const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(text);
+  const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(")?`).exec(text);
   if (!match) return undefined;
   // Drop a `\uXX` escape that the cap cut in half, unless its backslash is itself escaped.
   const raw = match[1].replace(/(^|[^\\])((?:\\\\)*)\\u[0-9a-fA-F]{0,3}$/, '$1$2');
   try {
     const value = JSON.parse(`"${raw}"`) as string;
-    return value.trim() ? value : undefined;
+    if (!value.trim()) return undefined;
+    const closed = match[2] !== undefined;
+    return closed ? value : `${value}${CUT_OFF_MARKER}`;
   } catch {
     return undefined;
   }

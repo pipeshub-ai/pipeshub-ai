@@ -134,13 +134,20 @@ describe('extractSqlQuery', () => {
     expect(extractSqlQuery('sql__execute_sql_query', 'null')).toBeUndefined();
   });
 
-  it('recovers the query from args cut off by the length cap', () => {
-    const full = args('SELECT "name",\n  id FROM users');
-    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf('FROM') + 4))).toBe(
-      'SELECT "name",\n  id FROM',
+  it('marks a query that args cut off by the length cap leave unfinished', () => {
+    const full = args('SELECT id FROM users WHERE active = true AND secret = false');
+    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf(' AND')))).toBe(
+      'SELECT id FROM users WHERE active = true… [truncated]',
     );
     const cutInEscape = JSON.stringify({ query: 'SELECT \'é\'' }).replace('é', '\\u00e9').slice(0, -6);
-    expect(extractSqlQuery('sql__execute_sql_query', cutInEscape)).toBe("SELECT '");
-    expect(extractSqlQuery('sql__execute_sql_query', '{"query": "SELECT \\')).toBe('SELECT ');
+    expect(extractSqlQuery('sql__execute_sql_query', cutInEscape)).toBe("SELECT '… [truncated]");
+    expect(extractSqlQuery('sql__execute_sql_query', '{"query": "SELECT \\')).toBe('SELECT … [truncated]');
+  });
+
+  it('keeps a query whole when the cut falls in an argument after it', () => {
+    const full = args('SELECT "name",\n  id FROM users');
+    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf('Postgre')))).toBe(
+      'SELECT "name",\n  id FROM users',
+    );
   });
 });
