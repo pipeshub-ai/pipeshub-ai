@@ -1060,6 +1060,7 @@
     "stoppedMarker": "Zastaveno",
     "toolCard": {
       "arguments": "Argumenty",
+      "query": "Dotaz",
       "result": "Výsledek",
       "error": "Chyba",
       "blocked": "Blokováno",
