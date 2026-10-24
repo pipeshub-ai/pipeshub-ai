@@ -155,6 +155,29 @@ class TestFailedBuckets:
         assert f"{BUCKET}/a.txt" in db.paths()
         assert not connector.full_sync_coverage().complete
 
+    @pytest.mark.asyncio
+    async def test_an_empty_bucket_whose_listing_fails_keeps_the_cleanup_waiting(self, connector, db) -> None:
+        """Its stored group is not written this run, so a complete run would unlink the group's edges."""
+        connector.data_source.denied.clear()
+        await connector.run_sync()
+        assert DENIED[0] in db.record_groups
+        connector.data_source.stores[DENIED[0]].fail_page = 0
+
+        await connector.run_sync()
+
+        assert not connector.full_sync_coverage().complete
+        assert DENIED[0] in db.record_groups
+
+    @pytest.mark.asyncio
+    async def test_an_unsure_group_check_keeps_the_cleanup_waiting(self, connector, db) -> None:
+        connector.data_source.denied.clear()
+        await connector.run_sync()
+        connector.data_source.stores[DENIED[0]].fail_page = 0
+        db.failing.add("get_nodes_by_filters")
+
+        await connector.run_sync()
+
+        assert not connector.full_sync_coverage().complete
 
     @pytest.mark.asyncio
     async def test_a_failed_group_write_fails_the_run_and_is_not_called_a_listing_failure(

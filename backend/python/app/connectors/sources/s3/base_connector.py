@@ -811,14 +811,33 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.data_entities_processor, self.connector_id, bucket_name, scope.list_prefixes, listed, self.logger
             )
         else:
-            # Only stored records need the full sync to keep its hands off; a bucket that never
-            # had any (one the key can list but not read) must not stop every full sync's cleanup.
-            if recorded:
+            # Only a bucket with stored records or a stored group needs the full sync to keep its
+            # hands off; one never read (the key can list it but not read it) must not stop every
+            # full sync's cleanup. A group not written this run would otherwise lose its edges.
+            if recorded or await self._unwritten_group_is_stored(bucket_name):
                 self._skipped_part_of_a_bucket = True
             self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
         )
+
+    async def _unwritten_group_is_stored(self, bucket_name: str) -> bool:
+        """Whether the bucket has a stored group this full sync has not written. Unsure counts as yes."""
+        if self._bucket_groups_written is not None and bucket_name in self._bucket_groups_written:
+            return False
+        try:
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={
+                    "connectorId": self.connector_id,
+                    "groupType": RecordGroupType.BUCKET.value,
+                    "externalGroupId": bucket_name,
+                },
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not check for a stored group of bucket {bucket_name}: {e}")
+            return True
+        return bool(groups)
 
     async def _claim_records_of_gone_copies(self, bucket_name: str, unrecorded: list[dict], listed: set[str]) -> None:
         """Process the unchanged objects that have no record of their own, when that is safe.
