@@ -1904,6 +1904,7 @@
         "errorLifetimeInvalid": "Zadejte platné doby platnosti (celé sekundy, nejméně 1).",
         "identityBoundNote": "Tokeny této aplikace jednají jménem přiřazeného servisního účtu. Jeho změna zneplatní již vydané tokeny.",
         "identityUnboundNote": "Tokeny této aplikace jednají jménem toho, kdo ji vytvořil, s jeho přístupem k dokumentům a jeho rolí — u správce to znamená správcovský přístup. Přiřaďte jí místo toho servisní účet.",
+        "identityAdminOnly": "Servisní účet může této aplikaci přiřadit pouze správce. Požádejte o to některého z nich.",
         "identityBindAction": "Použít tento účet",
         "identityBindRevokes": "Tím se zneplatní tokeny, které aplikace již vydala. Vše, co je používá, bude potřebovat nový.",
         "identityBound": "Aplikace nyní jedná jménem tohoto servisního účtu.",

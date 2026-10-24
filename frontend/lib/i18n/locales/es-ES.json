@@ -1770,6 +1770,7 @@
         "errorLifetimeInvalid": "Enter valid lifetimes (whole seconds, at least 1).",
         "identityBoundNote": "Los tokens de esta aplicación actúan como la cuenta de servicio asignada. Cambiarla revoca los tokens ya emitidos.",
         "identityUnboundNote": "Los tokens de esta aplicación actúan como quien la creó, con su acceso a documentos y su rol — si fue un administrador, eso significa acceso de administrador. Asígnele una cuenta de servicio.",
+        "identityAdminOnly": "Solo un administrador puede asignar una cuenta de servicio a esta aplicación. Pídaselo a uno.",
         "identityBindAction": "Usar esta cuenta",
         "identityBindRevokes": "Esto revoca los tokens que la aplicación ya emitió. Todo lo que los use necesitará uno nuevo.",
         "identityBound": "La aplicación ahora actúa como esa cuenta de servicio.",

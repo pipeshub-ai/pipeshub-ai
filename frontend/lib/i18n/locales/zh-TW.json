@@ -1822,6 +1822,7 @@
         "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。",
         "identityBoundNote": "此應用程式的權杖以所指向的服務帳號身分行事。變更它會撤銷已經簽發的權杖。",
         "identityUnboundNote": "此應用程式的權杖以建立它的人的身分行事，擁有其文件權限和角色——如果建立者是管理員，就意味著管理員權限。請改為將其指向一個服務帳號。",
+        "identityAdminOnly": "只有管理員才能為此應用程式指定服務帳號。請聯絡管理員處理。",
         "identityBindAction": "使用此帳號",
         "identityBindRevokes": "此操作會撤銷該應用程式已簽發的權杖。使用它們的一切都需要重新取得。",
         "identityBound": "該應用程式現在以此服務帳號的身分行事。",

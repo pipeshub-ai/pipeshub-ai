@@ -1832,6 +1832,7 @@
         "errorLifetimeInvalid": "Enter valid lifetimes (whole seconds, at least 1).",
         "identityBoundNote": "This application's tokens act as the service account it is pointed at. Changing that revokes the tokens it has already issued.",
         "identityUnboundNote": "This application's tokens act as whoever created it, carrying their document access and their role — so one created by an administrator has administrator access. Point it at a service account instead.",
+        "identityAdminOnly": "Only an administrator can point this application at a service account. Ask one to do it.",
         "identityBindAction": "Use this account",
         "identityBindRevokes": "This revokes the tokens the application has already issued. Anything using them will need a new one.",
         "identityBound": "The application now acts as that service account.",

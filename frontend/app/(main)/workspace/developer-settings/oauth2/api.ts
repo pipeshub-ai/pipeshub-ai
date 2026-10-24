@@ -90,11 +90,12 @@ export const Oauth2Api = {
     id: string,
     serviceAccountId: string
   ): Promise<OAuthClient> {
-    const { data } = await apiClient.put<OAuthClient>(
+    // The controller answers `{ message, app }`, not the app on its own.
+    const { data } = await apiClient.put<{ message: string; app: OAuthClient }>(
       `${BASE_URL}/${id}/token-identity`,
       { serviceAccountId }
     );
-    return data;
+    return data.app;
   },
 
   /**

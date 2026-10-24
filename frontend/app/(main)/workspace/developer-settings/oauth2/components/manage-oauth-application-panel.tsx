@@ -31,6 +31,7 @@ import {
   WorkspaceRightPanel,
 } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { Oauth2Api } from '../api';
 import { ServiceAccountsApi } from '../../../service-accounts/api';
 import type { OAuthClient, OAuthGrantTypeValue, OAuthScopeItem } from '../types';
@@ -215,6 +216,7 @@ export function ManageOAuthApplicationPanel({
 }: ManageOAuthApplicationPanelProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const [activeTab, setActiveTab] = useState<
     'general' | 'scopes' | 'granular' | 'advanced'
@@ -318,9 +320,14 @@ export function ManageOAuthApplicationPanel({
 
   const needsServiceAccount =
     grantTypes.has('client_credentials') && !tokenIdentityUserId;
+  // Listing service accounts and binding one are both administrator-only, and
+  // `setTokenIdentity` additionally filters on `createdBy` — which this panel
+  // already satisfies, since Developer Settings lists only what you created.
+  // So asking for the list as a member earns a 403 and nothing else.
+  const canBindServiceAccount = needsServiceAccount && isAdmin === true;
 
   useEffect(() => {
-    if (!open || !needsServiceAccount) return;
+    if (!open || !canBindServiceAccount) return;
     if (serviceAccounts !== null) return;
     if (serviceAccountsError !== null) return;
 
@@ -344,7 +351,7 @@ export function ManageOAuthApplicationPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, needsServiceAccount, serviceAccounts, serviceAccountsError, t]);
+  }, [open, canBindServiceAccount, serviceAccounts, serviceAccountsError, t]);
 
   const retryServiceAccounts = useCallback(() => {
     setServiceAccountsError(null);
@@ -359,19 +366,19 @@ export function ManageOAuthApplicationPanel({
         clientId,
         chosenServiceAccountId
       );
-      setTokenIdentityUserId(
-        updated?.tokenIdentityUserId ?? chosenServiceAccountId
-      );
+      // Read from the response, not from what we sent: the server is what
+      // decides, and a fallback here would hide it failing to come back.
+      setTokenIdentityUserId(updated.tokenIdentityUserId ?? '');
       setChosenServiceAccountId('');
       addToast({
         variant: 'success',
-        message: t('workspace.oauth2.manageApplication.identityBound'),
+        title: t('workspace.oauth2.manageApplication.identityBound'),
       });
       onSaved?.();
     } catch {
       addToast({
         variant: 'error',
-        message: t('workspace.oauth2.manageApplication.identityBindFailed'),
+        title: t('workspace.oauth2.manageApplication.identityBindFailed'),
       });
     } finally {
       setBindingIdentity(false);
@@ -1190,7 +1197,11 @@ export function ManageOAuthApplicationPanel({
                       >
                         {t('workspace.oauth2.manageApplication.identityUnboundNote')}
                       </Text>
-                      {serviceAccountsError !== null ? (
+                      {!canBindServiceAccount ? (
+                        <Text size="2" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
+                          {t('workspace.oauth2.manageApplication.identityAdminOnly')}
+                        </Text>
+                      ) : serviceAccountsError !== null ? (
                         <Flex align="center" gap="2" mt="2">
                           <Text size="2" style={{ color: 'var(--amber-11)' }}>
                             {serviceAccountsError}
@@ -1242,9 +1253,11 @@ export function ManageOAuthApplicationPanel({
                           </LoadingButton>
                         </Flex>
                       )}
-                      <Text size="1" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
-                        {t('workspace.oauth2.manageApplication.identityBindRevokes')}
-                      </Text>
+                      {canBindServiceAccount && (
+                        <Text size="1" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
+                          {t('workspace.oauth2.manageApplication.identityBindRevokes')}
+                        </Text>
+                      )}
                     </Box>
                   )}
                 </Box>
