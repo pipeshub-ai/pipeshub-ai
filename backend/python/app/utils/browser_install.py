@@ -21,7 +21,8 @@ _CHROMIUM_BROWSERS = frozenset({"chromium", "chromium-headless-shell"})
 # Playwright writes this into a browser's directory once its download is complete.
 _INSTALL_COMPLETE = "INSTALLATION_COMPLETE"
 _INSTALL_MODULES = ("playwright", "patchright")
-_DEFAULT_TIMEOUT_SECONDS = 600.0
+# Per driver: one Chromium download (about 150 MB) on a slow link.
+_INSTALL_TIMEOUT_SECONDS = 600.0
 
 _FAILURE = (
     "Chromium is not installed and the download failed. Use the full image, "
@@ -110,12 +111,10 @@ def _install_under_lock(timeout: float) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-async def ensure_chromium(*, timeout: float | None = None) -> None:
+async def ensure_chromium(*, timeout: float = _INSTALL_TIMEOUT_SECONDS) -> None:
     """Install Playwright and Patchright Chromium if they are not already present."""
     if chromium_installed():
         return
-    if timeout is None:
-        timeout = float(os.environ.get("PIPESHUB_BROWSER_INSTALL_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS))
     try:
         # ``timeout`` bounds each driver's install; the wait has to cover all of them,
         # or a slow but successful install is reported as a failure.
