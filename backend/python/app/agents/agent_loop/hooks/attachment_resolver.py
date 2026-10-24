@@ -266,6 +266,7 @@ async def _rehydrate_citation_maps(
     Returns actual record IDs (``record["id"]``) that were resolved —
     these are the IDs the model should pass to ``dynamic_fetch_full_record``.
     """
+    from app.modules.artifacts.reader import record_artifact_reader
     from app.utils.chat_helpers import CitationRefMapper
     from app.utils.chat_helpers import record_to_message_content
     from app.utils.record_access import caller_can_read_virtual_record
@@ -301,8 +302,8 @@ async def _rehydrate_citation_maps(
         ):
             continue
         try:
-            record = await blob_store.get_record_from_storage(
-                virtual_record_id=vrid, org_id=context.org_id,
+            record = await record_artifact_reader(blob_store).read_record(
+                vrid, context.org_id,
             )
             if record:
                 vrmap[vrid] = record
@@ -422,6 +423,7 @@ async def resolve_history_attachments(
     *image_blocks* is a list of LangChain ``image_url`` dicts for
     multimodal injection.
     """
+    from app.modules.artifacts.reader import record_artifact_reader
     from app.utils.chat_helpers import ImageBudget, record_to_message_content
     from app.utils.record_access import caller_can_read_virtual_record
 
@@ -457,8 +459,8 @@ async def resolve_history_attachments(
                 if vrid in vrmap:
                     record = vrmap[vrid]
                 else:
-                    record = await blob_store.get_record_from_storage(
-                        virtual_record_id=vrid, org_id=org_id,
+                    record = await record_artifact_reader(blob_store).read_record(
+                        vrid, org_id,
                     )
                     if not record:
                         continue
@@ -480,8 +482,8 @@ async def resolve_history_attachments(
 
         elif mime in _IMAGE_MIME_TYPES and is_multimodal_llm:
             try:
-                record = await blob_store.get_record_from_storage(
-                    virtual_record_id=vrid, org_id=org_id,
+                record = await record_artifact_reader(blob_store).read_record(
+                    vrid, org_id,
                 )
                 if not record:
                     continue

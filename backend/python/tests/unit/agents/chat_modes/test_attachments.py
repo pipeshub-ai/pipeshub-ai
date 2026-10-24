@@ -58,7 +58,7 @@ class TestDocumentAttachments:
             **_access(),
         )
 
-        blob_store.get_record_from_storage.assert_awaited_once_with("vrid-1", "org-1")
+        blob_store.get_record_from_storage.assert_awaited_once_with("vrid-1", "org-1", lookup_result=None)
         assert "policy text" in result.context_text
         assert result.virtual_record_ids == ["vrid-1"]
         assert result.has_image_attachments is False
@@ -254,7 +254,7 @@ class TestAttachmentAccess:
             user_id="user-1", graph_provider=graph,
         )
 
-        blob_store.get_record_from_storage.assert_awaited_once_with("vrid-ok", "org-1")
+        blob_store.get_record_from_storage.assert_awaited_once_with("vrid-ok", "org-1", lookup_result=None)
         assert result.virtual_record_ids == ["vrid-ok"]
         assert "visible" in result.context_text
         assert "hidden" not in result.context_text

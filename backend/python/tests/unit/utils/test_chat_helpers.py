@@ -3001,7 +3001,7 @@ class TestGetFlattenedResults:
         good = _make_record_blob()
         good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
 
-        async def fetch(virtual_record_id, **_kwargs):
+        async def fetch(virtual_record_id, *_args, **_kwargs):
             if virtual_record_id == "vr-missing":
                 raise aiohttp.ClientError("Failed to retrieve record from storage")
             return good
@@ -3028,7 +3028,7 @@ class TestGetFlattenedResults:
         good = _make_record_blob()
         good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
 
-        async def fetch(virtual_record_id: str, **_kwargs: object) -> dict:
+        async def fetch(virtual_record_id: str, *_args: object, **_kwargs: object) -> dict:
             if virtual_record_id == "vr-huge":
                 raise refusal
             return good
@@ -5162,10 +5162,10 @@ class TestEnrichVirtualRecordIdFKChildren:
             trashed={"rec-dropped"},
         )
         blob_store = self._make_blob_store()
-        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda **kw: {
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda vrid, *_a, **_kw: {
             "vr-dropped": self._sql_table_record(vrid="vr-dropped", record_id="rec-dropped"),
             "vr-parent": self._sql_table_record(vrid="vr-parent", record_id="rec-parent"),
-        }.get(kw.get("virtual_record_id")))
+        }.get(vrid))
         flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
 
         await enrich_virtual_record_id_to_result_with_fk_children(
@@ -5292,10 +5292,10 @@ class TestEnrichVirtualRecordIdFKChildren:
         parent_blob = self._sql_table_record(vrid="vr-parent", record_id="rec-parent")
 
         blob_store = self._make_blob_store()
-        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda **kw: {
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda vrid, *_a, **_kw: {
             "vr-child": child_blob,
             "vr-parent": parent_blob,
-        }.get(kw.get("virtual_record_id")))
+        }.get(vrid))
 
         flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
         await enrich_virtual_record_id_to_result_with_fk_children(
