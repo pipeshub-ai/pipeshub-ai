@@ -420,6 +420,12 @@ docker_cli_path() {
 
 apply_windows_docker_cli_compat() {
   ${IS_WINDOWS:-false} || return 0
+  # Without cygpath the host paths below would reach docker.exe as /c/...,
+  # which it cannot open once MSYS conversion is off; keep MSYS converting.
+  if ! command -v cygpath >/dev/null 2>&1; then
+    warn "cygpath not found; leaving Git Bash path conversion on for docker."
+    return 0
+  fi
   export MSYS_NO_PATHCONV=1
   export MSYS2_ARG_CONV_EXCL='*'
   COMPOSE_FILE="$(docker_cli_path "$COMPOSE_FILE")"

@@ -585,6 +585,17 @@ eval "$(extract_fn docker_cli_path "$INNER_INSTALLER")"
 IS_WINDOWS=false
 check "non-Windows docker_cli_path is identity" "$(docker_cli_path /tmp/pipeshub_hc.json)" "/tmp/pipeshub_hc.json"
 eval "$(extract_fn apply_windows_docker_cli_compat "$INNER_INSTALLER")"
+warn() { :; }
+_saved_path="$PATH"
+_empty_dir="$(mktemp -d)"
+PATH="$_empty_dir"
+IS_WINDOWS=true
+COMPOSE_FILE=/c/pipeshub/docker-compose.yml
+COMPOSE_FILES=(-f /c/pipeshub/docker-compose.yml)
+apply_windows_docker_cli_compat
+PATH="$_saved_path"; rmdir "$_empty_dir"
+check "Git Bash without cygpath keeps MSYS path conversion" "${MSYS_NO_PATHCONV:-unset}" "unset"
+check "Git Bash without cygpath leaves the compose path as is" "${COMPOSE_FILES[*]}" "-f /c/pipeshub/docker-compose.yml"
 _saved_path="$PATH"
 _shim_dir="$(mktemp -d)"
 printf '#!/usr/bin/env bash\n[[ "$1" == -m ]] && printf "C:/win%%s" "$2"\n' > "$_shim_dir/cygpath"
