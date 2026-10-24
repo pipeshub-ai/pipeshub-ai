@@ -51,7 +51,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -280,6 +280,11 @@ def record_date_ms(record: Any, date_field: str) -> int | None:  # noqa: ANN401
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return int(value)
+
+
+def _is_upload(record: object) -> bool:
+    doc = cast("dict[str, Any]", record) if isinstance(record, dict) else None
+    return doc is not None and is_kb_upload(doc.get("connectorName"), doc.get("origin"))
 
 
 def span_of(records: dict[str, Any], date_field: str) -> tuple[int, int] | None:
@@ -968,8 +973,7 @@ async def _render_timeline(
         " Matches whose record has no source date come last." if dated < len(hits) else ""
     )
     uploads_note = _UPLOADS_NOTE if any(
-        isinstance(record, dict) and is_kb_upload(record.get("connectorName"), record.get("origin"))
-        for h in hits for record in h.records.values()
+        _is_upload(record) for h in hits for record in h.records.values()
     ) else ""
     header = (
         f'Timeline for "{query}": {dated} period{"s" if dated != 1 else ""} from '

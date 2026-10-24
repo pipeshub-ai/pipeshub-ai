@@ -151,6 +151,7 @@ class RecordDates:
         if self.origin is None:
             modified = self.modified_ms or epoch_ms(fallback_ms)
             return ("modified", modified) if modified else None
-        if self.origin is SourceTimestampOrigin.FILE and (self.modified_ms or self.created_ms):
-            return "fileModified", self.modified_ms or self.created_ms
+        file_ms = self.modified_ms or self.created_ms
+        if self.origin is SourceTimestampOrigin.FILE and file_ms:
+            return "fileModified", file_ms
         return ("uploaded", self.upload_time) if self.upload_time else None

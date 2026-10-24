@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
@@ -1370,7 +1370,7 @@ class KnowledgeBaseService:
         user_id: str,
         record_id: str,
         updates: Dict,
-        file_metadata: Optional[Dict] = None,
+        file_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict]:
         """
         Update a record directly in KB root (not in any folder).
