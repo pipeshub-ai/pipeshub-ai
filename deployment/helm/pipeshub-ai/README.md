@@ -119,7 +119,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="..." \
   --set redis.auth.password="..." \
   --set neo4j.auth.password="..." \
-  --set qdrant.apiKey="..." \
+  --set qdrant.apiKey="$(openssl rand -hex 32)" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=..." \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -232,9 +232,11 @@ key in values every time.
 
 ### Upgrading a release that still uses `api_key`
 
-Releases installed from earlier chart versions without `qdrant.apiKey` run with
-the public default `api_key`. The first upgrade to this chart fails until you
-set a new key. Qdrant stores no data under the key; it only checks it on each
+Inline-mode releases (the default `secretManagement`) installed from earlier
+chart versions without `qdrant.apiKey` run with the public default `api_key`.
+The first upgrade to this chart fails until you set a new key. Releases on
+`existingSecrets` or `externalSecrets` upgrade without one; rotate the key in
+your secret store as described at the end of this section. Qdrant stores no data under the key; it only checks it on each
 request, so collections stay readable after the change.
 
 Both the Qdrant StatefulSet and the app Deployment carry a
