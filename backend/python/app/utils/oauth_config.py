@@ -356,7 +356,7 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            if _is_host_or_subdomain(hostname, 'notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com') or _is_notion_override(token_url):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
@@ -372,6 +372,17 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
 # Token endpoints whose providers accept client credentials only in a Basic
 # header: their OAuth metadata lists client_secret_basic and no client_secret_post.
 _BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_notion_override(token_url: str) -> bool:
+    """A token URL under NOTION_API_BASE_URL (a test stack's stand-in for Notion) is Notion's too."""
+    from app.sources.client.notion.notion import (
+        DEFAULT_NOTION_API_BASE_URL,
+        notion_api_base_url,
+    )
+
+    base = notion_api_base_url()
+    return base != DEFAULT_NOTION_API_BASE_URL and token_url.startswith(f"{base}/")
 
 
 def _is_host_or_subdomain(hostname: str, domain: str) -> bool:

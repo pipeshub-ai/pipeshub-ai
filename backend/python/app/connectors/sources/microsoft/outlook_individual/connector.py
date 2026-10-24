@@ -1,10 +1,12 @@
 import base64
 import html
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
+from urllib.parse import quote
 
+import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph.generated.models.attachment import Attachment  # type: ignore
@@ -34,17 +36,16 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
-    not_downloadable,
     not_found_at_source,
-    raise_for_stream_fetch,
-    to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
     AuthFieldKeys,
     BatchConfig,
     ConfigPaths,
@@ -88,6 +89,7 @@ from app.connectors.sources.microsoft.common.constants import (
     escape_odata_string,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
     OutlookAPIFields,
@@ -104,7 +106,28 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    graph_error_status,
+    is_folder_not_found_error,
+    mail_content_revision,
     normalize_conversation_index,
+)
+from app.connectors.sources.microsoft.common.outlook_folders import (
+    MailThreadRef,
+    OutlookFolderInventoryMixin,
+    cap_attachment_indexing,
+    close_graph_client,
+    graph_stream_error,
+    iter_graph_stream,
+    mail_thread_ref,
+    notify_sync_outcome,
+    open_graph_stream,
+    pace_graph_calls,
+    prefer_immutable_ids,
+    raise_for_graph_stream,
+    read_child_folders,
+    read_delta_pages,
+    removed_mail_update,
+    unsynced_attachment_kind,
 )
 from app.models.entities import (
     AppUser,
@@ -171,12 +194,19 @@ from app.utils.time_conversion import (
             }
         )
     ])\
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
+    .with_resilience_config(rate_limit=OutlookSyncConfig.GRAPH_RATE_LIMIT, max_retries=3)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.OUTLOOK.value))
         .add_documentation_link(DocumentationLink(
             "Azure AD App Registration Setup",
             OutlookDocs.AZURE_AD_SETUP_URL,
             "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            OutlookDocs.PIPESHUB_DOCS_URL_PERSONAL,
+            "pipeshub"
         ))
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, OutlookSyncConfig.DEFAULT_SYNC_INTERVAL_MINUTES)
@@ -185,14 +215,15 @@ from app.utils.time_conversion import (
             display_name="Mail Folders",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select folders to sync. Leave empty to sync all folders.",
+            description="Select folders to sync. Leave empty to sync all folders except Deleted Items; "
+            "select Deleted Items to sync it too.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.RECEIVED_DATE.value,
             display_name="Received Date",
-            description="Filter emails by received date. Defaults to last 60 days.",
+            description="Filter emails by received date. Defaults to last 90 days.",
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
             default_operator=DatetimeOperator.LAST_90_DAYS.value,
@@ -217,8 +248,10 @@ from app.utils.time_conversion import (
         ))
     )\
     .build_decorator()
-class OutlookIndividualConnector(BaseConnector):
+class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
     """Microsoft Outlook Personal connector for syncing emails from your mailbox."""
+
+    FOLDER_FILTER_KEYS = (SyncFilterKey.FOLDERS,)
 
     def __init__(
         self,
@@ -244,6 +277,11 @@ class OutlookIndividualConnector(BaseConnector):
         self.credentials: OutlookCredentials | None = None
         self.connector_id = connector_id
         self._current_access_token: str | None = None  # Track current token for refresh detection
+        # Set when refreshing the token failed this run: each refresh_now Microsoft rejects counts
+        # toward deactivating the connector, so it is tried once per run.
+        self._token_renewal_failed = False
+        # The client the last token swap replaced; closed at the next swap (see _get_fresh_graph_client).
+        self._retired_graph_client: ExternalMSGraphClient | None = None
 
         # Personal connector attributes
         self.connector_scope: str | None = None
@@ -259,7 +297,8 @@ class OutlookIndividualConnector(BaseConnector):
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
-
+        # What this run skipped after errors, for its one summary notification.
+        self._skipped: dict[str, int] = {"folders": 0, "mails": 0}
 
     async def init(self) -> bool:
         """Initialize the Outlook Personal connector with credentials and Graph client."""
@@ -296,10 +335,14 @@ class OutlookIndividualConnector(BaseConnector):
             access_token = credentials_data.get(OAuthConfigKeys.ACCESS_TOKEN)
 
             if not access_token:
-                raise ValueError("Access token not found for personal Outlook connector. Please complete OAuth flow.")
+                raise self._not_signed_in_error()
 
             # Store current token for refresh detection
             self._current_access_token = access_token
+            # A re-init (config change) replaces the client: close the old ones.
+            for old in (getattr(self, "external_client", None), getattr(self, "_retired_graph_client", None)):
+                await close_graph_client(old, self.logger)
+            self._retired_graph_client = None
 
             # Create delegated auth client directly (for personal connector with user OAuth)
             delegated_client = MSGraphClientWithDelegatedAuth(
@@ -307,7 +350,8 @@ class OutlookIndividualConnector(BaseConnector):
                 tenant_id=self.credentials.tenant_id,
                 logger=self.logger
             )
-            self.external_client = ExternalMSGraphClient(delegated_client, mode=GraphMode.DELEGATED)
+            self.external_client = prefer_immutable_ids(ExternalMSGraphClient(delegated_client, mode=GraphMode.DELEGATED))
+            pace_graph_calls(self.external_client, self.resilience)
 
             # Create Outlook data source client
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
@@ -331,18 +375,29 @@ class OutlookIndividualConnector(BaseConnector):
             await self._get_fresh_graph_client()
 
             # Test by listing mail folders with minimal fields
-            response = await self.external_outlook_client.me_list_mail_folders(
+            response = await self._call_graph(lambda client: client.me_list_mail_folders(
                 top=1,
                 select=OutlookAPIFields.FOLDER_SELECT_FIELDS
-            )
+            ))
 
             if not response.success:
                 self.logger.error(f"Connection test failed: {response.error}")
+                status = graph_error_status(response.error)
+                if status == HttpStatusCode.UNAUTHORIZED.value:
+                    raise self._not_signed_in_error()
+                if status == HttpStatusCode.FORBIDDEN.value:
+                    raise ConnectorInitError(
+                        "Microsoft refused access to the mailbox. Sign in again on the connector's "
+                        "Authorize tab and accept the Mail.Read permission; if your organization "
+                        "requires it, ask an admin to grant consent to the OAuth app."
+                    )
                 return False
 
             self.logger.info("Outlook Personal connector connection test passed")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
             return False
@@ -379,7 +434,11 @@ class OutlookIndividualConnector(BaseConnector):
 
             if not all((tenant_id, client_id, client_secret)):
                 self.logger.error("Incomplete Outlook Personal OAuth config. Ensure tenantId, clientId and clientSecret are configured.")
-                raise ValueError("Incomplete Outlook Personal credentials. Ensure tenantId, clientId and clientSecret are configured.")
+                raise ConnectorInitError(
+                    "The OAuth app linked to this connector is missing its Directory (Tenant) ID, "
+                    "Application (Client) ID or client secret. An admin can complete it on the "
+                    "connector's Authenticate Instance tab."
+                )
 
             return OutlookCredentials(
                 tenant_id=tenant_id,
@@ -421,7 +480,7 @@ class OutlookIndividualConnector(BaseConnector):
         fresh_token = credentials_config.get(OAuthConfigKeys.ACCESS_TOKEN, "")
 
         if not fresh_token:
-            raise Exception("No OAuth access token available")
+            raise self._not_signed_in_error()
 
         # Rebuild client if token changed (TokenRefreshService may have updated it)
         if self._current_access_token != fresh_token:
@@ -434,10 +493,68 @@ class OutlookIndividualConnector(BaseConnector):
                 tenant_id=self.credentials.tenant_id,
                 logger=self.logger
             )
-            self.external_client = ExternalMSGraphClient(delegated_client, mode=GraphMode.DELEGATED)
+            # The client replaced at the previous swap is closed now, not the one just replaced:
+            # a preview may still be streaming through that one.
+            await close_graph_client(getattr(self, "_retired_graph_client", None), self.logger)
+            self._retired_graph_client = self.external_client
+            self.external_client = prefer_immutable_ids(ExternalMSGraphClient(delegated_client, mode=GraphMode.DELEGATED))
+            pace_graph_calls(self.external_client, self.resilience)
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
 
         return self.external_outlook_client
+
+    def _not_signed_in_error(self) -> ConnectorInitError:
+        return ConnectorInitError(
+            f"{self.display_name} is not signed in to Microsoft, or its sign-in has expired. "
+            "Sign in again on the connector's Authorize tab."
+        )
+
+    async def _call_graph(self, call: Callable[[OutlookCalendarContactsDataSource], Awaitable[object]]) -> object:
+        """Run ``call`` with the current client; on a Graph 401, renew the token and run it once more.
+
+        A call answers a failure either as a response with ``success=False`` or by raising.
+        """
+        try:
+            result = await call(self.external_outlook_client)
+        except Exception as e:
+            if graph_error_status(e) != HttpStatusCode.UNAUTHORIZED.value or not await self._renew_token_after_401():
+                raise
+            return await call(self.external_outlook_client)
+        if (getattr(result, "success", True) is False
+                and graph_error_status(getattr(result, "error", None)) == HttpStatusCode.UNAUTHORIZED.value
+                and await self._renew_token_after_401()):
+            return await call(self.external_outlook_client)
+        return result
+
+    async def _renew_token_after_401(self) -> bool:
+        """Swap in a newer stored token, or refresh it now. True when the client has a new token."""
+        rejected = self._current_access_token
+        try:
+            await self._get_fresh_graph_client()
+            if self._current_access_token != rejected:
+                return True
+            config = await self.config_service.get_config(
+                ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=self.connector_id)
+            )
+            if getattr(self, "_token_renewal_failed", False):
+                return False
+            refresh_token = ((config or {}).get(OAuthConfigKeys.CREDENTIALS) or {}).get("refresh_token")
+            refresh_service = startup_service.get_token_refresh_service()
+            if not refresh_token or not refresh_service:
+                self.logger.error("Graph answered 401 and the token cannot be refreshed here")
+                self._token_renewal_failed = True
+                return False
+            await refresh_service.refresh_now(self.connector_id, self.connector_name.value, refresh_token)
+            await self._get_fresh_graph_client()
+        except Exception as e:
+            self.logger.error(f"Refreshing the access token after a 401 failed: {e}")
+            self._token_renewal_failed = True
+            return False
+        if self._current_access_token == rejected:
+            self._token_renewal_failed = True
+            return False
+        self.logger.info("Refreshed the Outlook access token after a 401")
+        return True
 
     async def run_sync(self) -> None:
         """Run Outlook Personal sync - emails and attachments for creator only."""
@@ -454,6 +571,11 @@ class OutlookIndividualConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized. Call init() first.")
 
+            # Set when a folder or mail is skipped after an error; see full_sync_coverage.
+            self._full_sync_incomplete = False
+            self._skipped = {"folders": 0, "mails": 0}
+            self._token_renewal_failed = False
+
             # Get creator as AppUser
             creator_user = await self._sync_users()
 
@@ -461,10 +583,19 @@ class OutlookIndividualConnector(BaseConnector):
             await self._process_user_emails(org_id, creator_user)
 
             self.logger.info("Outlook Personal sync completed successfully")
+            await notify_sync_outcome(self, None, self._skipped)
 
         except Exception as e:
             self.logger.error(f"Error during Outlook Personal sync: {e}")
+            await notify_sync_outcome(self, e, self._skipped)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that skipped a folder or mail after an error did not see what it
+        holds, so nothing is unlinked after it."""
+        # No window_start_ms: Received Date is saved as absolute bounds, so stored mail older
+        # than the start is there only because the filter was narrowed, and should be unlinked.
+        return FullSyncCoverage(complete=not self._full_sync_incomplete)
 
     async def _sync_users(self) -> AppUser:
         """Get creator as AppUser for personal connector."""
@@ -499,15 +630,20 @@ class OutlookIndividualConnector(BaseConnector):
     async def _process_user_emails(self, org_id: str, user: AppUser) -> str:
         """Process emails from all folders sequentially."""
         try:
+            incomplete_before, self._full_sync_incomplete = self._full_sync_incomplete, False
             # Sync folders as RecordGroups and get folder data for email processing
             folders = await self._sync_user_folders(user)
 
             if not folders:
+                self._full_sync_incomplete = incomplete_before or self._full_sync_incomplete
                 return f"No folders found for {user.email}"
 
             total_processed = 0
             folder_results = []
-            all_mail_records = []  # Collect all mail records for email thread edges processing
+            all_mail_records = []  # Id, thread and conversation index of each mail, for thread edges
+            failed_folders = 0
+            self._pending_removals = []
+            self._pending_full_reads = []
 
             # Process folders sequentially instead of concurrently
             for folder in folders:
@@ -518,8 +654,18 @@ class OutlookIndividualConnector(BaseConnector):
                     total_processed += result
                     all_mail_records.extend(folder_mail_records)  # Collect mail records
                 except Exception as e:
+                    if getattr(self, "_token_renewal_failed", False):
+                        # Every later call would be rejected too: stop here, notified once.
+                        raise
                     self.logger.error(f"Error processing folder {folder_name}: {e}")
                     folder_results.append(f"{folder_name}: Failed")
+                    failed_folders += 1
+
+            await self._apply_mail_removals()
+            self._full_sync_incomplete = incomplete_before or bool(failed_folders) or self._full_sync_incomplete
+            if failed_folders == len(folders):
+                raise Exception(f"All {len(folders)} folders failed to sync")
+            self._skipped["folders"] += failed_folders
 
             # After all folders are processed, create email thread edges using collected records
             try:
@@ -533,10 +679,14 @@ class OutlookIndividualConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing all folders for user {user.email}: {e}")
-            return f"Failed to process folders for {user.email}: {str(e)}"
+            raise
 
-    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> str | None:
-        """Find parent message ID using conversation index by searching ArangoDB."""
+    async def _find_parent_by_conversation_index_from_db(
+        self, conversation_index: str, thread_id: str, org_id: str, user: AppUser,
+        known_ids: dict[tuple[str, str], str] | None = None,
+    ) -> str | None:
+        """Find parent message ID using conversation index: first in ``known_ids``
+        ((thread id, conversation index) -> record id of this run's mail), then in the DB."""
         if not conversation_index:
             self.logger.debug(f"No conversation_index provided for thread {thread_id}")
             return None
@@ -553,6 +703,8 @@ class OutlookIndividualConnector(BaseConnector):
             parent_bytes = index_bytes[:-OutlookThreadDetection.CHILD_INDEX_SUFFIX_LENGTH]
             parent_index = base64.b64encode(parent_bytes).decode('utf-8')
             self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
+            if known_ids and (thread_id, parent_index) in known_ids:
+                return known_ids[(thread_id, parent_index)]
 
             parent_record = await self.data_entities_processor.get_record_by_conversation_index(
                 self.connector_id, parent_index, thread_id, user.source_user_id
@@ -567,7 +719,7 @@ class OutlookIndividualConnector(BaseConnector):
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
             return None
 
-    async def _create_all_thread_edges_for_user(self, org_id: str, user: AppUser, user_mail_records: list[Record]) -> int:
+    async def _create_all_thread_edges_for_user(self, org_id: str, user: AppUser, user_mail_records: list[MailThreadRef]) -> int:
         """Create thread edges for all email messages of a user by searching ArangoDB for parents."""
         try:
             if not user_mail_records:
@@ -576,6 +728,11 @@ class OutlookIndividualConnector(BaseConnector):
 
             edges = []
             processed_count = 0
+            # One DB lookup per reply is a scan each; parents synced in this run are found here.
+            known_ids = {
+                (r.thread_id, r.conversation_index): r.id
+                for r in user_mail_records if r.thread_id and r.conversation_index
+            }
 
             # Process each mail record to find its parent
             for record in user_mail_records:
@@ -587,7 +744,8 @@ class OutlookIndividualConnector(BaseConnector):
                         record.conversation_index,
                         record.thread_id,
                         org_id,
-                        user
+                        user,
+                        known_ids,
                     )
 
                     if parent_id:
@@ -628,57 +786,47 @@ class OutlookIndividualConnector(BaseConnector):
         Returns:
             Flattened list of all child folders (including nested children)
         """
-        try:
-            parent_folder_id = parent_folder.id
-            parent_folder_name = parent_folder.display_name or OutlookDefaults.UNKNOWN_FOLDER_LABEL
+        parent_folder_id = parent_folder.id
+        parent_folder_name = parent_folder.display_name or OutlookDefaults.UNKNOWN_FOLDER_LABEL
 
-            if not parent_folder_id:
-                return []
-
-            # Check if folder has children
-            child_folder_count = parent_folder.child_folder_count or 0
-            if child_folder_count == 0:
-                self.logger.debug(f"Folder '{parent_folder_name}' has no child folders")
-                return []
-
-            # Fetch child folders using /me API (no user_id needed for delegated auth)
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
-
-            response: OutlookMailFoldersResponse = await self.external_outlook_client.me_mail_folders_list_child_folders(
-                mailFolder_id=parent_folder_id
-            )
-
-            if not response.success:
-                self.logger.warning(
-                    f"Failed to get child folders for '{parent_folder_name}': {response.error}"
-                )
-                return []
-
-            # response.data is MailFolderCollectionResponse with .value containing list[MailFolder]
-            child_folders = response.data.value if response.data.value else []
-
-            if not child_folders:
-                return []
-
-            self.logger.info(
-                f"Found {len(child_folders)} child folder(s) under '{parent_folder_name}'"
-            )
-
-            # Recursively process each child folder
-            all_descendants = []
-            for child in child_folders:
-                all_descendants.append(child)
-                # Recursively get grandchildren
-                grandchildren = await self._get_child_folders_recursive(child)
-                all_descendants.extend(grandchildren)
-
-            return all_descendants
-
-        except Exception as e:
-            parent_name = parent_folder.display_name if parent_folder else OutlookDefaults.UNKNOWN_FOLDER_LABEL
-            self.logger.error(f"Error getting child folders for '{parent_name}': {e}")
+        if not parent_folder_id:
             return []
+
+        if (parent_folder.child_folder_count or 0) == 0:
+            self.logger.debug(f"Folder '{parent_folder_name}' has no child folders")
+            return []
+
+        if not self.external_outlook_client:
+            raise Exception("External Outlook client not initialized")
+
+        child_folders, complete = await read_child_folders(
+            lambda top, skip: self._call_graph(lambda client: client.me_mail_folders_list_child_folders(
+                mailFolder_id=parent_folder_id, top=top, skip=skip,
+            )),
+            # A childFolders nextLink is a full URL; any mailFolders builder can follow it.
+            lambda url: self._call_graph(lambda client: client.me_list_mail_folders(next_url=url)),
+            parent_folder,
+        )
+        if not complete:
+            self.logger.warning(
+                f"Graph listed fewer child folders under '{parent_folder_name}' than it counts "
+                f"({parent_folder.child_folder_count}); no folder is removed this run"
+            )
+            self._folder_listing_complete = False
+
+        if not child_folders:
+            return []
+
+        self.logger.info(
+            f"Found {len(child_folders)} child folder(s) under '{parent_folder_name}'"
+        )
+
+        all_descendants = []
+        for child in child_folders:
+            all_descendants.append(child)
+            all_descendants.extend(await self._get_child_folders_recursive(child))
+
+        return all_descendants
 
     def _is_descendant_of(
         self,
@@ -749,19 +897,19 @@ class OutlookIndividualConnector(BaseConnector):
             while True:
                 # Get folders page using /me API (no user_id needed for delegated auth)
                 if next_url:
-                    response: OutlookMailFoldersResponse = await self.external_outlook_client.me_list_mail_folders(
-                        next_url=next_url
-                    )
+                    response: OutlookMailFoldersResponse = await self._call_graph(lambda client, url=next_url: client.me_list_mail_folders(
+                        next_url=url
+                    ))
                 else:
-                    response: OutlookMailFoldersResponse = await self.external_outlook_client.me_list_mail_folders(
+                    response: OutlookMailFoldersResponse = await self._call_graph(lambda client: client.me_list_mail_folders(
                         includeHiddenFolders=None,
                         filter=odata_filter,
                         top=page_size
-                    )
+                    ))
 
                 if not response.success:
-                    self.logger.error(f"Failed to get folders page {page_num}: {response.error}")
-                    break
+                    # Fail the whole listing: a partial one makes the rest look deleted.
+                    raise Exception(f"Failed to get folders page {page_num}: {response.error}")
 
                 # response.data is MailFolderCollectionResponse with .value containing list[MailFolder]
                 raw_folders = response.data.value if response.data.value else []
@@ -775,6 +923,15 @@ class OutlookIndividualConnector(BaseConnector):
                 page_num += 1
 
             self.logger.info(f"Retrieved {len(top_level_folders)} top-level folders across {page_num} page(s)")
+
+            # Deleted Items, with the folders deleted in Outlook under it, is synced only when
+            # the IN filter selects it. Dropped before the walk, so its subtree is never read.
+            deleted_items_id = await self._get_deleted_items_folder_id()
+            operator_str = getattr(filter_operator, "value", filter_operator)
+            if deleted_items_id and not (
+                operator_str == MultiselectOperator.IN.value and deleted_items_id in (selected_folder_ids or [])
+            ):
+                top_level_folders = [f for f in top_level_folders if f.id != deleted_items_id]
 
             # Track top-level folder IDs to avoid storing parent references for them
             top_level_folder_ids = {folder.id for folder in top_level_folders if folder.id}
@@ -850,7 +1007,30 @@ class OutlookIndividualConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error getting folders for authenticated user: {e}")
-            return [], set()
+            raise
+
+    async def _get_deleted_items_folder_id(self) -> str | None:
+        """Id of the mailbox's Deleted Items folder, read by well-known name (display names are localized)."""
+        response = await self._call_graph(lambda client: client.me_get_mail_folders(mailFolder_id="deleteditems"))
+        if response.success and response.data and response.data.id:
+            return response.data.id
+        if is_folder_not_found_error(response.error):
+            return None
+        raise Exception(f"Failed to read the Deleted Items folder: {response.error}")
+
+    async def _folders_listed_before_upgrade(self, user: AppUser, listed: list[MailFolder]) -> set[str]:
+        """Earlier versions synced Deleted Items and the folders deleted into it."""
+        response = await self._call_graph(lambda client: client.me_get_mail_folders(mailFolder_id="deleteditems"))
+        if not (response.success and response.data and response.data.id):
+            if is_folder_not_found_error(response.error):
+                return set()
+            raise Exception(f"Failed to read the Deleted Items folder: {response.error}")
+        trash = response.data
+        return {trash.id, *(child.id for child in await self._get_child_folders_recursive(trash))}
+
+    def _folder_sync_point_key(self, user: AppUser, folder_id: str) -> str:
+        # The connector has one mailbox, so the key is the folder id alone.
+        return generate_record_sync_point_key(RecordType.MAIL.value, OutlookSyncPointKeys.SEGMENT_FOLDERS, folder_id)
 
     def _mailbox_external_id(self, user: AppUser) -> str:
         return f"mailbox:{user.source_user_id}"
@@ -950,12 +1130,14 @@ class OutlookIndividualConnector(BaseConnector):
                     self.logger.info(f"Folder filter: {operator_str} with {len(selected_folder_ids)} folders")
 
             # Get folders for authenticated user with filtering applied
+            self._folder_listing_complete, self._folders_maybe_present = True, set()
             folders, top_level_folder_ids = await self._get_all_folders_for_user(
                 selected_folder_ids=selected_folder_ids,
                 filter_operator=filter_operator
             )
 
             if not folders:
+                await self._drop_missing_user_folders(user, set(), folders)
                 self.logger.debug(f"No folders to sync for user {user.email} after filtering")
                 return []
 
@@ -977,125 +1159,109 @@ class OutlookIndividualConnector(BaseConnector):
                     + [(rg, []) for rg in record_groups]
                 )
 
+            # After the upsert: a subfolder moved out of a deleted folder has its new parent
+            # stored by then, so the delete does not take it along.
+            await self._drop_missing_user_folders(user, {folder.id for folder in folders if folder.id}, folders)
+
             # Return raw folder data for email processing
             return folders
 
         except Exception as e:
+            # Raise, not []: an empty folder list would read as an empty mailbox.
             self.logger.error(f"Error syncing folders for user {user.email}: {e}")
-            return []
+            raise
 
-    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: MailFolder) -> tuple[int, list[Record]]:
-        """Process messages using batch processing with automatic pagination and /me API."""
+    async def _process_single_folder_messages(
+        self, org_id: str, user: AppUser, folder: MailFolder
+    ) -> tuple[int, list[MailThreadRef]]:
+        """Process messages using batch processing with automatic pagination and /me API.
+
+        Returns the processed count and, for thread edges, a light reference to each mail saved.
+        """
         folder_name = folder.display_name or OutlookDefaults.FOLDER_NAME if folder else "Unknown"
         try:
             folder_id = folder.id
 
-            # Create folder-specific sync point (use folder_id only for personal connector)
-            sync_point_key = generate_record_sync_point_key(
-                RecordType.MAIL.value, OutlookSyncPointKeys.SEGMENT_FOLDERS, folder_id
-            )
+            sync_point_key = self._folder_sync_point_key(user, folder_id)
             sync_point = await self.email_delta_sync_point.read_sync_point(sync_point_key)
-            delta_link = sync_point.get(OutlookSyncPointKeys.DELTA_LINK) if sync_point else None
+            delta_link = self._saved_delta_link(sync_point)
 
-            # Get messages for this folder using delta sync with /me API
-            result = await self._get_all_messages_delta_external(folder_id, delta_link)
-            messages = result.messages
-
-            self.logger.info(f"Retrieved {len(messages)} total message changes from folder '{folder_name}' for user {user.email}")
-
-            if not messages:
-                self.logger.info(f"No messages to process in folder '{folder_name}'")
-                return 0, []
-
-            # Collect all updates first for thread processing
-            all_updates = []
+            # Each delta page is written before the next is fetched, so a large folder is
+            # never held in memory. The link is saved only once every page succeeded.
             processed_count = 0
+            message_count = 0
             mail_records = []  # Collect mail records for thread processing
-            any_failures = False  # Track if any message processing failed
+            failed_ids: list[str] = []
+            removed_ids: list[str] = []
+            new_delta_link = None
+            seen_ids: set[str] | None = None  # every mail id of a full read, failed ones included
+            async for result in self._get_all_messages_delta_external(folder_id, delta_link):
+                message_count += len(result.messages)
+                new_delta_link = result.delta_link
+                if result.full_read:
+                    seen_ids = (seen_ids or set()) | {m.id for m in result.messages if m.id}
+                page_records = []
+                for message in result.messages:
+                    record_updates, success = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                    if not success:
+                        failed_ids.append(message.id)
+                    for update in record_updates:
+                        if update.is_deleted:
+                            removed_ids.append(update.external_record_id)
+                        elif update.record:
+                            page_records.append((update.record, update.new_permissions or []))
+                            if update.record.record_type == RecordType.MAIL:
+                                mail_records.append(mail_thread_ref(update.record))
+                for start in range(0, len(page_records), BatchConfig.DEFAULT_BATCH_SIZE):
+                    batch = page_records[start:start + BatchConfig.DEFAULT_BATCH_SIZE]
+                    await self.data_entities_processor.on_new_records(batch, replace_permissions=True)
+                    processed_count += len(batch)
 
-            for message in messages:
-                record_updates, success = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-                if not success:
-                    any_failures = True
-                all_updates.extend(record_updates)
-
-            # Process records in batches
-            batch_records = []
-            batch_size = BatchConfig.DEFAULT_BATCH_SIZE
-
-            for update in all_updates:
-                if update and update.record:
-                    permissions = update.new_permissions or []
-                    batch_records.append((update.record, permissions))
-
-                    # Collect mail records (not attachments) for thread processing
-                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                        mail_records.append(update.record)
-
-                if len(batch_records) >= batch_size:
-                    await self.data_entities_processor.on_new_records(
-                    batch_records, replace_permissions=True
-                )
-                    processed_count += len(batch_records)
-                    batch_records = []
-
-            # Process remaining records
-            if batch_records:
-                await self.data_entities_processor.on_new_records(
-                    batch_records, replace_permissions=True
-                )
-                processed_count += len(batch_records)
-
-            # Update folder-specific sync point only if all messages were processed successfully
-            # Skip delta_link save if any message failed to ensure retry on next sync (zero data loss)
-            if not any_failures:
-                sync_point_data = {
-                    OutlookSyncPointKeys.DELTA_LINK: result.delta_link,
-                    OutlookSyncPointKeys.LAST_SYNC_TIMESTAMP: get_epoch_timestamp_in_ms(),
-                    OutlookSyncPointKeys.FOLDER_ID: folder_id,
-                    OutlookSyncPointKeys.FOLDER_NAME: folder_name,
-                }
-
-                await self.email_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    sync_point_data,
-                    encrypt_fields=[OutlookSyncPointKeys.ENCRYPT_FIELD_DELTA_LINK]
+            sync_point_data = {
+                OutlookSyncPointKeys.DELTA_LINK: new_delta_link,
+                OutlookSyncPointKeys.LAST_SYNC_TIMESTAMP: get_epoch_timestamp_in_ms(),
+                OutlookSyncPointKeys.FOLDER_ID: folder_id,
+                OutlookSyncPointKeys.FOLDER_NAME: folder_name,
+            }
+            if failed_ids:
+                await self._hold_back_folder_link(
+                    sync_point_key, sync_point, sync_point_data, folder_id, removed_ids, failed_ids,
                 )
             else:
-                self.logger.warning(
-                    f"Skipping delta_link save for folder '{folder_name}' due to message processing failures - "
-                    f"will retry failed messages on next sync"
-                )
+                await self._save_folder_link(sync_point_key, sync_point_data, folder_id, removed_ids)
+            if seen_ids is not None:
+                await self._note_full_read(folder_id, seen_ids)
 
             # Log final summary
-            self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed from {len(messages)} messages")
+            self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed from {message_count} messages")
 
             return processed_count, mail_records
 
         except Exception as e:
             self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}")
-            return 0, []
+            raise
 
-    async def _get_all_messages_delta_external(self, folder_id: str, delta_link: str | None = None) -> MessagesDeltaResult:
-        """Get folder messages for authenticated user using delta sync with automatic pagination.
+    async def _get_all_messages_delta_external(
+        self, folder_id: str, delta_link: str | None = None
+    ) -> AsyncGenerator[MessagesDeltaResult, None]:
+        """Yield the authenticated user's folder messages page by page using delta sync.
 
         This method handles both initial sync and incremental sync using /me API:
         - Initial sync (delta_link=None): Retrieves all messages in the folder
         - Incremental sync (delta_link provided): Retrieves only changes since last sync
 
         Pagination is handled automatically:
-        - The method follows nextLink URLs to fetch all pages
-        - Returns when deltaLink is received (signals completion)
-        - Maximum page size is 100 messages per request
+        - The method follows nextLink URLs and yields each page before fetching the next
+        - The last page (the one Graph sends a deltaLink with) carries the new deltaLink
 
         Args:
             folder_id: Mail folder identifier
             delta_link: Previously saved deltaLink for incremental sync (optional)
 
-        Returns:
+        Yields:
             MessagesDeltaResult with:
-                - messages: list[Message] - Pydantic Message objects
-                - delta_link: str | None - New deltaLink to save for next sync
+                - messages: list[Message] - one page of Pydantic Message objects
+                - delta_link: str | None - New deltaLink to save, on the last page only
         """
         try:
             if not self.external_outlook_client:
@@ -1126,60 +1292,56 @@ class OutlookIndividualConnector(BaseConnector):
                     received_before_dt = datetime.strptime(received_before_iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
                     self.logger.info(f"Will apply received date filter (client-side): receivedDateTime before {received_before_iso}")
 
-            # Use helper method for /me delta sync with automatic pagination
-            messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta_me(
-                mailFolder_id=folder_id,
-                saved_delta_link=delta_link,
-                page_size=OutlookSyncConfig.MESSAGE_PAGE_SIZE,
-                select=OutlookAPIFields.MESSAGE_SELECT_FIELDS,
-                filter=filter_string
-            )
+            def fetch_page(url: str | None) -> Awaitable[object]:
+                # After a 401 the page is read again with the renewed token.
+                return self._call_graph(lambda client: client.me_mail_folders_mail_folder_messages_delta(
+                    mailFolder_id=folder_id,
+                    continuation_url=url,
+                    page_size=OutlookSyncConfig.MESSAGE_PAGE_SIZE,
+                    select=OutlookAPIFields.MESSAGE_SELECT_FIELDS,
+                    filter=filter_string,
+                ))
 
-            # Apply client-side filtering for IS_BEFORE if needed
-            if received_before_dt is not None and messages:
-                original_count = len(messages)
-                filtered_messages = []
+            async for page_messages, new_delta_link, full_read in read_delta_pages(fetch_page, delta_link, folder_id, self.logger):
+                messages = page_messages
+                # Apply client-side filtering for IS_BEFORE if needed
+                if received_before_dt is not None and messages:
+                    original_count = len(messages)
+                    filtered_messages = []
 
-                for msg in messages:
-                    # Get receivedDateTime from message
-                    received_dt = msg.received_date_time
-                    if received_dt is None:
-                        # If no received date, include the message
-                        filtered_messages.append(msg)
-                        continue
-
-                    # Compare datetime objects directly
-                    if isinstance(received_dt, datetime):
-                        # Ensure timezone-aware comparison
-                        if received_dt.tzinfo is None:
-                            received_dt = received_dt.replace(tzinfo=timezone.utc)
-                        # Include message if received before the cutoff
-                        if received_dt < received_before_dt:
+                    for msg in messages:
+                        # Get receivedDateTime from message
+                        received_dt = msg.received_date_time
+                        if received_dt is None:
+                            # If no received date, include the message
                             filtered_messages.append(msg)
-                    else:
-                        filtered_messages.append(msg)
+                            continue
 
-                messages = filtered_messages
-                filtered_out = original_count - len(messages)
-                if filtered_out > 0:
-                    self.logger.info(
-                        f"Client-side date filter applied: {original_count} -> {len(messages)} messages "
-                        f"(filtered out {filtered_out} messages received after cutoff)"
-                    )
+                        # Compare datetime objects directly
+                        if isinstance(received_dt, datetime):
+                            # Ensure timezone-aware comparison
+                            if received_dt.tzinfo is None:
+                                received_dt = received_dt.replace(tzinfo=timezone.utc)
+                            # Include message if received before the cutoff
+                            if received_dt < received_before_dt:
+                                filtered_messages.append(msg)
+                        else:
+                            filtered_messages.append(msg)
 
-            self.logger.info(f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages")
+                    messages = filtered_messages
+                    filtered_out = original_count - len(messages)
+                    if filtered_out > 0:
+                        self.logger.info(
+                            f"Client-side date filter applied: {original_count} -> {len(messages)} messages "
+                            f"(filtered out {filtered_out} messages received after cutoff)"
+                        )
 
-            return MessagesDeltaResult(
-                messages=messages,
-                delta_link=new_delta_link
-            )
+                yield MessagesDeltaResult(messages=messages, delta_link=new_delta_link, full_read=full_read)
 
         except Exception as e:
+            # Raise, not an empty result: the folder counts as failed and keeps its link.
             self.logger.error(f"Error getting messages delta for folder {folder_id}: {e}", exc_info=True)
-            return MessagesDeltaResult(
-                messages=[],
-                delta_link=None
-            )
+            raise
 
     async def _process_single_message(
         self, org_id: str, user: AppUser, message: Message, folder_id: str, folder_name: str
@@ -1197,29 +1359,32 @@ class OutlookIndividualConnector(BaseConnector):
 
             # Check if message is deleted
             additional_data = message.additional_data or {}
-            removed_info = additional_data.get('@removed', {}) if isinstance(additional_data, dict) else {}
-            is_deleted = (removed_info.get('reason') == 'deleted') if isinstance(removed_info, dict) else False
-
-            if is_deleted:
-                self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
-                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, message_id, user.source_user_id)
-                return updates, True
+            # Any @removed reason ("deleted", or "changed" for an item that left this folder's
+            # delta scope but may be restorable) means the item is no longer in this folder.
+            # The caller deletes it once every folder was read (_save_folder_link).
+            if isinstance(additional_data, dict) and '@removed' in additional_data:
+                return [removed_mail_update(message_id)], True
 
             # Process email with attachments
             email_update = await self._process_single_email_with_folder(org_id, user.email, message, folder_id)
+            if email_update and not email_update.is_new and not email_update.is_updated and not self._full_sync_running():
+                # Same content, same folder (a read or flag change): nothing to write and no
+                # attachment listing. A full sync still writes it, so it counts as seen.
+                email_update = None
             if email_update:
                 updates.append(email_update)
 
-                # Process attachments if any
-                has_attachments = message.has_attachments or False
-                if has_attachments:
+                current_attachment_ids: set[str] = set()
+                if message.has_attachments:
                     email_permissions = await self._extract_email_permissions(message, None, user.email)
                     attachment_updates = await self._process_email_attachments_with_folder(
                         org_id, user, message, email_permissions, folder_id, folder_name,
-                        parent_node_id=email_update.record.id,
+                        parent_node_id=email_update.record.id, kept_ids=current_attachment_ids,
                     )
-                    if attachment_updates:
-                        updates.extend(attachment_updates)
+                    updates.extend(attachment_updates)
+                    current_attachment_ids |= {u.external_record_id for u in attachment_updates}
+                if not email_update.is_new and email_update.content_changed:
+                    await self._drop_removed_attachments(message_id, current_attachment_ids)
             else:
                 self.logger.debug(f"Skipping attachment processing for unchanged email {message_id}")
 
@@ -1227,6 +1392,10 @@ class OutlookIndividualConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing message {message.id if message else 'unknown'}: {e}")
+            if updates:
+                # The mail is saved without a revision, so the next read takes it as changed
+                # and lists its attachments again instead of skipping it as unchanged.
+                updates[0].record.external_revision_id = None
             return updates, False
 
     async def _process_single_email_with_folder(
@@ -1253,12 +1422,13 @@ class OutlookIndividualConnector(BaseConnector):
             metadata_changed = False
             content_changed = False
 
+            # From content, not changeKey: a read, flag or category change moves changeKey.
+            current_revision = mail_content_revision(message)
             if not is_new:
-                current_etag = message.change_key
-                if existing_record.external_revision_id != current_etag:
+                if existing_record.external_revision_id != current_revision:
                     content_changed = True
                     is_updated = True
-                    self.logger.info(f"Email {message_id} content changed (change_key: {existing_record.external_revision_id} -> {current_etag})")
+                    self.logger.info(f"Email {message_id} content changed")
 
                 current_folder_id = folder_id
                 existing_folder_id = existing_record.external_record_group_id
@@ -1276,8 +1446,8 @@ class OutlookIndividualConnector(BaseConnector):
                 record_name=message.subject or OutlookDefaults.SUBJECT,
                 record_type=RecordType.MAIL,
                 external_record_id=message_id,
-                external_revision_id=message.change_key,
-                version=0 if is_new else existing_record.version + 1,
+                external_revision_id=current_revision,
+                version=0 if is_new else existing_record.version + (1 if content_changed else 0),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.OUTLOOK_INDIVIDUAL,
                 connector_id=self.connector_id,
@@ -1320,7 +1490,23 @@ class OutlookIndividualConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing email {message.id if message else 'unknown'}: {str(e)}")
-            return None
+            raise
+
+    async def _drop_removed_attachments(self, message_id: str, current_attachment_ids: set[str]) -> None:
+        """Delete attachment records of a mail whose attachment is no longer on the message.
+
+        Only called after the attachment list was read successfully (a failed read raises
+        before this), so an empty set means the mail really has no attachments left.
+        """
+        existing = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, message_id, RecordType.FILE.value
+        )
+        for child in existing:
+            if child.external_record_id not in current_attachment_ids:
+                self.logger.info("Attachment %s was removed from mail %s; deleting it", child.external_record_id, message_id)
+                await self.data_entities_processor.delete_record_by_external_id(
+                    self.connector_id, child.external_record_id
+                )
 
     async def _extract_email_permissions(self, message: Message, record_id: str | None, inbox_owner_email: str) -> list[Permission]:
         """Mails inherit from their folder, which inherits from the app.
@@ -1358,6 +1544,11 @@ class OutlookIndividualConnector(BaseConnector):
         attachment_id = attachment.id
         is_new = existing_record is None
 
+        kind = unsynced_attachment_kind(attachment)
+        if kind:
+            self.logger.info(f"Skipping attachment '{attachment.name}' (id: {attachment_id}) of mail {message_id}: {kind} has no file to index")
+            return None
+
         # Check if content_type is available, skip attachment if not
         content_type = attachment.content_type
         if not content_type:
@@ -1372,6 +1563,7 @@ class OutlookIndividualConnector(BaseConnector):
         )
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
+        revision = attachment.last_modified_date_time.isoformat() if attachment.last_modified_date_time else None
 
         if not parent_weburl:
             self.logger.error(f"No parent weburl found for attachment id {attachment_id}, file name {file_name}, with parent message id {message_id}")
@@ -1382,8 +1574,8 @@ class OutlookIndividualConnector(BaseConnector):
             record_name=file_name,
             record_type=RecordType.FILE,
             external_record_id=attachment_id,
-            external_revision_id=attachment.last_modified_date_time.isoformat() if attachment.last_modified_date_time else None,
-            version=0 if is_new else existing_record.version + 1,
+            external_revision_id=revision,
+            version=0 if is_new else existing_record.version + (1 if existing_record.external_revision_id != revision else 0),
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.OUTLOOK_INDIVIDUAL,
             connector_id=self.connector_id,
@@ -1406,6 +1598,7 @@ class OutlookIndividualConnector(BaseConnector):
         # Apply indexing filter for attachment records
         if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        cap_attachment_indexing(attachment_record, self.logger)
 
         return attachment_record
 
@@ -1418,8 +1611,13 @@ class OutlookIndividualConnector(BaseConnector):
         folder_id: str,
         folder_name: str,
         parent_node_id: str,
+        kept_ids: set[str] | None = None,
     ) -> list[RecordUpdate]:
-        """Process email attachments with folder information."""
+        """Process email attachments with folder information.
+
+        ``kept_ids`` gets the ids of listed attachments skipped this time (no content type),
+        so a stored record of theirs is not taken as removed.
+        """
         attachment_updates = []
 
         try:
@@ -1461,6 +1659,8 @@ class OutlookIndividualConnector(BaseConnector):
 
                 # Skip if attachment was filtered out (e.g., no content_type)
                 if not attachment_record:
+                    if kept_ids is not None and not unsynced_attachment_kind(attachment):
+                        kept_ids.add(attachment_id)
                     continue
 
                 attachment_updates.append(RecordUpdate(
@@ -1478,8 +1678,10 @@ class OutlookIndividualConnector(BaseConnector):
             return attachment_updates
 
         except Exception as e:
+            # Raise, not []: the mail would be saved without its attachments and the folder's
+            # delta link would move past it.
             self.logger.error(f"Error processing attachments for email {message.id if message else 'unknown'}: {e}")
-            return []
+            raise
 
     async def _get_message_attachments_external(self, message_id: str) -> list[Attachment]:
         """Get message attachments for authenticated user using /me API.
@@ -1487,35 +1689,43 @@ class OutlookIndividualConnector(BaseConnector):
         Returns:
             List of Pydantic Attachment objects
         """
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        if not self.external_outlook_client:
+            raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_list_attachments(
-                message_id=message_id
+        response: OutlookCalendarContactsResponse = await self._call_graph(lambda client: client.me_messages_list_attachments(
+            message_id=message_id,
+            select=OutlookAPIFields.ATTACHMENT_SELECT_FIELDS,
+        ))
+
+        if not response.success:
+            # Raise, not []: an empty list would drop the mail's attachment records.
+            raise Exception(f"Failed to get attachments for message {message_id}: {response.error}")
+
+        # response.data is AttachmentCollectionResponse with .value containing list[Attachment]
+        page = response.data
+        attachments = list(page.value or [])
+        # The data source has no nextLink parameter for this call, so later pages go
+        # through the Graph client it wraps (a failed page raises).
+        followed: set[str] = set()
+        while page.odata_next_link:
+            next_link = page.odata_next_link
+            if next_link in followed:
+                raise Exception(f"Graph repeated an attachments nextLink for message {message_id}")
+            followed.add(next_link)
+            page = await self._call_graph(
+                lambda client, url=next_link: client.client.me.messages.by_message_id(message_id).attachments.with_url(url).get()
             )
-
-            if not response.success:
-                self.logger.error(f"Failed to get attachments for message {message_id}: {response.error}")
-                return []
-
-            # response.data is AttachmentCollectionResponse with .value containing list[Attachment]
-            return response.data.value if response.data.value else []
-
-
-        except Exception as e:
-            self.logger.error(f"Error getting attachments for message {message_id}: {e}")
-            return []
+            attachments.extend(page.value or [])
+        return attachments
 
     async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
-        """Get existing record from data store."""
-        try:
-            return await self.data_entities_processor.get_record_by_external_id(
-                self.connector_id, external_record_id
-            )
-        except Exception as e:
-            self.logger.error(f"Error getting existing record {external_record_id}: {e}")
-            return None
+        """Get existing record from data store.
+
+        A lookup error raises: returning None would save the item again under a new record id.
+        """
+        return await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, external_record_id
+        )
 
     def _augment_email_html_with_metadata(self, email_body: str, record: MailRecord) -> str:
         """Augment email HTML with searchable recipient metadata.
@@ -1587,14 +1797,11 @@ class OutlookIndividualConnector(BaseConnector):
                         detail=OutlookHTTPDetails.NO_PARENT_MESSAGE,
                     )
 
-                attachment_data = await self._download_attachment_external(parent_message_id, attachment_id)
-
-                async def generate_attachment() -> AsyncGenerator[bytes, None]:
-                    yield attachment_data
+                attachment = await self._open_attachment_stream(parent_message_id, attachment_id)
 
                 filename = record.record_name or "attachment"
                 return create_stream_record_response(
-                    generate_attachment(),
+                    iter_graph_stream(attachment),
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}"
@@ -1609,7 +1816,8 @@ class OutlookIndividualConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
-            raise to_stream_error(e, connector=self.display_name) from e
+            self.logger.error(f"Error streaming record {record.id}: {e}")
+            raise graph_stream_error(e, self.display_name) from e
 
     async def _get_message_by_id_external(self, message_id: str) -> Message | None:
         """Get a specific message by ID for authenticated user using /me API.
@@ -1621,9 +1829,9 @@ class OutlookIndividualConnector(BaseConnector):
         if not self.external_outlook_client:
             raise connector_not_ready(self.display_name)
 
-        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_get_message(
+        response: OutlookCalendarContactsResponse = await self._call_graph(lambda client: client.me_get_message(
             message_id=message_id
-        )
+        ))
 
         if not response.success:
             self.logger.error(f"Failed to get message {message_id}: {response.error}")
@@ -1633,70 +1841,26 @@ class OutlookIndividualConnector(BaseConnector):
         # response.data is Message Pydantic object
         return response.data
 
-    @staticmethod
-    def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
-        """Decode Graph API content_bytes handling both old and new Kiota behavior.
+    async def _open_attachment_stream(self, message_id: str, attachment_id: str) -> httpx.Response:
+        """Open a mail attachment's raw content (``/$value``) for streaming in chunks.
 
-        Kiota ≤1.11.6 returned base64 text as UTF-8 bytes; ≥1.11.7 returns
-        properly decoded raw bytes. Detect by checking for non-ASCII content.
-        """
-        raw = content_bytes if isinstance(content_bytes, bytes) else content_bytes.encode("utf-8")
-        try:
-            raw.decode("ascii")
-        except UnicodeDecodeError:
-            return raw
-        try:
-            return base64.b64decode(raw, validate=False)
-        except Exception:
-            return raw
-
-    async def _download_attachment_external(self, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content for authenticated user using /me API.
-
-        Raises rather than returning empty bytes: a failed download that returns
-        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        On a 401 the token is renewed and the request sent once more. A failed status
+        raises the mapped stream error, never an empty 200.
         """
         if not self.external_outlook_client:
             raise connector_not_ready(self.display_name)
 
-        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_get_attachments(
-            message_id=message_id,
-            attachment_id=attachment_id
-        )
-
-        if not response.success:
+        path = f"me/messages/{quote(message_id, safe='')}/attachments/{quote(attachment_id, safe='')}/$value"
+        response = await open_graph_stream(self.external_client, path)
+        if response.status_code == HttpStatusCode.UNAUTHORIZED.value and await self._renew_token_after_401():
+            await response.aclose()
+            response = await open_graph_stream(self.external_client, path)
+        if not response.is_success:
             self.logger.error(
-                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+                f"Failed to download attachment {attachment_id} for message {message_id}: HTTP {response.status_code}"
             )
-        raise_for_stream_fetch(
-            success=response.success,
-            has_payload=response.data is not None,
-            connector=self.display_name,
-            message=response.error,
-        )
-
-        # Extract attachment content from FileAttachment SDK object
-        # response.data is the SDK object itself (not a dict with 'value')
-        attachment_data = response.data
-
-        # Try both snake_case and camelCase attribute names
-        if hasattr(attachment_data, 'content_bytes'):
-            content_bytes = attachment_data.content_bytes
-        elif hasattr(attachment_data, 'contentBytes'):
-            content_bytes = attachment_data.contentBytes
-        elif isinstance(attachment_data, dict):
-            content_bytes = attachment_data.get('content_bytes') or attachment_data.get('contentBytes')
-        else:
-            content_bytes = None
-
-        if not content_bytes:
-            raise not_downloadable(
-                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
-                connector=self.display_name,
-            )
-
-        return self._decode_content_bytes(content_bytes)
-
+        await raise_for_graph_stream(response, self.display_name)
+        return response
 
     def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access. Not supported for Outlook."""
@@ -1715,6 +1879,8 @@ class OutlookIndividualConnector(BaseConnector):
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
         try:
+            await close_graph_client(getattr(self, "_retired_graph_client", None), self.logger)
+            self._retired_graph_client = None
             # Close the MSGraph client to properly close the HTTP transport
             if hasattr(self, 'external_client') and self.external_client:
                 try:

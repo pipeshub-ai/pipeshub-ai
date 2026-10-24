@@ -58,6 +58,8 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
       - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
+      # Unset: the Notion connector calls api.notion.com. The Notion suite sets it to the notion-sim service.
+      - NOTION_API_BASE_URL=${NOTION_CONNECTOR_BASE_URL:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
       - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
@@ -300,7 +302,7 @@ services:
 
   # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
   # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
-  # site with the same people and groups, served from the lumenfold@1 content pack
+  # site with the same people and groups, served from the lumenfold@2 content pack
   # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
   # pinned, so every run gets the same world and the suites can name fixture issues
   # (integration-tests/connectors/atlassian_sim.env). The test process uses the
@@ -345,6 +347,31 @@ services:
       default:
         aliases:
           - jira-sim.internal
+    mem_limit: 1g
+
+  # The Notion simulator for the Notion suite, behind the notion-sim profile: the Notion part of the
+  # same content pack, with the suite's fixture tree in it (integration-tests/connectors/notion_sim.env).
+  # A site of its own (CONNSIM_SOURCES=notion), seed and build time pinned so the tree's ids stay put. The
+  # connector reaches it through NOTION_API_BASE_URL, so no real host is aliased.
+  notion-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["notion-sim"]
+    restart: always
+    command: ["notion"]
+    environment:
+      CONNSIM_SOURCES: notion
+      CONNSIM_PACK: /pack
+      CONNSIM_SEED: "42"
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8103:80"
+    networks:
+      default:
+        aliases:
+          - notion-sim.internal
     mem_limit: 1g
 
   # An external MCP server that agent tests register and call, so "an agent

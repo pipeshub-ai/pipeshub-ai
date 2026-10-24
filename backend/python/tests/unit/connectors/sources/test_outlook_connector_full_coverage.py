@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -15,6 +16,7 @@ from app.connectors.sources.microsoft.outlook.connector import (
     OutlookCredentials,
 )
 from app.connectors.sources.microsoft.common.outlook_constants import (
+    OutlookAPIFields,
     OutlookFolders,
     OutlookThreadDetection,
 )
@@ -73,6 +75,17 @@ def _make_graph_response(success=True, data=None, error=None):
     resp.data = data
     resp.error = error
     return resp
+
+
+def _stub_sync_points(connector):
+    """Replace both sync points with mocks holding no prior inventory or cursor."""
+    for name in ("email_delta_sync_point", "group_conversations_sync_point"):
+        sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(return_value=None)
+        sync_point.update_sync_point = AsyncMock()
+        sync_point.delete_sync_point = AsyncMock()
+        setattr(connector, name, sync_point)
+    return connector
 
 
 def _make_user(email="user@test.com", source_user_id="su1", user_id="uid1"):
@@ -325,7 +338,7 @@ class TestStreamRecord:
         connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
-        connector._download_attachment_external = AsyncMock(return_value=b"pdf bytes")
+        connector._open_attachment_stream = AsyncMock(return_value=httpx.Response(200, content=b"pdf bytes"))
 
         record = _make_file_record()
 
@@ -1110,86 +1123,6 @@ class TestGetMessageByIdExternal:
 
 
 # ===========================================================================
-# _download_attachment_external
-# ===========================================================================
-
-
-class TestDownloadAttachmentExternal:
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-
-        content = b"PDF content"
-        b64 = base64.b64encode(content).decode()
-        mock_data = MagicMock()
-        mock_data.content_bytes = b64
-        mock_data.contentBytes = None
-
-        connector.external_outlook_client.users_messages_get_attachments = AsyncMock(
-            return_value=_make_graph_response(success=True, data=mock_data)
-        )
-
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == content
-
-    @pytest.mark.asyncio
-    async def test_fallback_to_contentBytes(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-
-        content = b"File data"
-        b64 = base64.b64encode(content).decode()
-        mock_data = MagicMock()
-        mock_data.content_bytes = b64  # Connector now uses content_bytes only
-
-        connector.external_outlook_client.users_messages_get_attachments = AsyncMock(
-            return_value=_make_graph_response(success=True, data=mock_data)
-        )
-
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == content
-
-    @pytest.mark.asyncio
-    async def test_failure_returns_empty_bytes(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-        connector.external_outlook_client.users_messages_get_attachments = AsyncMock(
-            return_value=_make_graph_response(success=False)
-        )
-
-        with pytest.raises(RuntimeError):
-            await connector._download_attachment_external("su1", "m1", "a1")
-
-    @pytest.mark.asyncio
-    async def test_item_attachment_raises_instead_of_streaming_empty(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-
-        mock_data = MagicMock()
-        mock_data.content_bytes = None
-        mock_data.contentBytes = None
-
-        connector.external_outlook_client.users_messages_get_attachments = AsyncMock(
-            return_value=_make_graph_response(success=True, data=mock_data)
-        )
-
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._download_attachment_external("su1", "m1", "a1")
-        assert exc_info.value.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_no_client(self):
-        connector = _make_connector()
-        connector.external_outlook_client = None
-
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._download_attachment_external("su1", "m1", "a1")
-        assert exc_info.value.status_code == 409
-
-
-# ===========================================================================
 # _get_message_attachments_external
 # ===========================================================================
 
@@ -1203,6 +1136,7 @@ class TestGetMessageAttachmentsExternal:
 
         mock_data = MagicMock()
         mock_data.value = [{"id": "a1"}, {"id": "a2"}]
+        mock_data.odata_next_link = None
 
         connector.external_outlook_client.users_messages_list_attachments = AsyncMock(
             return_value=_make_graph_response(success=True, data=mock_data)
@@ -1212,15 +1146,15 @@ class TestGetMessageAttachmentsExternal:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_failure_returns_empty(self):
+    async def test_failure_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
         connector.external_outlook_client.users_messages_list_attachments = AsyncMock(
             return_value=_make_graph_response(success=False, error="Err")
         )
 
-        result = await connector._get_message_attachments_external("su1", "m1")
-        assert result == []
+        with pytest.raises(Exception, match="Err"):
+            await connector._get_message_attachments_external("su1", "m1")
 
 
 # ===========================================================================
@@ -1741,8 +1675,8 @@ class TestProcessGroupPost:
         thread = MagicMock()
         thread.id = "t1"
 
-        result = await connector._process_group_post("org-1", group, thread, post)
-        assert result is None
+        with pytest.raises(Exception, match="DB error"):
+            await connector._process_group_post("org-1", group, thread, post)
 
 
 # ===========================================================================
@@ -1766,7 +1700,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = None
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
+            "org-1", group, MagicMock(id=None), post, [], parent_post_record_id="post-record-id"
         )
         assert result == []
 
@@ -1863,34 +1797,35 @@ class TestGetGroupPostAttachments:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_data = MagicMock()
-        mock_data.value = [{"id": "a1"}]
+        mock_data = MagicMock(attachments=[{"id": "a1"}])
 
-        connector.external_outlook_client.groups_threads_posts_list_attachments = AsyncMock(
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
         result = await connector._get_group_post_attachments("g1", "t1", "p1")
-        assert len(result) == 1
+        assert result == [{"id": "a1"}]
+        call_kwargs = connector.external_outlook_client.groups_threads_get_post.call_args[1]
+        assert call_kwargs["expand"] == [OutlookAPIFields.POST_ATTACHMENTS_METADATA_EXPAND]
 
     @pytest.mark.asyncio
-    async def test_failure_returns_empty(self):
+    async def test_failure_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
-        connector.external_outlook_client.groups_threads_posts_list_attachments = AsyncMock(
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
             return_value=_make_graph_response(success=False, error="Err")
         )
 
-        result = await connector._get_group_post_attachments("g1", "t1", "p1")
-        assert result == []
+        with pytest.raises(Exception, match="Err"):
+            await connector._get_group_post_attachments("g1", "t1", "p1")
 
     @pytest.mark.asyncio
-    async def test_no_client(self):
+    async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._get_group_post_attachments("g1", "t1", "p1")
-        assert result == []
+        with pytest.raises(Exception, match="not initialized"):
+            await connector._get_group_post_attachments("g1", "t1", "p1")
 
 
 # ===========================================================================
@@ -1904,7 +1839,8 @@ class TestSyncUserFolders:
     async def test_no_folders(self):
         connector = _make_connector()
         connector._determine_folder_filter_strategy = MagicMock(return_value=(None, None))
-        connector._get_all_folders_for_user = AsyncMock(return_value=[])
+        connector._get_all_folders_for_user = AsyncMock(return_value=([], set()))
+        _stub_sync_points(connector)
 
         user = _make_user()
         result = await connector._sync_user_folders(user)
@@ -1925,122 +1861,22 @@ class TestSyncUserFolders:
             connector_id="conn-1", group_type=RecordGroupType.MAILBOX,
         )
         connector._transform_folder_to_record_group = MagicMock(return_value=rg)
+        _stub_sync_points(connector)
 
         user = _make_user()
         result = await connector._sync_user_folders(user)
         assert len(result) == 1
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        connector.email_delta_sync_point.update_sync_point.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_error_returns_empty(self):
+    async def test_error_raises(self):
         connector = _make_connector()
         connector._determine_folder_filter_strategy = MagicMock(side_effect=Exception("Err"))
 
         user = _make_user()
-        result = await connector._sync_user_folders(user)
-        assert result == []
-
-
-# ===========================================================================
-# _get_all_messages_delta_external
-# ===========================================================================
-
-
-class TestGetAllMessagesDeltaExternal:
-
-    @pytest.mark.asyncio
-    async def test_basic_delta_sync(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get = MagicMock(return_value=None)
-
-        messages = [MagicMock(), MagicMock()]
-        connector.external_outlook_client.fetch_all_messages_delta = AsyncMock(
-            return_value=(messages, "delta-link-new")
-        )
-
-        result = await connector._get_all_messages_delta_external("su1", "f1", None)
-        assert len(result.messages) == 2
-        assert result.delta_link == "delta-link-new"
-
-    @pytest.mark.asyncio
-    async def test_with_received_date_filter(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-
-        date_filter = MagicMock()
-        date_filter.is_empty.return_value = False
-        date_filter.get_datetime_iso.return_value = ("2024-01-01T00:00:00", None)
-
-        def get_filter(key):
-            from app.connectors.core.registry.filters import SyncFilterKey
-            if key == SyncFilterKey.RECEIVED_DATE:
-                return date_filter
-            return None
-
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get = MagicMock(side_effect=get_filter)
-
-        connector.external_outlook_client.fetch_all_messages_delta = AsyncMock(
-            return_value=([MagicMock()], "delta")
-        )
-
-        result = await connector._get_all_messages_delta_external("su1", "f1", None)
-        assert len(result.messages) == 1
-
-    @pytest.mark.asyncio
-    async def test_client_side_before_filter(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-
-        date_filter = MagicMock()
-        date_filter.is_empty.return_value = False
-        date_filter.get_datetime_iso.return_value = (None, "2024-06-01T00:00:00")
-
-        def get_filter(key):
-            from app.connectors.core.registry.filters import SyncFilterKey
-            if key == SyncFilterKey.RECEIVED_DATE:
-                return date_filter
-            return None
-
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get = MagicMock(side_effect=get_filter)
-
-        msg_old = MagicMock()
-        msg_old.received_date_time = datetime(2024, 5, 1, tzinfo=timezone.utc)
-
-        msg_new = MagicMock()
-        msg_new.received_date_time = datetime(2024, 7, 1, tzinfo=timezone.utc)
-
-        connector.external_outlook_client.fetch_all_messages_delta = AsyncMock(
-            return_value=([msg_old, msg_new], "delta")
-        )
-
-        result = await connector._get_all_messages_delta_external("su1", "f1", None)
-        assert len(result.messages) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_client_returns_empty(self):
-        connector = _make_connector()
-        connector.external_outlook_client = None
-
-        result = await connector._get_all_messages_delta_external("su1", "f1", None)
-        assert result.messages == []
-
-    @pytest.mark.asyncio
-    async def test_with_delta_link(self):
-        connector = _make_connector()
-        connector.external_outlook_client = MagicMock()
-        connector.sync_filters = MagicMock()
-        connector.sync_filters.get = MagicMock(return_value=None)
-
-        connector.external_outlook_client.fetch_all_messages_delta = AsyncMock(
-            return_value=([MagicMock()], "new-delta")
-        )
-
-        result = await connector._get_all_messages_delta_external("su1", "f1", "old-delta")
-        assert result.delta_link == "new-delta"
+        with pytest.raises(Exception, match="Err"):
+            await connector._sync_user_folders(user)
 
 
 # ===========================================================================
@@ -2062,6 +1898,7 @@ class TestProcessSingleEmailWithFolderIndexing:
         msg.id = "m1"
         msg.subject = "Test"
         msg.change_key = "changekey"
+        msg.body_preview = ""
         msg.created_date_time = None
         msg.last_modified_date_time = None
         msg.web_link = ""
@@ -2081,18 +1918,17 @@ class TestProcessSingleEmailWithFolderIndexing:
         assert result.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
-    async def test_error_returns_none(self):
+    async def test_error_raises(self):
         connector = _make_connector()
         connector._get_existing_record = AsyncMock(side_effect=Exception("DB error"))
 
         msg = MagicMock()
         msg.id = "m1"
 
-        result = await connector._process_single_email_with_folder(
-            "org-1", "user@test.com", msg, "f1", "Inbox"
-        )
-
-        assert result is None
+        with pytest.raises(Exception, match="DB error"):
+            await connector._process_single_email_with_folder(
+                "org-1", "user@test.com", msg, "f1", "Inbox"
+            )
 
 
 # ===========================================================================
@@ -2114,6 +1950,9 @@ class TestGetAllFoldersForUserAdditional:
         connector.external_outlook_client.users_list_mail_folders = AsyncMock(
             return_value=_make_graph_response(success=True, data=data)
         )
+        connector.external_outlook_client.users_get_mail_folders = AsyncMock(
+            return_value=_make_graph_response(success=True, data=MagicMock(id="f1"))
+        )
         connector._get_child_folders_recursive = AsyncMock(return_value=[])
 
         folders, top_level_ids = await connector._get_all_folders_for_user(
@@ -2130,25 +1969,27 @@ class TestGetAllFoldersForUserAdditional:
             return_value=_make_graph_response(success=False, error="Err")
         )
 
-        folders, top_level_ids = await connector._get_all_folders_for_user("su1")
-        assert folders == []
-        assert top_level_ids == set()
+        with pytest.raises(Exception, match="Err"):
+            await connector._get_all_folders_for_user("su1")
 
     @pytest.mark.asyncio
     async def test_with_nested_folders(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        folder = {"id": "f1", "display_name": "Inbox", "child_folder_count": 1}
-        child = {"id": "f2", "display_name": "Subfolder", "child_folder_count": 0}
+        folder = MagicMock(id="f1", display_name="Inbox", child_folder_count=1)
+        child = MagicMock(id="f2", display_name="Subfolder", child_folder_count=0)
 
         connector.external_outlook_client.users_list_mail_folders = AsyncMock(
-            return_value=_make_graph_response(success=True, data={"value": [folder]})
+            return_value=_make_graph_response(
+                success=True, data=MagicMock(value=[folder], odata_next_link=None)
+            )
         )
         connector._get_child_folders_recursive = AsyncMock(return_value=[child])
 
-        result = await connector._get_all_folders_for_user("su1")
-        assert len(result) == 2
+        folders, top_level_ids = await connector._get_all_folders_for_user("su1")
+        assert [f.id for f in folders] == ["f1", "f2"]
+        assert top_level_ids == {"f1"}
 
 
 # ===========================================================================
@@ -2181,8 +2022,8 @@ class TestGetChildFoldersRecursiveAdditional:
             return_value=_make_graph_response(success=False, error="Forbidden")
         )
 
-        result = await connector._get_child_folders_recursive("su1", folder)
-        assert result == []
+        with pytest.raises(Exception, match="Forbidden"):
+            await connector._get_child_folders_recursive("su1", folder)
 
 
 # ===========================================================================
@@ -2252,11 +2093,9 @@ class TestDownloadGroupPostAttachmentAdditional:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_data = MagicMock()
-        mock_data.content_bytes = None
-        mock_data.contentBytes = None
+        mock_data = MagicMock(attachments=[MagicMock(id="a1", content_bytes=None, size=1)])
 
-        connector.external_outlook_client.groups_threads_posts_get_attachments = AsyncMock(
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
@@ -2318,13 +2157,13 @@ class TestProcessUserEmailsAdditional:
         assert "Failed" in result
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_string(self):
+    async def test_folder_listing_failure_raises(self):
         connector = _make_connector()
         connector._sync_user_folders = AsyncMock(side_effect=Exception("Fatal"))
 
         user = _make_user()
-        result = await connector._process_user_emails("org-1", user)
-        assert "Failed" in result
+        with pytest.raises(Exception, match="Fatal"):
+            await connector._process_user_emails("org-1", user)
 
 
 # ===========================================================================
@@ -2414,8 +2253,8 @@ class TestGetAllMicrosoft365GroupsAdditional:
             return_value=_make_graph_response(success=False, error="Err")
         )
 
-        result = await connector._get_all_microsoft_365_groups()
-        assert result == []
+        with pytest.raises(Exception, match="Err"):
+            await connector._get_all_microsoft_365_groups()
 
 
 # ===========================================================================
@@ -2442,12 +2281,12 @@ class TestGetGroupThreadsAdditional:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_no_client(self):
+    async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._get_group_threads("g1")
-        assert result == []
+        with pytest.raises(Exception, match="not initialized"):
+            await connector._get_group_threads("g1")
 
 
 # ===========================================================================
@@ -2474,12 +2313,12 @@ class TestGetThreadPostsAdditional:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_no_client(self):
+    async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._get_thread_posts("g1", "t1")
-        assert result == []
+        with pytest.raises(Exception, match="not initialized"):
+            await connector._get_thread_posts("g1", "t1")
 
 
 # ===========================================================================
@@ -2513,7 +2352,7 @@ class TestCreateConnector:
 class TestProcessSingleFolderMessagesAdditional:
 
     @pytest.mark.asyncio
-    async def test_exception_returns_zero(self):
+    async def test_exception_raises(self):
         connector = _make_connector()
         connector.email_delta_sync_point = MagicMock()
         connector.email_delta_sync_point.read_sync_point = AsyncMock(side_effect=Exception("DB err"))
@@ -2523,9 +2362,8 @@ class TestProcessSingleFolderMessagesAdditional:
         folder.id = "f1"
         folder.display_name = "Inbox"
 
-        count, records = await connector._process_single_folder_messages("org-1", user, folder)
-        assert count == 0
-        assert records == []
+        with pytest.raises(Exception, match="DB err"):
+            await connector._process_single_folder_messages("org-1", user, folder)
 
 
 # ===========================================================================
@@ -2811,9 +2649,12 @@ class TestSyncUserGroupsErrorHandling:
         connector._get_all_microsoft_365_groups = AsyncMock(return_value=[group1, group2])
         connector._get_group_members = AsyncMock(side_effect=[Exception("Err"), []])
         connector._transform_group_to_record_group = MagicMock(return_value=None)
+        _stub_sync_points(connector)
 
         result = await connector._sync_user_groups()
         assert len(result) >= 1
+        # The group whose members failed is still listed, so it must not read as deleted.
+        connector.data_entities_processor.on_user_group_deleted.assert_not_awaited()
 
 
 # ===========================================================================
