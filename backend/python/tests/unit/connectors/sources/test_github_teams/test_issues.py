@@ -227,6 +227,62 @@ class TestFetchIssuesBatched:
         assert [k.get("after") for k in calls] == [None, "cursor-2"]
         sync._write_checkpoint.assert_awaited_once()
 
+    async def test_a_full_cursor_page_without_a_next_link_ends_the_listing(self) -> None:
+        """GitHub sends no next link on the cursor page that holds the rest of the
+        listing, even when that page is full. Asking for a page number then would
+        be refused past the limit, and the checkpoint would never be written."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        last = ok_response([_issue(number=n) for n in range(100, 200)])  # full, no next link
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return [first, last][len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        assert await sync.fetch_issues_batched(repo) is True
+
+        assert len(calls) == 2
+        sync._write_checkpoint.assert_awaited_once()
+
+    async def test_a_repeated_cursor_stops_without_advancing_the_checkpoint(self) -> None:
+        """A cursor that does not move would page forever."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        page = ok_response([_issue(number=n) for n in range(100)])
+        page.next_cursor = "stuck"
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                assert len(calls) <= 3, "the listing kept paging on a cursor that never moved"
+                return page
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        assert await sync.fetch_issues_batched(repo) is False
+
+        assert len(calls) == 2
+        sync._write_checkpoint.assert_not_awaited()
+
     async def test_without_a_cursor_the_next_page_number_is_read(self) -> None:
         """A server that offers no cursor is still read to the end, by page number."""
         c = make_mock_connector()

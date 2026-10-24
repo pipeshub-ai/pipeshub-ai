@@ -292,7 +292,18 @@ class IssuesSync:
             # pull requests count towards them, so a busy repository could never
             # be read further back. Follow the cursor GitHub hands out instead;
             # the page number is the fallback where it offers none.
-            cursor = issues_res.next_cursor
+            next_cursor = issues_res.next_cursor
+            if cursor is not None and next_cursor is None:
+                # A cursor page that holds the rest of the listing is full and
+                # has no next link. Asking for a page number now would be refused.
+                break
+            if next_cursor is not None and next_cursor == cursor:
+                self.logger.error(
+                    "GitHub returned the same issues cursor twice for %s (page %s); stopping "
+                    "without advancing the checkpoint.", repo.full_name, page,
+                )
+                return False
+            cursor = next_cursor
             page += 1
 
         if processed:
