@@ -34,6 +34,30 @@ def github_slug(heading):
     return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
 
 
+def narrative(log, version):
+    """The narrative paragraph of the version's CHANGELOG.md entry, or None.
+
+    The entry is its "## <version> — <date>" heading, the "**<headline>** · ..." metadata
+    paragraph, then the narrative, then "### " sections. A wrapped narrative is joined.
+    """
+    entry, inside = [], False
+    for line in log.split("\n"):
+        heading = re.match(r"(#{2,3}) (\S+)", line)
+        if inside and heading:
+            break  # the entry's first section, or the next entry
+        if heading and heading.groups() == ("##", version):
+            inside = True
+        elif inside:
+            entry.append(line.strip())
+    paragraphs = re.split(r"\n\n+", "\n".join(entry).strip())
+    if len(paragraphs) < 2 or not paragraphs[0].startswith("**"):
+        return None
+    text = paragraphs[1]
+    if re.match(r"[#>|*+-]|\d+\.\s", text):  # a heading, quote, table or list, not prose
+        return None
+    return " ".join(text.split("\n"))
+
+
 def convert(src, out_dir):
     version = src.stem
     lines = src.read_text(encoding="utf-8").split("\n")
@@ -57,10 +81,10 @@ def convert(src, out_dir):
 
     # The docs summary page shows the release's narrative from the CHANGELOG.md entry.
     log = (src.parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
-    entry = re.search(rf"^## {re.escape(version)} — .+\n\n\*\*.+\n\n(.+)$", log, re.M)
-    if not entry:
-        sys.exit(f"CHANGELOG.md: no entry for {version} with a narrative line")
-    summary = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", entry.group(1))  # its links are relative to CHANGELOG.md
+    text = narrative(log, version)
+    if not text:
+        sys.exit(f"CHANGELOG.md: the {version} entry has no narrative paragraph after its metadata line")
+    summary = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # its links are relative to CHANGELOG.md
 
     # Mintlify builds heading ids differently, so linked headings keep GitHub's id explicitly.
     linked = set(re.findall(r"\]\(#([^)\s]+)\)", "\n".join(lines)))

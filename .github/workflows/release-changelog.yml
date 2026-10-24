@@ -14,12 +14,13 @@ name: Release Changelog
 # regenerates a missed changelog.
 #
 # The same run also converts changelog/<version>.md to the docs format
-# (.github/scripts/changelog-to-mdx.py) and opens a PR on
-# pipeshub-ai/documentation that adds changelog/platform/<version>.mdx.
+# (.github/scripts/changelog-to-mdx.py, from main) and opens a PR on
+# pipeshub-ai/documentation that adds changelog/platform/<version>.mdx. The
+# conversion has its own job, so a file it rejects stops only the docs PR.
 #
 # Claude reads contributor-written release notes and PR text, so it runs in a
-# read-only job and hands over a patch and the docs file; separate jobs check
-# them before they push with a write token.
+# read-only job and hands over a patch; separate jobs check it before they
+# push with a write token.
 #
 # Secrets: ANTHROPIC_API_KEY (Claude API key) and DOCS_REPO_TOKEN (a token that
 # can push branches and open PRs on pipeshub-ai/documentation).
@@ -41,7 +42,7 @@ on:
 env:
   DOCS_REPO: pipeshub-ai/documentation
 
-# Dispatched runs take turns across both jobs, so each builds on the branch the
+# Dispatched runs take turns across all jobs, so each builds on the branch the
 # previous one pushed. `queue: max` keeps every waiting run; the default keeps
 # only the newest pending one and cancels the rest.
 concurrency:
@@ -125,17 +126,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
-
-      # The docs converter comes from main (the changelog branch can be older).
-      # The skill can write files, so the convert step checks this copy
-      # against the hash taken here, before the skill runs.
-      - name: Keep the converter from main
-        id: converter
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/converter"
-          cp .github/scripts/changelog-to-mdx.py "$RUNNER_TEMP/converter/"
-          echo "sha=$(sha256sum "$RUNNER_TEMP/converter/changelog-to-mdx.py" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Every release adds to one changelog branch and PR, so releases published
       # before it merges build on each other's CHANGELOG.md edits. The branch is
@@ -231,24 +221,62 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Converts the changelog to the docs format. Only publish-docs needs this
+  # job, so a changelog the converter rejects still gets its changelog PR.
+  convert:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The converter comes from main (the changelog branch can be older).
+      - name: Checkout the converter from main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          path: main
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Checkout the base the patch was made on
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.generate.outputs.base_sha }}
+          path: work
+          persist-credentials: false
+
+      - name: Download the patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog-patch
+          path: ${{ runner.temp }}/patch
+
       - name: Convert to the docs format
+        working-directory: work
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          CONVERTER_SHA: ${{ steps.converter.outputs.sha }}
+          VERSION: ${{ needs.generate.outputs.version }}
         run: |
           set -euo pipefail
-          converter="$RUNNER_TEMP/converter/changelog-to-mdx.py"
-          if ! echo "$CONVERTER_SHA  $converter" | sha256sum --check --quiet; then
-            echo "::error::The docs converter changed during the run; not converting."
-            exit 1
+          patch="$RUNNER_TEMP/patch/changelog.patch"
+          # An empty patch means the changelog is already on the branch.
+          if [ -s "$patch" ]; then
+            git apply "$patch"
           fi
-          python3 -I "$converter" "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
+          # The patch came from the job that read untrusted text: read only regular files.
+          for file in "changelog/${VERSION}.md" CHANGELOG.md; do
+            if [ ! -f "$file" ] || [ -L "$file" ]; then
+              echo "::error::$file is missing or is not a regular file."
+              exit 1
+            fi
+          done
+          python3 -I "$GITHUB_WORKSPACE/main/.github/scripts/changelog-to-mdx.py" "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
 
       - name: Upload the docs file
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docs-changelog
-          path: ${{ runner.temp }}/docs-changelog/${{ steps.release.outputs.version }}.mdx
+          path: ${{ runner.temp }}/docs-changelog/${{ needs.generate.outputs.version }}.mdx
           if-no-files-found: error
           retention-days: 7
 
@@ -350,7 +378,7 @@ jobs:
           fi
 
   publish-docs:
-    needs: generate
+    needs: [generate, convert]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -383,7 +411,14 @@ jobs:
           # Exactly one regular file, named for the version.
           mapfile -t files < <(find "$RUNNER_TEMP/file" -type f)
           if [ "${#files[@]}" -ne 1 ] || [ "$(basename "${files[0]}")" != "${VERSION}.mdx" ]; then
-            echo "::error::Expected only ${VERSION}.mdx from the generate job."
+            echo "::error::Expected only ${VERSION}.mdx from the convert job."
+            exit 1
+          fi
+          # The converter writes a page per release (description is the headline,
+          # links go to /changelog/platform/<version>). An older docs main reads
+          # summary as the headline and would accept the file but render it wrong.
+          if ! grep -Eq "^const REQUIRED = .*'description'" scripts/changelog/build-index.mjs; then
+            echo "::error::${DOCS_REPO} main does not use the page-per-release changelog format yet (scripts/changelog/SPEC.md). Merge that first, then re-run."
             exit 1
           fi
 

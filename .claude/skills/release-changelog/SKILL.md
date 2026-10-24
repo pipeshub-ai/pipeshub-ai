@@ -205,7 +205,7 @@ Changes merged to `main` since the last release: [`<tag>...HEAD`](https://github
 
 **<H1 headline from the detailed file>** · <Channel> · [`<tag>`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/<tag>) · [Full changelog](changelog/<version>.md)
 
-<Two sentences, no links, on what changed for users: the main features and fixes. This line is also the release's summary on the docs changelog page.>
+<Two sentences on what changed for users: the main features and fixes. No links, except the "Finalizes" link below. This paragraph is also the release's summary on the docs changelog page, with links removed.>
 
 ### Added
 - <condensed bullet, citing only the 1–3 anchor PRs> ([#N](link))
