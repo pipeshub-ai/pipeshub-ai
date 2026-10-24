@@ -17,7 +17,7 @@ afterEach(cleanup);
 
 /** Opens the menu the way a keyboard user does: focus the trigger, press Enter. */
 const openWithKeyboard = () => {
-  const trigger = screen.getByRole('button', { name: /Can view|Can edit|Full Access/ });
+  const trigger = screen.getByRole('button', { name: /Can view|Can edit|Full access/ });
   trigger.focus();
   fireEvent.keyDown(trigger, { key: 'Enter' });
   return trigger;
@@ -27,7 +27,7 @@ describe('RoleDropdownMenu', () => {
   it('offers owner, edit and view by default', async () => {
     renderInTheme(<RoleDropdownMenu role="READER" onRoleChange={vi.fn()} />);
     openWithKeyboard();
-    expect(await screen.findByText('Full Access')).toBeTruthy();
+    expect(await screen.findByText('Full access')).toBeTruthy();
     expect(screen.getByText('Can edit')).toBeTruthy();
   });
 
@@ -35,7 +35,7 @@ describe('RoleDropdownMenu', () => {
     const onRoleChange = vi.fn();
     renderInTheme(<RoleDropdownMenu role="READER" roles={['WRITER', 'READER']} onRoleChange={onRoleChange} />);
     openWithKeyboard();
-    expect(screen.queryByText('Full Access')).toBeNull();
+    expect(screen.queryByText('Full access')).toBeNull();
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /Can edit/ }));
     expect(onRoleChange).toHaveBeenCalledWith('WRITER');
   });

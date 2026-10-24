@@ -154,9 +154,17 @@ const nonStreamingTurn =
             ? { agentKey: target.agentKey, ...ONLY_AGENT }
             : EXCLUDE_AGENT),
         };
-        await assertNotReadOnlyViewer(scope, userId);
+        // An agent conversation is shared read-only: only its owner adds messages,
+        // and anyone else gets the 404 of a conversation they cannot see.
+        if (target.kind !== 'agent')
+          await assertNotReadOnlyViewer(scope, userId);
         const continued = await continueConversation(
-          { ...scope, ...ownerOrWriterFilter(userId) },
+          {
+            ...scope,
+            ...(target.kind === 'agent'
+              ? { userId }
+              : ownerOrWriterFilter(userId)),
+          },
           userMessage,
           { appConfig, userId: String(userId), orgId: String(orgId) },
         );
