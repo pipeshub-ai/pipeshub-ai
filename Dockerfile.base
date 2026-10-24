@@ -132,9 +132,13 @@ RUN set -eux; \
 # Target: models — publish as pipeshubai/pipeshub-ai-base:models-bge-<hash>
 # Embedding and reranker weights. The slim app image does not copy this layer.
 # -----------------------------------------------------------------------------
+# The heron layout model is the pdfplumber parser's table and figure detector
+# (app/modules/parsers/pdf/table_detector.py pins the same revision); slim
+# downloads it on first use.
 FROM python-deps AS models
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')" && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')"
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')"
 
 # -----------------------------------------------------------------------------
 # Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime-<hash>

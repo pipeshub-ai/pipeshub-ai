@@ -50,10 +50,11 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 
 # Used only when MODELS_IMAGE is left at its default. Release builds pass the
 # published models image and BuildKit skips this stage.
+# Same weights as the models stage of Dockerfile.base.
 FROM python-deps AS models-download
-RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})" && \
-    mkdir -p /root/.cache/huggingface && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')"
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')"
 
 FROM ${MODELS_IMAGE} AS models
 
@@ -161,54 +162,9 @@ COPY --link --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-en
 # so ownership is set after the copies, without recursing into them.
 RUN chown 1000:1000 /app /app/backend
 
-# Copy Python site-packages from build stage
-COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=python-deps /usr/local/bin /usr/local/bin
-
-# Copy ML model data (dense HF embeddings + reranker, sparse fastembed, NLTK)
-COPY --chown=1000:1000 --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
-COPY --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
-COPY --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
-
-# Layout model for the pdfplumber PDF parser (tables, figures), so it needs no
-# download at runtime. Only its own cache dir is handed over: a chown of the
-# whole cache would copy every baked model into this layer.
-RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')" && \
-    chown -R 1000:1000 /root/.cache/huggingface/hub/models--docling-project--docling-layout-heron-onnx
-
-# Copy Playwright browser binaries
-COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
-
-# Copy Node.js backend (already pruned)
-COPY --from=nodejs-backend /app/backend/dist ./backend/dist
-COPY --from=nodejs-backend /app/templates ./backend/src
-COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
-COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
-
-# Copy frontend build (normalized to /out by the selected frontend stage)
-COPY --from=frontend-build /out ./backend/dist/public
-
-# Copy Python application code
-COPY backend/python/app/ /app/python/app/
-
-# Copy the process monitor script
-COPY deployment/process_monitor.sh /app/process_monitor.sh
-
-RUN chmod +x /app/process_monitor.sh && \
-    install -d -o 1000 -g 1000 /app/python/logs /data/pipeshub && \
-    chown 1000:1000 /app /app/backend
-
-# Code stays root-owned (read-only to the app); only the dirs above, which the
-# services create log and state files in, belong to the runtime user. The image
-# starts as root so the entrypoint can take over data from earlier root-running
-# releases; it drops to uid 1000 with no capabilities before any service starts.
-COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-
 # Which build this image is; each service returns it from /health. Declared
 # last so a new commit rebuilds only these layers. With no build args the
 # variables are empty and the services report null.
-
-# Declared last so a new commit rebuilds only these layers.
 ARG APP_VERSION=""
 ARG GIT_COMMIT=""
 ARG BASE_HASH=""
