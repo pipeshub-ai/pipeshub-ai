@@ -228,7 +228,7 @@ class TestMcpAuth:
     def test_client_credentials_token_sees_the_same_tools(
         self, mcp_base_url: str, mcp_client_credentials_token: str, mcp_surface: dict
     ) -> None:
-        """The route resolves a client_credentials token to the app owner and lists every tool."""
+        """A client_credentials token, which acts as the app's service account, lists every tool."""
         other = read_mcp_surface(mcp_base_url, mcp_client_credentials_token)
         assert [t["name"] for t in other["tools"]] == [t["name"] for t in mcp_surface["tools"]]
 

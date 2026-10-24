@@ -8,8 +8,9 @@ instance: a document indexed in a collection of its own, and an agent with
 that collection as its knowledge (see ``conftest.py``).
 
 Auth:
-  A client_credentials token minted from the OAuth app's client id and secret.
-  The backend resolves it to the app owner, the test user.
+  An authorization_code + PKCE token for the test user, the token a real MCP
+  host holds. A client_credentials token would act as the app's service
+  account, which cannot see the test user's collection or agent.
 
 ``integration_test_mcp_server.py`` pins what the tools look like; this file
 checks what they do.
@@ -33,9 +34,9 @@ CallTool = Callable[..., McpToolResult]
 
 
 @pytest.fixture(scope="module")
-def call(mcp_base_url: str, mcp_client_credentials_token: str) -> CallTool:
+def call(mcp_base_url: str, mcp_access_token: str) -> CallTool:
     def _call(name: str, **arguments: object) -> McpToolResult:
-        return call_mcp_tool(mcp_base_url, mcp_client_credentials_token, name, arguments)
+        return call_mcp_tool(mcp_base_url, mcp_access_token, name, arguments)
 
     return _call
 
@@ -67,14 +68,6 @@ class TestDirectory:
         assert body["orgId"] == pipeshub_client.org_id
         assert body.get("fullName"), body
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "@pipeshub-ai/mcp whoami reads the token's userId claim, which a client_credentials "
-            "token sets to the client id; the owner is only in createdBy. It reports the client "
-            "id as the user and cannot confirm it (GET /users/{client id} answers 400)."
-        ),
-    )
     def test_whoami_is_the_app_owner(self, call: CallTool, app_owner: dict) -> None:
         body = _ok(call("pipeshub_directory", action="whoami"))
 

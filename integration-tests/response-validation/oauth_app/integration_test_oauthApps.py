@@ -45,6 +45,7 @@ Requires (handled by the root conftest):
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -60,7 +61,8 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.clients.oauth_client import OAuthAppsClient  # noqa: E402
+from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
+from helper.local_auth import session_service_account_id  # noqa: E402
 from helper.http.session_client import (  # noqa: E402
     SESSION_REQUIRED_MESSAGE,
     SessionClient,
@@ -110,6 +112,8 @@ def _make_app_body(grant_types: list[str] | None = None) -> dict:
     }
     if grant_types is not None:
         body["allowedGrantTypes"] = grant_types
+        if "client_credentials" in grant_types:
+            body["tokenIdentityUserId"] = session_service_account_id()
     return body
 
 
@@ -771,8 +775,14 @@ class TestOAuthAppsRequireSession(OAuthAppsTestBase):
         assert SESSION_REQUIRED_MESSAGE in body["error"]["message"], body
 
     def test_oauth_access_token_is_refused(self, pipeshub_client: PipeshubClient) -> None:
-        """The client-credentials token the rest of the suite uses gets 403."""
-        self._assert_create_refused(pipeshub_client.auth_headers)
+        """A client-credentials token gets 403."""
+        resp = OAuthProviderClient(pipeshub_client).token(
+            grant_type="client_credentials",
+            client_id=os.environ.get("CLIENT_ID", ""),
+            client_secret=os.environ.get("CLIENT_SECRET", ""),
+        )
+        assert resp.status_code == 200, f"token fetch failed: {resp.status_code} {resp.text}"
+        self._assert_create_refused({"Authorization": f"Bearer {resp.json()['access_token']}"})
 
     def test_personal_access_token_is_refused(self, user_session_client: SessionClient) -> None:
         """A personal access token minted by the same user gets 403."""
