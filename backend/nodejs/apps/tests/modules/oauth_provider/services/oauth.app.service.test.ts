@@ -156,7 +156,8 @@ describe('OAuthAppService', () => {
         message = error.message ?? ''
       }
 
-      expect(message).to.contain('was not found in this organisation')
+      // The part that tells someone what to do next, not just that it failed.
+      expect(message).to.contain('Workspace \u2192 Service accounts')
       expect(createStub.called).to.equal(false)
     })
 

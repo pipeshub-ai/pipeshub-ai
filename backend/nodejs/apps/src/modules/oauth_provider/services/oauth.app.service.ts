@@ -215,26 +215,6 @@ export class OAuthAppService {
   }
 
   /**
-   * Point an app's `client_credentials` tokens at a service account, or put
-   * them back to acting as the app's creator.
-   *
-   * This is the way out of the problem the grant has: without it, a token
-   * minted from an app acts as whoever created that app, carrying their
-   * document access and their role, and stops working when they leave. Aimed
-   * at a service account instead, it acts as an identity that exists for the
-   * job, holds only what someone granted it, and survives any one person
-   * leaving.
-   *
-   * Takes effect for tokens already issued, because the middleware reads this
-   * field per request rather than trusting what the token was minted with. A
-   * change that waited for every outstanding token to expire would not stop
-   * those tokens acting as a person, which is the entire point of making it.
-   *
-   * The app's `createdBy` is untouched: that is who manages the app, and it
-   * is what Developer Settings filters on. Moving it would leave the app
-   * visible to nobody, since no person can sign in as a service account.
-   */
-  /**
    * The service account an app's own tokens may act as, or a refusal.
    *
    * `kind` is part of the query on purpose: a colleague's user id cannot be
@@ -277,6 +257,32 @@ export class OAuthAppService {
     return new Types.ObjectId(serviceAccountId);
   }
 
+  /**
+   * Point an app's `client_credentials` tokens at a different service account.
+   *
+   * This is the way out of the problem the grant has: without it, a token
+   * minted from an app acts as whoever created that app, carrying their
+   * document access and their role, and stops working when they leave. Aimed
+   * at a service account instead, it acts as an identity that exists for the
+   * job, holds only what someone granted it, and survives any one person
+   * leaving.
+   *
+   * Clearing it (`serviceAccountId: null`) is refused while the app allows
+   * the grant, since that would put the tokens back on the creator — the
+   * thing this exists to prevent. An app that does not allow the grant, or
+   * one that predates the requirement, can still be cleared.
+   *
+   * Revokes the tokens the app has already issued. They are not carried over
+   * to the new identity: the middleware reads this field per request, and a
+   * token whose `createdBy` claim disagrees with the record is refused with
+   * 401 rather than honoured as the new account. So a token minted before
+   * the change stops working, which is the point — anything still holding
+   * one has to ask for another.
+   *
+   * The app's `createdBy` is untouched: that is who manages the app, and it
+   * is what Developer Settings filters on. Moving it would leave the app
+   * visible to nobody, since no person can sign in as a service account.
+   */
   async setTokenIdentity(
     appId: string,
     orgId: string,
