@@ -35,7 +35,11 @@ from app.connectors.core.constants import (
     OAuthDefaults,
     OAuthRedirectPaths,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -313,8 +317,11 @@ class ServiceNowConnector(BaseConnector):
             oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
             if not oauth_config_id:
-                self.logger.error("ServiceNow oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "ServiceNow has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -390,6 +397,8 @@ class ServiceNowConnector(BaseConnector):
             self.logger.info("✅ ServiceNow KB Connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize connector: {e}", exc_info=True)
             return False
@@ -463,6 +472,34 @@ class ServiceNowConnector(BaseConnector):
             self.logger.error(f"❌ Connection test failed: {e}", exc_info=True)
             return False
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        email, source_user_id = None, None
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_now_table_tableName(
+                tableName=ServiceNowTables.SYS_USER,
+                sysparm_query=ServiceNowQueryValues.CURRENT_USER,
+                sysparm_fields=CommonStrings.COMMA.join([ServiceNowFields.SYS_ID, ServiceNowFields.EMAIL]),
+                sysparm_limit="2",
+                sysparm_display_value=ServiceNowQueryValues.DISPLAY_VALUE_FALSE,
+                sysparm_no_count=ServiceNowQueryValues.NO_COUNT_TRUE,
+                sysparm_exclude_reference_link=ServiceNowQueryValues.EXCLUDE_REFERENCE_LINK_TRUE,
+            )
+            rows = response.result or []
+            # An instance that will not evaluate the script can drop the condition and list
+            # other users, so anything but exactly one row could link the wrong account
+            if len(rows) == 1:
+                email = rows[0].get(ServiceNowFields.EMAIL)
+                source_user_id = rows[0].get(ServiceNowFields.SYS_ID)
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated ServiceNow user: %s", e)
+            return
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None, source_user_id
+        )
+
     async def run_sync(self) -> None:
         """
         Run full synchronization of ServiceNow Knowledge Base data.
@@ -481,6 +518,8 @@ class ServiceNowConnector(BaseConnector):
             # Ensure client is initialized
             if not self.servicenow_client:
                 raise Exception("ServiceNow client not initialized. Call init() first.")
+
+            await self._register_authenticated_identity()
 
             # Step 1: Sync users and groups globally
             self.logger.info("Step 1/5: Syncing users and groups...")
@@ -1924,7 +1963,7 @@ class ServiceNowConnector(BaseConnector):
 
         Creates:
         - RecordGroup nodes (type=SERVICENOW_CATEGORY) in recordGroups collection
-        - PARENT_CHILD edges in recordRelations collection
+        - PARENT_CHILD edges in nodeRelations collection
 
         First sync: Fetches all categories
         Subsequent syncs: Only fetches categories modified since last sync

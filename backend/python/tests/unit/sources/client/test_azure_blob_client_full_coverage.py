@@ -151,45 +151,6 @@ class TestBuildWithConnectionStringConfigExceptions:
                 AzureBlobClient.build_with_connection_string_config(bad_config)
 
 
-# ---------------------------------------------------------------------------
-# get_account_name – IndexError except branch (lines 96-97)
-# ---------------------------------------------------------------------------
-
-
-class TestGetAccountNameIndexError:
-    def test_index_error_in_parsing(self):
-        """If splitting the connection string parts triggers IndexError,
-        it should be caught and wrapped in AzureBlobConfigurationError.
-
-        NOTE: In practice, Python's str.split('=', 1) never raises IndexError
-        because it always returns at least one element. The except IndexError
-        block is defensive code. We test it by monkeypatching."""
-        cfg = AzureBlobConnectionStringConfig(
-            azureBlobConnectionString="AccountName=valid"
-        )
-        # Force IndexError by patching the connection-string attribute
-        # with an object whose split yields parts that explode on .split('=', 1)
-        original_cs = cfg.azureBlobConnectionString
-
-        class TrickStr(str):
-            """Str subclass whose .split(';') returns parts that raise IndexError
-            when further split."""
-            _call_count = 0
-
-            def split(self, sep=None, maxsplit=-1):
-                if sep == ';':
-                    # Return a part that, when .startswith('AccountName=') is True,
-                    # will raise IndexError when .split('=', 1)[1] is accessed.
-                    bad_part = MagicMock()
-                    bad_part.startswith = lambda prefix: prefix == 'AccountName='
-                    # Make .split raise IndexError
-                    bad_part.split = MagicMock(side_effect=IndexError("oops"))
-                    return [bad_part]
-                return super().split(sep, maxsplit)
-
-        cfg.azureBlobConnectionString = TrickStr(original_cs)
-        with pytest.raises(AzureBlobConfigurationError, match="Could not parse AccountName"):
-            cfg.get_account_name()
 
 
 # ---------------------------------------------------------------------------

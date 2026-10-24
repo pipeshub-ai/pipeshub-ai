@@ -9,7 +9,6 @@ from collections.abc import Callable
 import pytest
 from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
 
-
 STRATEGIES = ["aiohttp", "curl_cffi", "cloudscraper"]
 METADATA = "http://169.254.169.254/latest/meta-data/iam/security-credentials"
 INTRANET = "http://intranet.test/admin"

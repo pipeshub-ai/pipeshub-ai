@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +33,12 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.openai_responses import (
     EVT_COMPLETED,
     EVT_ERROR,
@@ -135,6 +140,30 @@ class RequestDefaults:
         return out
 
 
+def client_timeout(timeout: float | None) -> Any:
+    """`timeout` for the SDK client, with a shorter read timeout when
+    PIPESHUB_LLM_STALL_TIMEOUT_SECONDS is set.
+
+    The SDK applies one number to every phase, and on a stream the read phase
+    is the gap between chunks: a provider connection that stops responding
+    holds the turn for the whole of DEFAULT_LLM_TIMEOUT (6 minutes) before the
+    SDK's own retry runs. A per-phase limit bounds that stall; the retry then
+    usually succeeds in seconds.
+    """
+    raw = os.getenv("PIPESHUB_LLM_STALL_TIMEOUT_SECONDS", "").strip()
+    try:
+        stall = float(raw) if raw else 0.0
+    except ValueError:
+        stall = 0.0
+    if timeout is None or stall <= 0 or stall >= timeout:
+        return timeout
+    import httpx
+
+    # Write and pool too: a stall seen in production ran the full timeout with
+    # no read pending -- the large request body was still being sent.
+    return httpx.Timeout(timeout, connect=min(15.0, stall), read=stall, write=stall, pool=stall)
+
+
 class OpenAITransport(LLMTransport):
     """OpenAI Chat Completions API via the official SDK.
 
@@ -160,6 +189,7 @@ class OpenAITransport(LLMTransport):
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -179,9 +209,13 @@ class OpenAITransport(LLMTransport):
         # Unset, the SDK applies its own (longer) default; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn has to fail at the same point.
         if timeout is not None:
-            client_kwargs["timeout"] = timeout
+            client_kwargs["timeout"] = client_timeout(timeout)
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        # A caller-supplied httpx client carries whatever it was configured with
+        # (an egress guard, request hooks); the SDK does not close it.
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
         self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
@@ -197,6 +231,7 @@ class OpenAITransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
 
@@ -246,6 +281,7 @@ class OpenAITransport(LLMTransport):
             model_key=model_key,
             cache_kwargs=cache_kwargs,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     def _init_prompt_cache(
@@ -408,6 +444,7 @@ class OpenAITransport(LLMTransport):
         system: str | None,
         system_blocks: list[str] | None,
         stream: bool,
+        tool_choice: ToolChoice | None = None,
     ) -> dict[str, Any]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
@@ -420,6 +457,8 @@ class OpenAITransport(LLMTransport):
         formatted_tools = format_responses_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if stream:
             # No stream_options: include_usage is Chat-Completions-only, and
             # usage always arrives on response.completed.
@@ -432,8 +471,12 @@ class OpenAITransport(LLMTransport):
         tools: list[ToolSchema] | None = None,
         system: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        kwargs = self._build_responses_kwargs(messages, tools, system, system_blocks, stream=False)
+        kwargs = self._build_responses_kwargs(
+            messages, tools, system, system_blocks, stream=False, tool_choice=tool_choice,
+        )
         try:
             response = await self._client.responses.create(**kwargs)
         except Exception as exc:
@@ -441,6 +484,7 @@ class OpenAITransport(LLMTransport):
 
         message = parse_responses_output(response)
         usage = self._record_usage(*responses_usage_fields(response))
+        self._check_responses_output(response, message, usage, "complete")
         stop_reason = stop_reason_from_responses(response, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -489,8 +533,12 @@ class OpenAITransport(LLMTransport):
         tools: list[ToolSchema] | None = None,
         system: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        kwargs = self._build_responses_kwargs(messages, tools, system, system_blocks, stream=True)
+        kwargs = self._build_responses_kwargs(
+            messages, tools, system, system_blocks, stream=True, tool_choice=tool_choice,
+        )
         final_response: Any = None
         # Fallback only. The terminal event carries the fully-formed Response,
         # so the same parser as _complete_responses builds the final message;
@@ -556,6 +604,7 @@ class OpenAITransport(LLMTransport):
         if final_response is not None:
             message = parse_responses_output(final_response)
             usage = self._record_usage(*responses_usage_fields(final_response))
+            self._check_responses_output(final_response, message, usage, "stream")
             stop_reason = stop_reason_from_responses(final_response, bool(message.tool_calls))
         else:
             # Stream ended without a terminal event; salvage what arrived.
@@ -670,6 +719,40 @@ class OpenAITransport(LLMTransport):
 
         return self._record_usage(input_tokens, output_tokens, cached, written)
 
+    def _check_responses_output(
+        self, response: Any, message: AssistantMessage, usage: TokenUsage, context: str,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+        output_types = [
+            getattr(item, "type", None) for item in (getattr(response, "output", None) or [])
+        ]
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s status=%s "
+            "incomplete_reason=%s output_types=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, getattr(response, "id", None),
+            getattr(response, "status", None), reason, output_types,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"incomplete_details.reason={reason}")
+
+    def _check_chat_output(
+        self, message: AssistantMessage, usage: TokenUsage, context: str, *,
+        response_id: str | None, finish_reason: str | None,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s "
+            "finish_reason=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, response_id, finish_reason,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if finish_reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"finish_reason={finish_reason}")
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
         # OSError included to match LangChainTransport._is_network_error: a
@@ -704,10 +787,12 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         if self._wants_responses():
             return await self._complete_responses(
-                messages, tools=tools, system=system, system_blocks=system_blocks,
+                messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             )
         # OpenAI automatic prefix caching benefits from stable-first ordering
         # alone; join blocks when the caller omitted the already-joined string.
@@ -723,6 +808,8 @@ class OpenAITransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if effort:
             # o-series/gpt-5-series "reasoning effort" knob — accepted as a
             # no-op parameter by models that don't support it.
@@ -738,6 +825,10 @@ class OpenAITransport(LLMTransport):
         usage = self._usage_from(response)
         message = self._parse_response(response.choices[0].message)
         finish_reason = getattr(response.choices[0], "finish_reason", None)
+        self._check_chat_output(
+            message, usage, "complete", response_id=getattr(response, "id", None),
+            finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -795,10 +886,12 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if self._wants_responses():
             async for event in self._stream_responses(
-                messages, tools=tools, system=system, system_blocks=system_blocks,
+                messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             ):
                 yield event
             return
@@ -816,12 +909,15 @@ class OpenAITransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if effort:
             kwargs["reasoning_effort"] = effort
 
         text_parts: list[str] = []
         usage = TokenUsage()
         finish_reason: str | None = None
+        response_id: str | None = None
         # Tool call deltas arrive fragmented across chunks, indexed by
         # position in the assistant's tool_calls list — accumulate by
         # index until the stream ends, same pattern every OpenAI streaming
@@ -831,6 +927,7 @@ class OpenAITransport(LLMTransport):
         try:
             stream = await self._client.chat.completions.create(**kwargs)
             async for chunk in stream:
+                response_id = response_id or getattr(chunk, "id", None)
                 if getattr(chunk, "usage", None) is not None:
                     usage = self._usage_from(chunk)
                 if not chunk.choices:
@@ -893,6 +990,9 @@ class OpenAITransport(LLMTransport):
             )
         final_text = "".join(text_parts) or None
         message = AssistantMessage(content=final_text, tool_calls=final_tool_calls or None)
+        self._check_chat_output(
+            message, usage, "stream", response_id=response_id, finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(final_tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -929,13 +1029,13 @@ class OpenAITransport(LLMTransport):
                 d.reasoning = None
                 d.reasoning_effort = None
                 return LLMApiMode.NO_REASONING_WITH_TOOLS.value
-            # Reasoning combined with bound tools on Chat Completions: this
-            # deployment wants the Responses API for that combination.
+            # Tools refused on Chat Completions: this deployment wants the
+            # Responses API for them. Usually reasoning was set; a model that
+            # reasons by default (Azure's gpt-6) is refused without it, and
+            # then keeps its own default effort there, as on the LangChain arm.
             effort = d.reasoning_effort or (d.reasoning or {}).get("effort")
-            if not effort:
-                return None
             d.use_responses_api = True
-            d.reasoning = {"effort": effort}
+            d.reasoning = {"effort": effort} if effort else None
             d.reasoning_effort = None
             return LLMApiMode.RESPONSES.value
         if is_reasoning_mandatory_conflict(exc):
@@ -982,12 +1082,14 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         try:
             return await self._complete_once(
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks,
+                system_blocks=system_blocks, tool_choice=tool_choice,
             )
         except Exception as exc:
             dropped = self._drop_cache_params(exc)
@@ -997,7 +1099,7 @@ class OpenAITransport(LLMTransport):
         result = await self._complete_once(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks,
+            system_blocks=system_blocks, tool_choice=tool_choice,
         )
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
@@ -1014,6 +1116,8 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream, retrying once on a request-shape conflict.
 
@@ -1026,7 +1130,7 @@ class OpenAITransport(LLMTransport):
             async for event in self._stream_once(
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks,
+                system_blocks=system_blocks, tool_choice=tool_choice,
             ):
                 emitted = True
                 yield event
@@ -1043,7 +1147,7 @@ class OpenAITransport(LLMTransport):
         async for event in self._stream_once(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks,
+            system_blocks=system_blocks, tool_choice=tool_choice,
         ):
             yield event
         if mode is not None:

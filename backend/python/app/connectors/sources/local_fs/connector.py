@@ -85,7 +85,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
@@ -723,17 +723,7 @@ class LocalFsConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return folder_record, perms
+        return folder_record, []
 
     def _build_parent_folder_records(
         self,
@@ -1336,17 +1326,7 @@ class LocalFsConnector(BaseConnector):
         ):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return file_record, perms
+        return file_record, []
 
     async def _ensure_owner_and_record_group(
         self,
@@ -1373,21 +1353,9 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             group_type=RecordGroupType.DRIVE,
             web_url=f"file://{root}",
+            inherit_permissions=True,
         )
-        await self.data_entities_processor.on_new_record_groups(
-            [
-                (
-                    record_group,
-                    [
-                        Permission(
-                            email=owner.email,
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                        )
-                    ],
-                )
-            ]
-        )
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
         return owner, rg_external
 
@@ -1557,7 +1525,8 @@ class LocalFsConnector(BaseConnector):
                     # longer one of this run's live records.
                     seen_external_ids.discard(old_ext_id)
                     seen_external_ids.add(record.external_record_id)
-            await self.data_entities_processor.on_records_moved(list(move_buffer))
+            # Each move carries the record's full permission list, as for a new record.
+            await self.data_entities_processor.on_records_moved(list(move_buffer), permissions_fetched=True)
             processed += self._count_processed_file_records(
                 [(record, perms) for _old_ext_id, record, perms in move_buffer]
             )
@@ -1773,9 +1742,9 @@ class LocalFsConnector(BaseConnector):
         payload: JsonValue | bytes | bytearray,
     ) -> bytes:
         """
-        The storage service's GET /buffer route returns
-        ``res.json(buffer)``. Across local / S3 / Azure providers, that
-        always serializes a Node Buffer as ``{"type":"Buffer","data":[...]}``.
+        The storage service's GET /buffer route returns the raw bytes. Older
+        versions returned ``res.json(buffer)``, a Node Buffer serialised as
+        ``{"type":"Buffer","data":[...]}``, which is still accepted.
 
         Some legacy callers wrap it once more as ``{"data": <buffer>}``.
         """
@@ -1823,7 +1792,8 @@ class LocalFsConnector(BaseConnector):
                             response.status, record.record_name, (await response.text())[:500],
                         )
                         raise internal_service_status(response.status)
-                    raw_text = await response.text()
+                    is_raw = "application/octet-stream" in response.headers.get("Content-Type", "").lower()
+                    raw = await response.read()
         except asyncio.TimeoutError as exc:
             raise HTTPException(
                 status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
@@ -1846,11 +1816,12 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
 
-        payload: JsonValue | bytes
-        try:
-            payload = json.loads(raw_text) if raw_text else {}
-        except json.JSONDecodeError:
-            payload = raw_text.encode("utf-8")
+        payload: JsonValue | bytes = raw
+        if not is_raw:
+            try:
+                payload = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = raw
 
         body = self._decode_storage_buffer_payload(payload)
         media = record.mime_type or "application/octet-stream"

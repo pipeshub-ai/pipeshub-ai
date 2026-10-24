@@ -23,7 +23,7 @@ from app.agent_loop_lib.core.streaming import (
     StreamEvent,
     TextDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 
 # Raw httpx — Ollama speaks NDJSON, no SSE complexity. No SDK needed.
@@ -181,6 +181,8 @@ class OllamaTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
@@ -248,6 +250,8 @@ class OllamaTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)

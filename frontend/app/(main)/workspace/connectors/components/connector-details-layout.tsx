@@ -331,7 +331,14 @@ export function ConnectorDetailsLayout({
           </Text>
         </Flex>
       ) : (
-        <Flex direction="column" gap="4">
+        // Two cards per row once there is room for both; one on narrow screens.
+        <Box
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 480px), 1fr))',
+            gap: 'var(--space-4)',
+          }}
+        >
           {instances.map((instance) => (
             <InstanceCard
               key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
@@ -350,7 +357,7 @@ export function ConnectorDetailsLayout({
               renderExtraActions={renderInstanceActions}
             />
           ))}
-        </Flex>
+        </Box>
       )}
     </Flex>
   );

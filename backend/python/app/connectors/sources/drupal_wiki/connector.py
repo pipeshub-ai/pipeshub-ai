@@ -15,6 +15,10 @@ Sync model (see the design page for the full rationale):
 * a page shared into another space is left to its home space: every record belongs
   to exactly one record group, so access always comes from there
 * nothing is removed: a page, attachment or space deleted in the wiki stays indexed
+  until a full sync, which reports itself incomplete whenever it skipped anything
+* a member whose wiki account is disabled gets no grant on a private space; an
+  org-wide grant on an open space cannot exclude them
+* a token the wiki rejects fails the run with an auth notification
 """
 
 import html
@@ -75,6 +79,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.drupal_wiki.common.apps import DrupalWikiApp
 from app.models.entities import (
     AppUser,
@@ -88,7 +93,12 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
-from app.sources.client.drupal_wiki.drupal_wiki import DrupalWikiClient
+from app.sources.client.drupal_wiki.drupal_wiki import (
+    DrupalWikiClient,
+    check_wiki_address,
+    describe_exception,
+    describe_response,
+)
 from app.sources.client.drupal_wiki.graphql import DrupalWikiGraphQLClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.drupal_wiki.drupal_wiki import DrupalWikiDataSource
@@ -147,6 +157,7 @@ OPEN_SPACE_ACCESS_STATUSES = frozenset({SPACE_ACCESS_AUTHENTICATED, SPACE_ACCESS
 
 # UserDTO.status; the spec enumerates exactly ENABLED and DISABLED.
 USER_STATUS_ENABLED = "ENABLED"
+USER_STATUS_DISABLED = "DISABLED"
 
 # ---------------------------------------------------------------------------
 # Sync
@@ -172,6 +183,13 @@ def _epoch_millis(seconds: int | str | None) -> int | None:
 
 class DrupalWikiSyncError(RuntimeError):
     """A sync phase failed; the run is reported as failed and no checkpoint moves."""
+
+
+class DrupalWikiAuthError(RuntimeError):
+    """The wiki rejected the token. Nothing else can be read, so the run fails.
+
+    Not a ``DrupalWikiSyncError``: those are recorded and skipped one item at a time.
+    """
 
 
 def _plural(count: int, noun: str) -> str:
@@ -296,6 +314,9 @@ class DrupalWikiConnector(BaseConnector):
         # Partial failures collected across one run: a space or group that failed is
         # reported at the end, and its checkpoint is held back, but the run continues.
         self._failures: list[str] = []
+        # Emails the user directory marks DISABLED, or None when it could not be read
+        # this run (then nobody is dropped from a private space on its account).
+        self._disabled_emails: set[str] | None = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
@@ -314,10 +335,12 @@ class DrupalWikiConnector(BaseConnector):
                 connector_instance_id=self.connector_id,
                 resilience=self.resilience,
             )
+            await check_wiki_address(self.client.get_base_url())
         except ValueError as e:
             raise ConnectorInitError(str(e)) from e
         except Exception as e:
-            raise ConnectorInitError(f"Failed to connect to Drupal Wiki: {e}") from e
+            self.logger.error("Could not set up the Drupal Wiki client: %s", describe_exception(e), exc_info=True)
+            raise ConnectorInitError(f"Failed to connect to Drupal Wiki: {describe_exception(e)}") from e
 
         self.base_url = self.client.get_base_url()
         self.data_source = DrupalWikiDataSource(self.client)
@@ -335,20 +358,33 @@ class DrupalWikiConnector(BaseConnector):
 
         response = await self.data_source.list_users(size=1)
 
-        if response.status == HttpStatusCode.UNAUTHORIZED.value:
-            raise ConnectorInitError(
-                "Drupal Wiki rejected the personal access token. Check that it is current and its user is not blocked."
-            )
-        if response.status == HttpStatusCode.FORBIDDEN.value:
-            raise ConnectorInitError(
-                "The Drupal Wiki token has no access to users. Use a token whose user can read the wiki."
-            )
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise ConnectorInitError(f"Drupal Wiki returned status {response.status} for the connection test")
+            reason = describe_response(response)
+            self.logger.error("Drupal Wiki connection test: listing users failed: %s", reason)
+            if response.status == HttpStatusCode.UNAUTHORIZED.value:
+                raise ConnectorInitError(
+                    f"Drupal Wiki rejected the personal access token: {reason}. Check that it "
+                    "is current and its user is not blocked."
+                )
+            if response.status == HttpStatusCode.FORBIDDEN.value:
+                raise ConnectorInitError(
+                    f"The Drupal Wiki token has no access to users: {reason}. Use a token whose "
+                    "user can read the wiki."
+                )
+            raise ConnectorInitError(f"Drupal Wiki failed the connection test: {reason}")
 
         spaces = await self.data_source.list_spaces(size=1)
         if spaces.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise ConnectorInitError(f"Drupal Wiki returned status {spaces.status} when listing spaces")
+            reason = describe_response(spaces)
+            self.logger.error("Drupal Wiki connection test: listing spaces failed: %s", reason)
+            raise ConnectorInitError(f"Drupal Wiki could not list spaces: {reason}")
+        # A proxy or SSO page in front of the wiki answers 200 with HTML.
+        try:
+            _ = self._safe_json_parse(response, "testing the connection")
+            _ = self._safe_json_parse(spaces, "testing the connection")
+        except DrupalWikiSyncError as e:
+            self.logger.error("Drupal Wiki connection test: %s", e)
+            raise ConnectorInitError(str(e)) from e
         return True
 
     async def cleanup(self) -> None:
@@ -389,6 +425,7 @@ class DrupalWikiConnector(BaseConnector):
                 self.config_service, "Drupal Wiki", self.connector_id, self.logger
             )
             self._failures = []
+            self._disabled_emails = None
 
             users_by_id = await self._run_phase("people", self._sync_users())
             if users_by_id is None:
@@ -423,14 +460,26 @@ class DrupalWikiConnector(BaseConnector):
             self.logger.info(
                 "✅ Drupal Wiki sync finished with %d problem(s)", len(self._failures)
             )
+        except DrupalWikiAuthError as e:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("personal access token rejected"),
+                message=(
+                    f"{e}\n\nCreate a new token in Drupal Wiki (User settings > API-Token) "
+                    "and update it in the connector settings. What already synced is unchanged."
+                ),
+            )
+            self.logger.error("Drupal Wiki sync stopped: %s", e)
+            raise
         except Exception as e:
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
                 title=self._notification_title("sync did not finish"),
-                message=f"{str(e)[:300]}\n\nWhat already synced is unchanged.",
+                message=f"{describe_exception(e)[:300]}\n\nWhat already synced is unchanged.",
             )
-            self.logger.error("Drupal Wiki sync failed: %s", e, exc_info=True)
+            self.logger.error("Drupal Wiki sync failed: %s", describe_exception(e), exc_info=True)
             raise
 
     async def _run_phase(self, name: str, coro: Awaitable[T]) -> T | None:
@@ -443,16 +492,26 @@ class DrupalWikiConnector(BaseConnector):
         """
         try:
             return await coro
+        except DrupalWikiAuthError:
+            raise
         except Exception as e:
             # Logged here with the traceback; recorded without logging a second time.
             # A DrupalWikiSyncError already names what it was reading, so it stands on
             # its own; any other exception needs the phase spelled out.
-            self.logger.error("Drupal Wiki: could not sync %s: %s", name, e, exc_info=True)
+            self.logger.error(
+                "Drupal Wiki: could not sync %s: %s", name, describe_exception(e), exc_info=True
+            )
             self._failures.append(
                 str(e) if isinstance(e, DrupalWikiSyncError)
-                else f"Could not sync {name} from Drupal Wiki: {e}"
+                else f"Could not sync {name} from Drupal Wiki: {describe_exception(e)}"
             )
             return None
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that skipped anything (a space whose members could not be read,
+        a page, a group, a whole phase) did not read the whole wiki, so nothing it did
+        not write may be unlinked after it."""
+        return FullSyncCoverage(complete=not self._failures)
 
     # ------------------------------------------------------------------
     # Users and groups
@@ -461,20 +520,21 @@ class DrupalWikiConnector(BaseConnector):
     async def _sync_users(self) -> dict[str, AppUser]:
         """Active users are refreshed in full every run; emails are the identity link.
 
-        Disabled accounts are left out at the source: they cannot open the wiki, and
-        nothing downstream reads ``is_active``, so syncing them would only create
-        records that grant nothing.
+        Disabled accounts are listed but not written: they cannot open the wiki, so a
+        record for them would grant nothing. Their emails are kept for the run, because
+        a private space's member list still names them and must not grant them access.
 
         Each page is written as it arrives, so only one page of new objects is held at
         a time. The directory itself is still returned whole because group membership
         can name any user.
         """
         users_by_id: dict[str, AppUser] = {}
+        disabled_emails: set[str] = set()
         skipped_without_email = 0
         page = 0
         while True:
             payload = self._require_ok(
-                await self.data_source.list_users(only_active=True, page=page, size=PAGE_SIZE),
+                await self.data_source.list_users(only_active=False, page=page, size=PAGE_SIZE),
                 "reading the list of people",
             )
             content = payload.get("content") or []
@@ -489,6 +549,10 @@ class DrupalWikiConnector(BaseConnector):
                     )
                     continue
                 email = (user.get("email") or "").strip()
+                if (user.get("status") or "").upper() == USER_STATUS_DISABLED:
+                    if email:
+                        disabled_emails.add(email.lower())
+                    continue
                 if not email:
                     # Without an email there is nothing to match a PipesHub account on,
                     # so the user could never be granted anything.
@@ -523,6 +587,11 @@ class DrupalWikiConnector(BaseConnector):
                 break
             page += 1
 
+        # Only a definite DISABLED counts, and never against an address another,
+        # enabled account also uses.
+        self._disabled_emails = disabled_emails - {
+            user.email.lower() for user in users_by_id.values()
+        }
         self.logger.info("Synced %d Drupal Wiki user(s)", len(users_by_id))
         if skipped_without_email:
             # Nobody without an email can be granted anything, so a large count here
@@ -561,10 +630,15 @@ class DrupalWikiConnector(BaseConnector):
                     detail = self._require_ok(
                         await self.data_source.get_group(group_id), f"reading the members of group {group_id}"
                     )
-                except DrupalWikiSyncError as e:
+                except DrupalWikiAuthError:
+                    raise
+                except Exception as e:
                     # Passing an empty member list here would wipe the group's edges,
                     # so a failed fetch leaves the previous membership in place.
-                    self._fail(str(e))
+                    self._fail(
+                        str(e) if isinstance(e, DrupalWikiSyncError)
+                        else f"Could not read the members of group {group_id}: {describe_exception(e)}"
+                    )
                     continue
 
                 members = [
@@ -713,9 +787,10 @@ class DrupalWikiConnector(BaseConnector):
         # other right is strictly more than read. So membership is the grant, and it is
         # always READ -- nothing downstream separates the kinds, as in the Jira connector.
         permissions: dict[tuple[str, str], Permission] = {}
+        disabled = self._disabled_emails or set()
         for user in members.get("users") or []:
             email = (user.get("email") or "").strip()
-            if not email:
+            if not email or email.lower() in disabled:
                 continue
             permissions.setdefault(("user", email.lower()), Permission(
                 external_id=None,
@@ -755,10 +830,23 @@ class DrupalWikiConnector(BaseConnector):
                 await self._sync_space_pages(
                     space_id, spaces[space_id].get("name") or f"space {space_id}"
                 )
-            except DrupalWikiSyncError as e:
+            except DrupalWikiAuthError:
+                raise
+            except Exception as e:
                 # A space that cannot be listed keeps its checkpoint, so the next run
-                # resumes it from where it was; the other spaces still sync.
-                self._fail(str(e))
+                # resumes it from where it was; the other spaces still sync. A timeout
+                # or dropped connection counts too: it says nothing about the others.
+                if isinstance(e, DrupalWikiSyncError):
+                    self._fail(str(e))
+                    continue
+                self.logger.error(
+                    "Drupal Wiki: could not sync the pages of space %s: %s",
+                    space_id, describe_exception(e), exc_info=True,
+                )
+                self._failures.append(
+                    f"Could not sync the pages of the Drupal Wiki space "
+                    f"'{spaces[space_id].get('name') or space_id}': {describe_exception(e)}"
+                )
 
     async def _sync_space_pages(self, space_id: int, space_name: str) -> None:
         """Sync one space's changed pages and advance only that space's checkpoint.
@@ -779,20 +867,20 @@ class DrupalWikiConnector(BaseConnector):
         async for page in self._fetch_pages(space_id, modified_after):
             try:
                 records = await self._build_page_records(page, parents)
-            except DrupalWikiSyncError:
+            except (DrupalWikiSyncError, DrupalWikiAuthError):
                 raise
             except Exception as e:
                 # The rest of the space still syncs, but its checkpoint stays put so
                 # the next run retries this page. Nothing else would: there is no
                 # second pass to backfill it.
                 self.logger.error(
-                    "Could not read the Drupal Wiki page '%s': %s",
-                    page.get("title") or page.get("id"), e, exc_info=True,
+                    "Drupal Wiki: could not read page %s in space %s: %s",
+                    page.get("id"), space_id, describe_exception(e), exc_info=True,
                 )
-                self._fail(
+                self._failures.append(
                     f"Could not read the Drupal Wiki page "
-                    f"'{page.get('title') or page.get('id')}'. It will be tried again on "
-                    f"the next sync."
+                    f"'{page.get('title') or page.get('id')}' ({describe_exception(e)}). "
+                    f"It will be tried again on the next sync."
                 )
                 continue
             batch.extend(records)
@@ -1133,6 +1221,10 @@ class DrupalWikiConnector(BaseConnector):
         # Probe first: once bytes start flowing the status line is already sent, so a
         # 401 or 404 during the download could not be reported properly.
         probe = await self.data_source.get_attachment(attachment_id)
+        if probe.status >= HttpStatusCode.BAD_REQUEST.value:
+            self.logger.warning(
+                "Opening Drupal Wiki attachment %s failed: %s", attachment_id, describe_response(probe)
+            )
         if probe.status == HttpStatusCode.NOT_FOUND.value:
             raise not_found_at_source(connector=self.display_name)
         if probe.status >= HttpStatusCode.BAD_REQUEST.value:
@@ -1149,6 +1241,10 @@ class DrupalWikiConnector(BaseConnector):
         if page_id is None:
             raise not_found_at_source(connector=self.display_name)
         response = await self.data_source.get_page(page_id)
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            self.logger.warning(
+                "Opening Drupal Wiki page %s failed: %s", page_id, describe_response(response)
+            )
         if response.status == HttpStatusCode.NOT_FOUND.value:
             raise not_found_at_source(connector=self.display_name)
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
@@ -1192,8 +1288,9 @@ class DrupalWikiConnector(BaseConnector):
             except Exception as e:
                 # One record must not abort the rest of the batch.
                 self.logger.error(
-                    "Could not refresh '%s' from Drupal Wiki, so it keeps the content it "
-                    "already has: %s", record.record_name, e, exc_info=True,
+                    "Could not refresh %s from Drupal Wiki, so it keeps the content it "
+                    "already has: %s", record.external_record_id, describe_exception(e),
+                    exc_info=True,
                 )
                 continue
             if outcome == "updated":
@@ -1221,19 +1318,23 @@ class DrupalWikiConnector(BaseConnector):
             source_id = source_id_from_external(record.external_record_id, PAGE_ID_PREFIX)
             response = await self.data_source.get_page(source_id) if source_id else None
 
-        if response is None or response.status in (
-            HttpStatusCode.NOT_FOUND.value,
-            HttpStatusCode.FORBIDDEN.value,
-        ):
+        if response is None:
             self.logger.warning(
-                "Drupal Wiki no longer has '%s', or the token can no longer see it. The "
-                "copy already in PipesHub is kept.", record.record_name,
+                "Cannot refresh %s from Drupal Wiki: its id is not one this connector "
+                "wrote. The copy already in PipesHub is kept.", record.external_record_id,
+            )
+            return "gone"
+        if response.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.FORBIDDEN.value):
+            self.logger.warning(
+                "Drupal Wiki no longer has %s, or the token can no longer see it (%s). The "
+                "copy already in PipesHub is kept.",
+                record.external_record_id, describe_response(response),
             )
             return "gone"
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             self.logger.warning(
-                "Drupal Wiki returned an error (%s) for '%s', so it keeps the content it "
-                "already has.", response.status, record.record_name,
+                "Refreshing %s from Drupal Wiki failed (%s), so it keeps the content it "
+                "already has.", record.external_record_id, describe_response(response),
             )
             return "gone"
 
@@ -1278,11 +1379,21 @@ class DrupalWikiConnector(BaseConnector):
             search=search or None, page=max(page - 1, 0), size=limit
         )
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            self.logger.warning(
+                "Listing Drupal Wiki spaces for the filter failed: %s", describe_response(response)
+            )
             return FilterOptionsResponse(
                 success=False, options=[], page=page, limit=limit, has_more=False,
-                message=f"Drupal Wiki returned status {response.status}",
+                message=f"Drupal Wiki could not list spaces: {describe_response(response)}",
             )
-        payload = response.json() or {}
+        try:
+            payload = response.json() or {}
+        except ValueError:
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=limit, has_more=False,
+                message="Drupal Wiki sent something other than data. Check that the wiki "
+                        "address points at the wiki itself and not at a login or proxy page.",
+            )
         options = [
             FilterOption(id=str(space.get("id")), label=space.get("name") or str(space.get("id")))
             for space in payload.get("content") or []
@@ -1334,14 +1445,19 @@ class DrupalWikiConnector(BaseConnector):
             # turns an incremental run into a full one.
             self.logger.warning(
                 "Could not read where the last Drupal Wiki sync stopped (%s), so everything "
-                "will be synced again this time: %s", key, e
+                "will be synced again this time: %s", key, describe_exception(e)
             )
             return {}
 
     def _require_ok(self, response: HTTPResponse, context: str) -> object:
+        if response.status == HttpStatusCode.UNAUTHORIZED.value:
+            raise DrupalWikiAuthError(
+                f"Drupal Wiki rejected the personal access token while {context}: "
+                f"{describe_response(response)}. It may have been revoked or its user blocked."
+            )
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             raise DrupalWikiSyncError(
-                f"Drupal Wiki returned an error ({response.status}) while {context}"
+                f"Drupal Wiki refused {context}: {describe_response(response)}"
             )
         return self._safe_json_parse(response, context)
 
@@ -1356,8 +1472,9 @@ class DrupalWikiConnector(BaseConnector):
             return response.json()
         except ValueError as e:
             raise DrupalWikiSyncError(
-                f"Drupal Wiki sent something other than data while {context}. Check that the "
-                "wiki address points at the wiki itself and not at a login or proxy page."
+                f"Drupal Wiki sent something other than data while {context} "
+                f"({describe_response(response)}). Check that the wiki address points at the "
+                "wiki itself and not at a login or proxy page."
             ) from e
 
     # ------------------------------------------------------------------

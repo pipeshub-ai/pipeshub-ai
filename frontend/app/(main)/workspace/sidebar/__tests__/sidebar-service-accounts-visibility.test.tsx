@@ -19,12 +19,13 @@ let flagsState: { flags: Record<string, boolean> | null } = { flags: null };
 vi.mock('@/lib/store/feature-flags-store', () => ({
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
-  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP === true,
+  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
     t: (key: string) => {
       const parts = key.split('.');

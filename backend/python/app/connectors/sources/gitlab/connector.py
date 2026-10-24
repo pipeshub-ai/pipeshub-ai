@@ -43,6 +43,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -215,10 +216,16 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
             display_name="Index Merge Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(exclude_paths_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.TEST_FILES.value,
+            display_name="Index Test Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=False,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_admin_access_required(True, personal_connector_type="GitLab Personal")
@@ -251,6 +258,9 @@ class GitLabConnector(BaseConnector):
         )
         self.connector_name = Connectors.GITLAB.value
         self.connector_id = connector_id
+        # ScopeHelper replaces self.scope below. Keep the install scope for callers
+        # that need personal vs team; do not read it back off self.scope.
+        self.connector_scope = scope
         self.data_source: GitLabDataSource | None = None
         self.external_client: GitLabClient | None = None
         self.batch_size = 5

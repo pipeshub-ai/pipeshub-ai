@@ -30,6 +30,10 @@ class config_node_constants(Enum):
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
+    NAMED_ENTITIES = "/services/namedEntities"
+    # Org-wide rules for which identity fields may be sent to a model gateway.
+    # Written by the Node admin API; read-only from Python.
+    AI_GATEWAY_IDENTITY_POLICY = "/services/aiGateway/identityPolicy"
 
 
     # Non-service paths
@@ -102,6 +106,9 @@ class OAuthScopes(str, Enum):
     CONNECTOR_WRITE = "connector:write"
     CONNECTOR_SYNC = "connector:sync"
     CONNECTOR_DELETE = "connector:delete"
+
+    # Code graph
+    CODE_READ = "code:read"
 
     # Teams
     TEAM_READ = "team:read"

@@ -1,6 +1,9 @@
 """Unit tests for app.agents.mcp.models."""
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from app.agents.mcp.models import (
     AuthHint,
     DCRClient,
@@ -12,6 +15,7 @@ from app.agents.mcp.models import (
     MCPToolInfo,
     MCPTransport,
     OAuthTokens,
+    is_web_url,
     utcnow,
 )
 
@@ -75,7 +79,7 @@ class TestMCPServerInstanceConfig:
         cfg = MCPServerInstanceConfig(name="My server", transport=MCPTransport.SSE, auth_mode=MCPAuthMode.NONE)
         assert cfg.use_admin_auth is False
         assert cfg.args == []
-        assert cfg.env == {}
+        assert not hasattr(cfg, "env")
 
     def test_camel_case_round_trip(self) -> None:
         cfg = MCPServerInstanceConfig.model_validate(
@@ -193,8 +197,109 @@ class TestMCPToolInfo:
         assert tool.description is None
         assert tool.input_schema == {}
 
+    def test_its_kind_is_sent_with_it_and_not_read_back(self) -> None:
+        tool = MCPToolInfo(name="delete_page", namespaced_name="mcp_reset_tools_delete_page", annotations={"readOnlyHint": True})
+        dumped = tool.model_dump(by_alias=True)
+        assert (dumped["kind"], dumped["kindSource"]) == ("destructive", "name")
+        # Worked out again from the name and hints, whatever a stored copy says.
+        again = MCPToolInfo.model_validate({**dumped, "name": "search", "kind": "destructive"})
+        assert (again.kind, again.kind_source) == ("read", "server")
+
+    def test_the_namespace_never_sets_the_kind(self) -> None:
+        tool = MCPToolInfo(name="search", namespaced_name="mcp_reset_tools_search", annotations={"readOnlyHint": True})
+        assert tool.kind == "read"
+
 
 class TestUtcnow:
     def test_returns_aware_datetime(self) -> None:
         now = utcnow()
         assert now.tzinfo is not None
+
+
+class TestIsWebUrl:
+    @pytest.mark.parametrize("url", [
+        "https://auth.example.com/authorize",
+        "http://keycloak.internal:8080/realms/acme/protocol/openid-connect/auth",
+        "https://auth.example.com/authorize?tenant=acme",
+        "  https://auth.example.com/authorize  ",
+    ])
+    def test_http_and_https_urls_with_a_host_are_web_urls(self, url: str) -> None:
+        assert is_web_url(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "javascript:alert(document.domain)//",
+        "JavaScript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "/relative/authorize",
+        "https://",
+        "https://user:pw@auth.example.com/authorize",
+        "https://[::1",
+        "",
+        None,
+        42,
+    ])
+    def test_anything_else_is_not(self, url: object) -> None:
+        assert is_web_url(url) is False
+
+
+class TestOAuthEndpointsOnInstanceConfig:
+    def _config(self, **fields: object) -> MCPServerInstanceConfig:
+        return MCPServerInstanceConfig(
+            name="Custom", transport=MCPTransport.STREAMABLE_HTTP, auth_mode=MCPAuthMode.OAUTH,
+            url="https://mcp.example.com/mcp", **fields,
+        )
+
+    @pytest.mark.parametrize("field", ["authorization_url", "token_url"])
+    def test_a_script_url_is_rejected(self, field: str) -> None:
+        with pytest.raises(ValidationError, match="http or https"):
+            self._config(**{field: "javascript:alert(1)"})
+
+    def test_web_urls_are_kept_and_blanks_become_none(self) -> None:
+        config = self._config(authorization_url="https://auth.example.com/authorize", token_url="")
+        assert config.authorization_url == "https://auth.example.com/authorize"
+        assert config.token_url is None
+
+
+class TestInstanceConfigIsBounded:
+    """SEC-9: every text field has a limit, and the credential header can't be one HTTP or MCP uses."""
+
+    @staticmethod
+    def _config(**overrides: object) -> "MCPServerInstanceConfig":
+        from app.agents.mcp.models import MCPServerInstanceConfig
+
+        return MCPServerInstanceConfig.model_validate({
+            "name": "Server", "transport": "streamable_http", "authMode": "headers",
+            "url": "https://mcp.example.com/mcp", **overrides,
+        })
+
+    @pytest.mark.parametrize("field,value", [
+        ("name", "n" * 201),
+        ("description", "d" * 2001),
+        ("url", "https://mcp.example.com/" + "p" * 2048),
+        ("command", "c" * 513),
+        ("args", ["a"] * 65),
+        ("args", ["a" * 2049]),
+        ("requiredEnv", ["E" * 129]),
+        ("scopes", ["s"] * 65),
+    ])
+    def test_oversized_fields_are_refused(self, field: str, value: object) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self._config(**{field: value})
+
+    @pytest.mark.parametrize("header", ["Host", "content-length", "Mcp-Session-Id", "Transfer-Encoding", "X Bad", "X:Y"])
+    def test_a_header_http_or_mcp_uses_or_an_invalid_name_is_refused(self, header: str) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self._config(headerName=header)
+
+    @pytest.mark.parametrize("header", ["Authorization", "X-Api-Key", "x-goog-api-key"])
+    def test_ordinary_credential_headers_are_fine(self, header: str) -> None:
+        assert self._config(headerName=header).header_name == header
+
+    def test_a_blank_header_name_means_the_default(self) -> None:
+        assert self._config(headerName="  ").header_name is None

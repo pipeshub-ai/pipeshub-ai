@@ -45,6 +45,11 @@ class TaxonomyKind:
     entity_type: EntityType
     level: str | None = None
 
+    @property
+    def partition_key(self) -> str:
+        """Finer bucket than the collection. Subcategory levels never merge."""
+        return self.level or self.slot
+
 
 CATEGORY = TaxonomyKind("category", CollectionNames.CATEGORIES.value, EntityType.CATEGORY)
 SUBCATEGORY_1 = TaxonomyKind(
@@ -118,7 +123,9 @@ class ResolutionStats:
     stale_winners: int = 0
     model_calls: int = 0
     model_failures: int = 0
+    # Failed attempts, so a record that resolved after a retry still shows one.
     vector_failures: int = 0
+    graph_failures: int = 0
     rejected_decisions: int = 0
     merges: int = 0
     in_record_merges: int = 0

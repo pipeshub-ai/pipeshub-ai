@@ -5,6 +5,8 @@
 #
 #   ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1
 #   ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --destroy
+#   ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 \
+#     --existing-cluster --cluster my-cluster --zone us-east-1a
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -30,6 +32,9 @@ USE_PRIVATE_IMAGE=false
 BACKUPS=true
 ASSUME_YES=false
 PURGE=false
+EXISTING_CLUSTER=false
+ZONE="${PIPESHUB_ZONE:-}"
+STORAGE_CLASS="${STORAGE_CLASS:-gp3}"
 ACTION=deploy
 
 usage() {
@@ -57,23 +62,34 @@ Options:
   --zones a,b,c            Three availability zones (default: first three that offer m7i)
   --bucket NAME            S3 bucket for files (default: pipeshub-<cluster>-<account>-<region>)
   --image ACCOUNT/IMAGE[:TAG]
-                           pipeshub-ai image. With no tag, uses 0.9.1-slim.
+                           pipeshub-ai image. With no tag, uses 0.10.0-slim.
                            A private image also needs a Docker token. Omit this
-                           to use the public image pipeshubai/pipeshub-ai:0.9.1-slim
+                           to use the public image pipeshubai/pipeshub-ai:0.10.0-slim
   --docker-username USER   Owner of the Docker token (default: the account in --image)
   --docker-token TOKEN     Registry token. Prefer PIPESHUB_DOCKER_TOKEN so the
                            token is not saved in shell history. With no token,
                            the public image is used
+  --existing-cluster       Install into a cluster you already run, every pod in
+                           one zone. Creates the S3 bucket, Pod Identity access,
+                           certificate, DNS record and saved secret-key. Does not
+                           create or change the cluster, its nodes, storage
+                           classes, add-ons, or the load balancer controller.
+                           Needs --cluster and --zone
+  --zone ZONE              Availability zone for --existing-cluster, e.g. us-east-1a
+  --storage-class NAME     StorageClass for --existing-cluster (default: gp3). It
+                           must use volumeBindingMode WaitForFirstConsumer
   --no-backups             Skip the AWS Backup plan
   --render-cluster-config  Print the eksctl config and exit. Needs --region,
                            --zones, --kms-key-arn and --k8s-version; makes no AWS calls
   --destroy                Remove the release and the cluster. Keeps S3, EBS volumes,
-                           backups, KMS key and the saved secret-key
+                           backups, KMS key and the saved secret-key. With
+                           --existing-cluster, removes only the release and
+                           keeps the cluster and the database volume claims
   --purge                  With --destroy, also delete this cluster's database disks,
                            snapshots, backup vault, saved secret-key, and the
                            default bucket pipeshub-<cluster>-<account>-<region>.
                            A different --bucket is refused. Implies --destroy.
-                           The KMS key is kept
+                           The KMS key is kept. Not allowed with --existing-cluster
   -y, --yes                Do not ask for confirmation
   -h, --help               Show this help
 EOF
@@ -95,6 +111,9 @@ while [[ $# -gt 0 ]]; do
     --image) IMAGE_REF="$2"; shift 2 ;;
     --docker-username) DOCKER_USERNAME_ARG="$2"; shift 2 ;;
     --docker-token) DOCKER_TOKEN="$2"; TOKEN_FROM_FLAG=true; shift 2 ;;
+    --existing-cluster) EXISTING_CLUSTER=true; shift ;;
+    --zone) ZONE="$2"; shift 2 ;;
+    --storage-class) STORAGE_CLASS="$2"; shift 2 ;;
     --no-backups) BACKUPS=false; shift ;;
     --render-cluster-config) ACTION=render; shift ;;
     --destroy) ACTION=destroy; shift ;;
@@ -107,6 +126,9 @@ done
 
 if $PURGE; then
   [[ "$ACTION" == render ]] && { usage >&2; echo "deploy-eks: --purge cannot be combined with --render-cluster-config" >&2; exit 2; }
+  # Purge deletes disks by cluster tag and fails while any is attached. On a
+  # shared cluster that would match, or wait on, other teams' volumes.
+  $EXISTING_CLUSTER && { usage >&2; echo "deploy-eks: --purge cannot be combined with --existing-cluster" >&2; exit 2; }
   ACTION=destroy
 fi
 
@@ -156,6 +178,13 @@ if [[ "$ACTION" == deploy ]]; then
   elif [[ -n "$DOCKER_TOKEN" ]]; then
     die "a Docker token was set but no image. Pass --image account/image[:tag]"
   fi
+  if $EXISTING_CLUSTER; then
+    [[ -n "$ZONE" ]] || die "--existing-cluster needs --zone, for example --zone us-east-1a"
+  elif [[ -n "$ZONE" ]]; then
+    die "--zone is only used with --existing-cluster"
+  fi
+  [[ "${PIPESHUB_INGRESS:-true}" == true ]] \
+    || die "PIPESHUB_INGRESS=false is for install.sh. deploy.sh creates the certificate and DNS record for the Ingress"
 fi
 
 export PATH="${PIPESHUB_BIN_DIR:-${PIPESHUB_HOME:-${HOME}/.pipeshub}/bin}:${PATH}"
@@ -536,13 +565,19 @@ PY
 }
 
 destroy() {
-  step "Destroy ${CLUSTER} in ${REGION} (account ${ACCOUNT_ID})"
-  note "Deletes the Helm release, the load balancer and the cluster."
+  if $EXISTING_CLUSTER; then
+    step "Remove ${RELEASE} from ${CLUSTER} in ${REGION} (account ${ACCOUNT_ID})"
+    note "Deletes the Helm release and its load balancer. Keeps the cluster."
+    note "Keeps the database volume claims in ${NAMESPACE}, the S3 bucket, and the saved secret-key."
+  else
+    step "Destroy ${CLUSTER} in ${REGION} (account ${ACCOUNT_ID})"
+    note "Deletes the Helm release, the load balancer and the cluster."
+  fi
   if $PURGE; then
     resolve_purge_bucket
     note "Also deletes this cluster's database disks, snapshots, backup vault, saved secret-key, and s3://${BUCKET}."
     note "Keeps the KMS key alias/${CLUSTER}-eks."
-  else
+  elif ! $EXISTING_CLUSTER; then
     note "Keeps EBS volumes, the S3 bucket, backups, the KMS key and the saved secret-key."
     note "Add --purge to delete the database disks and the bucket as well."
   fi
@@ -550,6 +585,13 @@ destroy() {
 
   if cluster_exists; then
     aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION" >/dev/null
+    if ! $EXISTING_CLUSTER; then
+      local groups
+      groups=" $(aws eks list-nodegroups --cluster-name "$CLUSTER" --query nodegroups --output text | tr '\t' ' ') "
+      if [[ "$groups" != *" data "* || "$groups" != *" app "* ]]; then
+        die "${CLUSTER} has no data and app node groups, so this script did not create it. Pass --existing-cluster to remove only ${RELEASE}."
+      fi
+    fi
     if helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
       step "Uninstall ${RELEASE}"
       helm uninstall "$RELEASE" -n "$NAMESPACE" --wait --timeout 15m
@@ -559,6 +601,13 @@ destroy() {
       kubectl get ingress -n "$NAMESPACE" --no-headers 2>/dev/null | grep -q . || break
       sleep 10
     done
+  fi
+
+  if $EXISTING_CLUSTER; then
+    # The customer's storage class may use reclaimPolicy Delete, so deleting a
+    # claim could delete its disk.
+    note "volume claims left in ${NAMESPACE}: kubectl get pvc -n ${NAMESPACE}"
+  elif cluster_exists; then
     kubectl delete pvc -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
 
     step "Delete cluster ${CLUSTER} (about 15 minutes)"
@@ -586,6 +635,11 @@ destroy() {
 
   if $PURGE; then
     purge_cluster_data
+    return 0
+  fi
+
+  if $EXISTING_CLUSTER; then
+    note "Also kept: S3 bucket ${BUCKET:-$(default_bucket_name)}, secret ${CLUSTER}/secret-key"
     return 0
   fi
 
@@ -626,7 +680,11 @@ else
   note "image        ${DEFAULT_APP_REPOSITORY}:${DEFAULT_APP_TAG}"
 fi
 note "backups      ${BACKUPS}"
-if cluster_exists; then
+if $EXISTING_CLUSTER; then
+  note "topology     existing cluster, zone ${ZONE}, storage class ${STORAGE_CLASS}"
+  note "Leaves the cluster, nodes, add-ons, storage classes and load balancer controller as they are."
+  note "Adds an S3 bucket, an IAM role and policy, a Pod Identity association, an internal load balancer and EBS volumes."
+elif cluster_exists; then
   note "Cluster ${CLUSTER} already exists. Finished steps are skipped, and the Helm release is upgraded."
 else
   note "Creates 8 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
@@ -634,100 +692,113 @@ else
 fi
 confirm "Continue?"
 
-step "KMS key for Kubernetes Secrets"
-if [[ -z "$KMS_KEY_ARN" ]]; then
-  KMS_KEY_ARN="$(aws kms describe-key --key-id "alias/${CLUSTER}-eks" --query KeyMetadata.Arn --output text 2>/dev/null || true)"
-  if [[ -z "$KMS_KEY_ARN" || "$KMS_KEY_ARN" == None ]]; then
-    KMS_KEY_ARN="$(aws kms create-key --description "PipesHub EKS ${CLUSTER}" --query KeyMetadata.Arn --output text)"
-    aws kms create-alias --alias-name "alias/${CLUSTER}-eks" --target-key-id "$KMS_KEY_ARN"
-    aws kms enable-key-rotation --key-id "$KMS_KEY_ARN"
-    note "created ${KMS_KEY_ARN}"
-  else
-    note "reusing ${KMS_KEY_ARN}"
-  fi
-fi
-
-step "EKS cluster ${CLUSTER}"
-if cluster_exists; then
-  note "exists; skipping create"
+if $EXISTING_CLUSTER; then
+  step "Existing cluster ${CLUSTER}"
+  cluster_exists || die "cluster ${CLUSTER} not found in ${REGION}. Check --cluster and --region"
   aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION" >/dev/null
-  [[ -n "$K8S_VERSION" ]] \
-    || K8S_VERSION="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.version --output text)"
-  if [[ -z "$ZONES" ]]; then
-    ZONES="$(aws ec2 describe-instances \
-      --filters Name=tag:eks:cluster-name,Values="$CLUSTER" Name=instance-state-name,Values=running \
-      --query 'Reservations[].Instances[].Placement.AvailabilityZone' --output text \
-      | tr '\t' '\n' | sort -u | paste -sd, -)"
+  # Without the agent, the S3 association below never reaches the pods.
+  agent_status="$(aws eks describe-addon --cluster-name "$CLUSTER" --addon-name eks-pod-identity-agent \
+    --query addon.status --output text 2>/dev/null || true)"
+  if [[ "$agent_status" != ACTIVE ]] && ! kubectl get daemonset -n kube-system eks-pod-identity-agent >/dev/null 2>&1; then
+    die "the EKS Pod Identity Agent is not installed on ${CLUSTER}. Install it: aws eks create-addon --cluster-name ${CLUSTER} --addon-name eks-pod-identity-agent"
   fi
-  [[ -n "$ZONES" ]] || die "could not detect availability zones for ${CLUSTER}; pass --zones"
-  render_cluster_config >"$CLUSTER_CONFIG"
-  note "refreshed ${CLUSTER_CONFIG}"
-  for ng in $(awk '/^managedNodeGroups:/ {m = 1; next} m && /^  - name:/ {print $3}' "$CLUSTER_CONFIG"); do
-    ng_status="$(aws eks describe-nodegroup --cluster-name "$CLUSTER" --nodegroup-name "$ng" \
-      --query nodegroup.status --output text 2>/dev/null || true)"
-    if [[ "$ng_status" == CREATE_FAILED ]]; then
-      note "node group ${ng} failed to create earlier; deleting it so it can be created again"
-      eksctl delete nodegroup --cluster "$CLUSTER" --region "$REGION" --name "$ng" --wait
+  note "Pod Identity Agent found"
+else
+  step "KMS key for Kubernetes Secrets"
+  if [[ -z "$KMS_KEY_ARN" ]]; then
+    KMS_KEY_ARN="$(aws kms describe-key --key-id "alias/${CLUSTER}-eks" --query KeyMetadata.Arn --output text 2>/dev/null || true)"
+    if [[ -z "$KMS_KEY_ARN" || "$KMS_KEY_ARN" == None ]]; then
+      KMS_KEY_ARN="$(aws kms create-key --description "PipesHub EKS ${CLUSTER}" --query KeyMetadata.Arn --output text)"
+      aws kms create-alias --alias-name "alias/${CLUSTER}-eks" --target-key-id "$KMS_KEY_ARN"
+      aws kms enable-key-rotation --key-id "$KMS_KEY_ARN"
+      note "created ${KMS_KEY_ARN}"
+    else
+      note "reusing ${KMS_KEY_ARN}"
     fi
-  done
-  eksctl create nodegroup --config-file "$CLUSTER_CONFIG"
-  ensure_addons "$CLUSTER_CONFIG"
-else
-  if [[ -z "$K8S_VERSION" ]]; then
-    K8S_VERSION="$(aws eks describe-cluster-versions --default-only --query 'clusterVersions[0].clusterVersion' --output text 2>/dev/null || true)"
-    [[ -n "$K8S_VERSION" && "$K8S_VERSION" != None ]] \
-      || K8S_VERSION="$(sed -n 's/^  version: "\(.*\)"$/\1/p' "${AWS_DIR}/cluster.yaml")"
   fi
-  if [[ -z "$ZONES" ]]; then
-    ZONES="$(aws ec2 describe-instance-type-offerings --location-type availability-zone \
-      --filters Name=instance-type,Values=m7i.2xlarge --query 'InstanceTypeOfferings[].Location' --output text \
-      | tr '\t' '\n' | sort | head -3 | paste -sd, -)"
+
+  step "EKS cluster ${CLUSTER}"
+  if cluster_exists; then
+    note "exists; skipping create"
+    aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION" >/dev/null
+    [[ -n "$K8S_VERSION" ]] \
+      || K8S_VERSION="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.version --output text)"
+    if [[ -z "$ZONES" ]]; then
+      ZONES="$(aws ec2 describe-instances \
+        --filters Name=tag:eks:cluster-name,Values="$CLUSTER" Name=instance-state-name,Values=running \
+        --query 'Reservations[].Instances[].Placement.AvailabilityZone' --output text \
+        | tr '\t' '\n' | sort -u | paste -sd, -)"
+    fi
+    [[ -n "$ZONES" ]] || die "could not detect availability zones for ${CLUSTER}; pass --zones"
+    render_cluster_config >"$CLUSTER_CONFIG"
+    note "refreshed ${CLUSTER_CONFIG}"
+    for ng in $(awk '/^managedNodeGroups:/ {m = 1; next} m && /^  - name:/ {print $3}' "$CLUSTER_CONFIG"); do
+      ng_status="$(aws eks describe-nodegroup --cluster-name "$CLUSTER" --nodegroup-name "$ng" \
+        --query nodegroup.status --output text 2>/dev/null || true)"
+      if [[ "$ng_status" == CREATE_FAILED ]]; then
+        note "node group ${ng} failed to create earlier; deleting it so it can be created again"
+        eksctl delete nodegroup --cluster "$CLUSTER" --region "$REGION" --name "$ng" --wait
+      fi
+    done
+    eksctl create nodegroup --config-file "$CLUSTER_CONFIG"
+    ensure_addons "$CLUSTER_CONFIG"
+  else
+    if [[ -z "$K8S_VERSION" ]]; then
+      K8S_VERSION="$(aws eks describe-cluster-versions --default-only --query 'clusterVersions[0].clusterVersion' --output text 2>/dev/null || true)"
+      [[ -n "$K8S_VERSION" && "$K8S_VERSION" != None ]] \
+        || K8S_VERSION="$(sed -n 's/^  version: "\(.*\)"$/\1/p' "${AWS_DIR}/cluster.yaml")"
+    fi
+    if [[ -z "$ZONES" ]]; then
+      ZONES="$(aws ec2 describe-instance-type-offerings --location-type availability-zone \
+        --filters Name=instance-type,Values=m7i.2xlarge --query 'InstanceTypeOfferings[].Location' --output text \
+        | tr '\t' '\n' | sort | head -3 | paste -sd, -)"
+    fi
+    [[ "$(tr ',' '\n' <<<"$ZONES" | grep -c .)" -eq 3 ]] || die "need three availability zones with m7i.2xlarge in ${REGION}, found: ${ZONES}"
+    render_cluster_config >"$CLUSTER_CONFIG"
+    note "kubernetes ${K8S_VERSION}, zones ${ZONES}"
+    note "config saved to ${CLUSTER_CONFIG}"
+    check_vcpu_quota "$CLUSTER_CONFIG"
+    note "this takes 20 to 30 minutes"
+    eksctl create cluster -f "$CLUSTER_CONFIG"
   fi
-  [[ "$(tr ',' '\n' <<<"$ZONES" | grep -c .)" -eq 3 ]] || die "need three availability zones with m7i.2xlarge in ${REGION}, found: ${ZONES}"
-  render_cluster_config >"$CLUSTER_CONFIG"
-  note "kubernetes ${K8S_VERSION}, zones ${ZONES}"
-  note "config saved to ${CLUSTER_CONFIG}"
-  check_vcpu_quota "$CLUSTER_CONFIG"
-  note "this takes 20 to 30 minutes"
-  eksctl create cluster -f "$CLUSTER_CONFIG"
-fi
-kubectl get nodes -L pipeshub/role --no-headers | awk '{print "    " $1 "  " $2 "  " $NF}'
+  kubectl get nodes -L pipeshub/role --no-headers | awk '{print "    " $1 "  " $2 "  " $NF}'
 
-step "Storage class gp3"
-if kubectl get storageclass gp3 >/dev/null 2>&1; then
-  note "exists"
-else
-  kubectl apply -f "${AWS_DIR}/storageclass-gp3.yaml"
-fi
+  step "Storage class gp3"
+  if kubectl get storageclass gp3 >/dev/null 2>&1; then
+    note "exists"
+  else
+    kubectl apply -f "${AWS_DIR}/storageclass-gp3.yaml"
+  fi
 
-step "AWS Load Balancer Controller"
-helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
-helm repo update eks >/dev/null
-LBC_VERSION="$(helm show chart eks/aws-load-balancer-controller | sed -n 's/^appVersion: *//p' | tr -d '"')"
-[[ -n "$LBC_VERSION" ]] || die "could not read the controller version from the eks chart repo"
-curl -fsSL -o "${STATE_DIR}/lbc-iam-policy.json" \
-  "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${LBC_VERSION}/docs/install/iam_policy.json"
-LBC_POLICY_ARN="$(ensure_iam_policy "PipesHub-${CLUSTER}-LBController" "${STATE_DIR}/lbc-iam-policy.json")"
-eksctl create iamserviceaccount \
-  --cluster "$CLUSTER" --region "$REGION" \
-  --namespace kube-system --name aws-load-balancer-controller \
-  --role-name "PipesHub-${CLUSTER}-LBController" \
-  --attach-policy-arn "$LBC_POLICY_ARN" \
-  --override-existing-serviceaccounts --approve
-VPC_ID="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.resourcesVpcConfig.vpcId --output text)"
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName="$CLUSTER" \
-  --set region="$REGION" \
-  --set vpcId="$VPC_ID" \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=aws-load-balancer-controller \
-  --wait --timeout 10m >/dev/null
-# Helm rewrites the webhook CA in the TLS secret. Running pods keep the old
-# certificate, and the API server then rejects every Ingress update.
-kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system >/dev/null
-kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout 5m >/dev/null
-note "controller ${LBC_VERSION} ready"
+  step "AWS Load Balancer Controller"
+  helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
+  helm repo update eks >/dev/null
+  LBC_VERSION="$(helm show chart eks/aws-load-balancer-controller | sed -n 's/^appVersion: *//p' | tr -d '"')"
+  [[ -n "$LBC_VERSION" ]] || die "could not read the controller version from the eks chart repo"
+  curl -fsSL -o "${STATE_DIR}/lbc-iam-policy.json" \
+    "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${LBC_VERSION}/docs/install/iam_policy.json"
+  LBC_POLICY_ARN="$(ensure_iam_policy "PipesHub-${CLUSTER}-LBController" "${STATE_DIR}/lbc-iam-policy.json")"
+  eksctl create iamserviceaccount \
+    --cluster "$CLUSTER" --region "$REGION" \
+    --namespace kube-system --name aws-load-balancer-controller \
+    --role-name "PipesHub-${CLUSTER}-LBController" \
+    --attach-policy-arn "$LBC_POLICY_ARN" \
+    --override-existing-serviceaccounts --approve
+  VPC_ID="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.resourcesVpcConfig.vpcId --output text)"
+  helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+    -n kube-system \
+    --set clusterName="$CLUSTER" \
+    --set region="$REGION" \
+    --set vpcId="$VPC_ID" \
+    --set serviceAccount.create=false \
+    --set serviceAccount.name=aws-load-balancer-controller \
+    --wait --timeout 10m >/dev/null
+  # Helm rewrites the webhook CA in the TLS secret. Running pods keep the old
+  # certificate, and the API server then rejects every Ingress update.
+  kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system >/dev/null
+  kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout 5m >/dev/null
+  note "controller ${LBC_VERSION} ready"
+fi
 
 step "TLS certificate for ${DOMAIN}"
 if [[ -z "$CERT_ARN" ]]; then
@@ -822,6 +893,9 @@ fi
 
 step "PipesHub (Helm release ${RELEASE})"
 export FRONTEND_PUBLIC_URL NAMESPACE RELEASE
+if $EXISTING_CLUSTER; then
+  export PIPESHUB_TOPOLOGY=single-az PIPESHUB_ZONE="$ZONE" STORAGE_CLASS
+fi
 if $USE_CUSTOM_IMAGE; then
   export PIPESHUB_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
   export PIPESHUB_IMAGE_TAG="$IMAGE_TAG"
@@ -870,6 +944,27 @@ else
   note "  CNAME  ${DOMAIN}  ->  ${ALB_HOST}"
 fi
 
+if $BACKUPS && $EXISTING_CLUSTER; then
+  # Assigned outside the test: set -e and the ERR trap do not see a command
+  # that fails inside an if condition.
+  cluster_volumes="$(aws ec2 describe-volumes \
+    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
+    --query 'length(Volumes)' --output text)"
+  if ! kubectl get storageclass "$STORAGE_CLASS" \
+    -o go-template='{{range $k, $v := .parameters}}{{$k}}={{$v}}{{"\n"}}{{end}}' \
+    | grep -qE '^tagSpecification_[0-9]+=pipeshub-backup=true$'; then
+    step "Daily EBS backups"
+    note "skipped: the backup plan selects volumes tagged pipeshub-backup=true, and ${STORAGE_CLASS} does not add that tag."
+    note "Add tagSpecification_1: \"pipeshub-backup=true\" to a storage class only PipesHub uses (see storageclass-gp3.yaml), or back up the volumes your own way."
+    BACKUPS=false
+  elif [[ "$cluster_volumes" == 0 ]]; then
+    step "Daily EBS backups"
+    note "skipped: no volume carries both pipeshub-backup=true and kubernetes.io/cluster/${CLUSTER}=owned, and the backup plan needs both."
+    note "The EBS CSI driver adds the cluster tag when it runs with --k8s-tag-cluster-id=${CLUSTER}."
+    BACKUPS=false
+  fi
+fi
+
 if $BACKUPS; then
   step "Daily EBS backups"
   aws backup describe-backup-vault --backup-vault-name "$CLUSTER" >/dev/null 2>&1 \
@@ -888,11 +983,29 @@ if $BACKUPS; then
     PLAN_ID="$(aws backup create-backup-plan --query BackupPlanId --output text --backup-plan \
       "{\"BackupPlanName\":\"${CLUSTER}-daily\",\"Rules\":[{\"RuleName\":\"daily\",\"TargetBackupVaultName\":\"${CLUSTER}\",\"ScheduleExpression\":\"cron(0 3 * * ? *)\",\"StartWindowMinutes\":60,\"CompletionWindowMinutes\":240,\"Lifecycle\":{\"DeleteAfterDays\":30}}]}")"
   fi
-  if [[ "$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" --query 'length(BackupSelectionsList)' --output text)" == 0 ]]; then
+  # Earlier runs created this selection on pipeshub-backup=true alone, which
+  # matches every cluster's volumes in the account.
+  SELECTION_ID="$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" \
+    --query "BackupSelectionsList[?SelectionName=='${CLUSTER}-ebs'].SelectionId | [0]" --output text)"
+  [[ "$SELECTION_ID" != None ]] || SELECTION_ID=""
+  scoped=1
+  if [[ -n "$SELECTION_ID" ]]; then
+    scoped="$(aws backup get-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID" \
+      --query "length(BackupSelection.Conditions.StringEquals[?ConditionKey=='aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}' && ConditionValue=='owned'] || \`[]\`)" \
+      --output text)"
+  fi
+  if [[ "$scoped" == 0 ]]; then
+    aws backup delete-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID"
+    note "replaced backup selection ${CLUSTER}-ebs, which was not limited to this cluster's volumes"
+    SELECTION_ID=""
+  fi
+  if [[ -z "$SELECTION_ID" ]]; then
     # A new IAM role takes a few seconds to become usable by AWS Backup.
+    # ListOfTags entries are ORed; Conditions are ANDed, which keeps other
+    # clusters' pipeshub-backup volumes out of this vault.
     for attempt in $(seq 1 12); do
       if aws backup create-backup-selection --backup-plan-id "$PLAN_ID" --backup-selection \
-        "{\"SelectionName\":\"${CLUSTER}-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/${BACKUP_ROLE}\",\"ListOfTags\":[{\"ConditionType\":\"STRINGEQUALS\",\"ConditionKey\":\"pipeshub-backup\",\"ConditionValue\":\"true\"}]}" \
+        "{\"SelectionName\":\"${CLUSTER}-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/${BACKUP_ROLE}\",\"Resources\":[\"arn:aws:ec2:*:*:volume/*\"],\"Conditions\":{\"StringEquals\":[{\"ConditionKey\":\"aws:ResourceTag/pipeshub-backup\",\"ConditionValue\":\"true\"},{\"ConditionKey\":\"aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}\",\"ConditionValue\":\"owned\"}]}}" \
         >/dev/null 2>&1; then
         break
       fi
@@ -922,6 +1035,8 @@ else
   note "not reachable yet. DNS can take a few minutes. Retry: curl ${FRONTEND_PUBLIC_URL}/api/v1/health"
 fi
 
+REMOVE_FLAGS=""
+if $EXISTING_CLUSTER; then REMOVE_FLAGS=" --existing-cluster"; fi
 printf '\n%sPipesHub is deployed.%s\n' "$C_GREEN" "$C_RESET"
 cat <<EOF
 
@@ -938,5 +1053,5 @@ cat <<EOF
   2. secret-key is saved in Secrets Manager as ${CLUSTER}/secret-key.
 
   Re-run this command to update. Remove with:
-    $0 --domain ${DOMAIN} --region ${REGION} --cluster ${CLUSTER} --destroy
+    $0 --domain ${DOMAIN} --region ${REGION} --cluster ${CLUSTER}${REMOVE_FLAGS} --destroy
 EOF

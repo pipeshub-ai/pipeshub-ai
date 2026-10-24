@@ -22,6 +22,8 @@ export interface ActionsCatalogLayoutProps {
   activeTab: string;
   onTabChange: (value: string) => void;
   trailingAction?: React.ReactNode;
+  /** Shown after the cards once they have loaded. */
+  footer?: React.ReactNode;
   items: ActionCatalogItem[];
   resolveCta: (item: ActionCatalogItem) => { cta: ActionCardCta; label: string };
   onCta?: (item: ActionCatalogItem) => void;
@@ -55,6 +57,7 @@ export function ActionsCatalogLayout({
   activeTab,
   onTabChange,
   trailingAction,
+  footer,
   items,
   resolveCta,
   onCta,
@@ -216,6 +219,7 @@ export function ActionsCatalogLayout({
           })}
         </Grid>
       )}
+      {!isLoading ? footer : null}
     </Flex>
   );
 }

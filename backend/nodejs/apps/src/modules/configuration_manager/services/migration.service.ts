@@ -16,6 +16,7 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -48,6 +49,7 @@ export class MigrationService {
     await this.chatSessionsMigration();
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
+    await this.delegationLogRetentionMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
@@ -78,6 +80,12 @@ export class MigrationService {
   async userGroupNameIndexMigration(): Promise<void> {
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
+  }
+
+  async delegationLogRetentionMigration(): Promise<void> {
+    // Changing the retention constant does not move an index that already
+    // exists; this does. run() logs its own outcome and never throws.
+    await new DelegationLogRetentionMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {
@@ -201,6 +209,35 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Connector sync schedule migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Recreate the BullMQ job of any scheduled connector that lost it. Run on a timer: a schedule
+   * written in the background after a save can fail, and nothing else would ever notice.
+   */
+  async repairConnectorSchedules(
+    scheduler: CrawlingSchedulerService,
+    appConfig: AppConfig,
+  ): Promise<void> {
+    try {
+      const result = await new ScheduledJobsBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        scheduler,
+        appConfig,
+        { maxAttempts: 1 },
+      ).run({ ignoreDoneFlag: true });
+      if (result.scheduled > 0 || result.errored > 0) {
+        this.logger.warn(
+          'Repaired connector sync schedules that were missing',
+          result,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Connector sync schedule repair failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

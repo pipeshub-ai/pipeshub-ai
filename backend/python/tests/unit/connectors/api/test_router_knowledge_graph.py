@@ -357,12 +357,12 @@ class TestKnowledgeGraphLookup:
 
 class TestKnowledgeGraphContext:
     @pytest.mark.asyncio
-    async def test_provider_failure_resolving_user_becomes_500(self) -> None:
+    async def test_provider_failure_resolving_user_becomes_503(self) -> None:
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("arango unreachable"))
 
         with pytest.raises(HTTPException) as exc:
             await _call_navigate(graph_provider=gp)
 
-        assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert exc.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
         assert "arango unreachable" not in exc.value.detail

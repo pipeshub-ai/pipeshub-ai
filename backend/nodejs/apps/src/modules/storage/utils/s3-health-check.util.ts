@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { S3 } from 'aws-sdk';
 import AmazonS3Adapter from '../providers/s3.provider';
 import { StorageError } from '../../../libs/errors/storage.errors';
 import { Document } from '../types/storage.service.types';
@@ -126,19 +125,26 @@ export async function validateS3Capabilities(
     bucketNameLength: bucketName?.length,
     region,
     authMode:
-      resolvedCredentials.kind === 'explicit' ? 'explicitCredentials' : 'iamRole',
+      resolvedCredentials.kind === 'explicit'
+        ? 'explicitCredentials'
+        : 'iamRole',
   });
 
-  // Single S3 client used for cleanup only (best-effort, no IAM check needed).
-  const s3 =
-    resolvedCredentials.kind === 'explicit'
-      ? new S3({
+  // Cleanup client only. Path-style addressing is for this client, not the adapter.
+  // require() at call time so tests can replace the exported function.
+  const provider =
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('../providers/s3.provider') as typeof import('../providers/s3.provider');
+  const s3 = provider.createS3Service({
+    region,
+    forcePathStyle: true,
+    ...(resolvedCredentials.kind === 'explicit'
+      ? {
           accessKeyId: resolvedCredentials.accessKeyId,
           secretAccessKey: resolvedCredentials.secretAccessKey,
-          region,
-          s3ForcePathStyle: true,
-        })
-      : new S3({ region, s3ForcePathStyle: true });
+        }
+      : {}),
+  });
 
   let adapter: AmazonS3Adapter;
   try {
@@ -209,7 +215,8 @@ export async function validateS3Capabilities(
     } as Document;
 
     try {
-      const readResult = await adapter.getBufferFromStorageService(probeDocument);
+      const readResult =
+        await adapter.getBufferFromStorageService(probeDocument);
       const downloaded = readResult.data?.toString('utf-8');
       if (downloaded !== HEALTH_CHECK_CONTENT) {
         throw new Error(
@@ -247,9 +254,13 @@ export async function validateS3Capabilities(
     if (signedGetUrl) {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), SIGNED_URL_FETCH_TIMEOUT_MS);
+        const timeout = setTimeout(() => {
+          controller.abort();
+        }, SIGNED_URL_FETCH_TIMEOUT_MS);
         try {
-          const response = await fetch(signedGetUrl, { signal: controller.signal });
+          const response = await fetch(signedGetUrl, {
+            signal: controller.signal,
+          });
           if (!response.ok) {
             throw new Error(
               `Signed URL returned HTTP ${response.status}. This usually indicates a region mismatch — the configured region '${region}' may not match the bucket's actual region`,
@@ -267,7 +278,9 @@ export async function validateS3Capabilities(
         checks.push({ capability: 'getContent', passed: true });
         logger.info('S3 getContent check passed');
       } catch (error) {
-        logger.error('S3 getContent check failed', { error: formatError(error) });
+        logger.error('S3 getContent check failed', {
+          error: formatError(error),
+        });
         checks.push({
           capability: 'getContent',
           passed: false,

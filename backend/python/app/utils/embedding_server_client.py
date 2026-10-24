@@ -11,6 +11,8 @@ from langchain_openai.embeddings import OpenAIEmbeddings
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EMBEDDING_SERVER_URL,
+    EMBEDDING_PRIORITY_HEADER,
+    EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_MAX_RETRIES,
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
 )
@@ -86,6 +88,19 @@ class EmbeddingServerEmbeddings(Embeddings):
             timeout=self.timeout,
             extra_body=extra_body,
         )
+        # Search queries are marked so the server encodes them ahead of
+        # indexing batches (embedding_main.EncodeGate). Documents go
+        # unmarked, which the server treats as bulk.
+        self._query_inner = OpenAIEmbeddings(
+            model=self.model,
+            api_key=_EMBEDDING_SERVER_API_KEY,
+            base_url=_embedding_server_base_url(),
+            check_embedding_ctx_length=False,
+            max_retries=0,
+            timeout=self.timeout,
+            extra_body=extra_body,
+            default_headers={EMBEDDING_PRIORITY_HEADER: EMBEDDING_PRIORITY_QUERY},
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return call_with_retry(
@@ -98,7 +113,7 @@ class EmbeddingServerEmbeddings(Embeddings):
 
     def embed_query(self, text: str) -> list[float]:
         return call_with_retry(
-            lambda: self._inner.embed_query(text),
+            lambda: self._query_inner.embed_query(text),
             max_retries=self.max_retries,
             operation="embed_query",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
@@ -116,7 +131,7 @@ class EmbeddingServerEmbeddings(Embeddings):
 
     async def aembed_query(self, text: str) -> list[float]:
         return await await_with_retry(
-            lambda: self._inner.aembed_query(text),
+            lambda: self._query_inner.aembed_query(text),
             max_retries=self.max_retries,
             operation="aembed_query",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,

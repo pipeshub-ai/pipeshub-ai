@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -25,17 +26,31 @@ async def read_platform_feature_flag(
     config_service: Any,
     *,
     default: bool,
+    use_cache: bool = False,
+    fail_closed: bool = False,
 ) -> bool:
     """Return a platform feature flag's boolean value from encrypted settings.
 
-    Reads with ``use_cache=False`` so flipping a flag in Labs takes effect on
-    the next request instead of after a service restart. On missing settings,
-    an absent flag key, or a read failure, returns ``default``.
+    Reads with ``use_cache=False`` by default so flipping a flag in Labs takes
+    effect on the next request instead of after a service restart. A hot path
+    may pass ``use_cache=True``: a save in Labs invalidates the cached key in
+    every process. On missing settings or an absent flag key, returns ``default``.
+
+    ``get_config`` answers ``default`` for a store outage or an undecryptable
+    value, which here reads as "flag absent". For a flag whose default is on,
+    that would silently undo an admin's saved opt-out, so ``fail_closed=True``
+    asks ``get_config`` to raise and returns ``False`` when the saved value
+    cannot be read. Without it, a read failure also returns ``default``.
     """
     try:
-        settings = await config_service.get_config(
-            PLATFORM_SETTINGS_KEY, default={}, use_cache=False,
-        )
+        if fail_closed:
+            settings = await config_service.get_config(
+                PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache, raise_on_error=True,
+            )
+        else:
+            settings = await config_service.get_config(
+                PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache,
+            )
         flags = settings.get("featureFlags") if isinstance(settings, dict) else None
         if not isinstance(flags, dict):
             return default
@@ -45,15 +60,16 @@ async def read_platform_feature_flag(
             return default
         return bool(normalized[str(flag_name).upper()])
     except Exception as e:
+        fallback = False if fail_closed else default
         logger.error(
-            "Failed to read %s for feature flag %s; using default=%s: %s",
+            "Failed to read %s for feature flag %s; using %s: %s",
             PLATFORM_SETTINGS_KEY,
             flag_name,
-            default,
+            fallback,
             e,
             exc_info=True,
         )
-        return default
+        return fallback
 
 
 async def _platform_flag(
@@ -93,8 +109,7 @@ async def _platform_flag(
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
-    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
-    ``ENABLE_MCP``, toolsets/actions are pre-existing functionality; admins
+    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED; admins
     may opt out from Labs.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
@@ -104,13 +119,22 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
     skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
     platform feature flag. Defaults to ENABLED (Beta) — mirrors
-    ``is_actions_enabled``, not ``is_mcp_enabled``.
+    ``is_actions_enabled``.
 
     This is layered *under* the deployment-level ``PIPESHUB_ENABLE_SKILLS`` env
     kill-switch (see ``skills_wiring.skills_enabled()``); both must be true for
     skills to run.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
+
+
+async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Gate for typed named-entity extraction and the tools that read it: on when
+    the deployment sets ``HIGH_ACCURACY_MODE`` or the Labs flag is on. The flag is
+    read live and defaults to off; under ``HIGH_ACCURACY_MODE`` it is not read."""
+    if high_accuracy_mode():
+        return True
+    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
 
 
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
@@ -131,3 +155,16 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationService"]) -> bool:
+    """Gate for the knowledge hub's precomputed-scope listing. Source of truth
+    is the ``ENABLE_KH_SCOPE_LISTING`` platform feature flag. Defaults to
+    DISABLED, matching the Labs default. Read on every listing request, so it
+    reads through the config cache; a save in Labs invalidates it everywhere.
+    """
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
+    )

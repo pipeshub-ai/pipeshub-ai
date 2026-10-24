@@ -156,6 +156,27 @@ class AzureFilesStorageHelper:
         dest_path = new_path.strip("/")
         src_file_client.rename_file(dest_path, overwrite=True)
 
+    def create_share(self, share: str) -> None:
+        self._service.create_share(share)
+
+    def delete_share(self, share: str) -> None:
+        try:
+            self._service.delete_share(share, delete_snapshots=True)
+        except ResourceNotFoundError:
+            pass
+
+    def create_directory(self, share: str, path: str) -> None:
+        self._ensure_azure_files_directory(self._service.get_share_client(share), path)
+
+    def rename_directory(self, share: str, old_path: str, new_path: str) -> None:
+        self._service.get_share_client(share).get_directory_client(old_path).rename_directory(new_path)
+
+    def file_id(self, share: str, path: str, *, is_directory: bool = False) -> str:
+        share_client = self._service.get_share_client(share)
+        if is_directory:
+            return share_client.get_directory_client(path).get_directory_properties().file_id
+        return share_client.get_file_client(path).get_file_properties().file_id
+
     def clear_objects(self, share: str, prefix: str) -> None:
         """Delete this run's folder and everything in it, and nothing else."""
         folder = require_run_folder(prefix).rstrip("/")

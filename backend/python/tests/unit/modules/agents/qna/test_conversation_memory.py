@@ -49,7 +49,7 @@ class TestExtractToolContextFromHistory:
             {"role": "bot_response", "content": "Found data at https://example.com/api/data"},
         ]
         result = ConversationMemory.extract_tool_context_from_history(convos)
-        assert any("example.com" in url for url in result["entities"]["urls"])
+        assert result["entities"]["urls"] == ["https://example.com/api/data"]
 
     def test_bot_response_with_ids(self):
         convos = [

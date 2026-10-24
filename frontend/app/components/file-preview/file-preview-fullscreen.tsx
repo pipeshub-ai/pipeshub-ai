@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
@@ -36,6 +36,8 @@ export function FilePreviewFullscreen({
   citations,
   initialCitationId,
   showDownload,
+  onDownload,
+  onChat,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -194,6 +196,12 @@ export function FilePreviewFullscreen({
         </Flex>
 
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
             <IconButton
               variant="ghost"
@@ -204,6 +212,7 @@ export function FilePreviewFullscreen({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
               title={t('action.download')}

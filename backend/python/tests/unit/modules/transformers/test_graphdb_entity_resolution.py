@@ -151,7 +151,7 @@ class TestWithResolution:
         sub = ResolvedEntity(kind=SUBCATEGORY_1, key="k-sub", name="Contract", normalized="contract", is_new=True, decision="new", extracted_names=["Contract"])
         transformer = _transformer(store, provider)
         transformer.graph_data_store.transaction.side_effect = (
-            lambda: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
+            lambda explicit=None: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
         )
         touched = await transformer.save_metadata_to_db(
             "rec-1", _metadata(categories=["Legal"], sub_category_level_1="Contract"), "vr-1",
@@ -400,7 +400,7 @@ class TestCanonicalNodesBeforeTheTransaction:
         provider.create_taxonomy_node_if_absent.side_effect = lambda *a, **k: order.append("node")
         transformer = _transformer(store, provider)
         transformer.graph_data_store.transaction.side_effect = (
-            lambda: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
+            lambda explicit=None: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
         )
         entity = ResolvedEntity(kind=TOPIC, key="k-new", name="Fresh", normalized="fresh",
                                 is_new=True, decision="new", extracted_names=["Fresh"])
@@ -434,7 +434,7 @@ class TestPartlyLandedAttemptIsRerun:
 
         transformer.graph_data_store = MagicMock()
         transformer.graph_data_store.graph_provider = graph
-        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda explicit=None: _Txn())
         transformer.graph_data_store.execute_idempotent_in_transaction = partial(
             GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
         )

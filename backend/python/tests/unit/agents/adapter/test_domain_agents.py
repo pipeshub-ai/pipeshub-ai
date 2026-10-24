@@ -6,8 +6,11 @@ full parent -> child -> tool run driven by `ScriptedTransport`."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
@@ -21,7 +24,12 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import peek_staged_input_files
+from app.agent_loop_lib.tools.decorators import BoundMethodTool, ToolMeta
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agent_loop_lib.tools.toolset import ToolsetBuilder
+from app.agents.actions.calculator.calculator import Calculator
+from app.agents.actions.calculator.date_calculator import DateCalculator
+from app.agents.actions.google.calendar.calendar import GoogleCalendar
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.domain_agents import (
@@ -30,23 +38,19 @@ from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
 )
+from app.agents.agent_loop.loops.orchestrator import _domain_overview
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
 
 class FakeTool(Tool):
-    """Minimal registrable tool; `app_name` mimics the PipesHub adapters'
-    domain-grouping attribute."""
+    """An app-less tool (run_code, load_skill, ...): like those it inherits
+    `Tool.app_name`, None, so no domain can claim it by app."""
 
-    def __init__(self, name: str, app_name: str | None = None, result: str = "ok") -> None:
+    def __init__(self, name: str, result: str = "ok") -> None:
         self._name = name
-        self._app_name = app_name
         self._result = result
         self.calls: list[dict[str, Any]] = []
-
-    @property
-    def app_name(self) -> str | None:
-        return self._app_name
 
     @property
     def name(self) -> str:
@@ -76,6 +80,26 @@ class FakeTool(Tool):
         return ToolOutput(success=True, data=self._result)
 
 
+class FakeAppTool(BoundMethodTool):
+    """A connector tool built the way `ToolsetBuilder` builds one, so its name
+    and `app_name` come from the `@tool` path as in production. A fake that
+    declared `app_name` by hand is what hid that `BoundMethodTool` never
+    exposed it."""
+
+    def __init__(self, app_name: str, short_name: str, result: Any = "ok") -> None:  # noqa: ANN401
+        self._result = result
+        self.calls: list[dict[str, Any]] = []
+        super().__init__(self._run, ToolMeta(
+            path=f"/tools/{app_name}/{short_name}",
+            short_description=f"fake {short_name}",
+            description=f"fake {short_name}",
+        ))
+
+    async def _run(self, **kwargs: Any) -> Any:  # noqa: ANN401
+        self.calls.append(kwargs)
+        return self._result
+
+
 def _full_registry() -> ToolRegistry:
     """Every catalog domain has at least one tool, plus an unclaimed
     connector tool that must stay at the top level."""
@@ -84,15 +108,15 @@ def _full_registry() -> ToolRegistry:
         FakeTool("run_code"),
         FakeTool("install_packages"),
         FakeTool("read_sandbox_file"),
-        FakeTool("dynamic__web_search", app_name="dynamic"),
-        FakeTool("dynamic__fetch_url", app_name="dynamic"),
-        FakeTool("knowledgegraph__search", app_name="knowledgegraph"),
-        FakeTool("knowledgegraph__list_files", app_name="knowledgegraph"),
-        FakeTool("knowledgegraph__fetch_record", app_name="knowledgegraph"),
-        FakeTool("calculator_evaluate", app_name="calculator"),
-        FakeTool("date_calculator_get_exclusion_dates", app_name="date_calculator"),
-        FakeTool("google_calendar_list_events", app_name="google_calendar"),
-        FakeTool("jira_search_issues", app_name="jira"),
+        FakeAppTool("dynamic", "web_search"),
+        FakeAppTool("dynamic", "fetch_url"),
+        FakeAppTool("knowledgegraph", "search"),
+        FakeAppTool("knowledgegraph", "list_files"),
+        FakeAppTool("knowledgegraph", "fetch_record"),
+        FakeAppTool("calculator", "evaluate"),
+        FakeAppTool("date_calculator", "get_exclusion_dates"),
+        FakeAppTool("calendar", "get_calendar_events"),
+        FakeAppTool("jira", "search_issues"),
     ):
         registry.register_tool(tool)
     return registry
@@ -115,33 +139,42 @@ class TestComposition:
         registry = _full_registry()
         top_names = _compose(registry)
 
-        for agent_name in (
-            "web_agent", "coding_agent", "internal_exploration_agent",
-            "calculator_agent", "calendar_agent",
-        ):
+        for agent_name in ("web_agent", "coding_agent", "internal_exploration_agent"):
             assert agent_name in top_names
             assert registry.has(agent_name)
             assert isinstance(registry.resolve_by_name(agent_name), AgentTool)
 
         # Unclaimed connector tool stays a direct top-level tool...
-        assert "jira_search_issues" in top_names
+        assert "jira__search_issues" in top_names
         # ...while claimed domain tools leave the top level entirely.
-        for claimed in ("run_code", "dynamic__web_search", "retrieval_search",
-                        "calculator_evaluate", "date_calculator_get_exclusion_dates",
-                        "google_calendar_list_events"):
+        for claimed in ("run_code", "dynamic__web_search", "knowledgegraph__search"):
             assert claimed not in top_names
 
-    def test_calculator_agent_claims_date_calculator_tools_too(self) -> None:
-        """`date_calculator` is a separate registry `app_name` from
-        `calculator` (see `app/agents/actions/calculator/date_calculator.py`)
-        — both must be claimed by the SAME `calculator_agent`, not left
-        stranded at the top level or split across two agents."""
+    def test_calculator_and_calendar_tools_stay_with_the_top_level_agent(self) -> None:
+        """No domain claims them: the top-level agent calls them itself."""
         registry = _full_registry()
-        _compose(registry)
+        top_names = _compose(registry)
 
-        calculator = registry.resolve_by_name("calculator_agent")._spec
-        assert "date_calculator_get_exclusion_dates" in calculator.tool_names
-        assert "calculator_evaluate" in calculator.tool_names
+        for agent_name in ("calculator_agent", "calendar_agent"):
+            assert agent_name not in top_names
+            assert not registry.has(agent_name)
+        for tool_name in (
+            "calculator__evaluate", "date_calculator__get_exclusion_dates", "calendar__get_calendar_events",
+        ):
+            assert tool_name in top_names
+
+    def test_retrieval_and_knowledgehub_tools_stay_with_the_top_level_agent(self) -> None:
+        """The exploration agent claims only the knowledgegraph tools it names."""
+        registry = _full_registry()
+        registry.register_tool(FakeAppTool("retrieval", "search_internal_knowledge"))
+        registry.register_tool(FakeAppTool("knowledgehub", "list_files"))
+        top_names = _compose(registry)
+
+        internal = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert "retrieval__search_internal_knowledge" in top_names
+        assert "knowledgehub__list_files" in top_names
+        assert "retrieval__search_internal_knowledge" not in internal.tool_names
+        assert "knowledgehub__list_files" not in internal.tool_names
 
     def test_child_specs_are_react_loops_scoped_to_their_domain(self) -> None:
         registry = _full_registry()
@@ -170,16 +203,16 @@ class TestComposition:
 
     def test_no_claims_degenerates_to_flat_tool_list(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("jira_search_issues", app_name="jira"))
+        registry.register_tool(FakeAppTool("jira", "search_issues"))
         top_names = _compose(registry)
 
-        assert top_names == ["jira_search_issues"]
+        assert top_names == ["jira__search_issues"]
         assert not any(registry.has(n) for n in ("web_agent", "coding_agent"))
 
 
 class TestAvailabilityGating:
-    """Availability is claim-based, not a separate flag: no `retrieval`/
-    `knowledgehub` tools registered means nothing for
+    """Availability is claim-based, not a separate flag: no `knowledgegraph`
+    tools registered means nothing for
     `internal_exploration_agent` to claim, so it is silently never built
     (see `domain_agents.py`'s module docstring). Same mechanism gates
     `web_agent` on whether any `dynamic__web_search`/`dynamic__fetch_url`
@@ -189,7 +222,7 @@ class TestAvailabilityGating:
 
     def test_no_internal_exploration_agent_without_knowledge_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("jira_search_issues", app_name="jira"))
+        registry.register_tool(FakeAppTool("jira", "search_issues"))
         top_names = _compose(registry)
 
         assert "internal_exploration_agent" not in top_names
@@ -197,7 +230,7 @@ class TestAvailabilityGating:
 
     def test_no_web_agent_without_web_search_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("retrieval_search", app_name="retrieval"))
+        registry.register_tool(FakeAppTool("knowledgegraph", "search"))
         top_names = _compose(registry)
 
         assert "web_agent" not in top_names
@@ -209,6 +242,58 @@ class TestAvailabilityGating:
 
         assert "internal_exploration_agent" in top_names
         assert "web_agent" in top_names
+
+
+class TestProductionToolsets:
+    """Claims on toolsets built the way `PipesHubToolLoader` builds them
+    (`ToolsetBuilder` over the real connector classes): now that their tools
+    expose `app_name`, none of them may move into a domain agent."""
+
+    @staticmethod
+    def _registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        for instance, app in (
+            (Calculator(), "calculator"),
+            (DateCalculator(), "date_calculator"),
+            (GoogleCalendar(MagicMock()), "calendar"),
+        ):
+            ToolsetBuilder(instance, name=app, description="", path_prefix=f"/tools/{app}").register_into(registry)
+        return registry
+
+    def test_the_tools_expose_their_app(self) -> None:
+        registry = self._registry()
+
+        apps = {registry.resolve_by_name(n).app_name for n in registry.names()}
+
+        assert apps == {"calculator", "date_calculator", "calendar"}
+
+    def test_no_domain_agent_is_built_and_every_tool_stays_top_level(self) -> None:
+        registry = self._registry()
+        names = registry.names()
+        assert sum(n.startswith("calendar__") for n in names) == 7
+
+        plan = plan_domain_agents(registry)
+        top_names = _compose(registry)
+
+        assert plan.claims == {}
+        assert top_names == names
+        assert not any(registry.has(d.name) for d in DOMAIN_AGENT_DEFINITIONS)
+
+
+class TestDomainOverview:
+    """Deep mode's "Available Domains" block groups unclaimed tools by app."""
+
+    def test_unclaimed_tools_group_by_app_and_app_less_ones_by_name(self) -> None:
+        registry = ToolRegistry()
+        registry.register_tool(FakeAppTool("jira", "search_issues"))
+        registry.register_tool(FakeAppTool("jira", "create_issue"))
+        registry.register_tool(FakeTool("mcp_lookup"))
+        agent = SimpleNamespace(runtime=SimpleNamespace(tool_registry=registry))
+
+        overview = _domain_overview(agent)
+
+        assert "- **jira** (group): `jira__search_issues`, `jira__create_issue`" in overview
+        assert "- **mcp_lookup** (group): `mcp_lookup`" in overview
 
 
 class TestChildCitationHandoff:
@@ -250,9 +335,9 @@ class TestInternalExplorationAgent:
         _compose(registry)
 
         internal = registry.resolve_by_name("internal_exploration_agent")._spec
-        calculator = registry.resolve_by_name("calculator_agent")._spec
+        web = registry.resolve_by_name("web_agent")._spec
         assert internal.max_turns == 12
-        assert internal.max_turns > calculator.max_turns
+        assert internal.max_turns > web.max_turns
 
     def test_connector_inventory_and_playbook_included_when_knowledge_configured(self) -> None:
         registry = _full_registry()
@@ -279,6 +364,56 @@ class TestInternalExplorationAgent:
         assert "Exploration Playbook" in internal.system_prompt
         # No connector inventory was configured, so no routing-rules block.
         assert "Retrieval Routing" not in internal.system_prompt
+
+    def test_source_catalog_is_rendered_with_the_childs_own_tools(self) -> None:
+        """`render()` resolves every tool it names through `granted(...)`, so
+        called without `tool_names` it drops bullets for tools the child DOES
+        hold — `fetch_record` among them, which the playbook then tells it to
+        call. The names have to be threaded through."""
+        registry = _full_registry()
+        context = make_context(
+            agent_knowledge=[
+                {"displayName": "Confluence", "type": "confluence", "connectorId": "conn-1"},
+            ],
+        )
+        _compose(registry, context=context)
+
+        prompt = registry.resolve_by_name("internal_exploration_agent")._spec.system_prompt
+        assert "knowledgegraph__fetch_record(record_ids=[...])" in prompt
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_keyword_query_rule_reaches_the_explorer_that_writes_the_queries(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: bool,
+    ) -> None:
+        """With retrieval delegated, the child writes every knowledge-search
+        query, so the opt-in query wording belongs in its prompt."""
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true" if enabled else "false")
+        registry = _full_registry()
+        _compose(registry)
+
+        internal = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert ("Query text for `knowledgegraph__search`: keyword-dense" in internal.system_prompt) is enabled
+
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), [
+        (None, None, False),
+        ("true", None, True),
+        ("true", "false", False),
+        (None, "true", True),
+    ])
+    def test_multi_step_rules_reach_the_explorer_that_runs_the_lookups(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("MULTI_STEP_ANSWER_RULES", switch)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        registry = _full_registry()
+        _compose(registry)
+
+        internal = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert internal.system_prompt.count("Multi-step questions:") == (1 if expected else 0)
 
     def test_full_record_fetch_policy_names_the_dynamic_tool(self) -> None:
         """Regression guard — the policy must name the dynamic tool and
@@ -386,10 +521,10 @@ class TestSharedToolNames:
         )
 
         coding = registry.resolve_by_name("coding_agent")._spec
-        calculator = registry.resolve_by_name("calculator_agent")._spec
+        web = registry.resolve_by_name("web_agent")._spec
         assert "load_skill" in coding.tool_names
         assert "skill_search" in coding.tool_names
-        assert "load_skill" in calculator.tool_names
+        assert "load_skill" in web.tool_names
 
         # Not "claimed" — the top level keeps them too, same as before
         # this feature existed.
@@ -410,6 +545,22 @@ class TestSharedToolNames:
 
         coding = registry.resolve_by_name("coding_agent")._spec
         assert "load_skill" not in coding.tool_names
+
+    def test_code_tools_go_only_to_domains_that_read_code(self) -> None:
+        """Every domain paid the four code-graph schemas on every turn (A-11)."""
+        registry = _full_registry()
+        registry.register_tool(FakeTool("codegraph__get_neighbour"))
+        runtime = AgentRuntime(tool_registry=registry)
+
+        top_names = compose_domain_agents(
+            registry, runtime, make_context(), provider="scripted", model_name="scripted-model",
+            code_tool_names=frozenset({"codegraph__get_neighbour"}),
+        )
+
+        assert "codegraph__get_neighbour" in registry.resolve_by_name("coding_agent")._spec.tool_names
+        assert "codegraph__get_neighbour" not in (
+            registry.resolve_by_name("web_agent")._spec.tool_names)
+        assert "codegraph__get_neighbour" in top_names
 
     def test_defaults_to_empty_and_changes_nothing(self) -> None:
         registry = _full_registry()
@@ -464,7 +615,7 @@ class TestPlanRegisterSplit:
 
         # Simulate work happening between planning and registration (e.g.
         # loop routing) — the registry gains an unrelated tool.
-        registry.register_tool(FakeTool("slack_post_message", app_name="slack"))
+        registry.register_tool(FakeAppTool("slack", "post_message"))
 
         runtime = AgentRuntime(tool_registry=registry)
         top_names = register_domain_agents(
@@ -473,7 +624,7 @@ class TestPlanRegisterSplit:
 
         # The plan's residual is frozen at planning time — a tool added
         # afterward is neither claimed nor granted via this call.
-        assert "slack_post_message" not in top_names
+        assert "slack__post_message" not in top_names
 
     def test_compose_domain_agents_is_plan_then_register(self) -> None:
         registry = _full_registry()
@@ -495,12 +646,12 @@ class TestPlanRegisterSplit:
 
 class TestEndToEndDelegation:
     async def test_parent_delegates_to_child_which_runs_its_tool(self) -> None:
-        """Parent -> calculator_agent (AgentTool special route) -> child ReAct
-        run -> calculator tool -> child's final text becomes the parent's
+        """Parent -> web_agent (AgentTool special route) -> child ReAct
+        run -> web search tool -> child's final text becomes the parent's
         tool result. One shared ScriptedTransport scripts both runs in call
         order, proving parent and child use the same Agent loop."""
         registry = _full_registry()
-        calc_tool = registry.resolve_by_name("calculator_evaluate")
+        search_tool = registry.resolve_by_name("dynamic__web_search")
 
         transport = ScriptedTransport()
         transport_registry = TransportRegistry()
@@ -511,10 +662,10 @@ class TestEndToEndDelegation:
 
         # 1: parent delegates; 2: child calls its tool; 3: child answers;
         # 4: parent answers.
-        transport.add_tool_call(ToolCall(id="c1", name="calculator_agent", arguments={"goal": "what is 3 + 4?"}))
-        transport.add_tool_call(ToolCall(id="c2", name="calculator_evaluate", arguments={}))
-        transport.add_text("The sum is 7.")
-        transport.add_text("Answer: 7.")
+        transport.add_tool_call(ToolCall(id="c1", name="web_agent", arguments={"goal": "find the release date"}))
+        transport.add_tool_call(ToolCall(id="c2", name="dynamic__web_search", arguments={}))
+        transport.add_text("It was released on 2026-10-01.")
+        transport.add_text("Answer: 2026-10-01.")
 
         spec = AgentSpec(
             name="top-agent",
@@ -524,15 +675,16 @@ class TestEndToEndDelegation:
             loop=ReActLoop(),
             max_turns=5,
         )
-        result = await Agent(spec, runtime, session_id="sess-1").run(Goal(description="what is 3 + 4?"))
+        result = await Agent(spec, runtime, session_id="sess-1").run(Goal(description="when was it released?"))
 
         assert result.success is True
-        assert result.output == "Answer: 7."
-        assert calc_tool.calls, "child agent never executed the calculator tool"
+        assert result.output == "Answer: 2026-10-01."
+        assert search_tool.calls, "child agent never executed the web search tool"
         delegate_result = result.turns[0].tool_results[0]
-        assert delegate_result.name == "calculator_agent"
+        assert delegate_result.name == "web_agent"
         assert delegate_result.is_error is False
-        assert delegate_result.content == "The sum is 7."
+        # web_agent's result_note follows the child's answer.
+        assert delegate_result.content.startswith("It was released on 2026-10-01.\n")
 
     async def test_jira_search_result_reaches_coding_agent_child_deterministically(self) -> None:
         """Reproduces (and verifies the fix for) the incident this module
@@ -551,7 +703,7 @@ class TestEndToEndDelegation:
 
         registry = ToolRegistry()
         registry.register_tool(
-            FakeTool("jira_search_issues", app_name="jira", result={"tickets": ["A-1", "A-2"]})
+            FakeAppTool("jira", "search_issues", result={"tickets": ["A-1", "A-2"]})
         )
         created_backends: list[_UploadCapturingBackend] = []
 
@@ -572,7 +724,7 @@ class TestEndToEndDelegation:
         top_names = _compose(registry, runtime)
         assert "coding_agent" in top_names
 
-        transport.add_tool_call(ToolCall(id="c-jira", name="jira_search_issues", arguments={}))
+        transport.add_tool_call(ToolCall(id="c-jira", name="jira__search_issues", arguments={}))
         transport.add_tool_call(ToolCall(
             id="c-code", name="coding_agent",
             arguments={"goal": "Build a PDF report of the tickets."},
@@ -605,7 +757,7 @@ class TestEndToEndDelegation:
         child_goal_text = " ".join(
             m.content if isinstance(m.content, str) else str(m.content) for m in child_first_call_messages
         )
-        assert "jira_search_issues" in child_goal_text
+        assert "jira__search_issues" in child_goal_text
         assert "A-1" in child_goal_text and "A-2" in child_goal_text
         assert "Build a PDF report of the tickets." in child_goal_text
 
@@ -616,7 +768,7 @@ class TestEndToEndDelegation:
         # `parent_results_as_json`'s budget-aware envelope (see
         # `coordination/parent_results.py`): results wrapped alongside a
         # `_meta` block describing any truncation (none here).
-        assert payload["results"] == [{"tool": "jira_search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
+        assert payload["results"] == [{"tool": "jira__search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
         assert payload["_meta"]["truncated"] is False
 
 

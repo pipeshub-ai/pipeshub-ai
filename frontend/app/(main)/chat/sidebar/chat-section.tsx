@@ -11,7 +11,7 @@ import { SidebarItem } from './sidebar-item';
 import { TimeGroup } from './time-group';
 import type { Conversation } from '@/chat/types';
 import type { PendingConversation } from '@/chat/store';
-import type { TimeGroupKey } from './time-group';
+import type { SidebarGroupKey } from './time-group';
 
 interface ChatSectionBaseProps {
   /** Section label shown in the header. Omit to suppress the header entirely. */
@@ -45,7 +45,7 @@ interface ChatSectionBaseProps {
  * Props when time groups are provided (Your Chats mode).
  */
 interface TimeGroupedSectionProps extends ChatSectionBaseProps {
-  timeGroups: Array<[TimeGroupKey, Conversation[]]>;
+  timeGroups: Array<[SidebarGroupKey, Conversation[]]>;
   conversations?: never;
 }
 

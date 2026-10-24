@@ -14,6 +14,7 @@ closed (permissions) or carry on without the data (tree).
 
 from typing import Any
 
+from app.sources.client.drupal_wiki.drupal_wiki import describe_exception
 from app.sources.client.drupal_wiki.graphql import DrupalWikiGraphQLClient
 
 # Only the fields the connector reads are selected: an unknown field fails the whole
@@ -59,11 +60,15 @@ class DrupalWikiGraphQLDataSource:
         operation_name: str,
         variables: dict[str, Any],
     ) -> dict[str, Any]:
-        response = await self._client.execute(query, variables=variables, operation_name=operation_name)
+        try:
+            response = await self._client.execute(query, variables=variables, operation_name=operation_name)
+        except Exception as e:
+            # A timeout or dropped connection is still a failure of this one query; the
+            # caller decides per space.
+            raise DrupalWikiGraphQLError(f"{operation_name} failed: {describe_exception(e)}") from e
         if not response.success or response.data is None:
-            raise DrupalWikiGraphQLError(
-                f"{operation_name} failed (status {response.status_code}): {response.message}"
-            )
+            reason = response.message or f"the reply carried no data (HTTP {response.status_code})"
+            raise DrupalWikiGraphQLError(f"{operation_name} failed: {reason}")
         return response.data
 
     async def get_space_members(self, space_id: int) -> dict[str, Any]:

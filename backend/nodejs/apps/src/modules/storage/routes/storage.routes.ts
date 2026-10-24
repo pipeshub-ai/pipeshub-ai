@@ -14,6 +14,7 @@ import {
   RollBackToPreviousVersionSchema,
   DirectUploadSchema,
   DocumentIdParamsWithVersion,
+  PurgeConversationParams,
   PurgeDocumentParams,
   PurgeVirtualRecordParams,
   MoveTreeSchema,
@@ -166,6 +167,23 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.purgeDocumentById(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/conversations/:conversationId/purge',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeConversationParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgeConversationDocuments(req, res, next);
       } catch (error) {
         next(error);
       }

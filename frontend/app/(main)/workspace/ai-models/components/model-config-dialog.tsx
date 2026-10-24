@@ -14,10 +14,11 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { toast } from '@/lib/store/toast-store';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { useBrand } from '@/lib/branding';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel, PickedModel } from '../types';
-import { CAPABILITY_TO_MODEL_TYPE } from '../types';
+import { CAPABILITY_TO_MODEL_TYPE, IDENTITY_FORWARDING_FIELD_PREFIX } from '../types';
 import { AIModelsApi } from '../api';
 import { canFetchModels, useModelDiscovery } from '../hooks/use-model-discovery';
 import { useBatchAddModels } from '../hooks/use-batch-add-models';
@@ -186,7 +187,10 @@ function findHiddenCredentialFields(
   if (editModel.configuredFields) {
     return new Set(
       editModel.configuredFields.filter(
-        (name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !PUBLIC_CONFIG_KEYS.has(name),
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX),
       ),
     );
   }
@@ -194,7 +198,13 @@ function findHiddenCredentialFields(
   return new Set(
     fields
       .map((f) => f.name)
-      .filter((name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !(name in configured))
+      .filter(
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX) &&
+          !(name in configured),
+      )
   );
 }
 
@@ -292,6 +302,9 @@ export function ModelConfigDialog({
   onSaved,
 }: ModelConfigDialogProps) {
   const { t } = useTranslation();
+  const brand = useBrand();
+  const docsOverviewUrl =
+    brand.docsHref('ai-models/overview') ?? `${EXTERNAL_LINKS.documentation}ai-models/overview`;
   const [fields, setFields] = useState<AIModelProviderField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -330,7 +343,11 @@ export function ModelConfigDialog({
       return;
     }
 
-    const capFields = provider.fields[capability] ?? [];
+    // Identity forwarding is set per connection in its own dialog. Editing one model here
+    // would let a connection's models disagree.
+    const capFields = (provider.fields[capability] ?? []).filter(
+      (f) => !f.name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX),
+    );
     setFields(capFields as AIModelProviderField[]);
     setPicked([]);
     setDefaultModelId(null);
@@ -365,6 +382,18 @@ export function ModelConfigDialog({
         }
       }
       setValues(initial);
+      const existingModel = String(initial.model ?? '').trim();
+      if (existingModel) {
+        setPicked([
+          {
+            id: existingModel,
+            modelFriendlyName: String(initial.modelFriendlyName ?? '').trim() || undefined,
+            isReasoning: boolValue(initial.isReasoning),
+            isMultimodal: boolValue(initial.isMultimodal),
+            contextLength: positiveIntOrNull(initial.contextLength),
+          },
+        ]);
+      }
     } else {
       const defaults: Record<string, unknown> = {};
       for (const f of capFields) {
@@ -758,7 +787,9 @@ export function ModelConfigDialog({
       setDefaultModelId(settled[0]?.id ?? null);
     }
     // Deployments are usually named after their model; follow it until the user types their own.
+    // Edit already has a stored deployment — do not overwrite it when the model chip changes.
     const deploymentFollowsModel =
+      mode === 'add' &&
       fields.some((f) => f.name === 'deploymentName') &&
       (!touchedFieldsRef.current.has('deploymentName') || String(values.deploymentName ?? '').trim() === '');
     if (settled.length === 1 && (picked.length !== 1 || picked[0].id !== settled[0].id)) {
@@ -846,7 +877,7 @@ export function ModelConfigDialog({
   const primaryBlocked = saving || batch.running || !provider || !capability || !formValid;
 
   const discoveryMode = provider?.discovery?.mode ?? 'manual';
-  const canListModels = mode === 'add' && discoveryMode !== 'manual';
+  const canListModels = discoveryMode !== 'manual';
   const requiredFields = provider?.discovery?.requiredFields ?? [];
   const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS]
     .map((name) => String(values[name] ?? ''))
@@ -882,10 +913,11 @@ export function ModelConfigDialog({
         capability: capability ?? undefined,
         configuration,
         query: discoveryMode === 'search' ? searchQuery.trim() || undefined : undefined,
+        ...(mode === 'edit' && editModel?.modelKey ? { modelKey: editModel.modelKey } : {}),
       });
     }, DISCOVERY_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [open, provider, capability, canDiscover, credentialKey, discoveryMode, searchQuery, fetchModels]);
+  }, [open, provider, capability, canDiscover, credentialKey, discoveryMode, searchQuery, fetchModels, mode, editModel?.modelKey]);
 
   /** Configuration every picked model shares: credentials and endpoint, never per-model fields. */
   const sharedBatchConfiguration = (): Record<string, unknown> => {
@@ -952,7 +984,7 @@ export function ModelConfigDialog({
   };
 
   const modelField = fields.find((f) => f.name === 'model');
-  const multipleModels = !fields.some((f) => f.name === 'deploymentName');
+  const multipleModels = mode === 'add' && !fields.some((f) => f.name === 'deploymentName');
   const discoveryHint = ((): { text: string | null; tone: 'gray' | 'red' } => {
     if (!canListModels) return { text: t('workspace.aiModels.modelHintManual'), tone: 'gray' };
     if (!canDiscover) return { text: t('workspace.aiModels.modelHintNeedsFields'), tone: 'gray' };
@@ -1043,13 +1075,13 @@ export function ModelConfigDialog({
         aria-label={t('workspace.aiModels.configDocsOpenLabel')}
         style={{ cursor: 'pointer', gap: 6 }}
         onClick={() =>
-          window.open(`${EXTERNAL_LINKS.documentation}ai-models/overview`, '_blank', 'noopener,noreferrer')
+          window.open(docsOverviewUrl, '_blank', 'noopener,noreferrer')
         }
       >
         <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
       </Button>
     ),
-    [t]
+    [t, docsOverviewUrl]
   );
 
   return (
@@ -1089,7 +1121,8 @@ export function ModelConfigDialog({
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}
         discoverySlot={mode === 'add' ? discoverySlot : undefined}
-        modelFieldSlot={mode === 'add' ? modelFieldSlot : undefined}
+        modelFieldSlot={modelFieldSlot}
+        revealed={revealState === 'shown'}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -1140,6 +1173,7 @@ function ModelConfigFormBody({
   revealing,
   discoverySlot,
   modelFieldSlot,
+  revealed,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -1157,6 +1191,7 @@ function ModelConfigFormBody({
   discoverySlot?: React.ReactNode;
   /** Replaces the plain `model` text input in place. */
   modelFieldSlot?: React.ReactNode;
+  revealed: boolean;
 }) {
   const { t } = useTranslation();
   const leaveBlankPlaceholder = t('workspace.aiModels.savedLeaveBlank');
@@ -1314,6 +1349,7 @@ function ModelConfigFormBody({
                 onChange={onFieldChange}
                 disabled={saving}
                 startAdornment={fieldStartAdornment(field.name)}
+                revealed={revealed && hiddenCredentials.has(field.name)}
               />
             )
           )}

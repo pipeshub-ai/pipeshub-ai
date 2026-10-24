@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]
-from connectors.jira.constants import artifact_summary
+from connectors.jira.constants import artifact_summary, connector_base_url
 from connectors.jira.jira_test_utils import (
     can_delete_issues_in,
     check_issue_exists_bool,
@@ -167,7 +167,7 @@ async def scenario_adapter(
         config={
             "auth": {
                 "authType": "API_TOKEN",
-                "baseUrl": (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/"),
+                "baseUrl": connector_base_url(),
                 "email": os.getenv("JIRA_TEST_EMAIL"),
                 "apiToken": os.getenv("JIRA_TEST_API_TOKEN"),
             },

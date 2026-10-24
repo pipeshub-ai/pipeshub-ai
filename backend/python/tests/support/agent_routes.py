@@ -125,15 +125,31 @@ class InMemoryGraph:
         return [(a, k) for m, a, k in self.calls if m == method]
 
     # -- IGraphDBProvider surface used by the agent routes -------------------
-    async def get_user_by_user_id(self, user_id: str, **_: Any) -> dict[str, Any] | None:
-        self._enter("get_user_by_user_id", user_id)
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, **_: Any,
+    ) -> dict[str, Any] | None:
+        try:
+            self._enter("get_user_by_user_id", user_id)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         for doc in self.nodes.get(USERS_COLL, {}).values():
             if doc.get("userId") == user_id:
                 return copy.deepcopy(doc)
         return None
 
-    async def get_document(self, document_key: str, collection: str, transaction: str | None = None) -> dict | None:
-        self._enter("get_document", document_key, collection)
+    async def get_document(
+        self, document_key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> dict | None:
+        try:
+            self._enter("get_document", document_key, collection)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         doc = self.nodes.get(collection, {}).get(document_key)
         return copy.deepcopy(doc) if doc is not None else None
 
@@ -317,11 +333,19 @@ class InMemoryGraph:
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return False
 
+    def _real_transaction(self, explicit: bool | None) -> bool:
+        if explicit is None or (explicit and not self.honours_explicit):
+            return self.rollback_undoes_writes
+        return explicit
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return self._real_transaction(explicit)
+
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self._enter("begin_transaction", read, write)
         self.explicit_requests.append(explicit)
         txn = f"txn-{next(self._txn)}"
-        if self.rollback_undoes_writes or (explicit and self.honours_explicit):
+        if self._real_transaction(explicit):
             self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
         return txn
 
@@ -374,6 +398,23 @@ class InMemoryGraph:
         self._enter("get_edges_from_node", node_id, edge_collection)
         return copy.deepcopy(self.edges_from(edge_collection, node_id))
 
+    async def get_edges_from_node_with_target_name(
+        self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> list[dict]:
+        # Like the real providers: a failed read is [] unless raise_on_error.
+        try:
+            self._enter("get_edges_from_node_with_target_name", node_id, edge_collection)
+        except Exception:
+            if raise_on_error:
+                raise
+            return []
+        out = []
+        for edge in self.edges_from(edge_collection, node_id):
+            collection, key = edge["_to"].split("/", 1)
+            target = self.nodes.get(collection, {}).get(key, {})
+            out.append({**copy.deepcopy(edge), "name": target.get("name", key)})
+        return out
+
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None = None) -> int:
         self._enter("delete_all_edges_for_node", node_key, collection)
         kept = [e for e in self.edges.get(collection, []) if node_key not in (e["_from"], e["_to"])]
@@ -422,7 +463,9 @@ class FakeConfigService:
     def __init__(self, values: dict[str, Any] | None = None) -> None:
         self.values = values or {}
 
-    async def get_config(self, key: str, default: Any = None, use_cache: bool = True) -> Any:
+    async def get_config(
+        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,
+    ) -> Any:
         return copy.deepcopy(self.values.get(key, default))
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:

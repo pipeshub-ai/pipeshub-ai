@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -17,8 +18,11 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
+    BooleanOperator,
+    Filter,
     FilterCollection,
     FilterOperator,
+    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
 )
@@ -196,6 +200,14 @@ class TestTransformToFolderFileRecord:
         assert rec is not None
         assert rec.parent_external_record_id == "parent-page1"
         assert rec.parent_record_type == RecordType.CONFLUENCE_PAGE
+
+    def test_folder_is_not_queued_with_manual_indexing_on(self) -> None:
+        c = _make_connector()
+        assert c._transform_to_folder_file_record(_folder_data()).indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        c.indexing_filters = FilterCollection(filters=[Filter(
+            key="enable_manual_sync", value=True, type=FilterType.BOOLEAN, operator=BooleanOperator.IS,
+        )])
+        assert c._transform_to_folder_file_record(_folder_data()).indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     def test_transform_folder_missing_type_fallback(self):
         c = _make_connector()
@@ -543,7 +555,10 @@ class TestSyncFolders:
         folder1, perms1 = saved_records[0]
         folder2, perms2 = saved_records[1]
         
-        assert folder1.inherit_permissions is False
+        # Folder1 has a READ restriction: it keeps inheriting from the space and
+        # is RESTRICTED instead.
+        assert folder1.inherit_permissions is True
+        assert folder1.access_rule is AccessRule.RESTRICTED
 
     async def test_sync_folders_handles_api_failure(self):
         """Test that API failures are handled and raised."""
@@ -1367,7 +1382,12 @@ class TestFetchPagePermissions:
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_none(self):
+    async def test_api_failure_returns_none_not_empty(self) -> None:
+        """A 403 must not read as "no restrictions".
+
+        [] means definitively unrestricted, which writes the page STRICT and
+        lets the whole space see it. An unreadable ACL is not an absent one.
+        """
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(403, {}))
@@ -1456,7 +1476,8 @@ class TestSyncContentPermissionsByTitles:
 
         await connector._sync_content_permissions_by_titles(["Test Blog"])
 
-        assert mock_record.inherit_permissions is False
+        # A READ restriction keeps inheriting and is RESTRICTED instead.
+        assert mock_record.access_rule is AccessRule.RESTRICTED
         connector.data_entities_processor.on_new_records.assert_awaited_once()
 
 
@@ -2393,6 +2414,120 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
+    async def test_inactive_members_are_left_out_and_recorded(self) -> None:
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_group_members = AsyncMock(return_value=_resp(200, {"results": [
+            {"accountId": "acc-a", "email": "a@t.com", "accountStatus": "active"},
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "inactive"},
+            {"accountId": "acc-x", "accountStatus": "closed"},
+            {"accountId": "acc-n", "email": "n@t.com"},
+        ]}))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
+        assert emails == ["a@t.com", "n@t.com"]
+        assert account_ids == []
+        assert c._pending_inactive_ids == {"acc-d", "acc-x"}
+        assert c._inactive_account_ids == set()
+
+    @staticmethod
+    def _group_sync_conn(member_pages: list) -> ConfluenceConnector:
+        c = _conn()
+        dep = c.data_entities_processor
+        # Like the graph: get_all_app_users returns only the users linked to the connector.
+        linked: list[AppUser] = []
+        dep.on_new_app_users = AsyncMock(side_effect=lambda users: linked.extend(users))
+        dep.on_new_user_groups = AsyncMock()
+        dep.migrate_group_to_user_by_external_id = AsyncMock()
+        dep.get_all_app_users = AsyncMock(side_effect=lambda *a, **k: list(linked))
+        dep.withdraw_app_user_access = AsyncMock()
+        ds = MagicMock()
+        ds.search_users = AsyncMock(return_value=_resp(200, {"results": [
+            {"user": {"accountId": "acc-d", "email": "d@t.com", "displayName": "D"}},
+        ]}))
+        ds.get_groups = AsyncMock(return_value=_resp(200, {"results": [{"id": "g1", "name": "Group 1"}]}))
+        ds.get_group_members = AsyncMock(side_effect=member_pages)
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_reactivated_account_is_saved_again_in_the_same_sync(self) -> None:
+        c = self._group_sync_conn([_resp(200, {"results": [
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "active"},
+        ]})])
+        c._inactive_account_ids = {"acc-d"}
+
+        await c._sync_users()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        saved = c.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in saved] == ["acc-d"]
+        assert c._inactive_account_ids == set()
+        # Linked before the group is saved, so the group keeps the account as a member.
+        (_, members), = c.data_entities_processor.on_new_user_groups.await_args.args[0]
+        assert [u.source_user_id for u in members] == ["acc-d"]
+
+    @pytest.mark.asyncio
+    async def test_after_a_restart_an_inactive_account_is_never_linked(self) -> None:
+        c = self._group_sync_conn([_resp(200, {"results": [
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "inactive"},
+        ]})])
+
+        await c._sync_users()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        assert c._inactive_account_ids == {"acc-d"}
+
+    @pytest.mark.asyncio
+    async def test_a_member_list_failing_on_page_two_withdraws_nothing(self) -> None:
+        c = self._group_sync_conn([
+            _resp(200, {
+                "results": [{"accountId": "acc-n", "email": "n@t.com", "accountStatus": "inactive"}],
+                "_links": {"next": "/rest/api/group/g1/member?start=1"},
+            }),
+            _resp(500),
+        ])
+        c._inactive_account_ids = {"acc-d"}
+
+        await c._sync_users()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        assert c._group_read_complete is False
+        assert c._inactive_account_ids == {"acc-d"}
+        c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_withdraws_stored_users_reported_inactive(self) -> None:
+        c = _conn()
+        dep = c.data_entities_processor
+        stored = [
+            AppUser(app_name=Connectors.CONFLUENCE, connector_id="conn-cov-1", source_user_id=sid,
+                    org_id="org", email=email, full_name=email, id=f"u-{sid}")
+            for sid, email in (("acc-a", "a@t.com"), ("acc-d", "d@t.com"), ("acc-e", "e@t.com"))
+        ]
+        dep.get_all_app_users = AsyncMock(return_value=stored)
+        dep.withdraw_app_user_access = AsyncMock()
+        # acc-e is inactive but another active account of the same email is a member.
+        c._inactive_account_ids = {"acc-d", "acc-e"}
+        c._active_member_emails = {"a@t.com", "e@t.com"}
+        await c._withdraw_inactive_app_users()
+        dep.withdraw_app_user_access.assert_awaited_once_with("conn-cov-1", [stored[1]])
+
+    @pytest.mark.asyncio
+    async def test_withdraw_noop_without_inactive_members(self) -> None:
+        c = _conn()
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        await c._withdraw_inactive_app_users()
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_api_failure_returns_none(self):
         c = _conn()
         mock_ds = MagicMock()
@@ -2431,11 +2566,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -3758,10 +3893,11 @@ class TestGetAppUsersByEmailsFullCoverage:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrlFullCoverage:
@@ -4119,6 +4255,8 @@ def _mk_connector():
     """Create a fresh ConfluenceConnector with full mocks."""
     logger, dep, dsp, cs, _ = _make_mock_deps_fullcov()
     c = ConfluenceConnector(logger, dep, dsp, cs, "conn-new-1", "team", "usr-1")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
     return c
 
 
@@ -4385,6 +4523,20 @@ class TestSyncUsersHappyPath:
         saved = c.data_entities_processor.on_new_app_users.call_args[0][0]
         assert len(saved) == 1
         assert saved[0].email == "user1@example.com"
+
+    @pytest.mark.asyncio
+    async def test_skips_accounts_last_seen_inactive(self) -> None:
+        c = _mk_connector()
+        c._inactive_account_ids = {"acc-d"}
+        ds = MagicMock()
+        ds.search_users = AsyncMock(return_value=_mk_resp(200, {"results": [
+            {"user": {"accountId": "acc-d", "email": "d@example.com", "displayName": "D"}},
+            {"user": {"accountId": "acc-1", "email": "a@example.com", "displayName": "A"}},
+        ]}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        await c._sync_users()
+        saved = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in saved] == ["acc-1"]
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):
@@ -4842,7 +4994,7 @@ class TestSyncContentPages:
         assert mock_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
-    async def test_read_permission_sets_inherit_false(self):
+    async def test_read_permission_sets_restriction(self) -> None:
         c = _mk_connector()
         _setup_sync_content(c)
         page_data = {
@@ -4859,7 +5011,8 @@ class TestSyncContentPages:
         c._process_webpage_with_update = AsyncMock(return_value=MagicMock(record=mock_record))
 
         await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
-        assert mock_record.inherit_permissions is False
+        # A READ restriction keeps inheriting and is RESTRICTED instead.
+        assert mock_record.access_rule is AccessRule.RESTRICTED
 
     @pytest.mark.asyncio
     async def test_page_sync_does_not_create_comment_records(self):
@@ -5120,6 +5273,13 @@ class TestFetchSpacePermissions:
 
 
 class TestFetchPagePermissionsErrors:
+    """Unknown and empty are different answers.
+
+    Returning [] on a failure is indistinguishable from "this page genuinely
+    carries no restrictions": a transient failure would write a READ-restricted
+    page as STRICT and expose it to every member of its space.
+    """
+
     @pytest.mark.asyncio
     async def test_failed_response_returns_none(self):
         c = _mk_connector()
@@ -5135,6 +5295,20 @@ class TestFetchPagePermissionsErrors:
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("fail"))
         result = await c._fetch_page_permissions("page-1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_success_with_no_restrictions_still_returns_empty(self) -> None:
+        """The other half of the contract: [] must survive as a real answer.
+
+        Without this, returning None unconditionally would pass both tests
+        above while breaking every unrestricted page.
+        """
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_permissions_v1 = AsyncMock(return_value=_mk_resp(200, {"results": []}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        result = await c._fetch_page_permissions("page-1")
+        assert result == []
 
 
 # ===========================================================================
@@ -5360,13 +5534,13 @@ class TestGetAppUsersByEmailsMissing:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _mk_connector()
         c.data_entities_processor.get_all_app_users = AsyncMock(
             side_effect=RuntimeError("db fail")
         )
-        result = await c._get_app_users_by_emails(["u@x.com"])
-        assert result == []
+        with pytest.raises(RuntimeError, match="db fail"):
+            await c._get_app_users_by_emails(["u@x.com"])
 
 
 # ===========================================================================
@@ -5997,7 +6171,7 @@ class TestCheckAndFetchUpdatedPageAdditional:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_read_permissions_set_inherit_false(self):
+    async def test_read_permissions_set_restriction(self) -> None:
         c = _mk_connector()
         page_data = {"id": "p1", "version": {"number": 7}, "_links": {}}
         ds = MagicMock()
@@ -6010,7 +6184,8 @@ class TestCheckAndFetchUpdatedPageAdditional:
         record = MagicMock(external_record_id="p1", external_revision_id="3")
         result = await c._check_and_fetch_updated_page("org-1", record)
         assert result is not None
-        assert mock_rec.inherit_permissions is False
+        # A READ restriction keeps inheriting and is RESTRICTED instead.
+        assert mock_rec.access_rule is AccessRule.RESTRICTED
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
@@ -6025,7 +6200,7 @@ class TestCheckAndFetchUpdatedBlogpostReadPerms:
     """Test read permissions setting inherit_permissions=False (line 3639)."""
 
     @pytest.mark.asyncio
-    async def test_read_permissions_set_inherit_false(self):
+    async def test_read_permissions_set_restriction(self) -> None:
         c = _mk_connector()
         blogpost_data = {
             "id": "3010", "title": "Blog",
@@ -6042,7 +6217,8 @@ class TestCheckAndFetchUpdatedBlogpostReadPerms:
         record = MagicMock(external_record_id="3010", external_revision_id="4")
         result = await c._check_and_fetch_updated_blogpost("org-1", record)
         assert result is not None
-        assert mock_rec.inherit_permissions is False
+        # A READ restriction keeps inheriting and is RESTRICTED instead.
+        assert mock_rec.access_rule is AccessRule.RESTRICTED
 
 
 class TestCheckAndFetchUpdatedAttachmentParentNode:
@@ -8276,7 +8452,7 @@ class TestCheckAndFetchUpdatedComment:
         assert await c._check_and_fetch_updated_comment("org-1", record) is None
 
     @pytest.mark.asyncio
-    async def test_version_changed_returns_record_and_permissions(self):
+    async def test_version_changed_returns_record_inheriting_the_page_access(self):
         c = _mk_connector()
         comment_data = {
             "id": "c1",
@@ -8303,10 +8479,20 @@ class TestCheckAndFetchUpdatedComment:
         assert result is not None
         updated, perms = result
         assert updated.external_revision_id == "3"
-        assert len(perms) == 1
+        assert perms == [], "the page's grants are inherited, not copied onto the comment"
+        assert updated.inherit_permissions is True
+        assert updated.rewrite_permissions is True
+        c._fetch_page_permissions.assert_awaited_once_with("page-1")
 
     @pytest.mark.asyncio
-    async def test_unreadable_page_restrictions_returns_none(self):
+    async def test_permission_fetch_failure_skips_the_record(self) -> None:
+        """A failed permission fetch skips the record.
+
+        Returning the comment with permissions == [] reads as "no grants" on
+        the write path, so a reindex during a transient failure would wipe the
+        comment's inherited grants. Skipping leaves the last known-good row
+        untouched for the next sync.
+        """
         c = _mk_connector()
         comment_data = {
             "id": "c2",
@@ -8329,6 +8515,34 @@ class TestCheckAndFetchUpdatedComment:
         )
         result = await c._check_and_fetch_updated_comment("org-1", record)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_readable_permissions_still_return_the_record(self) -> None:
+        """Guards the guard: without this, skipping unconditionally would pass
+        the test above while dropping every comment."""
+        c = _mk_connector()
+        comment_data = {
+            "id": "c4",
+            "title": "Comment",
+            "version": {"authorId": "a1", "number": 2, "createdAt": "2025-01-01T00:00:00.000Z"},
+            "_links": {},
+        }
+        c._fetch_comment_data = AsyncMock(return_value=comment_data)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+
+        record = MagicMock(
+            external_record_id="c4",
+            external_revision_id="1",
+            record_type=RecordType.COMMENT,
+            parent_external_record_id="page-1",
+            external_record_group_id="space-1",
+            parent_node_id="node-1",
+            id="rec-c4",
+            version=0,
+        )
+        result = await c._check_and_fetch_updated_comment("org-1", record)
+        assert result is not None
+        assert result[1] == []
 
     @pytest.mark.asyncio
     async def test_transform_none_returns_none(self):
@@ -9259,3 +9473,21 @@ class TestIncludeJiraScopeSetting:
             await c._link_platform_users_via_jira()
 
         c._get_fresh_datasource.assert_awaited_once()
+
+
+class TestFindUserAccountIdByEmail:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("active, expected", [(True, "acc-1"), (False, None)])
+    async def test_deactivated_jira_account_is_not_returned(self, active, expected) -> None:
+        from app.sources.external.confluence.confluence import ConfluenceDataSource
+
+        client = MagicMock()
+        client.get_base_url.return_value = "https://site.atlassian.net/wiki/api/v2"
+        http = MagicMock()
+        http.get_base_url.return_value = "https://site.atlassian.net/wiki/api/v2"
+        http.execute = AsyncMock(return_value=_resp(200, [
+            {"accountId": "acc-1", "accountType": "atlassian", "emailAddress": "a@t.com", "active": active},
+        ]))
+        client.get_client.return_value = http
+        ds = ConfluenceDataSource(client)
+        assert await ds.find_user_account_id_by_email("a@t.com") == expected

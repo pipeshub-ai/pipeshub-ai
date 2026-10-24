@@ -36,6 +36,7 @@ from app.services.artifact_registry import (
     MAX_ARTIFACT_BYTES,
     Actor,
     ArtifactRegistryService,
+    artifact_owner,
 )
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -510,8 +511,8 @@ class Confluence:
         return ArtifactRegistryService(graph_provider, blob_store)
 
     def _actor(self) -> Actor:
-        state = self.chat_state or {}
-        return Actor(org_id=state.get("org_id", ""), user_id=state.get("user_id", ""))
+        """Who staged attachments are registered as: the chat's artifact owner."""
+        return artifact_owner(self.chat_state or {})
 
     def _handle_response(
         self,

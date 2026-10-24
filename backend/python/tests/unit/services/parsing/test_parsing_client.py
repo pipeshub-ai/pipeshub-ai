@@ -5,8 +5,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import jwt
 import pytest
-from jose import jwt
 
 from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer
@@ -280,6 +280,47 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
     assert client.circuit_breaker._consecutive_failures == 0
 
 
+@pytest.mark.asyncio
+async def test_an_unexpected_parser_failure_is_retried_and_stored_as_temporary() -> None:
+    """The parsing service answers an unexpected exception with a 500 and a
+    generic body. The client retries it as transient, and the record is told
+    of a temporary problem, as before the body stopped carrying the text."""
+    from app.utils.user_errors import TEMPORARY_PROBLEM, to_user_reason
+
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=2, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
+    body = {
+        "success": False,
+        "error": {
+            "code": "PARSE_FAILED",
+            "message": "Unexpected error while parsing the document",
+            "details": {"requestId": "req-1"},
+        },
+    }
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(500, body)
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(ServiceCallError) as exc_info:
+            await client.parse(file_content=b"data", record_name="doc.pdf")
+
+    assert calls == 2
+    assert exc_info.value.status_code == 500
+    assert "Unexpected error while parsing the document" in str(exc_info.value)
+    assert to_user_reason(exc_info.value) == TEMPORARY_PROBLEM
+
+
 # ---------------------------------------------------------------------------
 # Service token
 # ---------------------------------------------------------------------------
@@ -316,3 +357,87 @@ def test_parsing_client_uses_document_parse_scope() -> None:
     client = ParsingClient(service_url="http://fake-parsing:8092")
 
     assert client._service_scope is TokenScopes.DOCUMENT_PARSE
+
+
+@pytest.mark.asyncio
+async def test_parse_forwards_file_path_when_given() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+
+    with patch.object(
+        client,
+        "_post_multipart",
+        new=AsyncMock(return_value=_make_response(200, _success_response())),
+    ) as post:
+        await client.parse(
+            file_content=b"x = 1\n",
+            record_name="a.py",
+            extension="py",
+            file_path="src/pkg/a.py",
+        )
+        assert post.await_args.kwargs["data"]["file_path"] == "src/pkg/a.py"
+
+        await client.parse(file_content=b"x = 1\n", record_name="a.py", extension="py")
+        assert "file_path" not in post.await_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_gets_a_read_timeout_from_its_own_budget() -> None:
+    """The client-wide read timeout is sized from the generic record budget
+    and capped at one Docling batch, so a long filing died there whatever its
+    own budget said. With USE_PARSING_SERVICE=true every page batch runs
+    inside one /api/v1/parse response, so the deadline has to come from the
+    record."""
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    mock_post = AsyncMock(return_value=_make_response(200, _success_response()))
+
+    with patch.object(client, "_post_multipart", new=mock_post):
+        await client.parse(
+            file_content=b"%PDF-1.7", record_name="filing.pdf",
+            mime_type="application/pdf", extension="pdf",
+        )
+
+    kwargs = mock_post.await_args.kwargs
+    # 5400 * 0.8, above both the 1440s default and the 2400s per-batch cap.
+    assert kwargs["read_timeout"] == pytest.approx(4320.0)
+    assert kwargs["budget_seconds"] == pytest.approx(5400.0)
+    # One attempt can now use the budget, so a second cannot be squeezed in.
+    assert kwargs["read_timeout"] * 2 > kwargs["budget_seconds"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_pdf_keeps_the_client_read_timeout() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    mock_post = AsyncMock(return_value=_make_response(200, _success_response()))
+
+    with patch.object(client, "_post_multipart", new=mock_post):
+        await client.parse(
+            file_content=b"a,b", record_name="rows.csv",
+            mime_type="text/csv", extension="csv",
+        )
+
+    kwargs = mock_post.await_args.kwargs
+    assert kwargs["read_timeout"] == pytest.approx(1440.0)
+    assert kwargs["budget_seconds"] == pytest.approx(1800.0)
+
+
+@pytest.mark.asyncio
+async def test_the_per_call_read_timeout_reaches_the_request() -> None:
+    """`_request_with_retry` must apply it, not just accept it: the override
+    is the whole point, and the retry reserve has to match what one attempt
+    is actually allowed."""
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    seen: dict = {}
+
+    class _Recorder(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            seen["timeout"] = request.extensions.get("timeout")
+            return httpx.Response(200, json=_success_response())
+
+    with patch.object(client, "_make_client",
+                      lambda: httpx.AsyncClient(transport=_Recorder())):
+        await client._request_with_retry(
+            "POST", "http://fake-parsing:8092/api/v1/parse",
+            operation="parse", read_timeout=4320.0,
+        )
+
+    assert seen["timeout"]["read"] == pytest.approx(4320.0)

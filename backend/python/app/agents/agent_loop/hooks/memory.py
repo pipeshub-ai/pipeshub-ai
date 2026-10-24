@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.agents.agent_loop.parked_turn import VISIBLE_TOOLS
 from app.modules.agents.qna.conversation_memory import ConversationMemory
 
 if TYPE_CHECKING:
@@ -103,10 +104,6 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
             return
 
         run_scope = ctx.scope.run
-        if run_scope.visible_tools is not None:
-            await next_fn()
-            return
-
         registry = run_scope.runtime.tool_registry
         if registry is None or not registry.has_toolsets():
             await next_fn()
@@ -114,17 +111,45 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
 
         spec = run_scope.spec
         prior_names = tool_names_used_in_history(context.previous_conversations)
+        # What the turn an answered question stopped could see (`parked_turn.restore_question`).
+        prior_names |= set(context.tool_state.get(VISIBLE_TOOLS) or [])
         registered = set(registry.names())
         prior_names &= registered
         if spec.tool_names:
             prior_names &= set(spec.tool_names)
 
         if prior_names:
-            run_scope.visible_tools = initial_visible_tools(spec, run_scope.runtime) | prior_names
+            # Added to what PRE_AGENT already made visible (tool preloading sets it for every lazy
+            # agent), not skipped when it is set: otherwise a follow-up never sees them again.
+            run_scope.visible_tools = (run_scope.visible_tools or initial_visible_tools(spec, run_scope.runtime)) | prior_names
 
         await next_fn()
 
     return _middleware
 
 
-__all__ = ["conversation_enrichment", "seed_visible_tools_from_history", "tool_names_used_in_history"]
+def sync_visible_tools_for_prompt(context: AgentContext) -> "Middleware[TurnContext]":
+    """PRE_TURN: copy ``RunScope.visible_tools`` into ``tool_state`` for the
+    prompt builder.
+
+    Must register *after* hooks that grow visibility (history seed, CODE_FILE
+    unlock) so the lazy "must load" block matches schemas already bound.
+    """
+    from app.agents.agent_loop.prompt_builder import BOUND_TOOL_NAMES_KEY
+
+    async def _middleware(ctx: TurnContext, next_fn: "Next") -> None:
+        if ctx.scope is not None:
+            visible = ctx.scope.run.visible_tools
+            if visible is not None:
+                context.tool_state[BOUND_TOOL_NAMES_KEY] = sorted(visible)
+        await next_fn()
+
+    return _middleware
+
+
+__all__ = [
+    "conversation_enrichment",
+    "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
+    "tool_names_used_in_history",
+]

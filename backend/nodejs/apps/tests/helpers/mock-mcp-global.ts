@@ -43,6 +43,7 @@ const mcpServerPath = require.resolve('@pipeshub-ai/mcp/esm/mcp-server/server.js
 const mcpServerExports = {
   createMCPServer: () => ({
     server: {
+      registerTool: () => undefined,
       connect: () => Promise.resolve(),
       close: () => Promise.resolve(),
     },

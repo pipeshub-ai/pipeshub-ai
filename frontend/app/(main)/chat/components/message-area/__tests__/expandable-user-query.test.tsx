@@ -146,4 +146,39 @@ describe('ExpandableUserQuery', () => {
     expect(actions.contains(screen.getByRole('button', { name: /copy/i }))).toBe(true);
     expect(actions.contains(screen.getByRole('button', { name: /edit/i }))).toBe(true);
   });
+
+  it('shows a pasted URL as an underlined short link with the full URL on hover', () => {
+    const url = 'https://github.com/pipeshub-ai/pipeshub-ai/pull/1234';
+    renderQuery({ question: `Review ${url}, please` });
+    const link = screen.getByRole('link', { name: '#1234' });
+    expect(link.getAttribute('href')).toBe(url);
+    expect(link.getAttribute('title')).toBe(url);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(screen.getByTestId('user-query-heading').textContent).toContain(', please');
+  });
+
+  it('links URLs around a mention chip', () => {
+    renderQuery({
+      question: 'Compare report.pdf with https://acme.atlassian.net/browse/PROJ-12',
+      mentions: [{ id: 'n1', name: 'report.pdf', nodeType: 'record', connector: 'KB' }],
+    });
+    expect(screen.getByText('report.pdf')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'PROJ-12' })).toBeTruthy();
+  });
+
+  it('does not cut a URL in half when truncating a long question', () => {
+    const url = 'https://example.com/docs/guide';
+    const q = 'x'.repeat(QUESTION_CHAR_LIMIT - 10) + ' ' + url + ' ' + 'y'.repeat(40);
+    renderQuery({ question: q });
+    expect(screen.getByRole('link').getAttribute('href')).toBe(url);
+  });
+
+  it('copies the original URL, not its short label', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const q = 'See https://github.com/o/r/issues/7';
+    renderQuery({ question: q, messageId: 'msg-1', onEdit: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: /copy/i }));
+    expect(writeText).toHaveBeenCalledWith(q);
+  });
 });

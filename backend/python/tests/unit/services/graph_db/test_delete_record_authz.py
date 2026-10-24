@@ -1,5 +1,6 @@
 """delete_record is the user-facing delete: it must be org-scoped on every graph
-backend, and KB records additionally need a write role on their KB. Connector
+backend, and KB records additionally need a write role on their KB (OWNER or
+WRITER; a retired role reads as READER) and go with their contents. Connector
 deletes by external id are internal and keep working without the org argument."""
 
 from collections.abc import Callable
@@ -43,6 +44,12 @@ def _neo4j(record: dict | None, kb_role: str | None = "OWNER") -> Neo4jProvider:
     provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb-1"})
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "ukey-a"})
     provider.get_user_kb_permission = AsyncMock(return_value=kb_role)
+    provider.delete_records_and_relations = AsyncMock()
+    # A KB record is deleted with whatever is under it.
+    provider.delete_records_recursive = AsyncMock(return_value={
+        "success": True, "successfully_deleted": 1,
+        "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payloads": [{"recordId": "rec-1"}]},
+    })
     provider._delete_records_with_their_types = AsyncMock()
     provider._create_deleted_record_event_payload = AsyncMock(return_value={"recordId": "rec-1"})
     return provider
@@ -58,11 +65,13 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is False
         assert result["code"] == 404
+        provider.delete_records_and_relations.assert_not_awaited()
+        provider.delete_records_recursive.assert_not_awaited()
         provider._delete_records_with_their_types.assert_not_awaited()
         assert "eventData" not in result
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kb_role", ["READER", "COMMENTER", None])
+    @pytest.mark.parametrize("kb_role", ["READER", "COMMENTER", "FILEORGANIZER", None])
     async def test_kb_record_without_write_role_is_forbidden(self, kb_role: str | None) -> None:
         provider = _neo4j(_kb_record(ORG_A), kb_role=kb_role)
 
@@ -70,10 +79,12 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is False
         assert result["code"] == 403
+        provider.delete_records_and_relations.assert_not_awaited()
+        provider.delete_records_recursive.assert_not_awaited()
         provider._delete_records_with_their_types.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kb_role", ["OWNER", "WRITER", "FILEORGANIZER"])
+    @pytest.mark.parametrize("kb_role", ["OWNER", "WRITER"])
     async def test_kb_record_with_write_role_is_deleted(self, kb_role: str) -> None:
         provider = _neo4j(_kb_record(ORG_A), kb_role=kb_role)
 
@@ -81,7 +92,9 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is True
         assert result["isKb"] is True
-        provider._delete_records_with_their_types.assert_awaited_once()
+        provider.delete_records_recursive.assert_awaited_once_with(["rec-1"], "conn-1", transaction=None)
+        provider.delete_records_and_relations.assert_not_awaited()
+        provider._delete_records_with_their_types.assert_not_awaited()
         assert result["eventData"]["eventType"] == "deleteRecord"
         provider.get_user_kb_permission.assert_awaited_once_with("kb-1", "ukey-a", None)
 
@@ -94,6 +107,7 @@ class TestNeo4jDeleteRecordAuthz:
         assert result["success"] is True
         assert result["isKb"] is False
         provider._delete_records_with_their_types.assert_awaited_once()
+        provider.delete_records_recursive.assert_not_awaited()
         assert result["eventData"]["eventType"] == "deleteRecord"
         provider.get_user_kb_permission.assert_not_awaited()
 

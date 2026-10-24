@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+
+logger = logging.getLogger(__name__)
 
 _TOOL_REF_PREFIX = "tool: "
 
@@ -69,7 +72,7 @@ def shape_tool_result_clearing(
     (tool name, args, summary, hint) so the model retains enough context
     to decide whether to re-call.
 
-    Only fires when context exceeds ``trigger_ratio × budget``.
+    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     ``protected_tool_names`` prevents clearing regardless of age.
     """
 
@@ -77,7 +80,8 @@ def shape_tool_result_clearing(
         from app.agent_loop_lib.core.tokens import count_tokens
 
         messages = ctx.messages
-        if count_tokens(messages) <= ctx.budget.max_tokens * trigger_ratio:
+        total = count_tokens(messages)
+        if total <= ctx.budget.trigger_tokens(trigger_ratio):
             await next_fn()
             return
 
@@ -132,6 +136,7 @@ def shape_tool_result_clearing(
         )
 
         shaped = []
+        cleared = 0
         for i, msg in enumerate(messages):
             if i not in clearable:
                 shaped.append(msg)
@@ -140,6 +145,7 @@ def shape_tool_result_clearing(
             if isinstance(msg.content, str) and _is_already_compact(text_content):
                 shaped.append(msg)
                 continue
+            cleared += 1
             if getattr(msg, "artifact_meta", None) is not None:
                 shaped.append(msg.model_copy(update={"content": _compact_reference(msg)}))
             else:
@@ -159,6 +165,13 @@ def shape_tool_result_clearing(
                     is_error=getattr(msg, "is_error", False),
                 )
                 shaped.append(msg.model_copy(update={"content": ref}))
+        if cleared:
+            logger.info(
+                "tool_result_clearing: cleared %d tool result(s) older than the last %d turn(s), "
+                "%d→%d tokens (turn=%d, budget=%d)",
+                cleared, keep_last_n_turns, total, count_tokens(shaped),
+                ctx.turn_index, ctx.budget.effective_max_tokens,
+            )
         ctx.messages = shaped
         await next_fn()
 

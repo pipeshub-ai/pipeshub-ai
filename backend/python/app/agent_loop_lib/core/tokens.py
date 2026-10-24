@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -12,6 +13,9 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     UserMessage,
 )
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.tool_schema import ToolSchema
 
 """Single source of truth for pre-call token estimation.
 
@@ -105,3 +109,8 @@ def count_tokens(messages: list[Message]) -> int:
 
 def count_text_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
+
+
+def count_schema_tokens(schemas: list[ToolSchema]) -> int:
+    """Tool definitions as sent beside the messages, at the same rate."""
+    return sum(count_text_tokens(schema.model_dump_json()) for schema in schemas)

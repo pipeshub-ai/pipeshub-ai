@@ -24,8 +24,12 @@ from app.agent_loop_lib.core.streaming import (
     StreamEvent,
     TextDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
 from app.agent_loop_lib.transport.prompt_cache import (
     anthropic_breakpoint,
@@ -82,6 +86,7 @@ class AnthropicTransport(LLMTransport):
         model_key: str | None = None,
         cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -106,6 +111,8 @@ class AnthropicTransport(LLMTransport):
             client_kwargs["timeout"] = timeout
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _anthropic.AsyncAnthropic(**client_kwargs)
         # One marker value for the tools, the stable system block and the
         # request's last block; None sends no cache markers at all.
@@ -129,6 +136,7 @@ class AnthropicTransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None, cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AnthropicTransport":
         """Build from an already-configured `ChatAnthropic`.
 
@@ -180,6 +188,7 @@ class AnthropicTransport(LLMTransport):
             model_key=model_key,
             cache_ttl=cache_ttl,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @staticmethod
@@ -341,6 +350,21 @@ class AnthropicTransport(LLMTransport):
             cache_write_tokens=cache_write,
         )
 
+    def _check_output(
+        self, response: Any, message: AssistantMessage, usage: TokenUsage, context: str,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        stop_reason = getattr(response, "stop_reason", None)
+        logger.warning(
+            "AnthropicTransport.%s: model=%s returned no output (response_id=%s "
+            "stop_reason=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, getattr(response, "id", None), stop_reason,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if stop_reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"stop_reason={stop_reason}")
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         """Classify an SDK exception into a TransportError with retry metadata."""
         status_code = getattr(exc, "status_code", None)
@@ -469,6 +493,8 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         formatted = [self._format_message(m) for m in messages]
         message_cache = self._message_cache(formatted)
@@ -510,6 +536,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -518,11 +546,12 @@ class AnthropicTransport(LLMTransport):
                 raise self._wrap_error(exc, "complete") from exc
             return await self.complete(
                 messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-                effort=effort, system_blocks=system_blocks,
+                effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
             )
 
         usage = self._usage_from(response)
         message = self._parse_response(response)
+        self._check_output(response, message, usage, "complete")
         stop_reason = _STOP_REASON_MAP.get(getattr(response, "stop_reason", None), StopReason.END_TURN)
         return ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=kwargs["model"])
 
@@ -579,6 +608,8 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         formatted = [self._format_message(m) for m in messages]
         message_cache = self._message_cache(formatted)
@@ -615,6 +646,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         emitted = False
         try:
@@ -626,11 +659,14 @@ class AnthropicTransport(LLMTransport):
                 final = await stream.get_final_message()
                 usage = self._usage_from(final)
                 message = self._parse_response(final)
+                self._check_output(final, message, usage, "stream")
                 stop_reason = _STOP_REASON_MAP.get(getattr(final, "stop_reason", None), StopReason.END_TURN)
                 emitted = True
                 yield StreamCompleteEvent(
                     response=ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=resolved_model)
                 )
+        except TransportError:
+            raise
         except Exception as exc:
             # Resending after deltas reached the caller would replay them.
             if emitted or not self._drop_cache_params(exc):
@@ -639,6 +675,6 @@ class AnthropicTransport(LLMTransport):
             return
         async for event in self.stream(
             messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-            effort=effort, system_blocks=system_blocks,
+            effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
         ):
             yield event

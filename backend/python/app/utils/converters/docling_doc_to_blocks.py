@@ -15,6 +15,7 @@ from app.models.blocks import (
     ImageMetadata,
     Point,
     TableMetadata,
+    summary_with_captions,
 )
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
@@ -181,7 +182,9 @@ class DoclingDocToBlocksConverter():
                         if page_bbox and page_width > 0 and page_height > 0:
                             try:
                                 page_corners = transform_bbox_to_corners(page_bbox)
-                                normalized_corners = normalize_corner_coordinates(page_corners, page_width, page_height)
+                                normalized_corners = normalize_corner_coordinates(
+                                    page_corners, page_width, page_height, page_bbox.get("coord_origin")
+                                )
                                 # Convert normalized corners to Point objects
                                 bounding_boxes = [Point(x=corner[0], y=corner[1]) for corner in normalized_corners]
                                 block.citation_metadata.bounding_boxes = bounding_boxes
@@ -338,15 +341,17 @@ class DoclingDocToBlocksConverter():
                     fallback_llm,
                     table_grid,
                     logger=self.logger,
+                    # Outside the pre-pass's row budget: summary and headers only.
+                    describe_rows=False,
                 )
 
-            table_summary = enrichment.summary
             column_headers = enrichment.headers
             table_rows_text = enrichment.descriptions
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])
             _captions = _resolve_ref_list(_captions)
+            table_summary = summary_with_captions(enrichment.summary, _captions)
             _footnotes = item.get("footnotes", [])
             _footnotes = _resolve_ref_list(_footnotes)
 

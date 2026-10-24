@@ -62,10 +62,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Redis too: stage consumers take their leases from Redis on either broker.
           - suite: messaging
             backend: kafka
             compose: docker-compose.integration.messaging.yml
-            services: kafka-messaging-it
+            services: kafka-messaging-it redis-messaging-it
             tests: tests/integration/messaging
             select: kafka
           - suite: messaging

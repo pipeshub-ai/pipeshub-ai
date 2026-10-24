@@ -7,27 +7,26 @@ import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import {
-  activityEndsSession,
-  SESSION_INVALIDATING_ACTIVITIES,
-  userActivitiesType,
-} from '../utils/userActivities.utils';
+import { userActivitiesType } from '../utils/userActivities.utils';
+import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
+import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+
+const CLIENT_NAME_HEADER = 'client-name';
+const WEB_CLIENT_NAME = 'pipeshub-ai';
+export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
 const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
-
-function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
-  return role === 'admin' || role === 'member';
-}
 
 @injectable()
 export class AuthMiddleware {
@@ -86,59 +85,9 @@ export class AuthMiddleware {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
 
-    // User session JWTs must carry role (admin|member). Legacy tokens without
-    // role are rejected so the client re-logins and receives a new token.
-    if (!hasValidJwtRole(decoded?.role)) {
-      throw new UnauthorizedError('Session expired, please login again');
-    }
-
-    // search for user activities for this user
-    const userId = decoded?.userId;
-    const orgId = decoded?.orgId;
-    const user = await Users.findOne({
-      _id: userId,
-      isDeleted: false,
-    }).lean()
-      .exec();
-    if (!user) {
-      throw new UnauthorizedError('User not found, please login again');
-    }
-
-    // Sessions already handed out have to be stopped too, not only the next
-    // sign-in. generateAuthToken refuses to issue one for a disabled account,
-    // but a session minted before it was disabled would otherwise keep working
-    // until it expired — which for the account an administrator has just
-    // switched off is the whole point of switching it off.
-    if (user.isDisabled) {
-      throw new UnauthorizedError('This account is disabled');
-    }
-
-    // A service account has no way to obtain a session in the first place, so
-    // one turning up here means something is wrong rather than merely stale.
-    if (user.kind === 'service') {
-      throw new UnauthorizedError('Service accounts cannot sign in');
-    }
-
-    if (userId && orgId) {
-      let userActivity: Pick<IUserActivity, 'createdAt' | 'activityType'> | null = null;
-      try {
-        userActivity = await UserActivities.findOne({
-          userId: userId,
-          orgId: orgId,
-          isDeleted: false,
-          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-        })
-          .sort({ createdAt: -1 }) // sort by most recent first
-          .lean()
-          .exec();
-
-      } catch (activityError) {
-        this.logger.error('Failed to fetch user activity', activityError);
-      }
-
-      if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
-        throw new UnauthorizedError('Session expired, please login again');
-      }
+    const refusal = await findSessionRefusal(decoded, this.logger);
+    if (refusal) {
+      throw new UnauthorizedError(refusal);
     }
 
     this.logger.debug('User authenticated', decoded);
@@ -157,7 +106,10 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    const tokenScopes = payload.scope.split(' ');
+    const tokenScopes = parseScopeString(payload.scope);
+    if (tokenScopes.length === 0) {
+      throw new UnauthorizedError('Token carries no scopes');
+    }
 
     let userId = payload.userId;
     const orgId = payload.orgId;
@@ -254,6 +206,25 @@ export class AuthMiddleware {
       throw new UnauthorizedError('This account is disabled');
     }
 
+    // A delegated token speaks as a person, and the rules that let it be
+    // issued have to keep holding for as long as it works — not only at the
+    // moment it was signed. Five minutes is plenty of time for a promotion or
+    // a switched-off service account to matter, and nothing else here would
+    // notice: every check below is about the person named in `userId`, who is
+    // a colleague in good standing.
+    //
+    // These refuse the token outright rather than downgrading it. Clamping
+    // `req.user.role` would fix Node and leave the Python services wrong,
+    // because they ask `GET /api/v1/users/me/role`, which re-reads the user
+    // document (`users.routes.ts:319`) instead of trusting the request. There
+    // is no value to clamp that both halves would agree on, so the only
+    // answer that fails closed is no token at all.
+    if (payload.act?.sub !== undefined) {
+      // The rules live in one place because OAuthAuthMiddleware needs the
+      // same ones for the OIDC endpoints; see delegation-guard.ts.
+      await assertDelegationStillHolds(payload.act.sub, userId, orgId, user);
+    }
+
     email = user.email;
     if (!fullName) {
       fullName = user.fullName;
@@ -298,6 +269,14 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+    // The web app's client name lets an agent run wait for a person to approve a tool call.
+    // An OAuth or personal access token is a program, not the web app, so it can't claim it.
+    if (
+      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
+      WEB_CLIENT_NAME
+    ) {
+      req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
+    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,

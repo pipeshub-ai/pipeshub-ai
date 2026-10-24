@@ -37,6 +37,14 @@ export const PurgeDocumentParams = z.object({
   }),
 });
 
+export const PurgeConversationParams = z.object({
+  params: z.object({
+    conversationId: z
+      .string()
+      .regex(/^[0-9a-f]{24}$/i, 'Not a conversation id'),
+  }),
+});
+
 const virtualRecordIdSchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id');

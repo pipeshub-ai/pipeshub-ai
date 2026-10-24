@@ -74,7 +74,7 @@ class _LifecycleGraphProvider(FakeGraphProvider):
     def add_user(self, user_id: str, user_key: str) -> None:
         self._users[user_id] = {"_key": user_key, "userId": user_id}
 
-    async def get_user_by_user_id(self, user_id: str) -> dict[str, Any] | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self._users.get(user_id)
 
     @staticmethod

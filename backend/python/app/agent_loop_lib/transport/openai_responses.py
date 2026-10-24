@@ -29,6 +29,7 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.transport.content_filter import CONTENT_FILTER_STOP_REASONS
 
 # Stream event `type` literals we act on. Everything else in the union -- and
 # there are 52 -- is ignored rather than matched, so an event Azure adds later
@@ -132,10 +133,22 @@ def format_responses_input(
 
     for msg in messages:
         if msg.role == MessageRole.TOOL:
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                # A multipart result (text plus retrieved images) goes out as
+                # input blocks; concatenating the footer onto the list raised
+                # TypeError and failed the whole turn.
+                output: Any = _responses_content_blocks(content)
+                if step_footer:
+                    output.append({"type": "input_text", "text": step_footer})
+                output = output or ""
+            else:
+                output = (content or "") + step_footer
             items.append({
                 "type": "function_call_output",
                 "call_id": msg.tool_call_id,
-                "output": (msg.content or "") + getattr(msg, "step_footer", ""),
+                "output": output,
             })
             continue
 
@@ -312,6 +325,10 @@ def stop_reason_from_responses(response: Any, has_tool_calls: bool) -> StopReaso
         return StopReason.MAX_TOKENS
     if has_tool_calls:
         return StopReason.TOOL_USE
+    # Output a filter let through is final: continuing it as a cutoff injects
+    # a recovery note the same filter then rejects.
+    if reason in CONTENT_FILTER_STOP_REASONS:
+        return StopReason.END_TURN
     if reason or getattr(response, "status", None) == "incomplete":
         return StopReason.MAX_TOKENS
     return StopReason.END_TURN

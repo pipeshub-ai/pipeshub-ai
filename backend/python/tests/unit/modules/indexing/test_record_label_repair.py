@@ -523,3 +523,38 @@ def test_the_strict_arango_app_schema_accepts_every_repair_field() -> None:
     for name, value in vars(RecordLabelRepairState).items():
         if not name.startswith("_"):
             assert value in properties, value
+
+
+class _CountingPacer:
+    def __init__(self) -> None:
+        self.begun = 0
+        self.paused = 0
+
+    def begin(self) -> None:
+        self.begun += 1
+
+    async def pause(self) -> float:
+        self.paused += 1
+        return 0.0
+
+
+class TestItYieldsTheIndexingLoopBetweenRecords:
+    """On Neo4j this runs on the loop that indexes records; a page of repairs
+    back to back held that loop for nearly half its time."""
+
+    async def test_every_record_it_reads_is_followed_by_a_pause(self, world) -> None:
+        graph, blob = world
+        pacer = _CountingPacer()
+        repair = RecordLabelRepair(
+            logger=logging.getLogger("label-repair-test"), graph_provider=graph,
+            blob_store=blob, lock=AlwaysLeader(), cutoff_ms=CUTOFF, page_size=10, pacer=pacer,
+        )
+
+        while await repair.tick() != "idle":
+            pass
+
+        # b-open is repaired and e-recent is read and left; the two records
+        # whose edges lack their spelling are skipped without a read.
+        assert pacer.paused == 2
+        assert pacer.begun == 1
+        assert graph.apps[CONNECTOR][RecordLabelRepairState.REPAIRED] == 1

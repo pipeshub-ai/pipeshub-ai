@@ -44,6 +44,8 @@ def _make_manager(*, registry: MagicMock | None = None, **state_overrides) -> tu
     state.update(state_overrides)
     manager = ArtifactManager(state)
     mock_registry = registry if registry is not None else MagicMock()
+    if not isinstance(mock_registry.resolve, AsyncMock):
+        mock_registry.resolve = AsyncMock(return_value=_make_metadata())
     manager._registry = lambda: mock_registry  # bypass real ArtifactRegistryService construction
     return manager, mock_registry
 
@@ -131,6 +133,91 @@ class TestSaveArtifact:
         assert "unavailable" in json.loads(payload)["error"]
 
 
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class TestBinaryDocumentsMustBeReal:
+    async def test_plain_text_under_a_docx_name_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(name="minutes.docx", content="# Minutes\nAll agreed.")
+
+        assert success is False
+        error = json.loads(payload)["error"]
+        assert "not a real Word file" in error
+        assert "run_code" in error
+        registry.register_output.assert_not_awaited()
+
+    async def test_plain_text_with_a_docx_mime_type_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, _ = await manager.save_artifact(name="minutes", content="text", mime_type=DOCX_MIME)
+
+        assert success is False
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_pdf_mime_type_in_another_case_or_with_parameters_is_checked(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        for mime_type in ("Application/PDF", "application/pdf; charset=binary"):
+            success, payload = await manager.save_artifact(name="report", content="text", mime_type=mime_type)
+
+            assert success is False
+            assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_real_docx_is_saved(self) -> None:
+        registry = MagicMock()
+        registry.register_output = AsyncMock(return_value=(_make_metadata(name="minutes.docx"), None))
+        manager, registry = _make_manager(registry=registry)
+        docx = b"PK\x03\x04" + b"rest-of-the-zip"
+
+        success, _ = await manager.save_artifact(
+            name="Minutes.DOCX", content=base64.b64encode(docx).decode(), is_base64=True, mime_type=DOCX_MIME,
+        )
+
+        assert success is True
+        assert registry.register_output.call_args.kwargs["content"] == docx
+
+    async def test_text_under_a_pdf_name_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(name="report.pdf", content="Quarterly report")
+
+        assert success is False
+        assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_zip_under_a_pdf_name_is_refused_even_with_a_word_mime_type(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(
+            name="notes.pdf", content=base64.b64encode(b"PK\x03\x04zip").decode(), is_base64=True,
+            mime_type=DOCX_MIME,
+        )
+
+        assert success is False
+        assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_updating_a_docx_artifact_with_text_is_refused(self) -> None:
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=_make_metadata(name="minutes.docx", mime_type=DOCX_MIME))
+        registry.add_version = AsyncMock()
+        manager, registry = _make_manager(registry=registry)
+
+        success, payload = await manager.update_artifact(artifact_id="art-1", content="new text")
+
+        assert success is False
+        assert "not a real Word file" in json.loads(payload)["error"]
+        registry.add_version.assert_not_awaited()
+
+
 class TestUpdateArtifact:
     async def test_updates_existing_artifact(self) -> None:
         metadata = _make_metadata(version=2)
@@ -160,6 +247,8 @@ class TestUpdateArtifact:
         success, payload = await manager.update_artifact(artifact_id="ghost", content="x")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_returns_permission_error(self) -> None:
         registry = MagicMock()
@@ -202,6 +291,8 @@ class TestGetArtifactDownloadUrl:
         success, payload = await manager.get_artifact_download_url(artifact_id="ghost")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied(self) -> None:
         registry = MagicMock()
@@ -243,7 +334,7 @@ class TestGetRecordDownloadUrl:
         success, payload = await manager.get_record_download_url(record_id="rec-1")
 
         assert success is False
-        assert "permission" in json.loads(payload)["error"]
+        assert "No record found" in json.loads(payload)["error"]
         blob.get_download_url.assert_not_awaited()
         graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
 
@@ -268,10 +359,23 @@ class TestGetRecordDownloadUrl:
         assert success is False
         blob.get_download_url.assert_not_awaited()
 
-    async def test_direct_permission_edge_gets_signed_url(self) -> None:
+    async def test_direct_permission_edge_alone_gets_no_signed_url(self) -> None:
+        """The access check decides; a direct edge the check does not admit
+        (a STRICT or RESTRICTED record, a closed connector gate) is not enough."""
         blob = MagicMock()
         blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
         graph = _record_graph(record=_upload_record(), has_edge=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        blob.get_download_url.assert_not_awaited()
+
+    async def test_accessible_record_gets_signed_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -280,6 +384,25 @@ class TestGetRecordDownloadUrl:
         assert success is True
         assert (body["download_url"], body["url_type"]) == ("https://s3.example/signed", "direct_download")
         blob.get_download_url.assert_awaited_once_with("org-1", "doc-1")
+
+    async def test_record_outside_the_turns_scope_gets_no_signed_url(self) -> None:
+        """Readable by the user, but outside the folder the turn is limited to."""
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
+        graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"rec-1"})))
+        graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        manager, _ = _make_manager(
+            graph_provider=graph, blob_store=blob, filters={"apps": [], "kb": [], "records": ["folder-a"]},
+        )
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        assert "No record found" in json.loads(payload)["error"]
+        blob.get_download_url.assert_not_awaited()
 
     async def test_kb_access_without_direct_edge_gets_signed_url(self) -> None:
         blob = MagicMock()
@@ -310,7 +433,7 @@ class TestGetRecordDownloadUrl:
         blob.get_record_stream_url = AsyncMock(
             return_value="https://app.example/api/v1/knowledgeBase/stream/record/rec-1",
         )
-        graph = _record_graph(record=_upload_record(), has_edge=True)
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -454,6 +577,8 @@ class TestGetArtifactContent:
         success, payload = await manager.get_artifact_content(artifact_id="ghost")
         assert success is False
         assert "ghost" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_is_not_swallowed(self) -> None:
         registry = MagicMock()
@@ -539,3 +664,48 @@ class TestGetArtifactContentBoundsTheFetch:
         )
 
         assert _MAX_ARTIFACT_FETCH_BYTES > _MAX_ARTIFACT_CONTENT_CHARS * 4
+
+
+class TestRecordDownloadUrlChecksAccess:
+    """The record id comes from the model, so a signed URL (or a connector
+    record's name and source URL) is only handed out after the permission check
+    the record routes use -- not after an org check alone."""
+
+    @staticmethod
+    def _manager(allowed) -> tuple:
+        from types import SimpleNamespace
+
+        from app.config.constants.arangodb import OriginTypes
+
+        record = SimpleNamespace(
+            id="rec-1", org_id="org-1", origin=OriginTypes.UPLOAD, external_record_id="blob-1",
+            record_name="f.pdf", mime_type="application/pdf", weburl=None,
+        )
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(return_value=record)
+        graph.check_record_access_with_details = AsyncMock(return_value=allowed)
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://signed/url")
+        manager = ArtifactManager({"org_id": "org-1", "user_id": "user-1",
+                                   "graph_provider": graph, "blob_store": blob})
+        return manager, graph, blob
+
+    @pytest.mark.asyncio
+    async def test_denied_record_gets_no_url(self) -> None:
+        manager, graph, blob = self._manager(allowed=None)
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert not ok
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        blob.get_download_url.assert_not_called()
+        denied = json.loads(payload)["error"]
+
+        graph.get_record_by_id = AsyncMock(return_value=None)
+        _, missing = await manager.get_record_download_url("rec-1")
+        assert json.loads(missing)["error"] == denied    # no existence oracle (P9)
+
+    @pytest.mark.asyncio
+    async def test_accessible_record_gets_its_url(self) -> None:
+        manager, _, blob = self._manager(allowed={"record": {}})
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert ok and json.loads(payload)["download_url"] == "https://signed/url"
+        blob.get_download_url.assert_awaited_once()

@@ -81,6 +81,49 @@ sequenceDiagram
 
 `GET /v1/models` and `GET /api/v1/models` on the query service, and the same paths on the Node app, list configured models in the OpenAI model-list shape. The payload has ids and a `task`. It does not include API keys or endpoints.
 
+## Decision models
+
+A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type.
+
+The **For Decisions** tab in Workspace → AI Models is hidden until a feature uses decision models (`'decision'` is commented out of `CAPABILITY_SECTION_ORDER` in `frontend/app/(main)/workspace/ai-models/types.ts`). Until then, add one through the configuration API (`$NODE_URL` is the Node app's address, for example `http://localhost:3000`):
+
+```bash
+curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
+       "configuration": {"model": "gpt-6-luna", "apiKey": "sk-..."}}'
+```
+
+| Provider | Models | Endpoint |
+| --- | --- | --- |
+| OpenAI | `gpt-6-luna` | `POST {base}/decisions` (default base `https://api.openai.com/v1`) |
+| Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
+| TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
+
+Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+
+```python
+from app.services.ai_models.decision import ChoiceQuestion, DecisionOption
+from app.utils.llm import get_decision_model_instance
+
+built = await get_decision_model_instance(config_service)
+if built:
+    model, _config = built
+    result = await model.decide("I was charged twice.", [
+        ChoiceQuestion(name="team", instructions="Which team should handle this?", options=[
+            DecisionOption(value="payments", description="Payments and refunds"),
+            DecisionOption(value="technical", description="Problems using the product"),
+        ]),
+    ])
+    answer = result.answers["team"]  # .choice, .probabilities, .confidence, .refused
+```
+
+All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
+
+## Query instruction (BGE, experimental, off by default)
+
+Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchanged. Ranking evidence is mixed (dense gains, hybrid neutral, one slice regressed), so it stays opt-in. When on, BGE v1/v1.5 English embedding models (`bge-small|base|large[-en][-v1.5]`, local or hosted, by the configured model id) expect `Represent this sentence for searching relevant passages: ` in front of search *queries*. `app/utils/query_instruction.py` (`instruct_query`) adds it on the dense query embedding in chunk search (`retrieval_service.py`), entity search and the skill index. Passages and chunks are embedded as-is at index time, so stored vectors are unchanged, and the sparse (BM25) query is never prefixed. bge-m3 and the zh models are left alone, as is every non-BGE model. New query-embedding paths should call `instruct_query`.
+
 ## Where to change it
 
 | Concern | Location |
@@ -90,3 +133,5 @@ sequenceDiagram
 | Runtime model construction | `backend/python/app/utils/aimodels.py` |
 | Stored document and batch save | `backend/nodejs/apps/src/modules/configuration_manager/` |
 | Picker and onboarding | `frontend/app/(main)/workspace/ai-models/` |
+| Decision model clients | `backend/python/app/services/ai_models/decision/` |
+| Identity forwarded to an LLM gateway (user, groups, service identity) | `backend/python/app/services/model_identity/`; see [llm-gateway-identity.md](./llm-gateway-identity.md) |

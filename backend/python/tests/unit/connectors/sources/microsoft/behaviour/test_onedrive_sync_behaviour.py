@@ -130,8 +130,9 @@ class Tenant:
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
 
-    def add_user(self, user_id: str, email: str, name: str) -> TokenFeed:
-        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email, "accountEnabled": True})
+    def add_user(self, user_id: str, email: str, name: str, user_type: str = "Member") -> TokenFeed:
+        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email,
+                           "accountEnabled": True, "userType": user_type})
         self.db.add_active_user(email)
         drive = f"drive-{user_id.removeprefix('u-')}"
         self.cloud.on("GET", f"/v1.0/users/{user_id}/drive", {"id": drive, "webUrl": f"https://acme-my.sharepoint.com/personal/{user_id}"})
@@ -239,7 +240,13 @@ async def unshared_folder_scenario(
     tenant.share("f1", shared)
     connector = await ready_connector(db, checkpoints)
     await connector.run_sync()
-    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+    # The file keeps the list OneDrive returned. Matching the folder is not inheritance.
+    assert db.records["f1"].inherit_permissions is False
+    assert perms(db, "f1") == {
+        (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+        (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+    }
+    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "d1")
     tenant.share("d1", [user_grant("u-ana", "ana@acme.com", "owner")])
     cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/d1/children", page([drive_item("f1", "plan.pdf", parent="d1")]))
     return connector
@@ -622,12 +629,48 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.ANYONE_WITH_LINK, "anyone_with_link", None, PermissionType.READ),
-            (EntityType.ORG, "anyone_in_org", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }
+        }, "a link grants only the people it lists: the anonymous and organization links list nobody"
         assert db.records["f1"].is_shared is True
+
+    async def test_an_organization_link_as_graph_returns_it_grants_no_one(self, cloud, tenant, db, checkpoints) -> None:
+        """Graph's organization link carries roles and scope only: organization links track no grantees."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"}},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}, \
+            "the link opens the file to no colleague and to no organization-wide group"
+        assert "tenant-members" not in db.user_groups
+
+    async def test_people_graph_lists_on_an_organization_link_are_granted(self, cloud, tenant, db, checkpoints) -> None:
+        """Should Graph list identities on an organization link, those people, and only they, get its role."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"},
+             "grantedToIdentitiesV2": [{"user": {"id": "u-ben", "email": "ben@acme.com"}}]},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {
+            (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+            (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.WRITE),
+        }, "an edit link carries write access, for the person it lists only"
+        assert "tenant-members" not in db.user_groups
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
@@ -822,7 +865,10 @@ class TestSharing:
 
         for _ in range(4):
             await connector.run_sync()
-            assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+            assert perms(db, "f1") == {
+                (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+                (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+            }
         await connector.run_sync()
 
         assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}
@@ -845,10 +891,12 @@ class TestSharing:
 
         await connector.run_sync()
 
+        # A failed folder read must not replace the file's stored grants.
         assert perms(db, "f2") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
         }
+        assert db.records["f2"].inherit_permissions is False
         assert db.records["d1"].is_shared is True
         assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
 

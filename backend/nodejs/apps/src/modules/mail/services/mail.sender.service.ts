@@ -61,8 +61,17 @@ export class MailSenderService {
   ) {}
 
   /** Resolves the live SMTP config, or null when the org has not set one up. */
-  getSmtpConfig(): SmtpConfig | null {
+  getSmtpConfig(
+    _orgId?: string,
+  ): SmtpConfig | null | Promise<SmtpConfig | null> {
     return (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
+  }
+
+  protected renderContent(
+    emailTemplateType: string,
+    templateData: Record<string, unknown>,
+  ): string {
+    return getEmailContent(emailTemplateType, templateData);
   }
 
   /** Releases pooled SMTP connections so shutdown is not held open. */
@@ -237,7 +246,7 @@ export class MailSenderService {
   ): Promise<MailSendResult> {
     let emailContent: string;
     try {
-      emailContent = getEmailContent(
+      emailContent = this.renderContent(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
@@ -268,6 +277,7 @@ export class MailSenderService {
           from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
           cc: bodyData.sendCcTo,
+          replyTo: bodyData.replyTo,
           subject: bodyData.subject,
           html: emailContent,
           attachments: bodyData.attachments || [],

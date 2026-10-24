@@ -48,6 +48,7 @@ from app.modules.indexing.vector_membership_backfill import (
 from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.services.graph_db.taxonomy import TaxonomyLink, taxonomy_links
 from app.services.messaging.utils import MessagingUtils
+from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -67,6 +68,9 @@ BUSY_INTERVAL_SECONDS = 1.0
 IDLE_INTERVAL_SECONDS = 600.0
 ERROR_INTERVAL_SECONDS = 60.0
 _LEASE_RENEW_EVERY_N_RECORDS = 10
+# Longest pause between two records while indexing is busy (see LoopShare).
+# Ten of them stay far inside the leader lease renewed every ten records.
+MAX_RECORD_PAUSE_SECONDS = 5.0
 
 # Set on a stored semantic_metadata whose labels are the record's own: by the
 # resolver on every record it indexes, and by this repair on what it restores.
@@ -223,10 +227,14 @@ class RecordLabelRepair(ConnectorSweep):
         lock: LeaderLock,
         cutoff_ms: int,
         page_size: int = PAGE_SIZE,
+        pacer: LoopShare | None = None,
     ) -> None:
         super().__init__(logger=logger, graph_provider=graph_provider, lock=lock, page_size=page_size)
         self.blob_store = blob_store
         self.cutoff_ms = cutoff_ms
+        # Runs on the indexing worker loop on Neo4j; a page of repairs back to
+        # back held it for nearly half its time while records were indexing.
+        self.pacer = pacer or LoopShare(max_pause_seconds=MAX_RECORD_PAUSE_SECONDS)
 
     async def process_page(
         self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
@@ -238,6 +246,7 @@ class RecordLabelRepair(ConnectorSweep):
                 links_by_record.setdefault(link.record_id, []).append(link)
 
         repaired = skipped = missing = failed = 0
+        self.pacer.begin()
         for processed, row in enumerate(rows, start=1):
             key = key_of(row)
             links = links_by_record.get(key or "")
@@ -261,6 +270,7 @@ class RecordLabelRepair(ConnectorSweep):
                     "record_label_repair: record %s of connector %s failed; continuing the page",
                     key, app_key, exc_info=True,
                 )
+            await self.pacer.pause()
             if processed % _LEASE_RENEW_EVERY_N_RECORDS == 0 and not await self.lock.refresh():
                 return PageResult(lost_leadership=True)
         if skipped:

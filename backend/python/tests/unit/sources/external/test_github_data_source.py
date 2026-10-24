@@ -84,3 +84,49 @@ class TestRebindClient:
 
         assert ds._sdk is sdk
         assert ds.token == "stays"
+
+
+class TestRepoScopedReadsCostOneRequest:
+    """Each read below used to fetch the repository first: two requests of the
+    hourly rate limit per file streamed or subtree walked, where one does."""
+
+    @pytest.fixture
+    def requests(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        from github.Requester import Requester
+
+        seen: list[str] = []
+
+        def fake(_self: object, _verb: str, url: str, *_a: object, **_kw: object) -> tuple:
+            seen.append(url)
+            if "/git/blobs/" in url:
+                return {}, {"sha": "b1", "size": 3, "content": "YWJj", "encoding": "base64"}
+            if "/git/trees/" in url:
+                return {}, {"sha": "t1", "tree": [], "truncated": False}
+            if "/compare/" in url:
+                return {}, {"status": "ahead", "files": [], "commits": []}
+            if "/contents/" in url:
+                return {}, {"type": "file", "path": "a.py", "content": "YWJj", "encoding": "base64"}
+            return {}, {"full_name": "acme/widgets", "name": "widgets", "url": "https://api.github.com/repos/acme/widgets"}
+
+        monkeypatch.setattr(Requester, "requestJsonAndCheck", fake)
+        return seen
+
+    @pytest.mark.parametrize(
+        ("call", "endpoint"),
+        [
+            (lambda ds: ds.get_git_blob("acme", "widgets", "b1"), "/git/blobs/b1"),
+            (lambda ds: ds.get_git_tree("acme", "widgets", "t1"), "/git/trees/t1"),
+            (lambda ds: ds.compare_commits("acme", "widgets", "a", "b"), "/compare/a...b"),
+            (lambda ds: ds.get_file_contents("acme", "widgets", "a.py", "main"), "/contents/a.py"),
+        ],
+    )
+    def test_one_request(self, requests: list[str], call, endpoint: str) -> None:
+        response = call(GitHubDataSource(Github()))
+
+        assert response.success, response.error
+        assert len(requests) == 1, requests
+        assert endpoint in requests[0]
+
+    def test_get_repo_still_confirms_the_repository_exists(self, requests: list[str]) -> None:
+        assert GitHubDataSource(Github()).get_repo("acme", "widgets").success
+        assert requests == ["/repos/acme/widgets"]

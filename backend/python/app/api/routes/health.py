@@ -4,7 +4,7 @@ import ipaddress
 import os
 import shutil
 import socket
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -18,7 +18,13 @@ from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
 from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
+from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.ai_models.decision import PredicateQuestion, get_decision_model
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
@@ -37,9 +43,37 @@ from app.utils.aimodels import (
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import provider_error_code
+from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
+from app.web.deadline import Deadline
+from app.web.errors import (
+    AuthFailed,
+    Blocked,
+    NotConfigured,
+    QuotaExceeded,
+    RateLimited,
+    TimedOut,
+    UnknownProvider,
+    UpstreamError,
+    WebError,
+)
+from app.web.health import check_provider, provider_name
 
-router = APIRouter(dependencies=[Depends(deny_service_tokens)])
+
+async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
+    """Bind the admin as the caller. The projector sends admin workloads as the service, so a probe never spends a person's gateway budget."""
+    user = getattr(request.state, "user", None)
+    container = getattr(request.app, "container", None)
+    config_service = container.config_service() if container is not None else None
+    async with call_scope(
+        principal_from_request_user(user if isinstance(user, dict) else None),
+        Workload.HEALTH_CHECK,
+        config_service=config_service,
+        container=container,
+    ):
+        yield
+
+
+router = APIRouter(dependencies=[Depends(deny_service_tokens), Depends(_bind_health_check_identity)])
 
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
@@ -50,9 +84,9 @@ _OUTBOUND_PROBE_TIMEOUT_S = 5.0
 # is rejected rather than reported healthy -- Node's model-type validator is
 # wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
 # that falls through would register a model nothing had checked.
-SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt", "decision"})
 
-# Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
+# Deadline for one test search per provider.
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "duckduckgo": 20.0,
     "serper": 33.0,
@@ -227,13 +261,6 @@ def _provider_display_name(provider: str | None) -> str:
     return (meta or {}).get("name") or provider or "the provider"
 
 
-_WEB_SEARCH_NAMES = {"duckduckgo": "DuckDuckGo", "serper": "Serper", "tavily": "Tavily", "exa": "Exa"}
-
-
-def _web_search_name(provider: str | None) -> str:
-    return _WEB_SEARCH_NAMES.get(provider or "", provider or "The web search provider")
-
-
 # Failure messages are fixed text: exception and provider text go to the log only, never
 # into a response, where they could carry internals (hosts, request ids, stack frames).
 EMBEDDING_UNAVAILABLE_MESSAGE = (
@@ -249,10 +276,67 @@ def _model_setup_failed_message(kind: str, provider: str | None) -> str:
 _REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
 
 
-def _rejected_settings_message(code: str, kind: str, model_config: dict, model: str) -> str:
+def _rejected_settings_message(
+    code: str, kind: str, model_config: dict, model: str, exc: BaseException | None = None,
+) -> str:
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if _normalize_provider_key(model_config.get("provider")) == "bedrock":
+        from app.utils.aimodels import (
+            bedrock_inference_profile_hint,
+            bedrock_is_openai_gpt,
+        )
+
+        profiles = bedrock_inference_profile_hint(model)
+        if profiles and code in ("invalid_request", "model_not_found"):
+            return (
+                f"Bedrock only serves \"{model}\" through a cross-Region inference profile. "
+                f"Change the model name to {profiles} in Workspace > AI Models, then try again."
+            )
+        if code == "auth_error":
+            cause = bedrock_access_denied_cause(exc)
+            if cause == "credentials":
+                return (
+                    f"AWS rejected the credentials for {name}: the access key, secret key or "
+                    "session token is wrong or has expired. Check them in Workspace > AI Models, "
+                    "or the server's IAM role when no key is set, then try again."
+                )
+            if cause == "account":
+                return (
+                    f"AWS hasn't enabled {name} for this AWS account. IAM permissions can't fix "
+                    "this: ask AWS Support to enable the model for the account and Region, "
+                    "or choose another model."
+                )
+            if cause == "marketplace":
+                return (
+                    f"AWS couldn't complete the AWS Marketplace subscription for {name}, "
+                    "usually because the account has no valid payment method. Fix billing in "
+                    "the AWS console, wait a few minutes, then try again. IAM permissions "
+                    "can't fix this."
+                )
+            if cause == "other":
+                return (
+                    f"Bedrock denied access to {name}. Check the model's access, billing and "
+                    "account status in the Amazon Bedrock console, then try again."
+                )
+            if cause == "scp":
+                return (
+                    f"An AWS Organizations service control policy blocks {name}. Ask your AWS "
+                    "Organizations administrator to allow Bedrock for this account, then try again."
+                )
+            extra = (
+                " OpenAI GPT models also need that permission on the account's default project "
+                "(arn:aws:bedrock:<region>:<account-id>:project/default)."
+                if bedrock_is_openai_gpt(model) else ""
+            )
+            return (
+                f"Bedrock denied access to {name}. Make sure the access key, or the server's IAM "
+                f"role when no key is set, allows bedrock:InvokeModel and "
+                f"bedrock:InvokeModelWithResponseStream on this inference profile and on the "
+                f"foundation model in every Region the profile routes to "
+                f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
+            )
     if code == "auth_error":
         return (
             f"The API key for {name} was rejected by {provider}. "
@@ -287,7 +371,7 @@ async def _model_setup_failed_response(
     code = provider_error_code(e)
     if code in _REJECTED_SETTINGS_CODES:
         return _config_error(
-            _rejected_settings_message(code, kind, model_config, model),
+            _rejected_settings_message(code, kind, model_config, model, e),
             model_config, model, error_code=code,
         )
     if _looks_like_connectivity_error(e):
@@ -481,99 +565,72 @@ def _get_test_image() -> str:
     return _TEST_IMAGE
 
 
+def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()},
+    )
+
+
+_NOT_CONFIGURED_HINTS = {
+    "api_key": "{name} needs an API key. Add it in the web search settings, then try again.",
+    "base_url": "{name} needs the http(s) address of its server.",
+    "searxng_json": "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml.",
+    "server_version": "{name} 0.9.4 or later is required; older versions are unsafe to expose.",
+}
+
+
+def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
+    name = provider_name(provider)
+    if isinstance(error, TimedOut):
+        return _web_search_unhealthy(408, f"{name} didn't answer in time. Check your network, then try again.")
+    if isinstance(error, UnknownProvider):
+        return _web_search_unhealthy(400, f"{name} isn't a web search provider this server knows.")
+    if isinstance(error, NotConfigured):
+        # Fixed wording per reason: the error's own message can quote what a remote server said.
+        hint = _NOT_CONFIGURED_HINTS.get(error.reason, _NOT_CONFIGURED_HINTS["api_key"])
+        return _web_search_unhealthy(400, hint.format(name=name))
+    if isinstance(error, AuthFailed):
+        return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
+    if isinstance(error, RateLimited):
+        return _web_search_unhealthy(400, f"{name} is limiting requests right now. Wait a minute, then try again.")
+    if isinstance(error, QuotaExceeded):
+        return _web_search_unhealthy(400, f"{name} says this account's search credits are used up. Check the plan, then try again.")
+    if isinstance(error, Blocked):
+        return _web_search_unhealthy(
+            400, f"{name} blocked the test search as automated traffic. Try again later, or add a provider that uses an API key.",
+        )
+    if isinstance(error, UpstreamError) and error.status:
+        return _web_search_unhealthy(
+            400, f"{name} returned an error ({error.status}). Try again in a minute; if it keeps failing, check the web search settings.",
+        )
+    return _web_search_unhealthy(
+        500, f"Couldn't reach {name} for web search. Check its API key in the web search settings, then try again.",
+    )
+
+
 @router.post("/web-search-health-check")
 async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
-    """Health check endpoint to validate a web search provider configuration."""
+    """Health check endpoint to validate a web search or page-reading provider configuration."""
     provider = provider_config.get("provider", "duckduckgo")
+    configuration = provider_config.get("configuration") or {}
+    deadline = Deadline.after(_WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0))
     try:
-        configuration = provider_config.get("configuration", {})
-
-        from app.utils.web_search_tool import (
-            _search_with_duckduckgo,
-            _search_with_exa,
-            _search_with_serper,
-            _search_with_tavily,
-        )
-
-        provider_map = {
-            "duckduckgo": _search_with_duckduckgo,
-            "serper": _search_with_serper,
-            "tavily": _search_with_tavily,
-            "exa": _search_with_exa,
-        }
-
-        search_func = provider_map.get(provider)
-        if not search_func:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "not healthy",
-                    "error": f"Unknown web search provider: {provider}",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-
-        budget_s = _WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0)
-        await asyncio.wait_for(
-            search_func("health check test", configuration),
-            timeout=budget_s,
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": f"Web search provider '{provider}' is responding",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=408,
-            content={
-                "status": "not healthy",
-                "error": f"{_web_search_name(provider)} didn't answer in time. Check your network, then try again.",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except ValueError as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": str(e),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if status in (401, 403):
-            error_msg = f"{_web_search_name(provider)} didn't accept the API key. Check the key in the web search settings, then try again."
-        elif status == 429:
-            error_msg = f"{_web_search_name(provider)} is limiting requests right now. Wait a minute, then try again."
-        else:
-            error_msg = f"{_web_search_name(provider)} returned an error ({status}). Try again in a minute; if it keeps failing, check the web search settings."
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": error_msg,
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        await check_provider(provider, configuration, deadline)
+    except WebError as e:
+        request.app.container.logger().warning(f"Web search health check failed for {provider}: {e.error_type}")
+        return _web_search_failure(provider, e)
     except Exception as e:
         request.app.container.logger().error(f"Web search health check failed for {provider}: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "not healthy",
-                "error": (
-                    f"Couldn't reach {_web_search_name(provider)} for web search. Check its API key in the web search "
-                    "settings, then try again."
-                ),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        return _web_search_failure(provider, WebError(str(e)))
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": f"Web search provider '{provider}' is responding",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
 
 
 @router.post("/model-endpoint-check")
@@ -1036,6 +1093,17 @@ class _HealthProbe(BaseModel):
     query: str = Field(description="Anything at all; this tool is never run.")
 
 
+def _bind_probe_tool(llm_model: BaseChatModel) -> Any:  # noqa: ANN401
+    return llm_model.bind_tools([
+        StructuredTool.from_function(
+            func=lambda query: query,
+            name="health_probe",
+            description="A no-op probe used by the health check.",
+            args_schema=_HealthProbe,
+        ),
+    ])
+
+
 async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     """Whether this model accepts bound tools.
 
@@ -1044,16 +1112,13 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     them is unusable for agents even though it answers plain prompts. Reported
     rather than fatal: the same model may still be a fine choice for the
     indexing and image-description roles.
+
+    A refusal that asks for the Responses API (Azure's gpt-6 models refuse
+    tools on Chat Completions even with Reasoning unticked) is tried once more
+    there, as an agent turn would retry it (`LangChainTransport._api_shape_fallback`).
     """
     try:
-        bound = llm_model.bind_tools([
-            StructuredTool.from_function(
-                func=lambda query: query,
-                name="health_probe",
-                description="A no-op probe used by the health check.",
-                args_schema=_HealthProbe,
-            ),
-        ])
+        bound = _bind_probe_tool(llm_model)
     except Exception as exc:
         logger.info("Model does not accept bound tools: %s", exc)
         return False
@@ -1061,6 +1126,17 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     try:
         await _invoke_with_timeout(bound, _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S)
     except Exception as exc:
+        if is_api_shape_conflict(exc) and hasattr(llm_model, "use_responses_api") \
+                and not getattr(llm_model, "use_responses_api", None):
+            try:
+                await _invoke_with_timeout(
+                    _bind_probe_tool(responses_api_copy(llm_model)), _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S,
+                )
+            except Exception as retry_exc:
+                exc = retry_exc
+            else:
+                logger.info("Model accepts tools on the Responses API, not on Chat Completions: %s", exc)
+                return True
         if _is_capability_error(exc):
             logger.info("Model rejected a request carrying tools: %s", exc)
             return False
@@ -2052,6 +2128,56 @@ async def perform_stt_health_check(
     return checked
 
 
+async def perform_decision_health_check(model_config: dict, logger: Logger) -> JSONResponse:
+    """Ask each configured decision model one yes/no question.
+
+    A real call proves the key, the model and that the endpoint speaks the decision API.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    model_names = iter_model_names(configuration)
+    if not model_names:
+        return _config_error(
+            "Enter the decision model's name, then try again.",
+            model_config, "", error_code="invalid_request",
+        )
+
+    checked: JSONResponse | None = None
+    for model_name in model_names:
+        try:
+            model = get_decision_model(provider=provider, config=model_config, model_name=model_name)
+        except Exception as e:
+            logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+        try:
+            # One attempt: the client's own timeout then decides, not a retry loop
+            # that would outlast the admin's wait.
+            result = await model.decide(
+                "Hello, can you help me?",
+                [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
+                max_attempts=1,
+            )
+            answer = result.answers["is_greeting"]
+            if answer.refused or answer.missing or answer.probability is None:
+                return _config_error(
+                    f"{_provider_display_name(provider)} answered, but not with a usable decision. "
+                    "Check that the model and endpoint serve the decision API, then try again.",
+                    model_config, model_name, error_code="invalid_response",
+                )
+            checked = JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": "Decision model is reachable",
+                    "details": {"provider": provider, "model": model_name},
+                },
+            )
+        except Exception as e:
+            logger.error(f"Decision health check failed for {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+    return checked
+
+
 async def _check_embedding(request: Request, model_config: dict, logger: Logger) -> JSONResponse:
     return await perform_embedding_health_check(request, model_config, logger)
 
@@ -2072,12 +2198,17 @@ async def _check_stt(_request: Request, model_config: dict, logger: Logger) -> J
     return await perform_stt_health_check(model_config, logger)
 
 
+async def _check_decision(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_decision_health_check(model_config, logger)
+
+
 _HEALTH_CHECKERS = {
     "embedding": _check_embedding,
     "llm": _check_llm,
     "imageGeneration": _check_image,
     "tts": _check_tts,
     "stt": _check_stt,
+    "decision": _check_decision,
 }
 
 

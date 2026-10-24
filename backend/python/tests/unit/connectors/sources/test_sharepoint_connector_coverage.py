@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -44,6 +44,7 @@ def _make_connector(*, return_dep: bool = False):
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
+    dep.inheritance_when_unreadable = AsyncMock(return_value=False)
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -1368,9 +1369,14 @@ class TestSharePointCheckUpdatedPageRecord:
         page_record.id = "rec-p"
         c._create_page_record = AsyncMock(return_value=page_record)
         c._get_page_permissions = AsyncMock(return_value=[])
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
         result = await c._check_and_fetch_updated_page_record(record)
         assert result is not None
         assert result[0] is page_record
+        assert page_record.inherit_permissions is True
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-p"
+        )
 
     @pytest.mark.asyncio
     async def test_unchanged_etag_returns_none(self):
@@ -1611,8 +1617,10 @@ class TestSharePointProcessSitePages:
         c._safe_api_call = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
         existing = MagicMock()
+        existing.id = "rec-existing"
         existing.external_revision_id = "etag-old"
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
         c._get_page_permissions = AsyncMock(return_value=[])
@@ -1623,6 +1631,11 @@ class TestSharePointProcessSitePages:
         update = collected[0][2]
         assert update.is_updated is True
         assert update.content_changed is True
+        assert page_record.inherit_permissions is True
+        assert update.permissions_changed is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-existing"
+        )
 
     @pytest.mark.asyncio
     async def test_yields_new_page_record(self):
@@ -1656,6 +1669,10 @@ class TestSharePointProcessSitePages:
             collected.append(item)
         assert len(collected) == 1
         assert c.stats["pages_processed"] >= 1
+        assert page_record.inherit_permissions is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, None
+        )
 
     @pytest.mark.asyncio
     async def test_page_processing_error_continues(self):

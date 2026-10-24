@@ -264,14 +264,12 @@ class TestFindWebRecordByUrl:
 
 
 class TestRenumberCitationLinksDescriptive:
-    def test_descriptive_link_text_replaced_with_numbered_badge(self):
-        """``_renumber_citation_links`` always emits ``[N](full_url)``; link text is discarded."""
+    def test_descriptive_link_text_kept_before_numbered_badge(self):
         u = "https://example.com/doc#section"
         text = f"Read [Bellandur Restaurants]({u}) today."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {u: 1})
-        assert "[Bellandur Restaurants]" not in out
-        assert out == f"Read [1]({u}) today."
+        assert out == f"Read Bellandur Restaurants [1]({u}) today."
 
 
 class TestDetectHallucinatedCitationDuplicates:

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -65,6 +65,8 @@ export function FilePreviewInlinePanel({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
+  onChat,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -234,13 +236,19 @@ export function FilePreviewInlinePanel({
         </Flex>
 
         <Flex align="center" gap="1">
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               onClick={() =>
-                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob })
+                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob, onDownload })
               }
               title={t('action.download')}
             >

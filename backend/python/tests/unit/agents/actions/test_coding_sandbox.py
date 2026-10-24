@@ -507,3 +507,21 @@ class TestScheduleArtifactUploadException:
             "type": "artifacts",
             "artifacts": [{"fileName": "out.csv", "documentId": "d"}],
         }
+
+
+class TestArtifactOwner:
+    @pytest.mark.asyncio
+    async def test_outputs_belong_to_the_artifact_owner(self) -> None:
+        """A service-account agent's run: the files belong to the person chatting."""
+        from app.agents.actions.coding_sandbox import coding_sandbox as mod
+
+        sandbox = mod.CodingSandbox(_make_state(blob_store=MagicMock(), user_id="u-alice", artifact_owner_user_id="u-bob"))
+        result = ExecutionResult(
+            success=True, stdout="", exit_code=0, execution_time_ms=1,
+            artifacts=[ArtifactOutput(file_name="c.png", file_path="/tmp/c.png", mime_type="image/png", size_bytes=1)],
+        )
+
+        with patch.object(mod, "upload_artifacts_to_blob", AsyncMock(return_value=[])) as upload:
+            await sandbox._upload_artifacts(result)
+
+        assert upload.await_args.kwargs["user_id"] == "u-bob"

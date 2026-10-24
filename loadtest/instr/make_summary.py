@@ -57,6 +57,7 @@ def main() -> int:
         "steady_state_req_min": _search(report, r"steady-state.*?\(" + NUM + r" req/min\)"),
         "p50_ms": _search(report, r"turn total.*?p50=\s*([0-9]+)", int),
         "p95_ms": _search(report, r"turn total.*?p95=\s*([0-9]+)", int),
+        "failed_answers": _search(report, r"failed answers\s*:\s*([0-9]+)", int),
         "requests": requests,
         "errors": errors,
         "error_rate": round(errors / requests, 4) if requests else None,
@@ -66,6 +67,11 @@ def main() -> int:
         "mem_peak_mb": max(mem) if mem else None,
         "mem_growth_mb": round(max(mem) - mem[0], 1) if mem else None,
     }
+    for key, name in (("resources", "resources.json"), ("llm_usage", "llm_usage.json")):
+        try:
+            summary[key] = json.loads((out / name).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary[key] = None
     turns, samples = summary["turns"], summary["py_samples"]
     summary["py_samples_per_turn"] = round(samples / turns, 1) if turns and samples else None
 

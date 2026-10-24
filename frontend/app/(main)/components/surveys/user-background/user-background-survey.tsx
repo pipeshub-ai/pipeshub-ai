@@ -3,7 +3,8 @@
 import React, { useState } from 'react';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { submitUserBackgroundSurvey } from '@/app/(main)/onboarding/api';
-import { PipesHubIcon } from '@/app/components/ui';
+import { BrandMark } from '@/config';
+import { useBrand } from '@/lib/branding';
 
 // ===============================
 // DEV FLAG — set to false to hide the survey
@@ -38,6 +39,7 @@ const ROLE_OPTIONS = [
 const SURVEY_DISMISSED_KEY = 'pipeshub:userBackgroundSurveyDismissed';
 
 export function UserBackgroundSurvey() {
+  const brand = useBrand();
   const [isVisible, setIsVisible] = useState(() =>
     isUserBackgroundSurveyActive && !localStorage.getItem(SURVEY_DISMISSED_KEY)
   );
@@ -98,7 +100,7 @@ export function UserBackgroundSurvey() {
         <Box style={{ padding: '20px 20px 0', flexShrink: 0 }}>
           {/* Logo mark */}
           <Flex justify="center" style={{ marginBottom: '12px' }}>
-            <PipesHubIcon size={36} color="var(--accent-8)" />
+            <BrandMark size={36} color="var(--accent-8)" />
           </Flex>
 
           {/* Title */}
@@ -119,7 +121,7 @@ export function UserBackgroundSurvey() {
             align="center"
             style={{ color: 'var(--gray-9)', marginBottom: '12px', display: 'block' }}
           >
-            This will help us personalise your Pipeshub experience
+            This will help us personalise your {brand.productName} experience
           </Text>
         </Box>
 

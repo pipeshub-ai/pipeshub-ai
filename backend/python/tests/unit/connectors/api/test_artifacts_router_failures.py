@@ -61,7 +61,7 @@ def test_an_artifact_the_caller_cannot_see_is_still_a_404(client, graph):
 
 
 def test_an_empty_gallery_is_still_a_200(client, graph):
-    graph.list_accessible_artifacts = AsyncMock(return_value=([], 0))
+    graph.list_accessible_artifacts = AsyncMock(return_value=([], {"mine": 0, "shared": 0}))
     response = client.get("/api/v1/artifacts")
     assert response.status_code == 200
     assert response.json()["items"] == []

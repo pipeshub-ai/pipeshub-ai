@@ -883,6 +883,9 @@ class _KbGraph:
             return []
         return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return bool(explicit and self.honours_explicit)
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit_requests.append(explicit)

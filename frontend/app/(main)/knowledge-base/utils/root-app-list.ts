@@ -4,6 +4,7 @@ import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { isKbCollectionsHubApp } from './all-records-transformer';
 import { categorizeNodes, withOpenFoldersRestored } from './tree-builder';
 import type { KnowledgeHubApiResponse, KnowledgeHubNode } from '../types';
+import type { PendingChatNode } from '@/lib/store/pending-chat-store';
 
 // Several loads write the root app list: the first-page load when the page
 // opens, the full refresh after a create/rename/delete, and "load more". They
@@ -49,9 +50,10 @@ export function resetRootListLoads(): void {
   newestReplacingLoadDone = true;
 }
 
-export function fetchRootAppPage(page: number): Promise<KnowledgeHubApiResponse> {
+/** A page of root apps; no cursor reads the first page. */
+export function fetchRootAppPage(cursor: string | null): Promise<KnowledgeHubApiResponse> {
   return KnowledgeHubApi.getNavigationNodes({
-    page,
+    ...(cursor ? { cursor } : {}),
     limit: SIDEBAR_PAGINATION_PAGE_SIZE,
     include: 'counts',
     sortBy: 'updatedAt',
@@ -59,12 +61,40 @@ export function fetchRootAppPage(page: number): Promise<KnowledgeHubApiResponse>
   });
 }
 
+/**
+ * Every collection the user can open, as chat scope; `null` when there are more
+ * than `max`. The root list mixes connectors and collections and is paged, so
+ * every page is read.
+ */
+export async function allCollectionsChatScope(max: number): Promise<PendingChatNode[] | null> {
+  const found: PendingChatNode[] = [];
+  let cursor: string | null = null;
+  do {
+    const response: KnowledgeHubApiResponse = await KnowledgeHubApi.getNavigationNodes({
+      ...(cursor ? { cursor } : {}),
+      limit: 200,
+      sortBy: 'name',
+      sortOrder: 'asc',
+    });
+    for (const node of response.items) {
+      if (node.nodeType !== 'app' || !isKbCollectionsHubApp(node)) continue;
+      found.push({ id: node.id, name: node.name, nodeType: 'app', connector: 'KB' });
+      if (found.length > max) return null;
+    }
+    const { hasNext, nextCursor } = response.pagination ?? {};
+    if (hasNext && !nextCursor) throw new Error('The collections list has more pages but gave no cursor');
+    cursor = hasNext ? (nextCursor ?? null) : null;
+  } while (cursor);
+  return found;
+}
+
+/** "Load more" state after a page. Without a cursor there is no way to ask for more, so no "load more". */
 export function rootListPaginationAfter(
   pagination: KnowledgeHubApiResponse['pagination'] | undefined,
-): { hasNext: boolean; nextPage: number } | null {
-  return pagination
-    ? { hasNext: pagination.hasNext, nextPage: pagination.hasNext ? pagination.page + 1 : pagination.page }
-    : null;
+): { hasNext: boolean; nextCursor: string | null } | null {
+  if (!pagination) return null;
+  const nextCursor = pagination.nextCursor ?? null;
+  return { hasNext: Boolean(pagination.hasNext && nextCursor), nextCursor };
 }
 
 export function collectionsFirst(appItems: KnowledgeHubNode[]): KnowledgeHubNode[] {
@@ -83,7 +113,7 @@ export async function loadRootAppListFirstPage(): Promise<boolean> {
   return runReplacingRootListLoad(async (isCurrent) => {
     let response: KnowledgeHubApiResponse;
     try {
-      response = await fetchRootAppPage(1);
+      response = await fetchRootAppPage(null);
     } catch (error) {
       if (!isCurrent()) return false;
       throw error;

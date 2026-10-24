@@ -105,6 +105,7 @@ class ServiceNowQueryValues:
     NO_COUNT_TRUE = "true"
     EXCLUDE_REFERENCE_LINK_TRUE = "true"
     ORDER_BY_UPDATED = "ORDERBYsys_updated_on"
+    CURRENT_USER = "sys_id=javascript:gs.getUserID()"
 
 
 class ServiceNowURLPatterns:

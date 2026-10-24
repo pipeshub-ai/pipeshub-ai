@@ -23,10 +23,10 @@ from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
     InMemoryArtifactStore,
 )
 from app.models.entities import ArtifactType
-from app.services.artifact_registry.models import Actor
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
+    from app.services.artifact_registry.models import Actor
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def build_artifact_store(context: "AgentContext") -> Any:
     if context.artifact_registry and context.conversation_id:
         return RegistryBackedStore(
             registry=context.artifact_registry,
-            actor=Actor(org_id=context.org_id, user_id=context.user_id),
+            actor=context.artifact_actor,
             conversation_id=context.conversation_id,
         )
     return InMemoryArtifactStore()

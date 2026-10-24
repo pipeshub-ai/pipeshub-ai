@@ -702,6 +702,25 @@ class TestConfidentialIssueRouting:
         )
         assert result.new_permissions == []
         assert result.permissions_changed is False
+        assert result.record.rewrite_permissions is False
+
+    async def test_leaving_the_confidential_group_replaces_grants(self) -> None:
+        """Author and assignee edges from the confidential group must not survive the move."""
+        c = make_mock_connector()
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.record_name = "Bug"
+        existing.external_record_group_id = "42-confidential-work-items"
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.projects = MagicMock()
+        c.projects._create_permission_from_principal = AsyncMock()
+
+        result = await IssuesSync(c)._process_issue_incident_task_to_ticket(
+            _make_issue(confidential=False, title="Bug", author_id=7, assignee_ids=[8])
+        )
+        assert result.record.external_record_group_id == "42-work-items"
+        assert result.record.rewrite_permissions is True
+        assert result.new_permissions == []
 
 
 class TestConfidentialWatermark:

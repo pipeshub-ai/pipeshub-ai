@@ -28,6 +28,7 @@ import pytest_asyncio
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]
     ConfluenceDataSource,
 )
+from connectors.confluence.constants import connector_base_url  # type: ignore[import-not-found]
 from connectors.confluence.confluence_v1_test_utils import (
     check_page_in_v1_search_bool,
     check_page_title_bool,
@@ -172,7 +173,7 @@ async def scenario_adapter(
         config={
             "auth": {
                 "authType": "API_TOKEN",
-                "baseUrl": os.getenv("CONFLUENCE_TEST_BASE_URL"),
+                "baseUrl": connector_base_url(),
                 "email": os.getenv("CONFLUENCE_TEST_EMAIL"),
                 "apiToken": os.getenv("CONFLUENCE_TEST_API_TOKEN"),
             },

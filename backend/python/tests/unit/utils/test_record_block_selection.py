@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.utils.record_block_selection import (
+    BLOCK_RENDER_OVERHEAD,
+    GAP_MARKER_CHARS,
+    OPENING_MAX_CHARS,
+    OPENING_SHARE,
     build_selection_query,
     describe_gaps,
     estimate_record_chars,
@@ -44,6 +48,12 @@ def _retrieval(*hit_indices: int, virtual_record_id: str = "vr-1") -> MagicMock:
     return service
 
 
+def _room(blocks: int, chars: int = 500) -> int:
+    """Room for `blocks` rendered blocks of `chars` each, in one region that
+    does not start the record -- so it also carries one gap marker."""
+    return blocks * (chars + BLOCK_RENDER_OVERHEAD) + GAP_MARKER_CHARS
+
+
 async def _select(record: dict, service, budget: RenderBudget, **kwargs) -> set[int] | None:
     return await select_relevant_blocks(
         record=record,
@@ -63,7 +73,7 @@ class TestSelection:
         the sentence defining the term is usually the one next to it. Sized to
         exactly three blocks so the neighbourhood is what is being tested, not
         the fill that uses up whatever room is left."""
-        budget = RenderBudget(max_chars=1_500)   # 3 blocks of 500
+        budget = RenderBudget(max_chars=_room(3))
 
         selected = await _select(_record(), _retrieval(40), budget)
 
@@ -72,7 +82,7 @@ class TestSelection:
     async def test_selection_stops_at_the_allowance(self) -> None:
         """Four blocks of room: the best-ranked neighbourhood, then one more
         block of context around it — and nothing from the other two hits."""
-        budget = RenderBudget(max_chars=2_000)   # 4 blocks of 500
+        budget = RenderBudget(max_chars=_room(4))
 
         selected = await _select(_record(), _retrieval(10, 50, 90), budget)
 
@@ -135,10 +145,9 @@ class TestFillingTheAllowance:
         budget.begin_record("rec-1")
 
         selected = await _select(_record(block_count=500), _retrieval(250), budget)
+        around_hit = {i for i in selected if i >= OPENING_MAX_CHARS // 500}
 
-        assert selected == set(range(250 - len(selected) // 2, 250 + len(selected) // 2 + 1)) or (
-            min(selected) >= 240 and max(selected) <= 260
-        ), "growth stayed around the hit"
+        assert min(around_hit) >= 240 and max(around_hit) <= 260, "growth stayed around the hit"
 
     async def test_a_record_that_fits_entirely_is_selected_entirely(self) -> None:
         budget = RenderBudget(max_chars=100_000)
@@ -147,6 +156,48 @@ class TestFillingTheAllowance:
         selected = await _select(_record(block_count=20), _retrieval(5), budget)
 
         assert selected == set(range(20))
+
+
+def _record_with_opening_rows(rows: int = 12, blocks: int = 500) -> dict:
+    """Short key-value rows first, then long passages."""
+    record = _record(block_count=blocks)
+    for block in record["block_containers"]["blocks"][:rows]:
+        block["data"] = f"field {block['index']}: value"
+    return record
+
+
+class TestOpeningBlocks:
+    """A record cut to fit lost its opening rows whenever the ranked hits sat
+    late in it, though those rows are where a reader looks first."""
+
+    async def test_the_opening_survives_when_the_hits_are_late(self) -> None:
+        budget = RenderBudget(max_chars=20_000)
+        budget.begin_record("rec-1")
+
+        selected = await _select(_record_with_opening_rows(), _retrieval(300, 301), budget)
+
+        assert set(range(12)) <= selected
+        assert {299, 300, 301, 302} <= selected
+
+    async def test_the_opening_takes_a_bounded_part_of_the_room(self) -> None:
+        room = 20_000
+        budget = RenderBudget(max_chars=room)
+        budget.begin_record("rec-1")
+
+        selected = await _select(_record(block_count=500), _retrieval(*range(100, 500, 10)), budget)
+
+        opening = {i for i in selected if i < 99}
+        assert opening == set(range(len(opening))), "the opening is contiguous"
+        assert 0 < len(opening) * (500 + BLOCK_RENDER_OVERHEAD) <= room * OPENING_SHARE
+        assert len(selected - opening) > 2 * len(opening), "relevance keeps most of the room"
+
+    async def test_the_reserve_is_left_for_the_frame(self) -> None:
+        budget = RenderBudget(max_chars=_room(4))
+        budget.begin_record("rec-1")
+
+        selected = await _select(_record(), _retrieval(40), budget, reserve=_room(1) - GAP_MARKER_CHARS)
+
+        assert selected is not None and len(selected) == 3
 
 
 class TestFallback:

@@ -104,6 +104,22 @@ Service account name helper
 {{- end }}
 
 {{/*
+Drop null entries. Helm keeps a null when a later values file clears a key,
+and a nodeSelector value of null is not a label.
+*/}}
+{{- define "pipeshub-ai.compactMap" -}}
+{{- $clean := dict -}}
+{{- range $key, $value := . -}}
+{{- if not (kindIs "invalid" $value) -}}
+{{- $_ := set $clean $key $value -}}
+{{- end -}}
+{{- end -}}
+{{- if $clean -}}
+{{- toYaml $clean -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Selector labels
 */}}
 {{- define "pipeshub-ai.selectorLabels" -}}
@@ -422,23 +438,28 @@ dind
 {{/*
 Validate the Redis wiring before anything renders.
 
-`redis.external.enabled` only works when paired with a cluster-capable mode
-and the bundled subchart switched off -- a pairing the template comment
-described but nothing enforced. Left unchecked, `external.enabled=true` alone
-renders `REDIS_HOST=""` while `REDIS_MODE=standalone` selects
-`StandaloneRedisProvider`, which ignores `REDIS_CLUSTER_ENDPOINTS` and falls
-back to localhost, and the subchart still deploys. Both failures are silent.
+external.enabled needs either host (standalone, for example ElastiCache with
+cluster mode disabled) or clusterEndpoints (Redis Cluster). Mixing them, or
+pairing host with a cluster mode, used to render REDIS_HOST empty while
+REDIS_MODE=standalone, and the client then connected to localhost.
 */}}
 {{- define "pipeshub-ai.validateRedis" -}}
 {{- if and .Values.redis.builtin.enabled .Values.redis.external.enabled -}}
   {{- fail "redis.builtin.enabled and redis.external.enabled cannot both be true." -}}
 {{- end -}}
 {{- $external := .Values.redis.external -}}
+{{- $redisMode := .Values.redis.mode | default "standalone" -}}
 {{- if $external.enabled -}}
-  {{- if not $external.clusterEndpoints -}}
-    {{- fail "redis.external.enabled=true requires redis.external.clusterEndpoints (comma-separated host:port list)." -}}
+  {{- if and $external.host $external.clusterEndpoints -}}
+    {{- fail "redis.external.host and redis.external.clusterEndpoints cannot both be set. Use host for a standalone Redis (ElastiCache with cluster mode disabled) or clusterEndpoints for Redis Cluster." -}}
   {{- end -}}
-  {{- if eq (.Values.redis.mode | default "standalone") "standalone" -}}
+  {{- if and $external.host (ne $redisMode "standalone") -}}
+    {{- fail "redis.external.host requires redis.mode=standalone. A cluster-mode client ignores the host and needs redis.external.clusterEndpoints." -}}
+  {{- end -}}
+  {{- if and (not $external.host) (not $external.clusterEndpoints) -}}
+    {{- fail "redis.external.enabled=true requires redis.external.host (standalone) or redis.external.clusterEndpoints (comma-separated host:port list)." -}}
+  {{- end -}}
+  {{- if and $external.clusterEndpoints (eq $redisMode "standalone") -}}
     {{- fail "redis.external.enabled=true requires a cluster-capable redis.mode (set redis.mode=cluster, or an EE mode supplied via redis.providerModule). REDIS_MODE=standalone ignores redis.external.clusterEndpoints and would connect to localhost." -}}
   {{- end -}}
   {{- if .Values.redis.enabled -}}
@@ -451,7 +472,7 @@ back to localhost, and the subchart still deploys. Both failures are silent.
 {{- else if and .Values.redis.enabled .Values.redis.builtin.enabled -}}
   {{- fail "redis.enabled and redis.builtin.enabled cannot both be true. Use redis.enabled=true for the Bitnami subchart or redis.enabled=false with redis.builtin.enabled=true for the chart-owned master and replica." -}}
 {{- else if not .Values.redis.enabled -}}
-  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints, or redis.builtin.enabled=true; otherwise nothing provides Redis." -}}
+  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.host or redis.external.clusterEndpoints, or redis.builtin.enabled=true; otherwise nothing provides Redis." -}}
 {{- else if ne (.Values.redis.mode | default "standalone") "standalone" -}}
   {{- /*
     The bundled Bitnami subchart is *replication*, not Redis Cluster. Pointing

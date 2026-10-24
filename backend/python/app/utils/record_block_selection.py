@@ -25,6 +25,7 @@ hiccup must not turn into a failed fetch.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Blocks either side of a hit that come along with it. A matched passage whose
 # neighbours are missing reads as a fragment: the sentence that defines the
 # term, or the row the total belongs to, is usually adjacent. The search path
-# widens hits the same way (`adjacent_chunks` in `get_flattened_results`).
+# widens hits the same way (`expand_neighbours` in `modules/retrieval/context`).
 NEIGHBOUR_SPAN = 1
 
 # How many ranked hits to ask for. Generous, because the budget — not this
@@ -43,10 +44,22 @@ NEIGHBOUR_SPAN = 1
 # relevant block.
 DEFAULT_HIT_LIMIT = 60
 
+# A record read from its start keeps its opening blocks whatever the ranking
+# says: the lead paragraph and leading key-value rows are short, dense, and the
+# first place a reader checks. Bounded so relevance still gets most of the room.
+OPENING_SHARE = 0.15
+OPENING_MAX_CHARS = 8_000
+
 # Rough cost of a block whose text cannot be measured (an image, a group whose
 # content is assembled at render time). Deliberately not zero: assuming free
 # is how a selection overruns its budget.
 _UNKNOWN_BLOCK_CHARS = 400
+
+# What the renderer wraps around each block ("[ref12] …\n\n") and around each
+# record (the `<record>` header before `context_metadata`). Counted so a plan
+# made from estimates does not overrun what the render then charges.
+BLOCK_RENDER_OVERHEAD = 12
+_RECORD_FRAME_OVERHEAD = 64
 
 
 def estimate_block_chars(block: dict[str, Any]) -> int:
@@ -68,6 +81,11 @@ def estimate_block_chars(block: dict[str, Any]) -> int:
     return _UNKNOWN_BLOCK_CHARS
 
 
+def _render_cost(block: dict[str, Any]) -> int:
+    """A block's estimated size as rendered, its label included."""
+    return estimate_block_chars(block) + BLOCK_RENDER_OVERHEAD
+
+
 def estimate_record_chars(record: dict[str, Any]) -> int:
     """Rough rendered size of a whole record, used to decide whether selection
     is needed at all. Cheap: no rendering, no I/O."""
@@ -77,6 +95,33 @@ def estimate_record_chars(record: dict[str, Any]) -> int:
         estimate_block_chars(b)
         for b in blocks
         if isinstance(b, dict) and b.get("parent_block_index") is None
+    )
+
+
+def estimate_render_chars(record: dict[str, Any], start_block: int = 0) -> int:
+    """Rough size of the fetch result this record would produce when read from
+    `start_block`, framing included. What a multi-record fetch plans with."""
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks", []) if isinstance(containers, dict) else []
+    return estimate_frame_chars(record) + sum(
+        _render_cost(b)
+        for b in blocks
+        if isinstance(b, dict)
+        and b.get("parent_block_index") is None
+        and b.get("index", 0) >= start_block
+    )
+
+
+def estimate_frame_chars(record: dict[str, Any], *, selection: bool = False) -> int:
+    """What a record's render spends outside its blocks: the header carrying
+    its metadata, and room held for the hint and closing tag."""
+    # Imported here: chat_helpers imports this module.
+    from app.utils.chat_helpers import record_header_metadata
+
+    return (
+        _RECORD_FRAME_OVERHEAD
+        + len(record_header_metadata(record))
+        + record_trailer_reserve(record, selection=selection)
     )
 
 
@@ -146,10 +191,11 @@ async def select_relevant_blocks(
     record: dict[str, Any],
     virtual_record_id: str | None,
     query: str,
-    retrieval_service: Any,
+    retrieval_service: Any,  # noqa: ANN401
     user_id: str,
     org_id: str,
     budget: "RenderBudget",
+    reserve: int = 0,
     hit_limit: int = DEFAULT_HIT_LIMIT,
     neighbour_span: int = NEIGHBOUR_SPAN,
 ) -> set[int] | None:
@@ -192,19 +238,28 @@ async def select_relevant_blocks(
         if isinstance(b, dict)
     }
 
+    # `reserve` is what the render spends outside the blocks (header, hints).
+    room = max(0, budget.chars_remaining - reserve)
+    selected, spent = _opening_blocks(
+        available, by_index, room=min(int(room * OPENING_SHARE), OPENING_MAX_CHARS),
+    )
+
     # Admit whole neighbourhoods, best first, until the next one would not fit.
-    selected: set[int] = set()
-    spent = 0
-    room = budget.chars_remaining
+    # A region not touching what is already selected also costs the gap marker
+    # the render puts in front of it.
     for group in _widen(hits, available, neighbour_span):
         fresh = [i for i in group if i not in selected]
-        cost = sum(estimate_block_chars(by_index.get(i, {})) for i in fresh)
-        if fresh and spent + cost > room:
+        if not fresh:
+            continue
+        cost = sum(_render_cost(by_index.get(i, {})) for i in fresh)
+        if not any((i - 1) in selected or (i + 1) in selected for i in fresh):
+            cost += GAP_MARKER_CHARS
+        if spent + cost > room:
             break
         selected.update(fresh)
         spent += cost
 
-    if not selected:
+    if not selected.intersection(hits):
         # Even the best neighbourhood does not fit; let the positional path
         # render what it can rather than returning an empty record.
         return None
@@ -220,6 +275,25 @@ async def select_relevant_blocks(
     # slice elsewhere.
     spent = _grow_selection(selected, available, by_index, room=room, spent=spent)
     return selected
+
+
+def _opening_blocks(
+    available: list[int], by_index: dict[int, dict[str, Any]], *, room: int,
+) -> tuple[set[int], int]:
+    """The record's leading blocks, in order, up to `room` characters.
+
+    Stops at the first block that does not fit rather than skipping it, so the
+    opening stays contiguous.
+    """
+    selected: set[int] = set()
+    spent = 0
+    for index in available:
+        cost = _render_cost(by_index.get(index, {}))
+        if spent + cost > room:
+            break
+        selected.add(index)
+        spent += cost
+    return selected, spent
 
 
 def _grow_selection(
@@ -246,7 +320,7 @@ def _grow_selection(
             break
         progressed = False
         for index in frontier:
-            cost = estimate_block_chars(by_index.get(index, {}))
+            cost = _render_cost(by_index.get(index, {}))
             if spent + cost > room:
                 continue
             selected.add(index)
@@ -257,7 +331,57 @@ def _grow_selection(
     return spent
 
 
-def describe_gaps(selected: set[int], available: list[int]) -> dict[int, str]:
+@dataclass(frozen=True)
+class ReadHints:
+    """How the hints a render leaves behind tell its reader to fetch more.
+
+    The assistant reads with `knowledgegraph__fetch_record`, which takes a list
+    of records; a caller of the record-content API passes `startBlock` back
+    to the same endpoint and has no such tool. A hint naming a call the reader
+    cannot make is no hint at all, so the phrasing goes with the reader.
+
+    `again` continues the record being read (`{start}`); `named` names it too
+    (`{label}`), for results that may carry several records.
+    """
+
+    again: str
+    named: str
+    # Appended to the in-order continuation hint.
+    continuing: str = ""
+    in_order: str = "start_block=0"
+    # How to read the Slack thread a record's messages started (`slack_replies`).
+    # No tool is named: the assistant has its thread tool only with Slack knowledge.
+    thread: str = "fetch the whole Slack thread for this record"
+
+    def again_from(self, start: int) -> str:
+        return self.again.format(start=start)
+
+    def named_from(self, label: str, start: int) -> str:
+        return self.named.format(label=label, start=start)
+
+
+# The assistant's own fetch tool. The default everywhere, so its hints read
+# exactly as they always have.
+FETCH_RECORD_HINTS = ReadHints(
+    again="call knowledgegraph__fetch_record again with start_block={start}",
+    named='call knowledgegraph__fetch_record with record_ids=["{label}"] and start_block={start}',
+    continuing=" — one record at a time when continuing",
+)
+
+# The record-content API. Kept shorter than the fetch tool's phrasing, so a
+# room reserved for those hints (`GAP_MARKER_CHARS`, `record_trailer_reserve`,
+# the header `estimate_frame_chars` measures) always holds these.
+API_READ_HINTS = ReadHints(
+    again="request this record again with startBlock={start}",
+    named="request record {label} again with startBlock={start}",
+    in_order="startBlock=0",
+    thread="request this record again with mode=thread",
+)
+
+
+def describe_gaps(
+    selected: set[int], available: list[int], hints: ReadHints = FETCH_RECORD_HINTS,
+) -> dict[int, str]:
     """Marker text keyed by the selected block index it precedes.
 
     The model has to know the document it is reading is not contiguous —
@@ -270,15 +394,15 @@ def describe_gaps(selected: set[int], available: list[int]) -> dict[int, str]:
         if index not in selected:
             continue
         if previous is not None and index > previous + 1:
-            markers[index] = _gap_text(previous + 1, index - 1)
+            markers[index] = _gap_text(previous + 1, index - 1, hints)
         previous = index
     first = next((i for i in available if i in selected), None)
     if first is not None and first > available[0]:
-        markers[first] = _gap_text(available[0], first - 1)
+        markers[first] = _gap_text(available[0], first - 1, hints)
     return markers
 
 
-def _gap_text(start: int, end: int) -> str:
+def _gap_text(start: int, end: int, hints: ReadHints = FETCH_RECORD_HINTS) -> str:
     """What a skipped range says for itself.
 
     Names the range so the model can ask for it: a gap it cannot address is
@@ -287,17 +411,100 @@ def _gap_text(start: int, end: int) -> str:
     missing = end - start + 1
     return (
         f"\n[… {missing} block{'s' if missing != 1 else ''} ({start}–{end}) not shown — "
-        f"this record is too large to return in one read. To read this part, call "
-        f"knowledgegraph__fetch_record again with start_block={start} …]\n\n"
+        f"this record is too large to return in one read. To read this part, "
+        f"{hints.again_from(start)} …]\n\n"
     )
 
 
+RECORD_CLOSE = "\n</record>\n"
+
+
+def continuation_hint(
+    label: str, start: int, end: int, total: int, next_start: int,
+    hints: ReadHints = FETCH_RECORD_HINTS,
+) -> str:
+    """Where a record read in order stopped, and the offset that continues it.
+    It names its record: a result carrying several records cannot be continued
+    from an anonymous "start_block=138"."""
+    return (
+        f"\n[Record {label}: showing blocks {start}–{end} of "
+        f"approximately {total} renderable blocks. To read on, "
+        f"{hints.named_from(label, next_start)}{hints.continuing}.]\n"
+    )
+
+
+def selection_hint(
+    label: str, shown: int, total: int, resume: int | None = None,
+    hints: ReadHints = FETCH_RECORD_HINTS,
+) -> str:
+    """A selection is not a window: the blocks shown are not contiguous, so a
+    "next slice" offset would be the wrong instruction. `resume` is where a
+    selection that ran out of room stopped, which reads on in order."""
+    if resume is not None:
+        return (
+            f"\n[Record {label}: showed the {shown} block(s) most relevant "
+            f"to the question, of {total}; the rest of the selection did not fit. "
+            f"To read on from block {resume}, {hints.named_from(label, resume)}; "
+            f"to read it in order instead, use {hints.in_order}.]\n"
+        )
+    return (
+        f"\n[Record {label}: showed the {shown} block(s) most relevant "
+        f"to the question, of {total}. To read it in order "
+        f"instead, {hints.named_from(label, 0)}.]\n"
+    )
+
+
+def no_fit_hint(label: str, next_start: int, hints: ReadHints = FETCH_RECORD_HINTS) -> str:
+    """A record that got no room in a multi-record result, and how to read it."""
+    call = hints.named_from(label, next_start)
+    return (
+        f"\n[Record {label}: no blocks fit in this result. "
+        f"{call[:1].upper()}{call[1:]} to read it on its own.]\n"
+    )
+
+
+def record_trailer_reserve(
+    record: dict[str, Any], *, selection: bool = False, hints: ReadHints = FETCH_RECORD_HINTS,
+) -> int:
+    """The longest hint and closing tag a record's render can end with, so the
+    render can hold room for them before it walks the blocks. Only a selection
+    can end with the (longer) selection hint."""
+    label = str(record.get("id") or record.get("virtual_record_id") or "")
+    indices = _block_indices(record)
+    widest = int("9" * len(str(len(indices) + max(indices, default=0) + 1)))
+    longest = max(
+        len(continuation_hint(label, widest, widest, widest, widest, hints)),
+        len(selection_hint(label, widest, widest, widest, hints)) if selection else 0,
+        len(no_fit_hint(label, widest, hints)),
+    )
+    return longest + len(RECORD_CLOSE)
+
+
+# A gap marker's length barely varies with the range it names; this is the
+# longest it gets for records under 100,000 blocks.
+GAP_MARKER_CHARS = len(_gap_text(10_000, 10_999))
+
+
 __all__ = [
+    "API_READ_HINTS",
+    "BLOCK_RENDER_OVERHEAD",
     "DEFAULT_HIT_LIMIT",
+    "FETCH_RECORD_HINTS",
+    "GAP_MARKER_CHARS",
     "NEIGHBOUR_SPAN",
+    "OPENING_MAX_CHARS",
+    "OPENING_SHARE",
+    "RECORD_CLOSE",
+    "ReadHints",
     "build_selection_query",
+    "continuation_hint",
     "describe_gaps",
     "estimate_block_chars",
+    "estimate_frame_chars",
     "estimate_record_chars",
+    "estimate_render_chars",
+    "no_fit_hint",
+    "record_trailer_reserve",
     "select_relevant_blocks",
+    "selection_hint",
 ]

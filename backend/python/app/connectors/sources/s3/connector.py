@@ -9,7 +9,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import CONNECTOR_S3_INFO, IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -66,7 +66,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="accessKey",
                 display_name="Access Key",
                 placeholder="Enter your Access Key",
-                description="The Access Key from S3 instance",
+                description="Access key of a key with read-only access to the buckets to sync",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
@@ -75,18 +75,61 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="secretKey",
                 display_name="Secret Key",
                 placeholder="Enter your Secret Key",
-                description="The Secret Key from S3 instance",
+                description="Secret key of a key with read-only access to the buckets to sync",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
             )
+        ]),
+        AuthBuilder.type(AuthType.IAM_ROLE).fields([
+            AuthField(
+                name="accessKey",
+                display_name="Access Key",
+                placeholder="Enter the Access Key that may call sts:AssumeRole",
+                description="Used only to call STS AssumeRole. Give it no S3 access.",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="secretKey",
+                display_name="Secret Key",
+                placeholder="Enter the Secret Key for that Access Key",
+                description="Used only to call STS AssumeRole.",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="roleArn",
+                display_name="Role ARN",
+                placeholder="arn:aws:iam::123456789012:role/pipeshub-s3-reader",
+                description="The IAM role in the bucket's account that PipesHub assumes to read S3",
+                field_type="TEXT",
+                max_length=2048,
+            ),
+            AuthField(
+                name="externalId",
+                display_name="External ID",
+                placeholder="Enter the External ID from the role's trust policy",
+                description="Optional. Must match sts:ExternalId in the role's trust policy.",
+                field_type="TEXT",
+                required=False,
+                max_length=1224,
+            ),
         ])
     ])\
+    .with_info(CONNECTOR_S3_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.S3.value))
         .add_documentation_link(DocumentationLink(
-            "S3 Access Key Setup",
-            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
+            "S3 Read-Only Policy Examples",
+            "https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-policies-s3.html",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            "S3 IAM Role (AssumeRole) Setup",
+            "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_common-scenarios_third-party.html",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -99,14 +142,13 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             display_name="Bucket Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select specific S3 buckets to sync",
+            description="Select the S3 buckets to sync. Leave empty to sync every bucket the key can list.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
-        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
@@ -157,7 +199,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR, 
                 severity=NotificationSeverity.ERROR, 
-                title="Configuration not found", 
+                title=self._notification_title("Configuration not found"),
                 message="S3 configuration not found for this connector.", 
                 payload=payload,
             )
@@ -173,7 +215,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Credentials missing",
+                title=self._notification_title("Credentials missing"),
                 message=(
                     "S3 access key or secret key is missing in connector configuration."
                 ),
@@ -200,7 +242,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Failed to initialize S3 client",
+                title=self._notification_title("Failed to initialize S3 client"),
                 message=f"Failed to initialize S3 client: {e}",
             )
             return False
@@ -239,6 +281,7 @@ class S3Connector(S3CompatibleBaseConnector):
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         base_console_url = "https://s3.console.aws.amazon.com"
 
         # Create processor with default S3 URL generation (will be updated after connector creation)
@@ -246,7 +289,7 @@ class S3Connector(S3CompatibleBaseConnector):
             logger, data_store_provider, config_service,
             base_console_url=base_console_url
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         connector = cls(
             logger,

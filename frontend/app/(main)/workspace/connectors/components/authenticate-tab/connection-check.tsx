@@ -48,66 +48,93 @@ export function EgressIpNotice({ connectorName }: { connectorName: string }) {
   };
 
   return (
-    <Flex
-      direction="column"
-      gap="2"
+    <Box
       style={{
-        padding: 16,
-        backgroundColor: 'var(--olive-2)',
-        borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--olive-3)',
+        position: 'relative',
+        overflow: 'hidden',
+        padding: 2,
+        borderRadius: 'var(--radius-3)',
+        background: 'var(--accent-a5)',
+        boxShadow: '0 0 14px var(--accent-a4)',
       }}
     >
-      <Flex align="center" gap="2">
-        <MaterialIcon name="shield" size={18} color="var(--accent-11)" />
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {t('workspace.connectors.authTab.connectionCheck.egressTitle')}
+      {/* Moving border so the card isn't overlooked; 1.5x the card's width keeps the corners covered as it rotates. */}
+      <Box
+        aria-hidden
+        data-ph-egress-glow
+        style={{
+          position: 'absolute',
+          left: '-25%',
+          top: '50%',
+          width: '150%',
+          aspectRatio: '1',
+          marginTop: '-75%',
+          background:
+            'conic-gradient(transparent 0deg 100deg, var(--accent-a8) 150deg, var(--accent-11) 178deg, transparent 180deg 280deg, var(--accent-a8) 330deg, var(--accent-11) 358deg, transparent 360deg)',
+          animation: 'spin 3s linear infinite',
+        }}
+      />
+      <Flex
+        direction="column"
+        gap="2"
+        style={{
+          position: 'relative',
+          padding: 14,
+          borderRadius: 'calc(var(--radius-3) - 2px)',
+          background: 'linear-gradient(var(--accent-a2), var(--accent-a2)), var(--olive-2)',
+        }}
+      >
+        <Flex align="center" gap="2">
+          <MaterialIcon name="shield" size={18} color="var(--accent-11)" />
+          <Text size="2" weight="bold" style={{ color: 'var(--accent-11)' }}>
+            {t('workspace.connectors.authTab.connectionCheck.egressTitle')}
+          </Text>
+        </Flex>
+        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+          {t('workspace.connectors.authTab.connectionCheck.egressDescription', { name: connectorName })}
         </Text>
-      </Flex>
-      <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-        {t('workspace.connectors.authTab.connectionCheck.egressDescription', { name: connectorName })}
-      </Text>
-      <Flex gap="2" wrap="wrap">
-        {ips.map((ip) => (
-          <Flex
-            key={ip}
-            align="center"
-            style={{
-              border: '1px solid var(--olive-4)',
-              borderRadius: 'var(--radius-2)',
-              background: 'var(--color-surface)',
-              paddingRight: 4,
-            }}
-          >
-            <Box
-              asChild
+        <Flex gap="2" wrap="wrap">
+          {ips.map((ip) => (
+            <Flex
+              key={ip}
+              align="center"
               style={{
-                padding: '6px 10px',
-                fontSize: 12,
-                fontFamily: 'var(--code-font-family, ui-monospace, monospace)',
-                color: 'var(--gray-12)',
+                border: '1px solid var(--olive-4)',
+                borderRadius: 'var(--radius-2)',
+                background: 'var(--color-surface)',
+                paddingRight: 4,
               }}
             >
-              <code data-ph-egress-ip>{ip}</code>
-            </Box>
-            <Tooltip content={t('workspace.connectors.authTab.connectionCheck.copyIp')}>
-              <IconButton
-                type="button"
-                size="1"
-                variant="ghost"
-                color="gray"
-                radius="full"
-                style={{ cursor: 'pointer' }}
-                aria-label={t('workspace.connectors.authTab.connectionCheck.copyIp')}
-                onClick={() => void copy(ip)}
+              <Box
+                asChild
+                style={{
+                  padding: '6px 10px',
+                  fontSize: 12,
+                  fontFamily: 'var(--code-font-family, ui-monospace, monospace)',
+                  color: 'var(--gray-12)',
+                }}
               >
-                <MaterialIcon name="content_copy" size={16} color="var(--gray-11)" />
-              </IconButton>
-            </Tooltip>
-          </Flex>
-        ))}
+                <code data-ph-egress-ip>{ip}</code>
+              </Box>
+              <Tooltip content={t('workspace.connectors.authTab.connectionCheck.copyIp')}>
+                <IconButton
+                  type="button"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  radius="full"
+                  style={{ cursor: 'pointer' }}
+                  aria-label={t('workspace.connectors.authTab.connectionCheck.copyIp')}
+                  onClick={() => void copy(ip)}
+                >
+                  <MaterialIcon name="content_copy" size={16} color="var(--gray-11)" />
+                </IconButton>
+              </Tooltip>
+            </Flex>
+          ))}
+        </Flex>
       </Flex>
-    </Flex>
+    </Box>
   );
 }
 

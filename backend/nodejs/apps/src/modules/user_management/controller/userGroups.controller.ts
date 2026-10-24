@@ -45,6 +45,30 @@ async function saveGroupName<T extends { save(): Promise<T> }>(
 export class UserGroupController {
   constructor() {}
 
+  // safeParsePagination throws a plain Error for an out-of-range page or limit,
+  // which the error middleware reports as a 500. A bad query string is a 400.
+  private parsePagination(req: AuthenticatedUserRequest): {
+    page: number;
+    limit: number;
+    skip: number;
+  } {
+    try {
+      return safeParsePagination(
+        req.query.page as string,
+        req.query.limit as string,
+        1,
+        25,
+        100,
+      );
+    } catch (error) {
+      throw new BadRequestError(
+        error instanceof Error
+          ? error.message
+          : 'Invalid pagination parameters',
+      );
+    }
+  }
+
   async getAllUsers(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -103,13 +127,7 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
     const createdAfter = (req.query.createdAfter as string)?.trim();
     const createdBefore = (req.query.createdBefore as string)?.trim();
@@ -327,13 +345,7 @@ export class UserGroupController {
   ): Promise<void> {
     const { groupId } = req.params;
     const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
 
     const group = await UserGroups.findOne({

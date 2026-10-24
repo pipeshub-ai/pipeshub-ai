@@ -27,6 +27,7 @@ _ROUTERS = {
     "toolsets": ("app.api.routes.toolsets", "router"),
     "health": ("app.api.routes.health", "router"),
     "ai_models_registry": ("app.api.routes.ai_models_registry", "router"),
+    "code_graph": ("app.api.routes.code_graph", "router"),
     "entity": ("app.api.routes.entity", "router"),
     "mcp_servers": ("app.api.routes.mcp_servers", "router"),
     "kb": ("app.connectors.sources.localKB.api.kb_router", "kb_router"),
@@ -35,6 +36,7 @@ _ROUTERS = {
         "knowledge_hub_router",
     ),
     "connectors": ("app.connectors.api.router", "router"),
+    "artifacts": ("app.connectors.api.artifacts_router", "artifacts_router"),
     "parsing": ("app.api.routes.parsing", "router"),
     "extraction": ("app.api.routes.extraction", "router"),
 }
@@ -63,6 +65,7 @@ _SERVICE_TOKEN_ROUTES = {
     ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
     ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},
     ("entity", "PATCH", "/api/v1/entity/user/email"): {"entity:user:write"},
+    ("extraction", "POST", "/api/v1/extract/entities"): {"document:classify"},
 }
 
 

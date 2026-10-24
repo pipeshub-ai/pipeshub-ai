@@ -26,6 +26,7 @@ export function CollectionStatsPanel() {
   const [isRefreshBusy, setIsRefreshBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
 
   const collectionId = collectionStatsPanel.collectionId;
   const collectionName = collectionStatsPanel.collectionName;
@@ -126,13 +127,36 @@ export function CollectionStatsPanel() {
     }
   }, [collectionId, isManualIndexBusy, fetchStats, addToast, t]);
 
+  const handleRetryFailedClassification = useCallback(async () => {
+    if (!collectionId || isRetryClassificationBusy) return;
+    try {
+      setIsRetryClassificationBusy(true);
+      await KnowledgeBaseApi.reindexKnowledgeBase(collectionId, ['FAILED'], ['classify']);
+      addToast({
+        variant: 'success',
+        title: t('collections.stats.retryClassificationStart'),
+      });
+      await fetchStats(true);
+    } catch (error) {
+      console.error('Failed to retry classification', { collectionId, error });
+      addToast({
+        variant: 'error',
+        title: t('collections.stats.retryClassificationError'),
+      });
+    } finally {
+      setIsRetryClassificationBusy(false);
+    }
+  }, [collectionId, isRetryClassificationBusy, fetchStats, addToast, t]);
+
   const handleNavigateToRecords = useCallback(
     (indexingStatuses?: IndexingStatus[]) => {
       if (!collectionId) return;
 
       const params = new URLSearchParams();
       params.set('view', 'all-records');
-      params.set('kbIds', collectionId);
+      // A collection is an App, so it filters through connectorIds; no route
+      // accepts `kbIds`.
+      params.set('connectorIds', collectionId);
       if (indexingStatuses && indexingStatuses.length > 0) {
         params.set('indexingStatus', indexingStatuses.join(','));
       }
@@ -159,11 +183,13 @@ export function CollectionStatsPanel() {
         onRefresh={handleRefresh}
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
+        onRetryFailedClassification={handleRetryFailedClassification}
         onNavigateToRecords={handleNavigateToRecords}
         showSyncActions={true}
         isRefreshBusy={isRefreshBusy}
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
       />
     </WorkspaceRightPanel>
   );

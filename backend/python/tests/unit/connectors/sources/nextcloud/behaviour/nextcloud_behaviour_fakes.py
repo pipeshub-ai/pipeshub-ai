@@ -16,7 +16,6 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape
@@ -405,6 +404,10 @@ class FakeRecordsDb:
         self.unreadable_paths: set[str] = set()
         self.fail_record_scan = False
         self.messaging_producer: Any = None
+        self.kept_records: list[str] = []
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        self.kept_records.extend(record_ids)
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -580,12 +583,6 @@ class FakeRecordsDb:
             return None
         return self._path(record_id)
 
-    async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[SimpleNamespace]:
-        record = self._by_id(node_id)
-        if record is None or not self.permissions.get(record.external_record_id):
-            return None
-        return SimpleNamespace(email=self.permissions[record.external_record_id][0].email, source_user_id=None)
-
 
 def _neo4j_property(value: object) -> bool:
     primitive = (str, int, float, bool, type(None))
@@ -641,7 +638,7 @@ class FakeStore:
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeStore"]:
         yield self
 
 

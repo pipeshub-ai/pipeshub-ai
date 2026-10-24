@@ -81,9 +81,9 @@ CODE_FILE_MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 PR_PAGE_SIZE = 100
 ISSUE_PAGE_SIZE = 100
 
-# A PR's changed-file contents are inlined into the blocks payload and held in
-# memory while the container is serialised, so cap what gets inlined. The diff
-# itself is always kept — only the full-file body is dropped above this.
+# A changed file GitHub returns without a diff (too large to show) has its
+# contents inlined into the PR's blocks payload instead, held in memory while
+# the container is serialised, so cap what gets inlined.
 PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
 
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a
@@ -130,6 +130,12 @@ _SEARCH_PUBLIC_PAGES_PER_REQUEST = 3
 # sync-state to lean on). One keystroke = one request, so cache briefly.
 _ORG_SCOPE_CACHE_TTL_SECONDS = 60.0
 
+# Streamed records name their repository only by numeric id, so each one needs
+# owner/name before its real request. Remembered per repository for this long:
+# a sync streams hundreds of records per repo, and the bound means a renamed or
+# transferred repository is picked up again within minutes.
+_REPO_LOOKUP_TTL_SECONDS = 15 * 60.0
+
 # ---------------------------------------------------------------------------
 # Auth error markers — substring fallback for stringified errors on
 # GitHubResponse objects that carry no HTTP status
@@ -151,6 +157,13 @@ HTTP_UNAUTHORIZED = 401
 # permission denial by the time it gets here, because the data source reports
 # GitHub's rate-limited 403s as 429, and ds_call waits those out separately.
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+# httpx transport failures: the connection broke before GitHub sent a status. Not
+# retried, one dropped connection made a sync a silent no-op (B3: a force-push sat
+# unsynced until the next sync).
+_RETRYABLE_TRANSPORT_ERRORS: frozenset[str] = frozenset({
+    "RemoteProtocolError", "ConnectError", "ReadError", "WriteError", "CloseError",
+    "ConnectTimeout", "PoolTimeout",
+})
 _GITHUB_MAX_RETRIES = 3
 _GITHUB_RETRY_BASE_DELAY_SECONDS = 1.0
 _GITHUB_RETRY_MAX_DELAY_SECONDS = 30.0

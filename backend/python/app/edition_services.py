@@ -1,5 +1,5 @@
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
@@ -76,6 +76,60 @@ def get_data_entities_processor_cls():
     """Return the DataSourceEntitiesProcessor class for this edition."""
     from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
     return DataSourceEntitiesProcessor
+
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+    from langchain_core.embeddings import Embeddings
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.services.model_identity.forwarders.registry import ForwarderRegistry
+    from app.services.model_identity.groups import GroupMembershipResolver
+    from app.web.ports import WebAccessGate
+
+
+def register_extra_toolsets(registry: "ToolsetRegistry") -> None:
+    """Register edition-specific agent toolsets. OSS: no-op."""
+    pass
+
+
+def configure_app(app: "FastAPI", service: str) -> None:
+    """Edition setup on a freshly built FastAPI app. `service` names the process. OSS: no-op."""
+    pass
+
+
+def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, config: dict) -> "BaseChatModel":
+    """Wrap a chat model with edition extras. OSS: none."""
+    return model
+
+
+def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
+    """Wrap an embeddings client with edition extras. OSS: none."""
+    return embeddings
+
+
+def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":  # noqa: ANN401 - an untyped dependency-injection object
+    """Resolves a person's IdP group ids for identity forwarding to a model gateway.
+
+    OSS knows no groups: the gateway receives the user id only.
+    """
+    from app.services.model_identity.groups import NoopGroupResolver
+
+    return NoopGroupResolver()
+
+
+def register_identity_forwarders(registry: "ForwarderRegistry") -> None:
+    """Add edition-specific wire formats (for example signed JWT) to the forwarder registry. OSS: none."""
+    pass
+
+
+def get_web_access_gate() -> "WebAccessGate":
+    """Decides which web searches and fetches may happen. OSS: any search, and any http(s) URL
+    whose address is public (checked again for every redirect when it is fetched)."""
+    from app.web.gate import DefaultWebAccessGate
+
+    return DefaultWebAccessGate()
 
 
 

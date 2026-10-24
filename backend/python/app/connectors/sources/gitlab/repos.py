@@ -38,24 +38,37 @@ from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.constants import (
     IconPaths,
 )
+from app.connectors.core.registry.code_indexing_flags import (
+    code_exclude_globs,
+    code_indexing_flags,
+)
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.file_role import (
+    FileRole,
     classify_file_role,
-    should_index_code_file,
+)
+from app.modules.parsers.code_parser.gitattributes import (
+    LinguistExclusions,
+    parse_linguist_exclusions,
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
+from app.modules.parsers.code_parser.path_policy import PathPolicy
 
 from .constants import (
-    GITLAB_COMPARE_DIFF_LIMIT,
-    PREVIEW_RENDERABLE_EXTENSIONS,
     _GITLAB_BACKFILL_CONCURRENCY,
     _GITLAB_TREE_PAGE_MAX_ATTEMPTS,
     _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS,
+    GITLAB_COMPARE_DIFF_LIMIT,
+    PREVIEW_RENDERABLE_EXTENSIONS,
 )
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+# Rules alone, before a project's .gitattributes and filters are loaded.
+_BUILT_IN_POLICY = PathPolicy()
 
 
 class ReposSync:
@@ -64,10 +77,31 @@ class ReposSync:
     def __init__(self, connector: "GitLabConnector") -> None:
         self.c = connector
         self.logger = connector.logger
+        # Per project, loaded at the start of each run.
+        self._policy = _BUILT_IN_POLICY
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
+
+    async def _load_linguist_exclusions(self, project_id: int, sha: str) -> LinguistExclusions:
+        """The project's root ``.gitattributes`` linguist rules at ``sha``; none when absent (P-7)."""
+        c = self.c
+        try:
+            res = await c.runtime.ds_call(
+                c.data_source.get_file_content, project_id=project_id, file_path=".gitattributes", ref=sha,
+            )
+        except Exception as e:
+            self.logger.warning("Could not read .gitattributes for project %s: %s", project_id, e)
+            return LinguistExclusions()
+        content = getattr(res.data, "content", None) if res.success and res.data is not None else None
+        if not content:
+            return LinguistExclusions()
+        try:
+            text = base64.b64decode(content).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return LinguistExclusions()
+        return parse_linguist_exclusions(text)
 
     async def run(
         self, project_id: int, project_path: str, default_branch: str
@@ -93,6 +127,10 @@ class ReposSync:
             )
             return
 
+        self._policy = PathPolicy(
+            linguist=await self._load_linguist_exclusions(project_id, current_sha),
+            exclude_globs=code_exclude_globs(c.sync_filters),
+        )
         last_sha = await self._get_code_repo_checkpoint(project_id)
         if last_sha is None:
             self.logger.info("No code-repo checkpoint for project %s; running full sync", project_id)
@@ -155,7 +193,9 @@ class ReposSync:
     async def _get_code_repo_checkpoint(self, project_id: int) -> str | None:
         """Return the last synced HEAD commit SHA for a project's code repository."""
         from app.config.constants.arangodb import Connectors
-        from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
+        from app.connectors.core.base.sync_point.sync_point import (
+            generate_record_sync_point_key,
+        )
         try:
             group_project_id = f"{project_id}-code-repository"
             key = generate_record_sync_point_key(Connectors.GITLAB.value, group_project_id, "")
@@ -170,7 +210,9 @@ class ReposSync:
     async def _update_code_repo_checkpoint(self, project_id: int, commit_sha: str) -> None:
         """Persist the HEAD commit SHA after a successful code repository sync."""
         from app.config.constants.arangodb import Connectors
-        from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
+        from app.connectors.core.base.sync_point.sync_point import (
+            generate_record_sync_point_key,
+        )
         key = generate_record_sync_point_key(
             Connectors.GITLAB.value, f"{project_id}-code-repository", ""
         )
@@ -401,6 +443,9 @@ class ReposSync:
             diffs = getattr(compare_data, "diffs", None) or []
             overflow = getattr(compare_data, "overflow", None)
 
+        # shortcut: unlike GitHub (SC-11) there is no tree-diff fallback -- GitLab's tree is a
+        # paginated walk, so diffing two trees costs two full walks; add one if full syncs
+        # after >1000-file pushes show up in the logs as a cost.
         if overflow:
             self.logger.warning(
                 "compare_commits returned overflow=true for project %s (%s diffs); falling back to full sync",
@@ -411,7 +456,7 @@ class ReposSync:
             self.logger.warning("Too many diffs (%s) for project %s; falling back to full sync", len(diffs), project_id)
             return False
 
-        deletes, adds, modifies, renames = _classify_compare_diffs(diffs)
+        deletes, adds, modifies, renames = _classify_compare_diffs(diffs, self._policy)
         self.logger.info(
             "Incremental code sync for project %s: %s deletes, %s adds, %s modifies, %s renames (before SHA reconcile)",
             project_id, len(deletes), len(adds), len(modifies), len(renames),
@@ -556,6 +601,7 @@ class ReposSync:
 
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -566,7 +612,7 @@ class ReposSync:
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
                 await self._upsert_code_files_by_paths(project_id, project_path, [new_path], ref=ref)
                 continue
-            if _should_skip_dotfile_repo_path(new_path):
+            if _should_skip_dotfile_repo_path(new_path, self._policy):
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
                 continue
             web_path = _code_blob_web_path(project_path, new_path)
@@ -584,6 +630,8 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
+                commit_sha=_commit_ref(ref),
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
@@ -641,7 +689,9 @@ class ReposSync:
                                "webPath": web_path, "webUrl": f"{c._gitlab_base_url}{web_path}"})
 
         if nodes:
-            all_ok = await self.build_code_file_records(nodes, project_id, project_path) and all_ok
+            all_ok = await self.build_code_file_records(
+                nodes, project_id, project_path, commit_sha=_commit_ref(ref),
+            ) and all_ok
         return all_ok
 
     async def _delete_code_files_by_paths(
@@ -803,8 +853,10 @@ class ReposSync:
         external_group_id: str,
         parent_external_record_id: str | None,
         code_files_enabled: bool,
+        test_files_enabled: bool,
         source_created_at: int | None = None,
         source_updated_at: int | None = None,
+        commit_sha: str | None = None,
     ) -> CodeFileRecord:
         """Build the record for one repository blob.
 
@@ -820,9 +872,13 @@ class ReposSync:
         ``version`` is always 0 here; ``_process_record`` carries the stored
         version forward, where the existing record is already loaded.
         """
+
         c = self.c
         extension = _blob_extension(file_name)
         file_role = classify_file_role(file_path, file_name)
+        if commit_sha and weburl:
+            # A citation keeps pointing at the lines it quoted (P-8, A-12).
+            weburl = weburl.replace("/-/blob/HEAD/", f"/-/blob/{commit_sha}/", 1)
         record = CodeFileRecord(
             language=detect_language(file_name),
             file_role=file_role.value,
@@ -849,20 +905,25 @@ class ReposSync:
             weburl=weburl,
             source_created_at=source_created_at,
             source_updated_at=source_updated_at,
+            commit_sha=commit_sha,
         )
 
         if not code_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        elif file_role is FileRole.TEST and not test_files_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return record
 
     async def build_code_file_records(
-        self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
+        self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str,
+        commit_sha: str | None = None,
     ) -> None:
         """Build and persist repository blob records from a blob list."""
         list_records_new: list[RecordUpdate] = []
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -877,8 +938,7 @@ class ReposSync:
             if file_name.startswith("."):
                 files_skipped += 1
                 continue
-            should_index, _role = should_index_code_file(file_path, file_name)
-            if not should_index:
+            if not self._policy.keeps_file(file_path, str(file_name)):
                 files_skipped += 1
                 continue
             if "/" in file_path:
@@ -895,6 +955,8 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
+                commit_sha=commit_sha,
             )
             list_records_new.append(RecordUpdate(
                 record=blob_record, is_new=True, is_updated=False, is_deleted=False,
@@ -934,7 +996,12 @@ class ReposSync:
         if not external_group_id:
             raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
         project_id = external_group_id.split("-")[0]
-        file_res = await c.runtime.ds_call(c.data_source.get_file_content, project_id=project_id, file_path=file_path)
+        # At the synced commit when the record has one, so the content indexed
+        # is the content the record describes (P-8).
+        file_res = await c.runtime.ds_call(
+            c.data_source.get_file_content, project_id=project_id, file_path=file_path,
+            ref=getattr(record, "commit_sha", None) or "HEAD",
+        )
         if not file_res.success or not file_res.data:
             raise_for_stream_fetch(
                 success=file_res.success,
@@ -1106,11 +1173,10 @@ class ReposSync:
     # ------------------------------------------------------------------
 
     def _code_files_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+        return code_indexing_flags(self.c.indexing_filters)[0]
+
+    def _test_files_indexing_enabled(self) -> bool:
+        return code_indexing_flags(self.c.indexing_filters)[1]
 
     # ------------------------------------------------------------------
     # Record persistence helper
@@ -1169,7 +1235,7 @@ def _should_continue_repo_tree_pagination(page_info: dict[str, Any]) -> tuple[bo
     return True, end_cursor
 
 
-def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
+def _should_skip_dotfile_repo_path(repo_path: str, policy: PathPolicy = _BUILT_IN_POLICY) -> bool:
     """True when a repo path should not become a record at all.
 
     Dotfiles, plus dependency/build-output/cache trees and generated code. This
@@ -1179,8 +1245,7 @@ def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
     basename = repo_path.rsplit("/", 1)[-1]
     if basename.startswith("."):
         return True
-    should_index, _role = should_index_code_file(repo_path, basename)
-    return not should_index
+    return not policy.keeps_file(repo_path, basename)
 
 
 def _blob_extension(file_name: str) -> str | None:
@@ -1224,6 +1289,16 @@ def _blob_mime_type(file_name: str, extension: str | None) -> str:
     return MimeTypes.BIN.value
 
 
+def _commit_ref(ref: str | None) -> str | None:
+    """A ref that names a commit, or None for a moving one.
+
+    shortcut: a full sync lists files at HEAD and stamps no commit, so those
+    records read the branch head until the file changes; pass the branch's
+    head sha through the full sync to pin them too.
+    """
+    return ref if ref and ref != "HEAD" else None
+
+
 def _code_blob_web_path(project_path: str, repo_path: str, ref: str = "HEAD") -> str:
     return f"/{project_path}/-/blob/{ref}/{repo_path}"
 
@@ -1248,7 +1323,7 @@ def _repo_path_from_blob_web_url(web_url: str | None) -> str | None:
 
 
 def _classify_compare_diffs(
-    diffs: list[Any],
+    diffs: list[Any], policy: PathPolicy = _BUILT_IN_POLICY,
 ) -> tuple[list[str], list[str], list[str], list[tuple[str, str]]]:
     """Classify compare-API diffs into (deletes, adds, modifies, renames)."""
     deletes: list[str] = []
@@ -1261,17 +1336,17 @@ def _classify_compare_diffs(
     seen_rename_old: set[str] = set()
 
     def _add_delete(path: str) -> None:
-        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path, policy):
             deletes.append(path)
             seen_delete.add(path)
 
     def _add_add(path: str) -> None:
-        if path and path not in seen_add and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_add and not _should_skip_dotfile_repo_path(path, policy):
             adds.append(path)
             seen_add.add(path)
 
     def _add_modify(path: str) -> None:
-        if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path, policy):
             modifies.append(path)
             seen_modify.add(path)
 
@@ -1288,10 +1363,10 @@ def _classify_compare_diffs(
         if is_renamed:
             effective_old = old_path
             effective_new = new_path or old_path
-            if _should_skip_dotfile_repo_path(effective_new):
+            if _should_skip_dotfile_repo_path(effective_new, policy):
                 _add_delete(effective_old)
                 continue
-            if _should_skip_dotfile_repo_path(effective_old):
+            if _should_skip_dotfile_repo_path(effective_old, policy):
                 _add_add(effective_new)
                 continue
             if effective_old and effective_old not in seen_rename_old:

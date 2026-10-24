@@ -26,6 +26,12 @@ FALLBACKS = METRICS_BACKEND.counter(
     ["reason"],
 )
 
+LOOKUP_ERRORS = METRICS_BACKEND.counter(
+    "pipeshub_entity_resolution_lookup_errors_total",
+    "Entity lookups that raised: each failed attempt, and each resolution deferred after the last one",
+    ["lookup", "outcome"],
+)
+
 LATENCY = METRICS_BACKEND.histogram(
     "pipeshub_entity_resolution_seconds",
     "Wall-clock time of one record's resolution",
@@ -48,6 +54,10 @@ def record_fallback(reason: str, count: int = 1) -> None:
         FALLBACKS.inc(reason, value=float(count))
 
 
+def record_lookup_error(lookup: str, outcome: str) -> None:
+    LOOKUP_ERRORS.inc(lookup, outcome)
+
+
 def record_latency(mode: str, seconds: float) -> None:
     LATENCY.observe(mode, value=seconds)
 
@@ -55,6 +65,7 @@ def record_latency(mode: str, seconds: float) -> None:
 __all__ = [
     "record_fallback",
     "record_latency",
+    "record_lookup_error",
     "record_model_call",
     "record_name_outcome",
 ]

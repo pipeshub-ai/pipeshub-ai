@@ -51,7 +51,10 @@ vi.mock('react-i18next', () => {
       : cur;
   };
   const value = { i18n: { language: 'en-US' }, t };
-  return { useTranslation: () => value };
+  return {
+    initReactI18next: { type: '3rdParty', init: () => undefined },
+    useTranslation: () => value,
+  };
 });
 
 const listAccounts = vi.fn();
@@ -78,6 +81,18 @@ vi.mock('../api', () => ({
 
 import ServiceAccountsPage from '../page';
 import { ServiceAccountTokensPanel } from '../components/service-account-tokens-panel';
+
+// jsdom has no matchMedia; useIsMobile needs it to resolve the touch-target size.
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  writable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }),
+});
 
 const ACCOUNT = {
   id: '507f1f77bcf86cd799439012',
