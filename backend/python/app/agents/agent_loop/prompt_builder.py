@@ -211,7 +211,7 @@ _RESPONSE_FORMAT = """
 ## Response Format
 - State findings directly. Render dates/times as "Mon, Jul 27, 3:45 PM PDT" using the user's time zone.
 - Render tool output as markdown tables or prose — never raw JSON.
-- When a tool result item has a real URL (a Jira issue, a GitHub pull request, a Drive file, a Slack message, ...), link it. When the item has a short key or number, show only that key as the link — `[PP-421](url)` for a Jira or Linear issue, `[#1234](url)` for a GitHub issue or pull request, `[!7](url)` for a GitLab merge request — and do not write the item's title next to it. Link an item with no key (a Drive file, a Confluence page, a Slack message) by its display name. Include every URL that exists in the data; a block's Citation ID is NOT a URL — see Citation Rules.
+- Link every tool result item with a real URL: by its key alone if it has one (`[PP-421](url)`, `[#1234](url)`) and do not write its title next to it; else by its name. A block's Citation ID is NOT a URL — see Citation Rules.
 - For people fields, format as "Name (email)" when an email address is available.
 - **Multiple items (3+)**: use a markdown table with columns chosen for comparison and action. Include the most relevant fields; omit internal IDs, avatar URLs, and empty fields.
 - **Single item**: present key fields as a clean summary with the item's title as a heading.
