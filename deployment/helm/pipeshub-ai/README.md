@@ -245,12 +245,19 @@ one fail with 401. To avoid that window, stop the app first:
 ```bash
 KEY="$(openssl rand -hex 32)"   # store it before continuing
 
-# 1. App stopped, Qdrant restarted on the new key
+# 1. App stopped, and its pods gone: a terminating pod still holds the old key.
+#    kubectl, not helm: this chart refuses to render while the release holds
+#    `api_key`. A HorizontalPodAutoscaler leaves a Deployment at 0 alone.
+kubectl scale deployment/pipeshub-ai -n <namespace> --replicas=0
+kubectl wait --for=delete pod -n <namespace> --timeout=10m \
+  -l app.kubernetes.io/instance=pipeshub-ai,app.kubernetes.io/component=main
+
+# 2. Qdrant restarted on the new key, app still stopped
 helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
   --set qdrant.apiKey="$KEY" --set replicaCount=0 --set autoscaling.enabled=false
 kubectl rollout status statefulset/pipeshub-ai-qdrant -n <namespace>
 
-# 2. App back, with your usual replicaCount / autoscaling values
+# 3. App back, with your usual replicaCount / autoscaling values
 helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
   --set replicaCount=<n> --set autoscaling.enabled=<true|false>
 ```
