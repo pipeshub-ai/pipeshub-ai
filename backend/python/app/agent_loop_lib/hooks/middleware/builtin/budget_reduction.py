@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.context.watermark import watermarks
-from app.agent_loop_lib.core.tokens import CHARS_PER_TOKEN, count_message_tokens, count_tokens
+from app.agent_loop_lib.core.tokens import (
+    CHARS_PER_TOKEN,
+    count_message_tokens,
+    count_tokens,
+)
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
