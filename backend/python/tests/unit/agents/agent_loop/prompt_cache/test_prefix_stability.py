@@ -219,6 +219,7 @@ _ANSWER_RULE_SWITCHES = ("ANSWER_COMPOSITION_RULES", "THOROUGH_RETRIEVAL", "MULT
 # Other switches that change prompt text; pinned off so only the answer rules vary.
 _OTHER_PROMPT_SWITCHES = (
     "HIGH_ACCURACY_MODE", "KEYWORD_SEARCH_QUERIES", "TARGETED_RETRIEVAL", "TIMELINE_SUMMARIES",
+    "EXACT_TEXT_SEARCH_GATE",
 )
 _MODES = ("quick", "react", "planExecute", "deep", "internal_search")
 _SNAPSHOT = Path(__file__).parent / "snapshots" / "answer_rules_sections.json"
@@ -424,6 +425,25 @@ _STABLE_BLOCK_SCRIPT = textwrap.dedent('''
 ''')
 _HASH_SEEDS = (0, 7)
 _PROCESS_TIMEOUT_S = 120
+
+
+@pytest.mark.parametrize("mode", _MODES)
+async def test_the_exact_text_gate_keeps_one_tool_list_for_every_question(
+    monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    """The gate decides per query whether exact text runs, but the parameter
+    that asks for it is a deployment setting: the tool list must not follow
+    the question."""
+    _set_answer_rules(monkeypatch, on=False)
+    monkeypatch.setenv("EXACT_TEXT_SEARCH_GATE", "true")
+    first_stable, _, first_tools = await _mode_request(mode, _QUESTIONS[0])
+    second_stable, _, second_tools = await _mode_request(mode, _QUESTIONS[1])
+
+    assert (first_stable, first_tools) == (second_stable, second_tools)
+    searches = [t for t in first_tools if t["name"] == "knowledgegraph__search"]
+    # The other modes reach search through a sub-agent or a tool lookup.
+    assert searches or mode not in ("quick", "internal_search")
+    assert all("exact_match" in json.dumps(t) for t in searches)
 
 
 # Each seed cold-starts the agent stack in a fresh interpreter (langchain_core alone pulls in

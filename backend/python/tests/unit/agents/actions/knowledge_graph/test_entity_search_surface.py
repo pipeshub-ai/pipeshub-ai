@@ -173,3 +173,47 @@ def test_a_grouped_result_is_summarized_across_its_queries(payload: dict[str, An
 
     result = SimpleNamespace(content=json.dumps(payload), is_error=False)
     assert _search_entities_result_summary({}, result) == expected
+
+
+def _search_of(tools: list[Any]) -> Any:  # noqa: ANN401
+    (tool,) = [t for t in tools if t.name == "knowledgegraph__search"]
+    return tool
+
+
+@pytest.mark.parametrize("offered", [False, True])
+def test_without_the_exact_text_gate_search_offers_no_exact_match(
+    monkeypatch: pytest.MonkeyPatch, offered: bool,
+) -> None:
+    """With every search running exact text, the parameter would only add to every prompt."""
+    monkeypatch.delenv("EXACT_TEXT_SEARCH_GATE", raising=False)
+    _, served = _tools(offered)
+    assert "exact_match" not in {p.name for p in _search_of(served).parameters}
+
+
+@pytest.mark.parametrize(("offered", "named"), [(False, True), (False, False), (True, True)])
+def test_with_the_exact_text_gate_search_also_takes_exact_match(
+    monkeypatch: pytest.MonkeyPatch, offered: bool, named: bool,
+) -> None:
+    monkeypatch.delenv("EXACT_TEXT_SEARCH_GATE", raising=False)
+    _, ungated = _tools(offered, named=named)
+    monkeypatch.setenv("EXACT_TEXT_SEARCH_GATE", "true")
+    _, served = _tools(offered, named=named)
+
+    before, after = _search_of(ungated), _search_of(served)
+    assert after.parameters == [*before.parameters, surface.EXACT_MATCH_PARAMETER]
+    assert (after.description, after.path, after.tags) == (before.description, before.path, before.tags)
+    assert after.summarize_args({"query": "PAY-4312"}) == before.summarize_args({"query": "PAY-4312"})
+    others = [(t.name, t.description, t.parameters) for t in served if t.name != "knowledgegraph__search"]
+    assert others == [(t.name, t.description, t.parameters) for t in ungated if t.name != "knowledgegraph__search"]
+
+
+@pytest.mark.asyncio
+async def test_the_gated_search_passes_exact_match_to_the_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXACT_TEXT_SEARCH_GATE", "true")
+    tool = _search_of(_tools(False)[1])
+    tool.validate({"query": "refund requests", "exact_match": True})
+    with patch(
+        "app.agents.actions.knowledge_graph.ops.search.execute_search", AsyncMock(return_value="ok"),
+    ) as op:
+        await tool.execute(query="refund requests", exact_match=True)
+    assert op.await_args.kwargs["exact_match"] is True
