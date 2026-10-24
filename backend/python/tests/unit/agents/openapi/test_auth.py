@@ -207,3 +207,18 @@ class TestSharedCredentialRefresh:
                                   load=load, lock_key="toolset-2/u1")
         assert await source.access_token(force_refresh=True) != "rejected"
         assert len(endpoint.calls) == 1
+
+    async def test_a_rotated_refresh_token_is_used_even_when_the_access_token_came_back_the_same(
+        self, endpoint: _FakeTokenEndpoint,
+    ) -> None:
+        held = ApiToolsetCredentials(client_id="app", oauth=_tokens("same", refresh="r1"))
+        rotated = ApiToolsetCredentials(client_id="app", oauth=_tokens("same", refresh="r2"))
+
+        async def load() -> ApiToolsetCredentials:
+            return rotated
+
+        source = OAuthTokenSource(AUTH_CODE, held, token_url="https://auth.acme.test/token", allow_private=True,
+                                  load=load, lock_key="toolset-3/u1")
+        # The API refused "same": refresh, with the refresh token another request rotated to.
+        await source.access_token(force_refresh=True)
+        assert [call["refresh_token"] for _, call in endpoint.calls] == ["r2"]

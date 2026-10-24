@@ -124,9 +124,13 @@ class OAuthTokenSource:
                 return tokens.access_token
             newer = await self._newer_stored_tokens(tokens)
             if newer is not None:
-                # Another request refreshed while this one waited for the lock: use its token.
+                # Another request refreshed while this one waited for the lock: take its tokens, and
+                # its access token too unless that is about to expire or is the one just refused.
                 self._credentials = self._credentials.model_copy(update={"oauth": newer})
-                return newer.access_token
+                rejected = force_refresh and tokens is not None and newer.access_token == tokens.access_token
+                if not rejected and not _expires_soon(newer):
+                    return newer.access_token
+                tokens = newer
             try:
                 fresh = await self._obtain(tokens)
             except MCPOAuthError as e:
@@ -144,7 +148,9 @@ class OAuthTokenSource:
             return None
         stored = await self._load()
         tokens = stored.oauth if stored is not None else None
-        if tokens is None or _expires_soon(tokens) or (held is not None and tokens.access_token == held.access_token):
+        # The refresh token too: a server may rotate it and hand back the same access token.
+        if tokens is None or (held is not None and (tokens.access_token, tokens.refresh_token)
+                              == (held.access_token, held.refresh_token)):
             return None
         return tokens
 
