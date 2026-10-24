@@ -22,12 +22,20 @@ from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
-from app.agents.agent_loop.prompt_cache import AnthropicCacheStrategy
+from app.agents.agent_loop.prompt_cache import (
+    AnthropicCacheStrategy,
+    OpenAICacheStrategy,
+)
 from tests.unit.agents.adapter.conftest import make_context
-from tests.unit.agents.agent_loop.prompt_cache.conftest import anthropic_reply
+from tests.unit.agents.agent_loop.prompt_cache.conftest import (
+    anthropic_reply,
+    chat_reply,
+    responses_reply,
+)
 
 FIVE_MIN = {"type": "ephemeral"}
 _QUIET_SECTIONS = {
@@ -154,6 +162,61 @@ class TestTurnToTurn:
             assert later["messages"][: len(earlier["messages"])] == earlier["messages"]
         assert endpoint.bodies[0]["system"][0]["cache_control"] == FIVE_MIN
         assert "Name both" not in endpoint.bodies[0]["system"][0]["text"]
+
+
+_QUESTIONS_AND_NAMES = (("Where do Ann and Bo work?", ["Ann", "Bo"]), ("Who leads the Q3 audit?", ["Cy", "Di"]))
+
+
+def _openai_replies(names: list[str], *, responses: bool) -> list[dict]:
+    if responses:
+        return [*(responses_reply(call={"call_id": f"call_{i}", "name": "lookup", "arguments": json.dumps({"name": n})})
+                  for i, n in enumerate(names)), responses_reply(text="Both work in finance.")]
+    return [*(chat_reply(call={"id": f"call_{i}", "name": "lookup", "arguments": json.dumps({"name": n})})
+              for i, n in enumerate(names)), chat_reply(text="Both work in finance.")]
+
+
+class TestOpenAIPrefix:
+    """GPT-5.6 and later through the real agent, prompt builder and LangChain
+    clients: within a conversation every request extends the previous one, and
+    a new conversation starts with the same tools and marked stable message."""
+
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_turns_extend_and_conversations_share_the_marked_prefix(
+        self, endpoint: Any, responses: bool,  # noqa: ANN401
+    ) -> None:
+        from langchain_openai import ChatOpenAI
+
+        registry = ToolRegistry()
+        registry.register_tool(_LookupTool())
+        conversations: list[list[dict]] = []
+        for question, names in _QUESTIONS_AND_NAMES:
+            endpoint.bodies.clear()
+            endpoint.replies = _openai_replies(names, responses=responses)
+            llm = ChatOpenAI(model="gpt-6.1-sol", api_key="test", base_url=endpoint.url, max_retries=0,
+                             use_responses_api=responses)
+            transport = LangChainTransport(llm, model_name="gpt-6.1-sol", cache_strategy=OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "pipeshub:org:0"}, breakpoint=True)))
+            builder = PipesHubPromptBuilder(make_context(timezone="Asia/Kolkata", has_knowledge=True))
+            transports = TransportRegistry()
+            transports.register("lc", lambda transport=transport: transport)
+            spec = AgentSpec(name="pipeshub-agent", system_prompt=builder, loop=ReActLoop(), max_turns=6,
+                             model=ModelSpec(provider="lc", model="gpt-6.1-sol"))
+            agent = Agent(spec, AgentRuntime(transport_registry=transports, tool_registry=registry))
+            with patch.multiple("app.agents.agent_loop.prompt_builder", **_QUIET_SECTIONS):
+                await agent.run(Goal(description=question, requirements=[f"Name {names[0]}"]))
+            conversations.append(list(endpoint.bodies))
+
+        items = "input" if responses else "messages"
+        for bodies in conversations:
+            assert len(bodies) == 3
+            for earlier, later in zip(bodies, bodies[1:], strict=False):
+                assert later["tools"] == earlier["tools"]
+                assert later[items][: len(earlier[items])] == earlier[items]
+        first, second = conversations[0][0], conversations[1][0]
+        assert first["tools"] == second["tools"]
+        assert first[items][0] == second[items][0]
+        assert first[items][0]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert first[items][1] != second[items][1]
+        assert "Name Ann" not in json.dumps(first[items][0])
 
 
 def _unmarked(node: Any) -> Any:  # noqa: ANN401
