@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-from itertools import accumulate
 from typing import Any
 
+from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 _TOOL_REF_PREFIX = "tool: "
 
 _LEGACY_CLEARED_PREFIX = "[cleared"
+
+# Kept, not recomputed: the shapers before this one rewrite older results per
+# call (artifact compaction shrinks an artifact once it ages), so a later call's
+# input does not show what an earlier call saw.
+_CUT: StateSlot[int] = StateSlot(key="tool_result_clearing.cut", default_factory=lambda: 0)
 
 
 def _is_already_compact(content: str) -> bool:
@@ -75,22 +80,26 @@ def shape_tool_result_clearing(
 
     **Cleared in steps** — once the context exceeds
     ``budget.trigger_tokens(trigger_ratio)``, every turn but the last
-    ``keep_last_n_turns`` is cleared, and that cut stays where it is until
-    the context *as cleared* exceeds the trigger again (see
-    ``_sticky_cut``). Each request in between extends the one before, so the
-    provider's prompt cache keeps the whole history instead of falling back
-    to the system prompt on every call.
+    ``keep_last_n_turns`` is cleared. The run keeps that cut, so later calls
+    clear the same turns, and it moves only when the context *as cleared*
+    exceeds the trigger again (see ``_next_cut``). Each request in between
+    extends the one before, so the provider's prompt cache keeps the whole
+    history instead of falling back to the system prompt on every call.
+    Without a run scope there is no earlier cut, so each call clears from
+    scratch.
 
     ``protected_tool_names`` prevents clearing regardless of age.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        from app.agent_loop_lib.core.tokens import count_tokens
+        from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 
+        run = ctx.scope.run if ctx.scope is not None else None
+        cut = run.get(_CUT) if run is not None else 0
         messages = ctx.messages
         trigger = ctx.budget.trigger_tokens(trigger_ratio)
         total = count_tokens(messages)
-        if total <= trigger:
+        if not cut and total <= trigger:
             await next_fn()
             return
 
@@ -156,7 +165,19 @@ def shape_tool_result_clearing(
                 )
                 replacements[i] = msg.model_copy(update={"content": ref})
 
-        cut = _sticky_cut(messages, turns, replacements, trigger, keep_last_n_turns)
+        gains = {
+            i: count_message_tokens(messages[i]) - count_message_tokens(replacement)
+            for i, replacement in replacements.items()
+        }
+        cut = _next_cut(
+            turns, gains,
+            total=total,
+            trigger=trigger,
+            keep=keep_last_n_turns,
+            cut=min(cut, len(turns) - keep_last_n_turns),
+        )
+        if run is not None:
+            run.set(_CUT, cut)
         clearable = {i for turn_indices in turns[:cut] for i in turn_indices if i in replacements}
         if not clearable:
             await next_fn()
@@ -175,31 +196,13 @@ def shape_tool_result_clearing(
     return _middleware
 
 
-def _sticky_cut(
-    messages: list[Any], turns: list[set[int]], replacements: dict[int, Any], trigger: int, keep: int,
+def _next_cut(
+    turns: list[set[int]], gains: dict[int, int], *,
+    total: int, trigger: int, keep: int, cut: int,
 ) -> int:
-    """How many of the oldest turns to clear.
-
-    Replays the decision every earlier call made: a call happened wherever an
-    assistant message follows, on the history before it. The cut moves to
-    "all but the last ``keep`` turns" only where that history, cleared up to
-    the cut so far, was over the trigger. A pure function of the history, so
-    every call agrees with the ones before it about every turn they share.
-    """
-    from app.agent_loop_lib.core.tokens import count_message_tokens
-
-    sizes = [count_message_tokens(message) for message in messages]
-    prefix = list(accumulate(sizes, initial=0))
-    turn_ends = [max(turn_indices) for turn_indices in turns]
-    calls = [i for i, message in enumerate(messages) if message.role == MessageRole.ASSISTANT]
-    cut = done = saved = 0
-    for call in [*calls, len(messages)]:
-        while done < len(turn_ends) and turn_ends[done] < call:
-            done += 1
-        if prefix[call] - saved > trigger and done - keep > cut:
-            saved += sum(
-                sizes[i] - count_message_tokens(replacements[i])
-                for turn_indices in turns[cut:done - keep] for i in turn_indices if i in replacements
-            )
-            cut = done - keep
-    return cut
+    """How many of the oldest turns to clear, given the ``cut`` the run's
+    previous call cleared: it moves to "all but the last ``keep`` turns" only
+    when the context, cleared up to ``cut``, is over ``trigger``."""
+    target = len(turns) - keep
+    cleared_total = total - sum(gains.get(i, 0) for turn_indices in turns[:cut] for i in turn_indices)
+    return target if target > cut and cleared_total > trigger else cut
