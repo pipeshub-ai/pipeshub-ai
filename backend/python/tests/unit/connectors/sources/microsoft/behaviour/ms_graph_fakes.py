@@ -273,6 +273,7 @@ class FakeRecordsDb:
         self.app_users: list[Any] = []
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
+        self.kept_user_groups: list[str] = []
         self.user_group_writes: list[tuple[Any, list[Any]]] = []
         self.fail_group_write: set[str] = set()
         self.deleted_groups: list[str] = []
@@ -442,6 +443,17 @@ class FakeRecordsDb:
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_user_groups.append(external_group_id)
+
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(source_user_group_id=k) for k in self.user_groups]
+
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        self.kept_user_groups.extend(g.source_user_group_id for g in groups)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         # Like the real processor: a write that fails raises, and none of the batch is saved.

@@ -1377,7 +1377,9 @@ class TestSharePointProcessSingleGroup:
         group.created_date_time = None
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_group_members = AsyncMock(side_effect=Exception("boom"))
+        c.data_entities_processor.note_kept_user_group = AsyncMock()
         assert await c._process_single_group(group) is None
+        c.data_entities_processor.note_kept_user_group.assert_awaited_once_with(c.connector_id, "g1")
 
 
 class TestSharePointCheckUpdatedPageRecord:
