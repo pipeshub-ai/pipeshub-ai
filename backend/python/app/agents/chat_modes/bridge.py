@@ -442,8 +442,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ),
                 resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
-                    query_info.get("attachments"), blob_store=blob_store,
-                    org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    query_info.get("attachments"),
+                    org_id=user_info.get("orgId", ""), logger=log,
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
@@ -716,9 +716,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             await emit_prefetch_retrieval_context(
                 context, scheduled=prefetch_task is not None, result=prefetch_result,
             )
-            if resolved_attachments.context_text:
-                goal.constraints.append(resolved_attachments.context_text)
-
             if clarifying_questions:
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,

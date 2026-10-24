@@ -224,6 +224,31 @@ class AnthropicTransport(LLMTransport):
     # Message formatting helpers
     # ------------------------------------------------------------------
 
+    def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """Framework messages into the request's ``messages``, one user message
+        per run of tool results.
+
+        The API would accept one user message per result (it merges consecutive
+        user turns), but Anthropic's parallel tool use guide calls that shape
+        wrong: it "teaches" Claude to stop calling tools in parallel, and the
+        loop then takes one round trip per tool.
+        """
+        formatted: list[dict[str, Any]] = []
+        grouped = 0
+        previous_was_tool = False
+        for msg in messages:
+            entry = self._format_message(msg)
+            is_tool = msg.role == MessageRole.TOOL
+            if is_tool and previous_was_tool:
+                formatted[-1]["content"].extend(entry["content"])
+                grouped += 1
+            else:
+                formatted.append(entry)
+            previous_was_tool = is_tool
+        if grouped:
+            logger.debug("anthropic: grouped %d parallel tool result(s) into their run's user message", grouped)
+        return formatted
+
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to Anthropic API message dict."""
         msg = as_sent(msg)
@@ -498,7 +523,7 @@ class AnthropicTransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         kwargs: dict[str, Any] = {
@@ -570,7 +595,7 @@ class AnthropicTransport(LLMTransport):
             "description": "Return the structured result.",
             "input_schema": output_schema,
         }
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model
@@ -613,7 +638,7 @@ class AnthropicTransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model

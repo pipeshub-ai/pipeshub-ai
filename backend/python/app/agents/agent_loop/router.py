@@ -86,6 +86,7 @@ def _context_to_query_info(context: "AgentContext", query: str) -> dict[str, Any
         "toolsets": context.agent_toolsets or [],
         "previous_conversations": context.previous_conversations,
         "attachments": context.tool_state.get("attachments") or [],
+        "context_window": context.configured_context_window,
     }
 
 

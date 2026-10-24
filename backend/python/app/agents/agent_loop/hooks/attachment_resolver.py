@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
     from app.utils.chat_helpers import ImageBudget
     from app.utils.image_admission import ImageAdmission
+    from app.utils.render_budget import RecordRenderOutcome, RenderBudget
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,30 @@ __all__ = [
 # First-turn resolution (read-only — no blob writes)
 # ---------------------------------------------------------------------------
 
+# Marks an `image_url` dict on `context.attachment_image_blocks` as the user's
+# own attachment. Prefetch adds retrieved images to the same list, and the
+# transport's image cap keeps the user's before those.
+USER_ATTACHED_KEY = "user_attached"
+
+
+def default_message_budget(context: "AgentContext") -> int:
+    """The message budget for `context`'s model when the system prompt is not
+    known yet. The factory passes the real one; this serves direct callers."""
+    from app.agent_loop_lib.context.base import ContextBudget
+
+    return ContextBudget.for_model(
+        context.model_name or None, context_window=context.configured_context_window,
+    ).effective_max_tokens
+
+
+
 
 async def resolve_attachments_for_goal(
     context: "AgentContext",
     log: logging.Logger,
+    *,
+    max_chars: int | None = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve current-turn attachments from blob and populate citation maps.
 
@@ -73,6 +94,14 @@ async def resolve_attachments_for_goal(
     string when nothing was resolved) and *image_blocks* is a list of
     LangChain ``{"type": "image_url", ...}`` dicts to be injected into the
     initial ``UserMessage`` when the LLM supports vision.
+
+    Documents render within *max_chars* (by default the current attachments'
+    share of the model's message budget): a document is inlined into the
+    current request, which no compaction layer shortens, so an unbounded one
+    alone could overflow the window. One cut short says where it stopped and
+    how to read on. Images go through the request's `ImageAdmission` as the
+    user's own (`ImageOrigin.ATTACHMENT`), so the per-model cap, dedup and
+    downscale apply to them as to every other image.
     """
     attachments = context.tool_state.get("attachments") or []
     if not attachments:
@@ -83,10 +112,15 @@ async def resolve_attachments_for_goal(
         log.warning("No blob_store available; cannot resolve attachment content")
         return "", []
 
+    from app.agents.agent_loop.history_window import current_attachment_chars
     from app.utils.attachment_utils import resolve_attachments
     from app.utils.chat_helpers import CitationRefMapper
+    from app.utils.image_admission import admission_from_state
+    from app.utils.render_budget import RenderBudget
 
     state = context.tool_state
+    if max_chars is None:
+        max_chars = current_attachment_chars(default_message_budget(context))
 
     ref_mapper = state.get("citation_ref_mapper")
     if ref_mapper is None:
@@ -107,9 +141,12 @@ async def resolve_attachments_for_goal(
             ref_mapper=ref_mapper,
             out_records=attachment_records,
             image_budget=image_budget,
+            image_admission=admission_from_state(state),
             user_id=context.user_id,
             graph_provider=context.graph_provider,
             is_service_account=context.is_service_account,
+            render_budget=RenderBudget(max_chars=max(max_chars, 0)),
+            outcomes=outcomes,
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
@@ -126,7 +163,7 @@ async def resolve_attachments_for_goal(
         b["text"] for b in blocks if b.get("type") == "text" and b.get("text")
     ]
     image_blocks = [
-        b for b in blocks if b.get("type") == "image_url"
+        {**b, USER_ATTACHED_KEY: True} for b in blocks if b.get("type") == "image_url"
     ]
 
     text = ""
@@ -373,6 +410,9 @@ def _merge_records_into_state(
 # ---------------------------------------------------------------------------
 
 _DOC_MIME_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown"})
+# Below this a document's render would be little more than its header; it is
+# named instead, with how to read it.
+_MIN_HISTORY_ATTACHMENT_CHARS = 2_000
 _IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg"})
 
 
@@ -389,6 +429,8 @@ async def resolve_history_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -416,13 +458,22 @@ async def resolve_history_attachments(
     asking about, and skipped dedup and the downscale to the provider's
     per-image limits on the way.
 
+    ``render_budget`` is what earlier turns' documents may render into,
+    shared across every turn the seeding replays (the history window's
+    attachment share). A document cut short ends with a note saying where it
+    stopped and how to read on; one with no room left is named, not inlined.
+    None renders documents in full.
+
     Returns ``(text, image_blocks)`` where *text* is the rendered
     ``<record>`` content (empty string if nothing resolved) and
     *image_blocks* is a list of LangChain ``image_url`` dicts for
     multimodal injection.
     """
+    from app.agents.agent_loop.history_window import attachment_stub
     from app.modules.artifacts.reader import record_artifact_reader
-    from app.utils.chat_helpers import ImageBudget, record_to_message_content
+    from app.utils.attachment_utils import render_attachment_record
+    from app.utils.chat_helpers import ImageBudget
+    from app.utils.image_admission import ImageOrigin
     from app.utils.record_access import caller_can_read_virtual_record
 
     if image_budget is None:
@@ -430,6 +481,12 @@ async def resolve_history_attachments(
 
     text_parts: list[str] = []
     image_blocks: list[dict[str, Any]] = []
+    not_inlined: list[str] = []
+    docs_left = sum(
+        1 for att in attachments
+        if isinstance(att, dict) and att.get("virtualRecordId")
+        and (att.get("mimeType") or "").lower() in _DOC_MIME_TYPES
+    )
 
     for att in attachments:
         if not isinstance(att, dict):
@@ -453,6 +510,11 @@ async def resolve_history_attachments(
             continue
 
         if mime in _DOC_MIME_TYPES:
+            sharing = docs_left
+            docs_left -= 1
+            if render_budget is not None and render_budget.call_chars_remaining < _MIN_HISTORY_ATTACHMENT_CHARS:
+                not_inlined.append(str(att.get("recordName") or "a file"))
+                continue
             try:
                 if vrid in vrmap:
                     record = vrmap[vrid]
@@ -463,8 +525,12 @@ async def resolve_history_attachments(
                     if not record:
                         continue
                     vrmap[vrid] = record
-                content_list, ref_mapper = record_to_message_content(
+                content_list, ref_mapper = render_attachment_record(
                     record, ref_mapper=ref_mapper, is_multimodal_llm=False,
+                    image_budget=None, image_admission=None,
+                    image_origin=ImageOrigin.HISTORY,
+                    render_budget=render_budget, docs_left=sharing,
+                    outcomes=outcomes, logger=logger,
                 )
                 text = "".join(
                     item["text"] for item in content_list
@@ -497,6 +563,8 @@ async def resolve_history_attachments(
                     vrid, exc_info=True,
                 )
 
+    if not_inlined:
+        text_parts.append(attachment_stub(not_inlined))
     return "\n".join(text_parts), image_blocks
 
 
@@ -623,14 +691,26 @@ def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
             await next_fn()
             return
         if not _cached_parts and context.attachment_image_blocks:
-            parts = [_langchain_image_to_part(b) for b in context.attachment_image_blocks]
-            _cached_parts.extend(p for p in parts if p is not None)
+            _cached_parts.extend(_attachment_image_parts(context.attachment_image_blocks))
 
         if _cached_parts:
             ctx.messages = _with_images_on_current_request(ctx.messages, _cached_parts)
         await next_fn()
 
     return _middleware
+
+
+def _attachment_image_parts(blocks: list[dict[str, Any]]) -> list[Any]:
+    """`ImagePart`s for `blocks`, the user's own marked as attached."""
+    parts = []
+    for block in blocks:
+        part = _langchain_image_to_part(block)
+        if part is None:
+            continue
+        if block.get(USER_ATTACHED_KEY):
+            part = part.model_copy(update={"user_attached": True})
+        parts.append(part)
+    return parts
 
 
 def _image_identity(part: Any) -> str | None:

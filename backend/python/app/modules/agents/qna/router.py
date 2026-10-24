@@ -177,10 +177,16 @@ async def build_prior_routing_messages(
     user_id: str = "",
     graph_provider: Any = None,
     is_service_account: bool = False,
+    max_attachment_chars: int | None = None,
 ) -> list:
     """
     Build prior conversation turns as LangChain HumanMessage/AIMessage objects
     for the routing LLM call.
+
+    Attachment text across these turns is bounded by `max_attachment_chars`
+    (by default the agent's own share for earlier attachments,
+    `history_window.earlier_attachment_chars`); past it a turn says the rest
+    of its attachment is not shown.
 
     Each user turn's content list is assembled in document order:
     - Turn text comes first.
@@ -200,6 +206,9 @@ async def build_prior_routing_messages(
     if not previous:
         return []
 
+    if max_attachment_chars is None:
+        max_attachment_chars = default_earlier_attachment_chars()
+    room = max_attachment_chars
     recent = previous[-6:]
     messages = []
 
@@ -234,7 +243,8 @@ async def build_prior_routing_messages(
                         if not record:
                             continue
                         if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:
-                            parts.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
+                            kept, room = _within(resolve_attachment_blocks_simple(record, is_multimodal_llm), room)
+                            parts.extend(kept)
                         elif mime.startswith("image/") and is_multimodal_llm:
                             blocks = (
                                 (record.get("block_containers") or {}).get("blocks") or []
@@ -274,6 +284,41 @@ def _close_unanswered_question(messages: list) -> None:
     as agent-loop history seeding does."""
     if messages and isinstance(messages[-1], HumanMessage):
         messages.append(AIMessage(content=UNANSWERED_ANSWER))
+
+
+_NOT_SHOWN = "[… the rest of this attachment is not shown here]"
+
+
+def default_earlier_attachment_chars(model: str | None = None, context_window: int | None = None) -> int:
+    """What earlier turns' attachments may render into for `model`, as the agent's history sizes it."""
+    from app.agent_loop_lib.context.base import ContextBudget
+    from app.agents.agent_loop.history_window import (
+        HISTORY_SHARE,
+        earlier_attachment_chars,
+        share_tokens,
+    )
+
+    budget = ContextBudget.for_model(model or None, context_window=context_window).effective_max_tokens
+    return earlier_attachment_chars(share_tokens(budget, HISTORY_SHARE))
+
+
+def _within(blocks: list[dict], room: int) -> tuple[list[dict], int]:
+    """`blocks` with their text cut to `room` characters, and the room left."""
+    kept: list[dict] = []
+    for block in blocks:
+        if block.get("type") != "text":
+            kept.append(block)
+            continue
+        text = block.get("text") or ""
+        if len(text) <= room:
+            room -= len(text)
+            kept.append(block)
+            continue
+        if room > 0:
+            kept.append({"type": "text", "text": text[:room]})
+        kept.append({"type": "text", "text": _NOT_SHOWN})
+        return kept, 0
+    return kept, room
 
 
 def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:

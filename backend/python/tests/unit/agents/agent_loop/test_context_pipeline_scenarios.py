@@ -4,7 +4,7 @@ layouts real chats produce, call after call.
 The customer case: a chat whose current question comes after an earlier turn,
 then a long tool loop with large `fetch_record` results. Before the fix the
 chain kept the earlier question and dropped the current one, and the model
-answered the earlier question (docs/context-engineering/REPORT.md, CE-01).
+answered the earlier question (docs/context-engineering.md, CE-01).
 """
 
 from __future__ import annotations

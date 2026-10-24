@@ -97,6 +97,17 @@ from app.agents.agent_loop.entity_search_tool import (
     SEARCH_BY_ENTITIES_TOOL_NAME,
     entity_search_tool_offered,
 )
+from app.agents.agent_loop.history_window import (
+    HISTORY_SHARE,
+    attachment_stub,
+    earlier_attachment_chars,
+    exchange_tokens,
+    omitted_note,
+    plan_history,
+    reduce_exchange,
+    share_tokens,
+    split_exchanges,
+)
 from app.agents.agent_loop.hooks import (
     CitationCollector,
     RepeatedReadGuard,
@@ -124,6 +135,7 @@ from app.agents.agent_loop.hooks import (
     stash_tool_call_metadata,
     sync_visible_tools_for_prompt,
 )
+from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
     PROGRESSIVE_TOOL_NAMES,
@@ -718,22 +730,6 @@ class PipesHubAgentFactory:
         # fetch-tool block cap can both reach it without the TransportRegistry.
         context.model_name = model_name
 
-        attachment_text = ""
-        if not clarifying_questions:
-            attachment_text, image_blocks = await resolve_attachments_for_goal(
-                context, logger,
-            )
-            if attachment_text:
-                goal.attachment_text = (
-                    f"{attachment_text}"
-                    "\n\nWhen citing facts from attached documents, use the "
-                    "Citation ID as a markdown link, e.g. [source](ref2). "
-                    "Do NOT use record URLs or block indices as citation links."
-                )
-                goal.description = f"{goal.description}\n\n{goal.attachment_text}"
-            if image_blocks:
-                context.attachment_image_blocks = image_blocks
-
         # Per-mode composition/tool-grant, keyed off `mode` (the resolved
         # `ModeDefinition` — see `modes.py`), never off `isinstance(loop, ...)`:
         # - `loop_kind == "orchestrator"` (deep): the top-level `Agent` is a
@@ -1038,9 +1034,16 @@ class PipesHubAgentFactory:
         # `agent` are in scope.
         context.run_id = agent.run_ctx.run_id
 
+        _mark("f:runtime+compose")
+        message_budget = _message_budget_tokens(spec, runtime, goal)
+        if not clarifying_questions:
+            await _attach_current_files(goal, context, runtime, message_budget)
+            _mark("f:current_attachments")
+
         if context.previous_conversations:
-            _mark("f:runtime+compose")
-            await self._seed_conversation_history(agent, context.previous_conversations, context)
+            await self._seed_conversation_history(
+                agent, context.previous_conversations, context, message_budget_tokens=message_budget,
+            )
             _mark("f:seed_history")
             hold_history(context, agent)
 
@@ -1049,7 +1052,7 @@ class PipesHubAgentFactory:
             await parked_turn.restore_question(context, agent.context)
             # A resumed run adds no goal message (`_skip_start`), so files sent with the reply ride on it.
             await inject_ask_user_question_resume(
-                agent, resume_answers, typed=typed_reply, files=attachment_text if typed_reply else "",
+                agent, resume_answers, typed=typed_reply, files=goal.attachment_text if typed_reply else "",
             )
 
         return agent, runtime, goal, clarifying_questions
@@ -1184,95 +1187,70 @@ class PipesHubAgentFactory:
         agent: Agent,
         previous_conversations: list[dict[str, Any]],
         context: "AgentContext",
-    ) -> None:
+        *,
+        message_budget_tokens: int | None = None,
+    ) -> int:
         """Loads prior turns into the agent's `ContextManager` so the model
         sees them as ordinary conversation history on turn 0 — the
         agent-loop equivalent of `nodes.py::_build_conversation_messages`.
 
-        Document attachments (PDF, text, markdown) on historical user_query
-        turns are resolved from blob storage and appended to the
-        corresponding ``UserMessage``, mirroring the old agent's behavior
-        where the model always has file content directly in context.
-        ``virtual_record_id_to_result`` and ``citation_ref_mapper`` are
-        populated as a side-effect so ``dynamic_fetch_full_record`` remains
-        available as a post-compaction fallback.
+        What is replayed fits the history share of `message_budget_tokens`
+        (`history_window.py`): the newest exchanges whole, older ones reduced
+        to question, answer opening and tool names, the oldest left out with a
+        note saying how many. Document attachments of exchanges kept whole are
+        rendered from blob storage within the history's attachment share;
+        others are named with how to read them. ``virtual_record_id_to_result``
+        and ``citation_ref_mapper`` are populated as a side-effect so
+        ``dynamic_fetch_full_record`` remains available.
+
+        `message_budget_tokens` is the budget the run's model calls will have
+        (the factory passes it); without it the model's window alone sizes it.
+        Returns the estimated tokens replayed.
         """
         from app.agent_loop_lib.context.manager import ContextManager
+        from app.agent_loop_lib.core.tokens import count_tokens
+        from app.utils.render_budget import RenderBudget
 
-        blob_store = context.blob_store
-        org_id = context.org_id
+        if message_budget_tokens is None:
+            message_budget_tokens = default_message_budget(context)
+        history_tokens = share_tokens(message_budget_tokens, HISTORY_SHARE)
+        exchanges = split_exchanges(previous_conversations, _opens_an_exchange)
 
-        state = context.tool_state
-        ref_mapper = state.get("citation_ref_mapper")
-        if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper
-            ref_mapper = CitationRefMapper()
-            state["citation_ref_mapper"] = ref_mapper
-
-        vrmap: dict[str, Any] = state.get("virtual_record_id_to_result") or {}
-        if not isinstance(vrmap, dict):
-            vrmap = {}
-        state["virtual_record_id_to_result"] = vrmap
-
-        is_multimodal = context.is_multimodal_llm
-        from app.utils.chat_helpers import ImageBudget
-        from app.utils.image_admission import admission_from_state
-        image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
+        attachments = _HistoryAttachments(context, RenderBudget(max_chars=earlier_attachment_chars(history_tokens)))
+        # Newest first, and only as far back as exchanges could still be kept
+        # whole: when the share runs out it is the oldest files that are named,
+        # and an exchange that will be reduced costs no blob read or image slot.
+        spent = 0
+        for index in range(len(exchanges) - 1, -1, -1):
+            spent += exchange_tokens(exchanges[index])
+            if spent > history_tokens:
+                break
+            await attachments.render(index, exchanges[index])
+            spent += attachments.tokens(index)
+        plan = plan_history(exchanges, history_tokens, [attachments.tokens(i) for i in range(len(exchanges))])
 
         ctx = ContextManager()
         history: list[Message] = []
+        if plan.omitted:
+            history.append(UserMessage(content=omitted_note(plan.omitted), injected=True))
         tool_results_at: dict[str, int] = {}
         after_answer = False
         unanswered = 0
-        for turn in previous_conversations:
-            if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
-                _drop_closing_text(history)
-                after_answer = True
-                continue
-            messages = _convert_conversation_turn(turn)
-            if messages and _opens_a_new_question(turn) and _ends_on_open_question(history):
-                history.append(AssistantMessage(content=UNANSWERED_ANSWER))
-                unanswered += 1
-
-            if (
-                turn.get("role") == "user_query"
-                and blob_store
-                and messages
-            ):
-                attachments = turn.get("attachments") or []
-                if attachments:
-                    extra_text, image_blocks = await resolve_history_attachments(
-                        attachments, blob_store, org_id, ref_mapper, vrmap,
-                        is_multimodal_llm=is_multimodal,
-                        image_budget=image_budget,
-                        image_admission=admission_from_state(state),
-                        user_id=context.user_id,
-                        graph_provider=context.graph_provider,
-                        is_service_account=context.is_service_account,
-                    )
-                    msg = messages[0]
-                    if extra_text:
-                        msg.content = (
-                            f"{msg.content}\n\nAttached documents:\n{extra_text}"
-                            "\n\nWhen citing facts from these documents, use the "
-                            "Citation ID as a markdown link, e.g. [source](ref2). "
-                            "Do NOT use record URLs or block indices as citation links."
-                        )
-                    if image_blocks and is_multimodal:
-                        _inject_images_into_message(msg, image_blocks)
-                    elif image_blocks:
-                        names = [
-                            a.get("recordName", "image")
-                            for a in attachments
-                            if (a.get("mimeType") or "").lower().startswith("image/")
-                        ]
-                        placeholder = "\n".join(
-                            f"[Image attached: {n}]" for n in names
-                        )
-                        msg.content = f"{msg.content}\n\n{placeholder}"
-
-            _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
-            after_answer = after_answer and turn.get("role") != "bot_response"
+        for index in plan.kept:
+            whole = index in plan.whole
+            for position, turn in enumerate(exchanges[index] if whole else reduce_exchange(exchanges[index])):
+                if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
+                    _drop_closing_text(history)
+                    after_answer = True
+                    continue
+                messages = _convert_conversation_turn(turn)
+                if messages and _opens_a_new_question(turn) and _ends_on_open_question(history):
+                    history.append(AssistantMessage(content=UNANSWERED_ANSWER))
+                    unanswered += 1
+                if turn.get("role") == "user_query" and messages and turn.get("attachments"):
+                    attachments.attach(messages[0], index, turn, whole=whole and position == 0)
+                _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
+                after_answer = after_answer and turn.get("role") != "bot_response"
 
         # The run adds the current request next.
         if _ends_on_open_question(history):
@@ -1284,12 +1262,175 @@ class PipesHubAgentFactory:
         for message in history:
             await ctx.add(message)
         agent.seed_context(ctx)
+        replayed = count_tokens(history)
         statuses = [turn.get("status") for turn in previous_conversations if turn.get("role") == "bot_response"]
         logger.info(
-            "history_seeded conversation_id=%s turns=%d messages=%d failed=%d stopped=%d unanswered=%d",
-            context.conversation_id, len(previous_conversations), len(history),
+            "history_seeded run_id=%s conversation_id=%s turns=%d exchanges=%d whole=%d reduced=%d omitted=%d "
+            "messages=%d tokens=%d share=%d failed=%d stopped=%d unanswered=%d "
+            "attachment_chars=%d attachments_truncated=%d attachments_named=%d",
+            context.run_id, context.conversation_id, len(previous_conversations), len(exchanges),
+            len(plan.whole), plan.reduced, plan.omitted, len(history), replayed, history_tokens,
             statuses.count(FAILED), statuses.count(STOPPED), unanswered,
+            attachments.chars_rendered(plan.whole), attachments.truncated(plan.whole),
+            attachments.named,
         )
+        return replayed
+
+
+def _message_budget_tokens(spec: AgentSpec, runtime: AgentRuntime, goal: Any) -> int:  # noqa: ANN401
+    """The message budget the run's model calls will have, as far as it is
+    known before the run: the model's window less the system prompt and the
+    granted tools' schemas (`Agent.step` derives it the same way per call).
+    Every granted tool is counted, so a lazily disclosed set errs small."""
+    from app.agent_loop_lib.agent.prompt import build_system_prompt
+    from app.agent_loop_lib.context.base import ContextBudget
+    from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
+
+    registry = runtime.tool_registry
+    schemas = registry.schemas(spec.tool_names or None) if registry is not None else []
+    prompt_tokens = count_text_tokens(build_system_prompt(spec, runtime, goal)) + count_schema_tokens(schemas)
+    return ContextBudget.for_model(
+        spec.model.model, context_window=spec.model.context_window, reserved_prompt_tokens=prompt_tokens,
+    ).effective_max_tokens
+
+
+async def _attach_current_files(
+    goal: Any,  # noqa: ANN401
+    context: "AgentContext",
+    runtime: AgentRuntime,
+    message_budget_tokens: int,
+) -> None:
+    """Renders this turn's attachments into the current request within their
+    share of the budget. One cut short names `knowledgegraph__fetch_record`,
+    so the tool is granted for the run."""
+    from app.agent_loop_lib.core.tokens import count_text_tokens
+    from app.agents.agent_loop.history_window import current_attachment_chars
+
+    words = goal.user_message if goal.user_message is not None else goal.description
+    outcomes: list[Any] = []
+    attachment_text, image_blocks = await resolve_attachments_for_goal(
+        context, logger,
+        max_chars=current_attachment_chars(message_budget_tokens, count_text_tokens(words)),
+        outcomes=outcomes,
+    )
+    if attachment_text:
+        goal.attachment_text = (
+            f"{attachment_text}"
+            "\n\nWhen citing facts from attached documents, use the "
+            "Citation ID as a markdown link, e.g. [source](ref2). "
+            "Do NOT use record URLs or block indices as citation links."
+        )
+        goal.description = f"{goal.description}\n\n{goal.attachment_text}"
+    if image_blocks:
+        context.attachment_image_blocks = image_blocks
+    if any(not outcome.complete for outcome in outcomes):
+        from app.agents.agent_loop.hooks.citations import (
+            ensure_fetch_full_record_available,
+        )
+
+        ensure_fetch_full_record_available(context, registry=runtime.tool_registry)
+
+
+class _HistoryAttachments:
+    """Earlier turns' attachments, rendered once per seeding within one
+    character budget and put on the replayed question they came with."""
+
+    def __init__(self, context: "AgentContext", render_budget: Any) -> None:  # noqa: ANN401
+        state = context.tool_state
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper
+
+            state["citation_ref_mapper"] = CitationRefMapper()
+        vrmap = state.get("virtual_record_id_to_result")
+        if not isinstance(vrmap, dict):
+            vrmap = {}
+        state["virtual_record_id_to_result"] = vrmap
+        from app.utils.chat_helpers import ImageBudget
+
+        state.setdefault("image_budget", ImageBudget())
+        self._context = context
+        self._budget = render_budget
+        self._rendered: dict[int, tuple[str, list[dict[str, Any]], list[Any]]] = {}
+        self.named = 0
+
+    async def render(self, index: int, exchange: list[dict[str, Any]]) -> None:
+        context = self._context
+        question = exchange[0]
+        attachments = question.get("attachments") or []
+        if question.get("role") != "user_query" or not attachments or not context.blob_store:
+            return
+        from app.utils.image_admission import admission_from_state
+
+        state = context.tool_state
+        outcomes: list[Any] = []
+        text, image_blocks = await resolve_history_attachments(
+            attachments, context.blob_store, context.org_id, state["citation_ref_mapper"],
+            state["virtual_record_id_to_result"],
+            is_multimodal_llm=context.is_multimodal_llm,
+            image_budget=state["image_budget"],
+            image_admission=admission_from_state(state),
+            user_id=context.user_id,
+            graph_provider=context.graph_provider,
+            is_service_account=context.is_service_account,
+            render_budget=self._budget,
+            outcomes=outcomes,
+        )
+        self._rendered[index] = (text, image_blocks, outcomes)
+
+    def tokens(self, index: int) -> int:
+        from app.agent_loop_lib.core.tokens import count_image_tokens, count_text_tokens
+        from app.utils.chat_helpers import image_dict_to_part
+
+        text, image_blocks, _ = self._rendered.get(index, ("", [], []))
+        parts = [part for block in image_blocks if (part := image_dict_to_part(block)) is not None]
+        return count_text_tokens(_attached_documents(text)) + sum(count_image_tokens(part) for part in parts)
+
+    def chars_rendered(self, whole: frozenset[int]) -> int:
+        return sum(len(self._rendered[i][0]) for i in whole if i in self._rendered)
+
+    def truncated(self, whole: frozenset[int]) -> int:
+        return sum(
+            1 for i in whole if i in self._rendered for outcome in self._rendered[i][2] if not outcome.complete
+        )
+
+    def attach(self, message: UserMessage, index: int, turn: dict[str, Any], *, whole: bool) -> None:
+        """Puts the rendered attachments of exchange `index` on its replayed
+        question, or, for a reduced exchange, names them."""
+        if not whole:
+            names = [str(a.get("recordName") or "a file") for a in turn.get("attachments") or [] if isinstance(a, dict)]
+            message.content = f"{message.content}\n\n{attachment_stub(names)}"
+            self.named += len(names)
+            return
+        if index not in self._rendered:
+            return
+        text, image_blocks, _ = self._rendered[index]
+        if text:
+            message.content = f"{message.content}{_attached_documents(text)}"
+        if image_blocks and self._context.is_multimodal_llm:
+            _inject_images_into_message(message, image_blocks)
+        elif image_blocks:
+            names = [
+                a.get("recordName", "image")
+                for a in turn.get("attachments") or []
+                if (a.get("mimeType") or "").lower().startswith("image/")
+            ]
+            message.content = f"{message.content}\n\n" + "\n".join(f"[Image attached: {n}]" for n in names)
+
+
+def _attached_documents(text: str) -> str:
+    if not text:
+        return ""
+    return (
+        f"\n\nAttached documents:\n{text}"
+        "\n\nWhen citing facts from these documents, use the "
+        "Citation ID as a markdown link, e.g. [source](ref2). "
+        "Do NOT use record URLs or block indices as citation links."
+    )
+
+
+def _opens_an_exchange(turn: dict[str, Any]) -> bool:
+    """A question the person asked: not an answer to a card or an approval."""
+    return _opens_a_new_question(turn) and not is_tool_approval_resume_query(str(turn.get("content") or ""))
 
 
 def _inject_images_into_message(

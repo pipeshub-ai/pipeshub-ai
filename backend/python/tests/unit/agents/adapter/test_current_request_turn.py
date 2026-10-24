@@ -1,5 +1,5 @@
 """One chat turn through the real factory and agent loop, with a scripted model: what the model
-is told the person asked (docs/context-engineering/REPORT.md, CE-07, CE-08, CE-14).
+is told the person asked (docs/context-engineering.md, CE-07, CE-08, CE-14).
 
 - SC-12: outside quick mode the intent step's briefing is context for the model, in the
   turn-volatile band of the system prompt; the person's own words are the current user message.

@@ -1,4 +1,4 @@
-"""The current request a run adds is the person's own words (docs/context-engineering/REPORT.md,
+"""The current request a run adds is the person's own words (docs/context-engineering.md,
 CE-07), and every default system prompt says what a context note is (CE-05)."""
 
 from __future__ import annotations

@@ -345,8 +345,13 @@ async def parse_intent_and_route(
     if not user_query:
         return _fallback_decision(user_query, include_routing=include_routing, reason="empty query")
 
+    from app.agent_loop_lib.context.base import ContextBudget
+    from app.agent_loop_lib.core.tokens import count_text_tokens
+    from app.agents.agent_loop.history_window import current_attachment_chars
+    from app.modules.agents.qna.router import default_earlier_attachment_chars
     from app.modules.transformers.blob_storage import BlobStorage
     from app.utils.attachment_utils import resolve_attachments
+    from app.utils.render_budget import RenderBudget
 
     capability_block, n_knowledge, _sources, _tools_data = (
         build_capability_context(query_info)
@@ -363,9 +368,11 @@ async def parse_intent_and_route(
         except Exception as _bs_exc:
             logger.warning("Intent: failed to create blob_store: %s", _bs_exc)
 
+    context_window = query_info.get("context_window")
     prior_messages = await build_prior_routing_messages(
         query_info, blob_store=blob_store, org_id=org_id, is_multimodal_llm=is_multimodal_llm,
         user_id=user_id, graph_provider=graph_provider, is_service_account=is_service_account,
+        max_attachment_chars=default_earlier_attachment_chars(model_name, context_window),
     )
 
     human_content: Any = f"user query : {user_query}"
@@ -377,6 +384,10 @@ async def parse_intent_and_route(
                 is_multimodal_llm=is_multimodal_llm, logger=logger,
                 user_id=user_id, graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                render_budget=RenderBudget(max_chars=current_attachment_chars(
+                    ContextBudget.for_model(model_name or None, context_window=context_window).effective_max_tokens,
+                    count_text_tokens(user_query),
+                )),
             )
             if attachment_blocks:
                 human_content = [
