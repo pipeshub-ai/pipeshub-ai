@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.entity_search_tool import (
+    entity_search_offered_in,
+    named_entities_enabled_in,
+)
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
@@ -1234,13 +1237,18 @@ class KnowledgeGraph:
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
-        that go with it only where the deployment offers it
+        that go with it only where the deployment offers it, and the
+        named-entity tools only where extraction is on
         (``entity_search_surface``); ``search_timeline`` unless
         ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
         from .ops.timeline import without_timeline_unless_enabled
         tools = without_timeline_unless_enabled(tools)
-        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
+        return tools_for_request(
+            self, tools,
+            offered=entity_search_offered_in(self.state),
+            named_entities=named_entities_enabled_in(self.state),
+        )
 
     # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)

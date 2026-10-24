@@ -11,7 +11,7 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -351,6 +351,10 @@ class TestAnswerRulesKeepThePrefixStable:
     async def test_off_is_the_same_under_high_accuracy_mode_with_each_switch_false(
         self, monkeypatch: pytest.MonkeyPatch, mode: str,
     ) -> None:
+        # HIGH_ACCURACY_MODE also turns named-entity extraction on, which adds its tools.
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.is_named_entity_extraction_enabled", AsyncMock(return_value=True),
+        )
         _set_answer_rules(monkeypatch, on=False)
         unset = await _mode_request(mode, _QUESTIONS[0])
         monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")

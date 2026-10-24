@@ -258,6 +258,10 @@ Agent tools, when extraction is on:
   organizations, products or places, by name, when the deployment sets
   `ENTITY_SEARCH_TOOL=true` (see below)
 
+With extraction off, the agent is not shown `find_records_by_value` or
+`named_entity_kinds`, so it never calls a tool that can only fail. The flag is
+read once per request, before tools load.
+
 An entity is visible only when the caller can read a record that mentions it.
 Records in the trash never come back from an entity filter; the entities on
 a trashed record are still readable from the record itself.

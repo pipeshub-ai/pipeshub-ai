@@ -116,6 +116,7 @@ from app.agents.agent_loop.domain_agents import (
 )
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
+    NAMED_ENTITIES_ENABLED_STATE_KEY,
     SEARCH_BY_ENTITIES_TOOL_NAME,
     entity_search_tool_offered,
 )
@@ -216,7 +217,10 @@ from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
-from app.services.featureflag.platform_settings import is_skills_enabled
+from app.services.featureflag.platform_settings import (
+    is_named_entity_extraction_enabled,
+    is_skills_enabled,
+)
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
 
@@ -526,7 +530,10 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
-        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = await entity_search_tool_offered(context.tool_state)
+        context.tool_state[NAMED_ENTITIES_ENABLED_STATE_KEY] = await is_named_entity_extraction_enabled(
+            context.tool_state.get("config_service"),
+        )
+        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = entity_search_tool_offered(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
