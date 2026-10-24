@@ -524,7 +524,7 @@ class TestNestedTableInCell:
         assert nested_rows[0].data["cells"] == ["inner"]
 
     async def test_nested_list_in_cell(self):
-        """List in cell is parsed as blocks, not flattened to text."""
+        """A text-only list in a cell is kept once, in the row, not again as list blocks."""
         parser = _parser()
         adf = {
             "type": "doc",
@@ -556,13 +556,13 @@ class TestNestedTableInCell:
         
         blocks, block_groups = await parser.parse_adf(adf, page_id="p1", page_title=None)
         
-        # Check that cell has nested content with text blocks
         table_rows = [b for b in blocks if b.type == BlockType.TABLE_ROW]
         assert len(table_rows) == 1
-        
+        assert [b.type for b in blocks] == [BlockType.TABLE_ROW]
+
         cell_details = table_rows[0].data["cell_details"]
-        assert cell_details[0]["type"] == "nested"
-        assert len(cell_details[0]["block_indices"]) > 0
+        assert cell_details[0]["type"] == "text"
+        assert cell_details[0]["text"] == "- item1 - item2"
 
     async def test_mixed_text_and_nested_cells(self):
         """Table row with both simple text and nested content cells."""
@@ -611,9 +611,9 @@ class TestNestedTableInCell:
         assert cell_details[0]["type"] == "text"
         assert cell_details[0]["text"] == "Simple"
         
-        # Second cell: nested list
-        assert cell_details[1]["type"] == "nested"
-        assert len(cell_details[1]["block_indices"]) > 0
+        # Second cell: text-only list, kept in the row only
+        assert cell_details[1]["type"] == "text"
+        assert len(blocks) == 1
         
         # Third cell: text only
         assert cell_details[2]["type"] == "text"
@@ -664,9 +664,9 @@ class TestNestedTableInCell:
         ]
         assert list_groups == []
 
-        list_items = [b for b in blocks if b.list_metadata]
-        assert len(list_items) == 2
-        assert all(item.parent_index == table_group.index for item in list_items)
+        assert [b for b in blocks if b.list_metadata] == []
+        assert blocks[0].parent_index == table_group.index
+        assert blocks[0].data["cells"] == ["- item1 - item2"]
 
     async def test_page_level_list_still_grouped_after_post_process(self):
         """List items outside tables are still wrapped in LIST groups."""
@@ -3293,3 +3293,87 @@ class TestCommentHeaderText:
             block_indices=(7, 9),
         )
         assert [(r.start, r.end) for r in group.children.block_ranges] == [(7, 9)]
+
+
+@pytest.mark.asyncio
+class TestParserEdgeCases:
+    async def test_null_attrs_and_bad_values_keep_the_table(self):
+        parser = _parser()
+        cell = {"type": "tableCell", "attrs": None, "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "due"},
+            {"type": "date", "attrs": {"timestamp": "9" * 30}},
+        ]}]}
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "table", "attrs": None, "content": [{"type": "tableRow", "attrs": None, "content": [cell]}]},
+            {"type": "heading", "attrs": {"level": "x"}, "content": [{"type": "text", "text": "H"}]},
+        ]})
+        assert len(groups) == 1
+        assert blocks[0].data["cells"] == ["due" + "9" * 30]
+        assert blocks[1].data == "# H"
+
+    def test_adf_markdown_heading_with_bad_level(self):
+        from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
+
+        assert adf_to_markdown({"type": "doc", "content": [
+            {"type": "heading", "attrs": {"level": "x"}, "content": [{"type": "text", "text": "H"}]},
+            {"type": "paragraph", "content": None},
+        ]}) == "# H"
+
+    async def test_inline_comment_matching_normalizes_blocks_once(self):
+        parser = _parser()
+        blocks = [
+            Block(index=i, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data=f"block number {i}")
+            for i in range(3)
+        ]
+        body = {"atlas_doc_format": {"value": {"type": "doc", "content": [_p("ok")]}}}
+        comments = [
+            {"id": f"c{i}", "properties": {"inlineOriginalSelection": f"number {i}"}, "body": body}
+            for i in range(3)
+        ]
+        calls = 0
+        original = parser._searchable_text_for_comment_match
+
+        def counting(block):
+            nonlocal calls
+            calls += 1
+            return original(block)
+
+        parser._searchable_text_for_comment_match = counting
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        assert calls == len(blocks)
+        assert [len(b.comments) for b in blocks] == [1, 1, 1]
+
+    async def test_numbering_continues_after_nested_bullet_list(self):
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "orderedList", "content": [
+            _li("one", {"type": "bulletList", "content": [_li("sub")]}),
+            _li("two"),
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        assert [b.data for b in blocks] == ["1. one", "- sub", "2. two"]
+
+    async def test_nested_list_group_hangs_under_its_parent_list(self):
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "panel", "content": [
+            {"type": "bulletList", "content": [
+                _li("a", {"type": "bulletList", "content": [_li("a1")]}),
+                _li("b"),
+            ]},
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        outer, inner = (groups[blocks[0].parent_index], groups[blocks[1].parent_index])
+        assert blocks[2].parent_index == outer.index
+        assert inner.parent_index == outer.index
+        assert [(r.start, r.end) for r in outer.children.block_group_ranges] == [(inner.index, inner.index)]
+        assert outer.parent_index == 0
+        assert any(r.start <= outer.index <= r.end for r in groups[0].children.block_group_ranges)
+
+    async def test_macro_in_list_item_is_kept(self):
+        parser = _parser()
+        macro = {"type": "extension", "attrs": {"extensionKey": "jira", "parameters": {
+            "macroParams": {"key": {"value": "PROJ-1"}},
+        }}}
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "bulletList", "content": [
+            {"type": "listItem", "content": [_p("see"), macro]},
+        ]}]})
+        assert blocks[0].data == "- see [Extension: jira] key: PROJ-1"

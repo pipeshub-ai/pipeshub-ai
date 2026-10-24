@@ -103,18 +103,21 @@ def adf_to_markdown(adf_content: object) -> str:
             return apply_adf_marks(text, marks)
 
         elif node_type == "paragraph":
-            content = node.get("content", [])
+            content = node.get("content") or []
             para_text = "".join(extract_text_recursive(child) for child in content).strip()
             return f"{para_text}\n\n" if para_text else ""
 
         elif node_type == "heading":
-            level = (node.get("attrs") or {}).get("level", 1)
-            content = node.get("content", [])
+            try:
+                level = min(max(int((node.get("attrs") or {}).get("level") or 1), 1), 6)
+            except (TypeError, ValueError, OverflowError):
+                level = 1
+            content = node.get("content") or []
             heading_text = "".join(extract_text_recursive(child) for child in content).strip()
             return f"{'#' * level} {heading_text}\n\n" if heading_text else ""
 
         elif node_type in ["bulletList", "orderedList"]:
-            content = node.get("content", [])
+            content = node.get("content") or []
             is_numbered = node_type == "orderedList"
             items = []
             for i, child in enumerate(content, 1):
@@ -125,11 +128,11 @@ def adf_to_markdown(adf_content: object) -> str:
             return "\n".join(items) + "\n\n" if items else ""
 
         elif node_type == "listItem":
-            content = node.get("content", [])
+            content = node.get("content") or []
             return "".join(extract_text_recursive(child) for child in content).strip()
 
         elif node_type == "codeBlock":
-            content = node.get("content", [])
+            content = node.get("content") or []
             code_text = "".join(child.get("text", "") for child in content if child.get("type") == "text")
             language = (node.get("attrs") or {}).get("language") or ""
             return f"```{language}\n{code_text}\n```\n\n" if code_text else ""
@@ -141,7 +144,7 @@ def adf_to_markdown(adf_content: object) -> str:
             return "---\n\n"
 
         elif node_type in ("mediaSingle", "mediaGroup"):
-            names = [extract_text_recursive(child) for child in node.get("content", [])]
+            names = [extract_text_recursive(child) for child in (node.get("content") or [])]
             text = " ".join(name for name in names if name)
             return f"{text}\n\n" if text else ""
 
@@ -150,7 +153,7 @@ def adf_to_markdown(adf_content: object) -> str:
             return f"{url}\n\n" if url else ""
 
         elif "content" in node:
-            content = node.get("content", [])
+            content = node.get("content") or []
             return "".join(extract_text_recursive(child) for child in content)
 
         return _inline_node_text(node_type, node.get("attrs") or {})
