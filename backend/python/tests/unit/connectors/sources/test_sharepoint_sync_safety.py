@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from azure.core.exceptions import ClientAuthenticationError
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
     ContainerTracker,
@@ -24,6 +26,7 @@ from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
     everyone_groups,
 )
 from app.connectors.sources.microsoft.sharepoint_online.graph_permission_check import (
+    GRAPH_PERMISSION,
     graph_sites_fullcontrol_missing,
 )
 from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
@@ -276,7 +279,7 @@ def _permission_connector(permissions: object) -> object:
 
 
 class TestMissingGraphPermission:
-    async def test_the_connection_test_fails_without_graph_sites_fullcontrol(self) -> None:
+    async def test_the_connection_test_names_the_missing_graph_permission(self) -> None:
         connector = _permission_connector(_GraphError(403))
         connector.client.sites.get = AsyncMock()
 
@@ -286,7 +289,8 @@ class TestMissingGraphPermission:
         connector._sharepoint_rest_pages = rest_pages
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
 
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match=GRAPH_PERMISSION):
+            await connector.test_connection_and_access()
 
     async def test_the_admin_is_told_once_while_it_stays_missing(self) -> None:
         connector = _permission_connector(_GraphError(403))
@@ -303,6 +307,20 @@ class TestMissingGraphPermission:
         await connector._report_missing_graph_permission()
 
         connector.notify.assert_not_awaited()
+
+
+class TestTokenFailure:
+    async def test_a_credential_that_stops_working_is_reported_once_a_run(self) -> None:
+        """Every SharePoint REST read asks for a token; the admin gets one notification, not one per read."""
+        connector = _permission_connector([])
+        connector.sharepoint_domain = "https://contoso.sharepoint.com"
+        connector.credential = SimpleNamespace(get_token=AsyncMock(side_effect=ClientAuthenticationError("expired")))
+        connector._token_failure_notified = False
+
+        assert await connector._get_sharepoint_access_token() is None
+        assert await connector._get_sharepoint_access_token() is None
+
+        connector.notify.assert_awaited_once()
 
 
 class TestFilteredOutContainers:

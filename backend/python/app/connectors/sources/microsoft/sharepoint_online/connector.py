@@ -51,7 +51,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -703,6 +703,8 @@ class SharePointConnector(BaseConnector):
         self._org_wide_site_groups: dict[str, dict[str, set[str]]] = {}
         # Per site, the site groups whose members this run could not read.
         self._unreadable_site_groups: dict[str, set[str]] = {}
+        # Sites whose SharePoint groups this run listed in full; a group grant elsewhere is unknown.
+        self._site_groups_read: set[str] = set()
         self._reset_permission_caches()
         self._health = SyncHealth()
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
@@ -711,6 +713,8 @@ class SharePointConnector(BaseConnector):
         self._discovered_site_ids: set[str] = set()
         # Sites the sync filters excluded this run; what PipesHub stores for them is deleted.
         self._filtered_out_site_ids: set[str] = set()
+        # Every SharePoint REST read asks for a token, so a credential that stopped working is reported once a run.
+        self._token_failure_notified = False
         self._discovery_complete = False
         # Set for a run that has to read every item again (see PERMISSION_MODEL_VERSION).
         self._rewrite_all_items = False
@@ -2563,40 +2567,36 @@ class SharePointConnector(BaseConnector):
             self.logger.error(
                 f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
             )
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title="SharePoint authentication failed",
-                message=(
-                    "Unable to authenticate using current credentials. Please verify the connector authentication credentials."
-                ),
-                recipient_user_ids=[self.created_by],
+            await self._notify_token_failure(
+                "SharePoint authentication failed",
+                "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
             return None
         except ClientAuthenticationError as auth_error:
             title, message = get_sharepoint_auth_notification(auth_error)
             self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=title,
-                message=message,
-                recipient_user_ids=[self.created_by],
-            )
+            await self._notify_token_failure(title, message)
             return None
         except Exception as e:
             self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title="SharePoint authentication Failed",
-                message=(
-                    "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                    "and connector authentication credentials."
-                ),
-                recipient_user_ids=[self.created_by],
+            await self._notify_token_failure(
+                "SharePoint authentication Failed",
+                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+                "and connector authentication credentials.",
             )
             return None
+
+    async def _notify_token_failure(self, title: str, message: str) -> None:
+        if self._token_failure_notified:
+            return
+        self._token_failure_notified = True
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title=title,
+            message=message,
+            recipient_user_ids=[self.created_by],
+        )
 
     async def _get_site_permissions(self, site_id: str) -> list[Permission] | None:
         """The site's (web's) role assignments as grants, or None when they can't be read.
@@ -2844,11 +2844,14 @@ class SharePointConnector(BaseConnector):
     def _site_group_permissions(self, site_id: str, group_id: object, role: PermissionType) -> list[Permission]:
         """A SharePoint site group grant, keyed as _sync_user_groups saves the group.
 
-        Raises for a group whose members this run could not read: whether it holds a tenant-wide claim is
-        then unknown, so what it grants is unknown too, and the caller keeps what is stored.
+        Raises for a group whose members this run did not read (its site's groups could not be listed, or a
+        reindex ran without listing them): whether it holds a tenant-wide claim is then unknown, so what it
+        grants is unknown too, and the caller keeps what is stored.
         """
         if group_id is None or not site_id:
             return []
+        if site_id not in self._site_groups_read:
+            raise RuntimeError(f"the SharePoint groups of site {site_id} were not read in this run")
         if str(group_id) in self._unreadable_site_groups.get(site_id, set()):
             raise RuntimeError(f"the members of SharePoint group {group_id} on site {site_id} could not be read")
         permissions = [Permission(
@@ -3208,6 +3211,7 @@ class SharePointConnector(BaseConnector):
         self.logger.info("Starting SharePoint Site Groups fetch...")
         self._org_wide_site_groups = {}
         self._unreadable_site_groups = {}
+        self._site_groups_read = set()
         if sites is None:
             sites = await self._get_all_sites()
         sharepoint_groups_with_members: list[tuple[AppUserGroup, list[AppUser]]] = []
@@ -3267,6 +3271,7 @@ class SharePointConnector(BaseConnector):
             out.append((AppUserGroup(source_user_group_id=f"{site_id}-{gone}", app_name=self.connector_name,
                                      connector_id=self.connector_id, name=f"Deleted group {gone}"), []))
         await tracker.remember(listed)
+        self._site_groups_read.add(site_id)
         return out
 
     async def _site_group_member_users(self, site_id: str, group_id: str, principals: list[dict]) -> list[AppUser]:
@@ -3319,11 +3324,20 @@ class SharePointConnector(BaseConnector):
         delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
         if delta_link is None or self._refresh_all_groups:
+            caught_up = True
+            if delta_link is not None:
+                # Only the stored link reports the groups deleted since it was taken: the full read below lists
+                # the groups that exist, and the new link starts after the deletions.
+                try:
+                    caught_up = await self._perform_delta_sync(delta_link, sync_point_key)
+                except Exception as e:
+                    caught_up = False
+                    self._health.skipped("Entra group changes", e)
             self.logger.info("Reading every Entra group's members...")
             # The delta link is taken before the groups are read, so no change made meanwhile is missed.
             new_delta_link = await self._get_initial_delta_link()
             complete = await self._perform_initial_full_sync()
-            if new_delta_link and complete:
+            if new_delta_link and complete and caught_up:
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
@@ -3421,8 +3435,8 @@ class SharePointConnector(BaseConnector):
                 response = await builder.with_url(next_link).get()
         return groups
 
-    async def _perform_delta_sync(self, url: str, sync_point_key: str) -> None:
-        """Apply the Entra group changes since the stored delta link.
+    async def _perform_delta_sync(self, url: str, sync_point_key: str) -> bool:
+        """Apply the Entra group changes since the stored delta link. True when every change was applied.
 
         A changed group has its members read again, and so does every group that contains it: Graph reports
         a member change only on the group the member was added to or removed from, while PipesHub holds
@@ -3456,7 +3470,7 @@ class SharePointConnector(BaseConnector):
             if refreshed:
                 await self.data_entities_processor.on_new_user_groups(refreshed)
             if not applied:
-                return
+                return False
             if result.get('next_link'):
                 url = result.get('next_link')
                 await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
@@ -3464,10 +3478,10 @@ class SharePointConnector(BaseConnector):
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key, {"nextLink": None, "deltaLink": result.get('delta_link')}
                 )
-                return
+                return True
             else:
                 self.logger.warning("Received response with neither next_link nor delta_link")
-                return
+                return False
 
     async def _handle_group_create(self, group: Group) -> bool:
         """Write an Entra group with its members. False when they could not be read (stored members stay)."""
@@ -3678,6 +3692,7 @@ class SharePointConnector(BaseConnector):
         self._health = SyncHealth()
         self._drive_roots = {}
         self._filtered_out_site_ids = set()
+        self._token_failure_notified = False
         self.last_sync_summary = None
 
         try:
@@ -3777,7 +3792,10 @@ class SharePointConnector(BaseConnector):
         await self.run_sync()
 
     async def test_connection_and_access(self) -> bool:
-        """Whether the app can read what a sync needs: the sites (Graph) and site permissions (SharePoint REST)."""
+        """Whether the app can read what a sync needs: the sites (Graph) and site permissions (SharePoint REST).
+
+        Raises ConnectorInitError naming the Graph permission when the app is found without it.
+        """
         try:
             async with self.rate_limiter:
                 root_site = await self.client.sites.by_site_id("root").get()
@@ -3794,7 +3812,11 @@ class SharePointConnector(BaseConnector):
                 f"❌ SharePoint connection test failed: the app lacks the Microsoft Graph application permission "
                 f"{GRAPH_PERMISSION}; without it changes to who can open uniquely shared items are not reported"
             )
-            return False
+            raise ConnectorInitError(
+                f"The app lacks the Microsoft Graph application permission {GRAPH_PERMISSION}. Without it, "
+                "Microsoft does not report changes to who can open items that have their own permissions. "
+                "Grant it in the app registration with admin consent."
+            )
         return True
 
     async def _report_missing_graph_permission(self) -> None:

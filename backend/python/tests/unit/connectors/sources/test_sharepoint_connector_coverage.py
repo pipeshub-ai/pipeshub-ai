@@ -460,6 +460,7 @@ class TestSharePointGetSitePermissionsExtended:
             site_name="Test",
             is_root=False,
         )
+        c._site_groups_read = {"site-1"}
         sec_guid = "00000000-0000-0000-0000-000000000001"
         c._get_directory_object_type = AsyncMock(return_value="#microsoft.graph.group")
         c._sharepoint_rest_pages = _rest_pages({"results": [
@@ -1234,6 +1235,7 @@ class TestSharePointGetSitePermissionsCustomGroupDedup:
             site_name="Test",
             is_root=False,
         )
+        c._site_groups_read = {"site-1"}
         c._sharepoint_rest_pages = _rest_pages({"results": [
             _role_assignment({"Id": 99, "Title": "Dup", "PrincipalType": 8}, "Read"),
             _role_assignment({"Id": 99, "Title": "Dup Again", "PrincipalType": 8}, "Edit"),

@@ -580,6 +580,39 @@ class TestAzureAdGroups:
 
         assert db.deleted_groups == ["g-old"]
 
+    async def test_a_full_refresh_still_applies_the_deletions_the_stored_link_reports(
+        self, connector, api, db, checkpoints
+    ) -> None:
+        """The full read lists only groups that exist, and its new link starts after the deletion."""
+        serve_groups_delta(api, {None: page([], delta_link=groups_delta_url("D1"))})
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        db.user_groups["g-old"] = ["x@contoso.com"]
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D3")),
+            "D1": page([{"id": "g-old", "@removed": {"reason": "deleted"}}], delta_link=groups_delta_url("D2")),
+        })
+        connector._refresh_all_groups = True  # An account was disabled since the last run.
+
+        await connector._sync_azure_ad_groups()
+
+        assert db.deleted_groups == ["g-old"]
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D3")
+
+    async def test_a_full_refresh_keeps_the_stored_link_when_it_cannot_be_read(self, connector, api, db, checkpoints) -> None:
+        serve_groups_delta(api, {None: page([], delta_link=groups_delta_url("D1"))})
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D3")),
+            "D1": graph_error(500, "generalException"),
+        })
+        connector._refresh_all_groups = True
+
+        await connector._sync_azure_ad_groups()
+
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1"), "its deletions are read next run"
+
 
 def rest_users(*entries: dict) -> dict:
     return {"d": {"results": list(entries)}}
@@ -596,6 +629,7 @@ def serve_site(api) -> None:
 
 class TestSiteAccess:
     async def test_every_role_assignment_of_the_site_becomes_site_access(self, connector, api) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_site(api)
         await connector._get_all_sites()
         m365_id = "0a1b2c3d-0000-4000-8000-000000000001"
@@ -678,6 +712,25 @@ class TestSiteGroups:
         await connector._sync_user_groups()
 
         assert db.user_groups[f"{SITE_ID}-7"] == ["ana@contoso.com"]
+
+    async def test_a_site_whose_groups_cannot_be_listed_keeps_its_stored_group_grants(self, connector, api) -> None:
+        """Which of its groups hold "Everyone" is unknown, so what they grant is unknown, not nothing."""
+        serve_site(api)
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", graph_error(403, "accessDenied"))
+        await connector._sync_user_groups()
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(role_assignment(sp_group(5, "Eng Visitors"), "Read")))
+
+        assert await connector._get_site_permissions(SITE_ID) is None
+
+    async def test_a_group_grant_read_before_the_sites_groups_is_unknown(self, connector, api) -> None:
+        """A reindex reads grants without listing site groups first."""
+        serve_site(api)
+        await connector._get_all_sites()
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(role_assignment(sp_group(5, "Eng Visitors"), "Read")))
+
+        assert await connector._get_site_permissions(SITE_ID) is None
 
 
 CREATED_TS = "2024-02-01T00:00:00Z"
@@ -822,6 +875,7 @@ class TestUniquePermissions:
     """Graph marks no driveItem permission as inherited; SharePoint REST says which items are unique."""
 
     async def test_a_unique_item_stops_inheriting_and_keeps_its_full_acl_with_site_groups(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID), (9, SHARED_PDF_ID)))
         api.on("GET", f"{LIBRARY_REST}/items(7)/roleassignments", rest_results(
             role_assignment(sp_group(3, "IT Team Site Owners"), "Full Control"),
@@ -855,6 +909,7 @@ class TestUniquePermissions:
         self, connector, api, db
     ) -> None:
         """Graph lists no grantee on an organization link; SharePoint holds its redeemers in the link's group."""
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         link_group = "SharingLinks.0f6e.OrganizationEdit.9a1b"
         serve_library_permissions(api, unique_items=((9, SHARED_PDF_ID),))
         api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results(
@@ -887,6 +942,7 @@ class TestUniquePermissions:
         assert api.calls("GET", f"/v1.0/drives/{DRIVE_ID}/items/i1/permissions") == []
 
     async def test_a_unique_library_gets_its_own_role_assignments_and_no_limited_access(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_library_permissions(api, unique=True, role_assignments=(
             role_assignment(sp_group(3, "IT Team Site Owners"), "Full Control"),
             role_assignment(sp_group(14, "IT editors"), "Edit", "Limited Access"),
@@ -916,6 +972,7 @@ class TestUniquePermissions:
         assert api.calls("GET", f"{LIBRARY_REST}/roleassignments") == []
 
     async def test_a_unique_page_gets_its_own_role_assignments(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_site(api)
         await connector._get_all_sites()
         api.on("GET", PAGES, page([site_page(SECRET_PAGE_ID, "Secret"), site_page(HOME_PAGE_ID, "Home")]))
