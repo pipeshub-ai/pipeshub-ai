@@ -543,6 +543,8 @@ class TestKnowledgeBaseRoutes:
         searched = _rest_search(base_url, file_pat, corpus["inside_needle"])
         assert corpus["inside_record"] in searched
         assert folder not in searched and folder_name not in searched
+        # Nor the collection, by its name on each hit.
+        assert f"pp7-in-{corpus['tag']}" not in searched
 
         # The folder's own limit shares the folder, so the same file names it.
         assert folder in _rest_search(base_url, folder_pat, corpus["inside_needle"])

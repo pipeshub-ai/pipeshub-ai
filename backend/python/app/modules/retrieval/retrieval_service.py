@@ -60,6 +60,7 @@ from app.modules.retrieval.selection_scope import (
     SelectionScope,
     SelectionTooLargeError,
     connection_bound_scope,
+    connection_sources_of,
     require_membership_ready,
     resolve_request_scopes,
 )
@@ -1092,6 +1093,15 @@ class RetrievalService:
                     )
 
             await self._attach_connector_instance_names(fetched_records)
+            limit_sources = connection_sources_of(filter_groups)
+            if limit_sources is not None:
+                # The app's own name is its source's or collection's name: shown
+                # only when the limit covers that app whole, as the Location
+                # trail and record details show it.
+                whole_apps = set(limit_sources.get("apps") or ())
+                for r in fetched_records:
+                    if r and r.get("connectorId") not in whole_apps:
+                        r.pop("connectorInstanceName", None)
 
             record_id_to_record_map = {}
             for r in fetched_records:
