@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sharp from 'sharp';
-import { compressImageIfNeeded } from '../../../../src/modules/enterprise_search/controller/es_controller';
+import { validateAttachmentFile } from '../../../../src/modules/enterprise_search/controller/es_controller';
 import { BadRequestError } from '../../../../src/libs/errors/http.errors';
 
 const SVG = Buffer.from(
@@ -33,11 +33,11 @@ function file(
   } as Express.Multer.File;
 }
 
-describe('compressImageIfNeeded', () => {
-  it('rejects SVG bytes labelled as PNG whether or not they exceed the size threshold', async () => {
+describe('validateAttachmentFile', () => {
+  it('rejects SVG bytes labelled as PNG, small or large', async () => {
     for (const size of [SVG.length, 2 * 1024 * 1024]) {
       try {
-        await compressImageIfNeeded(
+        await validateAttachmentFile(
           file({
             buffer: SVG,
             mimetype: 'image/png',
@@ -64,7 +64,7 @@ describe('compressImageIfNeeded', () => {
 
     for (const buffer of [signature, corrupt]) {
       try {
-        await compressImageIfNeeded(
+        await validateAttachmentFile(
           file({
             buffer,
             mimetype: 'image/png',
@@ -84,7 +84,7 @@ describe('compressImageIfNeeded', () => {
 
   it('passes a PDF through without decoding it', async () => {
     const pdf = Buffer.from('%PDF-1.4');
-    const result = await compressImageIfNeeded(
+    const result = await validateAttachmentFile(
       file({
         buffer: pdf,
         mimetype: 'application/pdf',
@@ -98,16 +98,16 @@ describe('compressImageIfNeeded', () => {
 
   it('leaves a small real PNG unchanged', async () => {
     const png = await pngBuffer();
-    const result = await compressImageIfNeeded(
+    const result = await validateAttachmentFile(
       file({ buffer: png, mimetype: 'image/png', size: png.length }),
     );
     expect(result.buffer.equals(png)).to.equal(true);
     expect(result.mimeType).to.equal('image/png');
   });
 
-  it('compresses a real PNG once it is over the threshold', async () => {
+  it('forwards a large real PNG as uploaded: same bytes, type and name', async () => {
     const png = await pngBuffer();
-    const result = await compressImageIfNeeded(
+    const result = await validateAttachmentFile(
       file({
         buffer: png,
         mimetype: 'image/png',
@@ -115,11 +115,9 @@ describe('compressImageIfNeeded', () => {
         size: 2 * 1024 * 1024,
       }),
     );
-    expect(result.mimeType).to.equal('image/jpeg');
-    expect(result.fileName).to.equal('large.jpg');
-    expect(result.size).to.be.lessThan(2 * 1024 * 1024);
-    expect(result.buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).to.equal(
-      true,
-    );
+    expect(result.buffer.equals(png)).to.equal(true);
+    expect(result.mimeType).to.equal('image/png');
+    expect(result.fileName).to.equal('large.png');
+    expect(result.size).to.equal(2 * 1024 * 1024);
   });
 });

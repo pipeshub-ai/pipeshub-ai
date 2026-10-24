@@ -230,7 +230,14 @@ def downscale_to_limits(
         from PIL import Image
 
         with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
-            image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
+            if source.mode in ("RGBA", "LA", "PA") or "transparency" in source.info:
+                # JPEG has no alpha, and dropping it shows the colour stored
+                # under each transparent pixel, usually black: lay it on white.
+                rgba = source.convert("RGBA")
+                image = Image.new("RGB", rgba.size, (255, 255, 255))
+                image.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                image = source.convert("RGB") if source.mode not in ("RGB", "L") else source.copy()
         if max(image.size) > max_long_edge_px:
             ratio = max_long_edge_px / max(image.size)
             image = image.resize(

@@ -86,6 +86,7 @@ from app.utils.attachment_mime_types import (
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
 from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
@@ -252,13 +253,24 @@ def _pdf_page_count(file_content: bytes) -> int:
         return len(pdf.pages)
 
 
+# Limits for the copy of an uploaded image kept in its parsed record, which is
+# what the model reads and what every later turn replays. The stored file stays
+# as uploaded; the model's own per-image limits still apply when it is sent.
+_RECORD_IMAGE_MAX_LONG_EDGE_PX = 2048
+_RECORD_IMAGE_MAX_BYTES = 1024 * 1024
+
+
 def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
     mime_lower = mime_type.lower()
     if mime_lower in ("image/jpeg", "image/jpg"):
         media_type = "image/jpeg"
     else:
         media_type = "image/png"
-    data_uri = f"data:{media_type};base64,{base64.b64encode(file_content).decode('utf-8')}"
+    data_uri = downscale_to_limits(
+        f"data:{media_type};base64,{base64.b64encode(file_content).decode('utf-8')}",
+        max_long_edge_px=_RECORD_IMAGE_MAX_LONG_EDGE_PX,
+        max_bytes=_RECORD_IMAGE_MAX_BYTES,
+    )
     block = Block(
         index=0,
         type=BlockType.IMAGE,
@@ -734,7 +746,7 @@ async def upload_chat_attachments(
         parse_mode = "pdfplumber"
         if is_image:
             try:
-                block_containers = _build_image_blocks(file_binary, item.mimeType)
+                block_containers = await asyncio.to_thread(_build_image_blocks, file_binary, item.mimeType)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "image_direct"
             except Exception as e:

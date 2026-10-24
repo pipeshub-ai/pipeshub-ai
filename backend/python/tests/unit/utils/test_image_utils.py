@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image
 
 from app.utils.image_utils import (
     EXT_TO_MIME,
     _fetch_image_as_base64,
+    downscale_to_limits,
     get_extension_from_mimetype,
     get_image_info_from_url,
     get_mime_type_from_base64,
@@ -25,6 +28,23 @@ _RASTERIZE = "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base
 
 def _svg_uri(svg: bytes) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(svg).decode()
+
+
+class TestDownscaleToLimits:
+    def test_a_transparent_image_is_laid_on_white_not_black(self) -> None:
+        source = Image.new("RGBA", (3000, 20), (0, 0, 0, 0))
+        source.paste((200, 30, 30, 255), (0, 0, 40, 20))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+        uri = downscale_to_limits(
+            "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode(),
+            max_long_edge_px=2048, max_bytes=10 * 1024 * 1024,
+        )
+
+        assert uri.startswith("data:image/jpeg;base64,")
+        out = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGB")
+        assert min(out.getpixel((out.width - 5, out.height // 2))) > 240
+        assert out.getpixel((5, out.height // 2))[0] > 150
 
 
 class TestToLlmImageFormat:
