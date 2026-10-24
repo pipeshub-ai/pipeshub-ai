@@ -115,6 +115,15 @@ class TestClientUsesTheResolvedEndpoint:
         client = await MinIOClient.build_from_services(logging.getLogger("test.minio"), config_service, "minio-1")
         assert client.get_endpoint_url() == "http://10.0.0.5:9000"
 
+    @pytest.mark.asyncio
+    async def test_build_from_services_refuses_a_metadata_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Every data source is built here, so the address rule holds on this path too, not only in init().
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"auth": _keys(endpointUrl="http://169.254.169.254")})
+        with pytest.raises(ValueError, match="metadata"):
+            await MinIOClient.build_from_services(logging.getLogger("test.minio"), config_service, "minio-1")
+
 
 class TestInitRefusesABadEndpoint:
     @pytest.mark.asyncio

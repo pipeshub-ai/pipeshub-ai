@@ -287,10 +287,13 @@ class MinIOClient(IClient):
             if not access_key_id or not secret_access_key:
                 raise ValueError("Access key ID and secret access key are required for MinIO authentication")
 
+            # Checked here, on the value the client uses: every data source is built by this method.
+            endpoint = resolve_endpoint_url(endpoint_url, use_ssl=use_ssl)
+            await check_endpoint_address(endpoint)
             client = MinIORESTClientViaAccessKey(
                 access_key_id=access_key_id,
                 secret_access_key=secret_access_key,
-                endpoint_url=resolve_endpoint_url(endpoint_url, use_ssl=use_ssl),
+                endpoint_url=endpoint,
                 bucket_name=bucket_name,
                 use_ssl=use_ssl,
                 verify_ssl=verify_ssl,
