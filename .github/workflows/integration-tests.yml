@@ -319,7 +319,7 @@ jobs:
       # CONNSIM_REF pins the simulator commit the image is built from and
       # CONNSIM_PACK_* the content pack it serves; together they fix every fixture
       # value in those env files.
-      CONNSIM_REF: fcfe407746e1ecd254b30731a8d78479c58f59d9
+      CONNSIM_REF: 4754b8c9b1e649454f0bd46d80e461cfe308781e
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
       CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
