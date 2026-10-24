@@ -39,6 +39,7 @@ from app.models.source_dates import (
     content_dates_replace,
     is_kb_upload,
 )
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.indexing.content_dates import (
     DatesWrite,
     latest_upload_ms,
@@ -46,10 +47,11 @@ from app.modules.indexing.content_dates import (
     plan_revert,
 )
 from app.modules.named_entities.document_dates import find_document_dates
-from app.modules.named_entities.domain.models import read_stored_extraction
+from app.modules.named_entities.kept import read_kept_extraction
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
+    from app.modules.artifacts.reader import RecordArtifactReader
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 PAGE_SIZE = 200
@@ -108,6 +110,7 @@ async def backfill_content_dates(
         raise ValueError("Dating writes need CONTENT_DOCUMENT_DATES set to true or all")
     tally = Tally(after_key=after_key)
     reads = asyncio.Semaphore(max(1, concurrency))
+    reader = record_artifact_reader(blob_storage)
     resume_kb, _, resume_key = (after_key or "").partition(CURSOR_SEPARATOR)
     for kb_id in await _knowledge_bases(graph_provider, org_id, page_size):
         if resume_kb and kb_id < resume_kb:
@@ -130,7 +133,7 @@ async def backfill_content_dates(
             uploads = [doc for doc in page if is_kb_upload(doc.get("connectorName"), doc.get("origin"))]
             tally.checked += len(uploads)
             planned = await asyncio.gather(*(
-                _plan(doc, blob_storage, reads, tally, replace=replace, revert=revert) for doc in uploads
+                _plan(doc, reader, graph_provider, reads, tally, replace=replace, revert=revert) for doc in uploads
             ))
             writes = [(doc["_key"], write) for doc, write in zip(uploads, planned, strict=True) if write is not None]
             for _key, write in writes:
@@ -167,7 +170,8 @@ async def _knowledge_bases(graph_provider: IGraphDBProvider, org_id: str, page_s
 
 async def _plan(
     doc: dict[str, Any],
-    blob_storage: Any,  # noqa: ANN401
+    reader: RecordArtifactReader,
+    graph_provider: IGraphDBProvider,
     reads: asyncio.Semaphore,
     tally: Tally,
     *,
@@ -178,16 +182,22 @@ async def _plan(
         return None
     if revert:
         return plan_revert(doc)
-    if doc.get("indexingStatus") != ProgressStatus.COMPLETED.value or not doc.get("virtualRecordId"):
+    virtual_record_id = doc.get("virtualRecordId")
+    if doc.get("indexingStatus") != ProgressStatus.COMPLETED.value or not virtual_record_id:
         return None
     async with reads:
         try:
-            blob = await blob_storage.get_record_from_storage(doc["virtualRecordId"], doc.get("orgId"))
+            stored = await reader.read_record(virtual_record_id, doc.get("orgId") or "")
+            # The entities stage keeps its extraction in its state; a record indexed
+            # before the stage existed keeps it in the stored record.
+            extraction = await read_kept_extraction(
+                graph_provider, virtual_record_id, doc.get("contentRev"),
+                ((stored or {}).get("semantic_metadata") or {}).get("named_entities"),
+            )
         except Exception:
             tally.unreadable += 1
             return None
-    extraction = read_stored_extraction(((blob or {}).get("semantic_metadata") or {}).get("named_entities"))
-    containers = (blob or {}).get("block_containers")
+    containers = (stored or {}).get("block_containers")
     if extraction is None or not containers or extraction.status in ("FAILED", "SKIPPED"):
         tally.without_extraction += 1
         # Nothing is known of the content, so only a missing origin is written.

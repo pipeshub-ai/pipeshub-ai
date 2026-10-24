@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import io
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -16,7 +16,12 @@ from app.modules.named_entities.extractor import (
     NamedEntityExtractor,
     NamedEntityRequest,
 )
+from app.modules.named_entities.kept import ENTITIES_STAGE
+from app.modules.pipeline.models import stage_state_key
 from app.scripts.content_document_dates import backfill_content_dates
+
+if TYPE_CHECKING:
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 UPLOADED = 1792090099000  # 2026-10-15 18:48:19 UTC
 EMAIL_DAY = int(datetime(2025, 2, 11, tzinfo=UTC).timestamp() * 1000)
@@ -34,13 +39,19 @@ def _doc(key: str, **overrides: Any) -> dict[str, Any]:  # noqa: ANN401
     return doc
 
 
-async def _blob(*texts: str) -> dict[str, Any]:
+async def _extraction(*texts: str) -> tuple[BlocksContainer, NamedEntityExtraction]:
     blocks = [Block(index=i, type=BlockType.TEXT, data=t) for i, t in enumerate(texts)]
     kinds = frozenset({EntityKind.DATE, EntityKind.DATE_TIME, EntityKind.DATE_RANGE, EntityKind.DURATION})
-    extraction = await NamedEntityExtractor().extract(NamedEntityRequest(blocks=blocks, enabled=kinds))
+    return BlocksContainer(blocks=blocks), await NamedEntityExtractor().extract(
+        NamedEntityRequest(blocks=blocks, enabled=kinds),
+    )
+
+
+async def _blob(*texts: str) -> dict[str, Any]:
+    blocks, extraction = await _extraction(*texts)
     # As BlobStorage writes it: unset fields are left out.
     return {
-        "block_containers": BlocksContainer(blocks=blocks).model_dump(mode="json", exclude_none=True),
+        "block_containers": blocks.model_dump(mode="json", exclude_none=True),
         "semantic_metadata": {"named_entities": extraction.model_dump(mode="json")},
     }
 
@@ -58,6 +69,10 @@ class _Graph:
         self.apps = {app["_key"]: app for app in apps}
         self.batches: list[list[tuple[str, dict, dict]]] = []
         self.record_filters: list[dict[str, Any]] = []
+        self.stage_states: dict[str, dict[str, Any]] = {}
+
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        return self.stage_states.get(key)
 
     async def get_documents_paginated(
         self, collection: str, *, limit: int, filters: dict, sort_field: str, raise_on_error: bool, after_key: str | None,
@@ -88,7 +103,9 @@ class _Blobs:
         self.blobs = blobs
         self.reads = 0
 
-    async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> dict[str, Any] | None:
+    async def get_record_from_storage(
+        self, virtual_record_id: str, org_id: str, lookup_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         self.reads += 1
         if virtual_record_id not in self.blobs:
             raise RuntimeError("storage down")
@@ -178,6 +195,23 @@ async def test_each_knowledge_base_is_walked_by_its_connector_index_and_resumed_
         graph, blobs, org_id="o1", apply=False, replace=UPLOAD_ONLY, after_key="kb-1/a", out=io.StringIO(),
     )
     assert resumed.checked == 2
+
+
+@pytest.mark.asyncio
+async def test_an_extraction_the_entities_stage_kept_dates_the_upload() -> None:
+    # Indexed through the entities stage: the stored record holds the blocks, and the
+    # extraction is the stage's output for the record's revision.
+    blocks, extraction = await _extraction(*EMAIL)
+    graph = _Graph([_doc("a", contentRev="rev-a", sourceTimestampOrigin="upload")])
+    graph.stage_states[stage_state_key("v-a", "rev-a", ENTITIES_STAGE)] = {
+        "status": "COMPLETED", "output": extraction.model_dump_json(),
+    }
+    blobs = _Blobs({"v-a": {"block_containers": blocks.model_dump(mode="json", exclude_none=True)}})
+
+    tally = await backfill_content_dates(graph, blobs, org_id="o1", apply=True, replace=UPLOAD_ONLY, out=io.StringIO())
+
+    assert (tally.date, tally.written, tally.without_extraction) == (1, 1, 0)
+    assert graph.docs["a"]["sourceCreatedAtTimestamp"] == EMAIL_DAY
 
 
 @pytest.mark.asyncio
