@@ -2,7 +2,7 @@
 their content states, from the named-entity extraction each blob holds.
 
     python -m app.scripts.content_document_dates --org ORG [--apply] [--revert]
-        [--after-key KEY] [--limit N] [--concurrency N]
+        [--after-key KB/KEY] [--limit N] [--concurrency N]
 
 The same rule as indexing with CONTENT_DOCUMENT_DATES on (see
 ``app.modules.indexing.content_dates``), so dating needs the switch set in this
@@ -11,6 +11,10 @@ timestamp origin was kept get it stamped. ``--revert`` puts back what the
 upload set on every content-dated record and reads no blob. Nothing is written
 without ``--apply``. Each write applies only while the record still holds what
 was read, so a run can be repeated or resumed with ``--after-key``.
+
+It walks the org's knowledge bases one at a time, each by the records'
+(connectorId, key) index, so a page costs the same however many uploads the
+org has.
 
 Output is one JSON object per page and a final summary.
 """
@@ -27,11 +31,14 @@ from typing import TYPE_CHECKING, Any, TextIO
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
-    OriginTypes,
     ProgressStatus,
 )
 from app.models.blocks import BlocksContainer
-from app.models.source_dates import SourceTimestampOrigin, content_dates_replace
+from app.models.source_dates import (
+    SourceTimestampOrigin,
+    content_dates_replace,
+    is_kb_upload,
+)
 from app.modules.indexing.content_dates import (
     DatesWrite,
     latest_upload_ms,
@@ -49,6 +56,9 @@ PAGE_SIZE = 200
 CONCURRENCY = 8
 EXIT_FAILED = 1
 _RECORDS = CollectionNames.RECORDS.value
+_APPS = CollectionNames.APPS.value
+# Between the knowledge base and the record key in the resume cursor.
+CURSOR_SEPARATOR = "/"
 
 
 @dataclass
@@ -72,7 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--org", required=True)
     parser.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     parser.add_argument("--revert", action="store_true", help="put back the dates uploads set")
-    parser.add_argument("--after-key", default=None, help="resume after this record key")
+    parser.add_argument(
+        "--after-key", default=None, help="resume after this KB/KEY, the after_key a page printed",
+    )
     parser.add_argument("--limit", type=int, default=None, help="stop after checking this many records")
     parser.add_argument("--concurrency", type=int, default=CONCURRENCY, help="blobs read at once")
     return parser
@@ -96,35 +108,61 @@ async def backfill_content_dates(
         raise ValueError("Dating writes need CONTENT_DOCUMENT_DATES set to true or all")
     tally = Tally(after_key=after_key)
     reads = asyncio.Semaphore(max(1, concurrency))
-    while limit is None or tally.checked < limit:
-        size = page_size if limit is None else min(page_size, limit - tally.checked)
-        page = await graph_provider.get_documents_paginated(
-            _RECORDS,
-            limit=size,
-            filters={"orgId": org_id, "connectorName": Connectors.KNOWLEDGE_BASE.value, "origin": OriginTypes.UPLOAD.value},
-            sort_field="_key",
-            raise_on_error=True,
-            after_key=tally.after_key,
-        )
-        if not page:
-            break
-        tally.checked += len(page)
-        tally.after_key = page[-1].get("_key")
-        planned = await asyncio.gather(*(
-            _plan(doc, blob_storage, reads, tally, replace=replace, revert=revert) for doc in page
-        ))
-        writes = [(doc["_key"], write) for doc, write in zip(page, planned, strict=True) if write is not None]
-        for _key, write in writes:
-            setattr(tally, write.action, getattr(tally, write.action) + 1)
-        written = 0
-        if apply and writes:
-            rows = [(key, write.updates, write.expected) for key, write in writes]
-            written = len(await graph_provider.update_nodes_fields_if_match(_RECORDS, rows))
-            tally.written += written
-        out.write(json.dumps({"page": len(page), "page_planned": len(writes), "page_written": written, **asdict(tally)}) + "\n")
-        if len(page) < size:
+    resume_kb, _, resume_key = (after_key or "").partition(CURSOR_SEPARATOR)
+    for kb_id in await _knowledge_bases(graph_provider, org_id, page_size):
+        if resume_kb and kb_id < resume_kb:
+            continue
+        cursor = (resume_key or None) if kb_id == resume_kb else None
+        while limit is None or tally.checked < limit:
+            size = page_size if limit is None else min(page_size, limit - tally.checked)
+            page = await graph_provider.get_documents_paginated(
+                _RECORDS,
+                limit=size,
+                filters={"connectorId": kb_id},
+                sort_field="_key",
+                raise_on_error=True,
+                after_key=cursor,
+            )
+            if not page:
+                break
+            cursor = page[-1].get("_key")
+            tally.after_key = f"{kb_id}{CURSOR_SEPARATOR}{cursor}"
+            uploads = [doc for doc in page if is_kb_upload(doc.get("connectorName"), doc.get("origin"))]
+            tally.checked += len(uploads)
+            planned = await asyncio.gather(*(
+                _plan(doc, blob_storage, reads, tally, replace=replace, revert=revert) for doc in uploads
+            ))
+            writes = [(doc["_key"], write) for doc, write in zip(uploads, planned, strict=True) if write is not None]
+            for _key, write in writes:
+                setattr(tally, write.action, getattr(tally, write.action) + 1)
+            written = 0
+            if apply and writes:
+                rows = [(key, write.updates, write.expected) for key, write in writes]
+                written = len(await graph_provider.update_nodes_fields_if_match(_RECORDS, rows))
+                tally.written += written
+            out.write(json.dumps({"page": len(page), "page_planned": len(writes), "page_written": written, **asdict(tally)}) + "\n")
+            if len(page) < size:
+                break
+        if limit is not None and tally.checked >= limit:
             break
     return tally
+
+
+async def _knowledge_bases(graph_provider: IGraphDBProvider, org_id: str, page_size: int) -> list[str]:
+    """The org's knowledge bases, in key order. Each is the connectorId of its uploads."""
+    keys: list[str] = []
+    while True:
+        page = await graph_provider.get_documents_paginated(
+            _APPS,
+            limit=page_size,
+            filters={"orgId": org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+            sort_field="_key",
+            raise_on_error=True,
+            after_key=keys[-1] if keys else None,
+        )
+        keys.extend(doc["_key"] for doc in page if doc.get("_key"))
+        if len(page) < page_size:
+            return keys
 
 
 async def _plan(

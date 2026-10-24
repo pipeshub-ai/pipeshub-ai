@@ -25,7 +25,7 @@ UPLOAD_ONLY = frozenset({SourceTimestampOrigin.UPLOAD})
 
 def _doc(key: str, **overrides: Any) -> dict[str, Any]:  # noqa: ANN401
     doc = {
-        "_key": key, "id": key, "orgId": "o1", "connectorName": "KB", "origin": "UPLOAD",
+        "_key": key, "id": key, "orgId": "o1", "connectorId": "kb-1", "connectorName": "KB", "origin": "UPLOAD",
         "virtualRecordId": f"v-{key}", "indexingStatus": "COMPLETED",
         "createdAtTimestamp": UPLOADED, "sourceCreatedAtTimestamp": UPLOADED - 40,
         "sourceLastModifiedTimestamp": UPLOADED - 40,
@@ -45,17 +45,29 @@ async def _blob(*texts: str) -> dict[str, Any]:
     }
 
 
+APPS = [
+    {"_key": "kb-1", "orgId": "o1", "type": "KB"},
+    {"_key": "drive-1", "orgId": "o1", "type": "DRIVE"},
+    {"_key": "kb-9", "orgId": "o2", "type": "KB"},
+]
+
+
 class _Graph:
-    def __init__(self, docs: list[dict[str, Any]]) -> None:
+    def __init__(self, docs: list[dict[str, Any]], apps: list[dict[str, Any]] = APPS) -> None:
         self.docs = {doc["_key"]: copy.deepcopy(doc) for doc in docs}
+        self.apps = {app["_key"]: app for app in apps}
         self.batches: list[list[tuple[str, dict, dict]]] = []
+        self.record_filters: list[dict[str, Any]] = []
 
     async def get_documents_paginated(
         self, collection: str, *, limit: int, filters: dict, sort_field: str, raise_on_error: bool, after_key: str | None,
     ) -> list[dict[str, Any]]:
         assert (sort_field, raise_on_error) == ("_key", True)
+        if collection == "records":
+            self.record_filters.append(dict(filters))
+        docs = self.docs if collection == "records" else self.apps
         rows = [
-            copy.deepcopy(doc) for key, doc in sorted(self.docs.items())
+            copy.deepcopy(doc) for key, doc in sorted(docs.items())
             if (after_key is None or key > after_key) and all(doc.get(f) == v for f, v in filters.items())
         ]
         return rows[:limit]
@@ -92,7 +104,7 @@ async def _setup() -> tuple[_Graph, _Blobs]:
         _doc("b"),  # stored before origins were kept, says no date
         _doc("c"),  # its blob cannot be read
         _doc("d", isDeleted=True),
-        _doc("e", connectorName="DRIVE", origin="CONNECTOR"),
+        _doc("e", connectorId="drive-1", connectorName="DRIVE", origin="CONNECTOR"),
     ])
     blobs = _Blobs({"v-a": await _blob(*EMAIL), "v-b": await _blob("Runbook", "Restart it."), "v-d": await _blob(*EMAIL)})
     return graph, blobs
@@ -143,9 +155,29 @@ async def test_revert_gives_the_upload_values_back_without_reading_blobs() -> No
 async def test_resuming_after_a_key_skips_what_was_done() -> None:
     graph, blobs = await _setup()
 
-    tally = await backfill_content_dates(graph, blobs, org_id="o1", apply=False, replace=UPLOAD_ONLY, after_key="b", out=io.StringIO())
+    tally = await backfill_content_dates(
+        graph, blobs, org_id="o1", apply=False, replace=UPLOAD_ONLY, after_key="kb-1/b", out=io.StringIO(),
+    )
 
     assert tally.checked == 2
+
+
+@pytest.mark.asyncio
+async def test_each_knowledge_base_is_walked_by_its_connector_index_and_resumed_across() -> None:
+    # Filtering on connectorId alone and sorting by key is what the records'
+    # (connectorId, key) index serves on both backends; the org's own filter is not.
+    apps = [*APPS, {"_key": "kb-2", "orgId": "o1", "type": "KB"}]
+    graph = _Graph([_doc("a"), _doc("b"), _doc("x", connectorId="kb-2"), _doc("y", connectorId="kb-9", orgId="o2")], apps)
+    blobs = _Blobs({})
+
+    tally = await backfill_content_dates(graph, blobs, org_id="o1", apply=False, replace=UPLOAD_ONLY, page_size=1, out=io.StringIO())
+
+    assert tally.checked == 3 and tally.after_key == "kb-2/x"
+    assert {tuple(filters) for filters in graph.record_filters} == {("connectorId",)}
+    resumed = await backfill_content_dates(
+        graph, blobs, org_id="o1", apply=False, replace=UPLOAD_ONLY, after_key="kb-1/a", out=io.StringIO(),
+    )
+    assert resumed.checked == 2
 
 
 @pytest.mark.asyncio
