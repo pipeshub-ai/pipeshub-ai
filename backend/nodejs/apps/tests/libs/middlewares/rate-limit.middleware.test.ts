@@ -696,5 +696,39 @@ describe('Rate Limit Middleware', () => {
       const results = await deliver(1, [200, 200, 200, 401, 401])
       expect(results).to.deep.equal([200, 200, 200, 401, 429])
     })
+
+    it('should not 429 a burst of accepted deliveries that are still in flight', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let inFlight = 0
+      const app = express()
+      app.use(createSlackEventsRateLimiter(loggerStub as unknown as Logger, 2))
+      app.post('/slack/events', async (_req, res) => {
+        inFlight += 1
+        await gate
+        res.status(200).end()
+      })
+      const server = app.listen(0)
+      await new Promise((resolve) => server.once('listening', resolve))
+      const { port } = server.address() as AddressInfo
+      try {
+        const pending = [0, 1, 2, 3].map(() =>
+          fetch(`http://127.0.0.1:${port}/slack/events`, { method: 'POST' }),
+        )
+        const deadline = Date.now() + 2000
+        while (inFlight < 4 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        expect(inFlight, 'every delivery reached the handler').to.equal(4)
+        release()
+        const results = await Promise.all(pending)
+        expect(results.map((response) => response.status)).to.deep.equal([200, 200, 200, 200])
+      } finally {
+        release()
+        server.close()
+      }
+    })
   })
 })
