@@ -56,6 +56,13 @@ def _jira(cls: type) -> MagicMock:
         return ["u"]
 
     c._fetch_users = fetch
+    c._app_roles_mapping = None
+    c._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={"jira-software": []})
+
+    async def licensed(users: list, mapping: dict) -> list:
+        return [u for u in users if u == "u"]
+
+    c._keep_licensed_users = licensed
     c._sync_user_groups = AsyncMock(return_value={"g": ["u"]})
     c._fetch_filtered_projects = AsyncMock(return_value=([(MagicMock(short_name="P"), None)], [{"key": "P"}]))
     c._sync_project_roles = AsyncMock()
@@ -75,6 +82,16 @@ async def test_jira_cloud_pass_writes_users_groups_roles_and_keeps_the_sync_stat
     assert (c._kept_unread_access, c._user_read_unfinished, c._app_roles_unread) == (True, True, True)
     assert c._kept_after_refusal == [("projects", "")]
     assert c._projects_naming_unread_roles == {"P"}
+    assert c._app_roles_mapping is None  # the pass leaves the full sync's mapping as it found it
+
+
+@pytest.mark.asyncio
+async def test_jira_cloud_pass_links_only_users_with_product_access() -> None:
+    c = _jira(JiraConnector)
+    c._fetch_users = AsyncMock(return_value=["u", "unlicensed"])
+    await JiraConnector._link_users_groups_and_roles(c)
+    c.data_entities_processor.on_new_app_users.assert_awaited_once_with(["u"])
+    c._sync_user_groups.assert_awaited_once_with(["u"])
 
 
 @pytest.mark.asyncio

@@ -2099,7 +2099,7 @@ class JiraConnector(BaseConnector):
     # Bookkeeping a full sync reads at its end; a link pass must leave it as it found it.
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
-        "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles",
+        "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -2115,6 +2115,9 @@ class JiraConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users()
+            # Same licence filter as a full sync: an account without Jira product access is not linked.
+            self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+            jira_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             groups_members_map = await self._sync_user_groups(jira_users)
