@@ -102,7 +102,7 @@
     "@types/react-dom": "^19.1.7",
     "@vitest/coverage-v8": "^4.1.11",
     "dotenv": "^17.4.2",
-    "electron": "^42.11.3",
+    "electron": "^42.11.16",
     "electron-builder": "^26.15.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
