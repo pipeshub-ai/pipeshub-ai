@@ -50,7 +50,11 @@ def media_reference(attrs: dict[str, Any]) -> str:
     """
     name = str(attrs.get("alt") or attrs.get("__fileName") or "").strip()
     url = str(attrs.get("url") or "").strip() if attrs.get("type") == "external" else ""
-    return f"[{name or url}]({url})" if url else name
+    if not url:
+        return name
+    # A space or bracket would end a bare link target early.
+    target = f"<{url}>" if any(c in url for c in " ()<>") else url
+    return f"[{(name or url).replace(']', chr(92) + ']')}]({target})"
 
 
 def _inline_node_text(node_type: str, attrs: dict[str, Any]) -> str:

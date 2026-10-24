@@ -480,6 +480,9 @@ class ConfluenceClient(IClient):
                 # Normalize base URL — Cloud (email + token) vs DC PAT (token only, no /wiki/api/v2)
                 base_url = base_url.rstrip('/')
                 if email:
+                    # A site URL ending in /wiki would otherwise call /wiki/wiki/api/v2.
+                    if base_url.endswith('/wiki'):
+                        base_url = base_url[: -len('/wiki')]
                     if not base_url.endswith('/wiki/api/v2'):
                         base_url = f"{base_url}/wiki/api/v2"
                     client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)

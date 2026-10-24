@@ -3020,6 +3020,22 @@ class TestInlineCommentAnchoring:
         assert "shot.png" in text
         assert "[https://img.test/a.png](https://img.test/a.png)" in text
 
+    async def test_external_image_reference_survives_awkward_urls(self) -> None:
+        from app.connectors.sources.atlassian.core.adf_markdown import media_reference
+
+        assert media_reference({"type": "external", "url": "https://img.test/a (1).png", "alt": "x]y"}) == (
+            r"[x\]y](<https://img.test/a (1).png>)"
+        )
+
+    async def test_external_image_without_id_or_name_is_kept_in_the_page(self) -> None:
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/b.png",
+            }}]},
+        ]})
+        assert any("https://img.test/b.png" in str(b.data) for b in blocks)
+
 
 @pytest.mark.asyncio
 class TestCommentCreatedAt:

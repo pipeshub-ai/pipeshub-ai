@@ -996,12 +996,12 @@ class ConfluenceBlockParser:
         width = attrs.get("width")
         height = attrs.get("height")
 
-        if not media_id and not filename:
+        if not media_id and not filename and not media_reference(attrs):
             return []
 
-        # Fetch media as base64 if fetcher provided
+        # Fetch media as base64 if fetcher provided; an external image with neither has nothing to fetch.
         base64_data_url = None
-        if media_fetcher:
+        if media_fetcher and (media_id or filename):
             try:
                 base64_data_url = await media_fetcher(media_id, filename or alt_text)
             except Exception as e:
