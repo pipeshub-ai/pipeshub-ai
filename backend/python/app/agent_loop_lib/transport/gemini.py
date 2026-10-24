@@ -321,13 +321,20 @@ class GeminiTransport(LLMTransport):
                 parts: list[Any] = []
                 if msg.text:
                     parts.append(types.Part(text=msg.text))
-                for tc in msg.tool_calls or []:
+                calls = msg.tool_calls or []
+                # Gemini signs only the first function_call of a parallel set and
+                # validates only that one, so a signed first call vouches for its
+                # unsigned siblings. Flattening them would replay their results as
+                # plain user text.
+                turn_signed = bool(calls) and bool(self._thought_signatures.get(calls[0].id or ""))
+                for tc in calls:
                     signature = self._thought_signatures.get(tc.id or "")
-                    if signature:
+                    if signature or turn_signed:
                         part = types.Part(function_call=types.FunctionCall(
                             name=tc.name, args=tc.arguments or {},
                         ))
-                        part.thought_signature = signature
+                        if signature:
+                            part.thought_signature = signature
                         parts.append(part)
                         continue
                     # No signature: this call came from an earlier HTTP request,
