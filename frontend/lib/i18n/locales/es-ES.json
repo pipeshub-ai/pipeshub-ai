@@ -903,6 +903,7 @@
     "toolCard": {
       "arguments": "Argumentos",
       "query": "Consulta",
+      "queryCutOff": "… [truncado]",
       "result": "Resultado",
       "error": "Error",
       "blocked": "Bloqueado",

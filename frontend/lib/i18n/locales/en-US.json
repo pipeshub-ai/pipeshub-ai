@@ -1015,6 +1015,7 @@
     "toolCard": {
       "arguments": "Arguments",
       "query": "Query",
+      "queryCutOff": "… [truncated]",
       "result": "Result",
       "error": "Error",
       "blocked": "Blocked",
