@@ -71,10 +71,16 @@ class TestResolveEndpointUrl:
         with pytest.raises(ValueError, match=reason):
             resolve_endpoint_url(url)
 
-    def test_a_password_in_the_url_is_not_repeated_in_the_error(self) -> None:
-        with pytest.raises(ValueError) as refused:
-            resolve_endpoint_url("http://admin:hunter2@minio.local:99999")
+    @pytest.mark.parametrize(
+        "url",
+        ["http://admin:hunter2@minio.local:99999", "admin:hunter2@minio.local:9000", "admin:9hunter2@minio.local"],
+    )
+    def test_credentials_in_the_url_are_refused_without_repeating_them(self, url: str) -> None:
+        # Without a scheme, "admin:" once read as a scheme and came back in the message.
+        with pytest.raises(ValueError, match="user name or password") as refused:
+            resolve_endpoint_url(url)
         assert "hunter2" not in str(refused.value)
+        assert "admin" not in str(refused.value)
 
 
 class TestCheckEndpointAddress:

@@ -55,16 +55,21 @@ async def _connector(
             }
         }
     }
-    connector = pipeshub_client.create_connector("MinIO", f"minio-vis-{scope}-{uuid.uuid4().hex[:6]}", scope=scope, config=config)
-    cid = connector.connector_id
+    cid = None
     try:
+        cid = pipeshub_client.create_connector(
+            "MinIO", f"minio-vis-{scope}-{uuid.uuid4().hex[:6]}", scope=scope, config=config,
+        ).connector_id
         pipeshub_client.toggle_sync(cid, enable=True)
         record = await wait_until_searchable(graph_provider, cid, FILE_NAME, timeout=600)
         yield {"connector_id": cid, "record": record, "bucket": bucket, "key": key}
     finally:
-        pipeshub_client.delete_connector(cid)
-        await graph_provider.assert_connector_graph_fully_cleaned(cid, timeout=300)
-        minio_storage._client.delete_object(Bucket=bucket, Key=key)
+        try:
+            if cid:
+                pipeshub_client.delete_connector(cid)
+                await graph_provider.assert_connector_graph_fully_cleaned(cid, timeout=300)
+        finally:
+            minio_storage._client.delete_object(Bucket=bucket, Key=key)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")

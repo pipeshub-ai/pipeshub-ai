@@ -25,6 +25,13 @@ def resolve_endpoint_url(endpoint_url: str, *, use_ssl: bool = True, field: str 
     url = (endpoint_url or "").strip().rstrip("/")
     if not url:
         raise ValueError(f"{field[0].upper()}{field[1:]} is required for MinIO")
+    # Checked first, and the URL is never repeated in a message: it may hold a password.
+    # Without a scheme, "admin:s3cret@host" would otherwise read as the scheme "admin:".
+    if "@" in url.split("://", 1)[-1].split("/", 1)[0]:
+        raise ValueError(
+            f"The MinIO {field} must not contain a user name or password. "
+            "Enter the access key and secret key in their own fields."
+        )
     if "://" not in url:
         # "javascript:x" names a scheme; "minio.local:9000" names a port.
         typed_scheme = re.match(r"[A-Za-z][A-Za-z0-9+.-]*:(?!\d)", url)
@@ -36,12 +43,6 @@ def resolve_endpoint_url(endpoint_url: str, *, use_ssl: bool = True, field: str 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"The MinIO {field} must start with http:// or https://, not {parsed.scheme}://.")
-    # Checked first, and the URL is never repeated in a message: it may hold a password.
-    if "@" in parsed.netloc:
-        raise ValueError(
-            f"The MinIO {field} must not contain a user name or password. "
-            "Enter the access key and secret key in their own fields."
-        )
     try:
         _ = parsed.port
     except ValueError as e:
