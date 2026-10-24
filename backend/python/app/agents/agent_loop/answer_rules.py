@@ -7,10 +7,11 @@ is the same for every question and stays inside the cached prompt prefix.
 
 - ANSWER_COMPOSITION_RULES: enterprise-search answers name what they are
   about and who said it, keep values with their qualifiers, answer from the
-  record that defines a procedure, and resolve conflicting sources in a
-  fixed order. Prompt text only.
+  record that defines a procedure, lead with the substance before its
+  status, and resolve conflicting sources in a fixed order. Prompt text only.
 - THOROUGH_RETRIEVAL: enterprise search reads the records an answer rests
-  on in full, searches again for any part the context does not state, and
+  on in full, one for each part and checked against the question's
+  conditions, searches again for any part the context does not state, and
   looks for other sources on a question about a conflict. More fetch and
   search turns per question.
 - MULTI_STEP_ANSWER_RULES: every prompt that grants knowledge retrieval

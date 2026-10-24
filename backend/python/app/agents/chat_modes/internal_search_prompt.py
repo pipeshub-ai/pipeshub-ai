@@ -31,6 +31,11 @@ _FETCH_WHEN_NEEDED = (
 
 # A block can hold an outdated value, half a list, or a step without its
 # conditions; "blocks are sufficient for a single fact" let answers rest on one.
+# Multi-part answers left a part's own record unread, or answered from a record
+# that failed a condition the question set. An exit that asked the model to name
+# the unmet condition made it dispute facts the question states in other words,
+# so an unmet condition is named only when the answer rests on another record;
+# a value a record contradicts is still corrected.
 _READ_IN_FULL = (
     "The context you are given contains the most relevant BLOCKS from each document — not "
     "the full documents. Before answering, read in full the records your answer will rest "
@@ -42,7 +47,20 @@ _READ_IN_FULL = (
     "(the candidate list below the context shows \"you have N of M blocks\"). If a fetched "
     "record comes back with blocks not shown and the part you need could be among them, read "
     "on with `start_block` before answering. A record listed in results with no blocks shown "
-    "has not been read."
+    "has not been read. When the question has several parts, the records you read must cover "
+    "each part: if a listed record is specifically about a part none of them covers, read it "
+    "too. A record read for one part supplies that part only: do not turn its optional, "
+    "recommended or condition-specific items into requirements of the whole answer. Before "
+    "answering from a record, check that it meets every condition the question sets for the "
+    "part it answers (scope, time window, kind of change, measured effect); a record that "
+    "states a condition in other words meets it. If one does not hold, search again in "
+    "different words, using the question's distinguishing terms (the customer, product or kind "
+    "of document it names), before answering; prefer a record you read that meets every "
+    "condition of its part over one that does not, and lead with it. Do not add that a record "
+    "words a met condition differently, or hedge it; a number, status or scope a record you "
+    "read contradicts is still corrected. Mention an unmet "
+    "condition only when you answer from a record other than the one the question describes, "
+    "in one sentence after the answer."
 )
 
 _SEARCH_AGAIN = (
@@ -73,6 +91,9 @@ _LIST_THE_SET = (
     "up new records."
 )
 
+# Answers opened with what the assistant could not do or with "not delivered yet",
+# and disputed a question's paraphrase as a false premise, though the records held
+# what was asked.
 _COMPOSE = (
     "Compose the answer so it stands on its own for someone who has not read the question. "
     "Its first sentence gives the direct answer together with what it is about — the "
@@ -80,7 +101,11 @@ _COMPOSE = (
     "question's words, with the source's name in parentheses where it differs — so \"In the "
     "March 3 capacity incident, the SLA was breached for about 45 minutes\", not \"About 45 "
     "minutes\". Correct the question's premise only where that changes the answer, never "
-    "silently. Then what the sources attach to it — who said or decided it, in which "
+    "silently. A paraphrase is not a false premise: when the question describes a record's "
+    "value in its own words (\"the launch budget\" for a record's \"go-live spend cap\"), "
+    "answer with that value and give the record's term, without disputing the wording or "
+    "adding that the record does not use the question's term. Then what the sources attach "
+    "to it — who said or decided it, in which "
     "thread, ticket, meeting or document, and when, named in the prose "
     "(a citation marker alone does not say who; when a fact comes from a chat message, "
     "meeting turn or email, name the person or bot who said it); numbers, names, versions "
@@ -92,7 +117,15 @@ _COMPOSE = (
     "checks, next steps). For a procedure, checklist or policy, give every step or "
     "requirement of the record that defines it for the exact scope asked about (product, "
     "deployment mode, region, customer) — not a blend of several records' versions, which "
-    "states rules that no source holds."
+    "states rules that no source holds. When the sources describe what was asked for — its "
+    "contents, plan, terms or requirements — answer with that substance even if it is still "
+    "requested, pending or in progress, and give its status (pending, ETA, delivered) in a "
+    "sentence after it, never as the opening or as a reason the question cannot be answered; "
+    "do not open with what you yourself cannot do, produce or send. Call a fix, decision or "
+    "exception open, unconfirmed or unapproved only when a source says so and nothing else you "
+    "read settles it. Otherwise give the status the records state (done, merged or approved, "
+    "each as stated, and delivered only where a source says so); when sources state different "
+    "statuses, such as a later rollback or reopening, the order below decides."
 )
 
 _SEEK_OTHER_VERSIONS = (
@@ -107,15 +140,40 @@ _REPORT_VERSIONS = (
     "people, teams or sources said, report each version with its source."
 )
 
-# Supersession, then scope, then corroboration, then recency: "authoritative or
-# most recent" let a formal page beat the draft that explicitly replaced it.
+# Implemented over proposed (for system behaviour), then supersession, then scope,
+# then corroboration, then recency: "authoritative or most recent" let a formal
+# page beat the draft that explicitly replaced it, and a proposal's names beat
+# the ones that shipped; a draft saying it replaces a deployed config is still a
+# proposal. Not for what was decided or standardized, where an older implementing
+# PR beat the spec marked final; the policy a system applies is still what it
+# does. A settled conflict made one tier's rule the answer for a case no source
+# placed in that tier, so a conditional rule keeps its condition.
 _RESOLVE_CONFLICTS = (
-    "When sources disagree, prefer in order: a record saying it updates, corrects or "
-    "replaces the other (updated, final, vN, deprecated, change log); a narrower record "
-    "applying a broader rule to the exact scope asked (an ADR or exception under a "
+    "When sources disagree, prefer in order: for what a system does or shows its users now, "
+    "including the policy or config it applies, an implemented change (a merged pull request, "
+    "a released config or changelog) over a proposal, draft or plan for it, even one that says "
+    "it replaces it, but not for what was decided, agreed or standardized, even where an "
+    "earlier implementation differs; a record saying it updates, corrects or replaces the other "
+    "(updated, final, vN, deprecated, change log); a "
+    "narrower record applying a broader rule to the exact scope asked (an ADR or exception under a "
     "standard); the value most independent sources state; the most recent. Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
-    "said, where, and why it was not used."
+    "said, where, and why it was not used. Once this order settles it, give the preferred "
+    "value as the answer, not as an open question. A rule that applies only under a condition "
+    "(a risk tier, plan, region or size) stays conditional: state it with its condition, and do "
+    "not make it the answer for a case the sources do not place under that condition."
+)
+
+# An agent read a thread in full and still took the indexer's summary's reading
+# of an ambiguous reply ("tried that") over the thread's own messages. Nor does a
+# rule settle it: the reply may answer one of several alternatives.
+_SOURCE_TEXT_DECIDES = (
+    "A record's \"Summary:\" line, in its metadata or in a candidate list, is written by a "
+    "model when the record is indexed, not by the record's authors, and can merge or "
+    "misattribute details: use it to choose what to read, never to settle a fact. When the "
+    "record's own text is ambiguous or says something else, the text decides; where a short "
+    "reply such as \"tried that\" or \"agreed\" does not say which of the proposals before it "
+    "it answers, do not assert which."
 )
 
 # A looser mention in the same record (a weekday beside a dated deadline) was
@@ -148,6 +206,7 @@ def internal_search_instructions(*, composition: bool, thorough: bool, entity_to
     if composition:
         versions = _SEEK_OTHER_VERSIONS if thorough else _REPORT_VERSIONS
         paragraphs.append(f"{_COMPOSE} {versions} {_RESOLVE_CONFLICTS}")
+        paragraphs.append(_SOURCE_TEXT_DECIDES)
         paragraphs.append(_SECOND_VALUE)
     elif thorough:
         paragraphs.append(_SEEK_OTHER_VERSIONS)
