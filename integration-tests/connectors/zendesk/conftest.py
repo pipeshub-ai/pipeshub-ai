@@ -124,6 +124,24 @@ async def _ticket_snapshot(
     }
 
 
+async def _load_ticket(
+    client: httpx.AsyncClient, ticket_id: int
+) -> dict[str, Any] | str:
+    """Fetch a ticket fresh and snapshot it, or say why it cannot be used.
+
+    A 404 on the ticket or a related record (a hard-deleted ticket still in the
+    search index, a deleted user) rejects only that ticket. Other errors, such as
+    auth or rate limits, still raise.
+    """
+    try:
+        ticket = await _get(client, f"/api/v2/tickets/{ticket_id}.json", "ticket")
+        return await _ticket_snapshot(client, ticket)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
+        return f"it or a related record was not found ({exc.request.url.path})"
+
+
 async def _seeded_ticket(client: httpx.AsyncClient, ticket_id: int) -> dict[str, Any]:
     """Prefer the configured ticket, then any other seed-tagged ticket that qualifies.
 
@@ -131,8 +149,7 @@ async def _seeded_ticket(client: httpx.AsyncClient, ticket_id: int) -> dict[str,
     configured ticket and cleared its assignee (tag ``escalated_by_ultimate``),
     and the suite's token is read-only so it cannot put the assignee back.
     """
-    configured = await _get(client, f"/api/v2/tickets/{ticket_id}.json", "ticket")
-    snapshot = await _ticket_snapshot(client, configured)
+    snapshot = await _load_ticket(client, ticket_id)
     if isinstance(snapshot, dict):
         return snapshot
     rejected = [f"ticket {ticket_id}: {snapshot}"]
@@ -151,10 +168,7 @@ async def _seeded_ticket(client: httpx.AsyncClient, ticket_id: int) -> dict[str,
         if candidate.get("id") == ticket_id or candidate.get("result_type") != "ticket":
             continue
         # Search results come from an index that can lag the ticket itself.
-        candidate = await _get(
-            client, f"/api/v2/tickets/{candidate['id']}.json", "ticket"
-        )
-        snapshot = await _ticket_snapshot(client, candidate)
+        snapshot = await _load_ticket(client, candidate["id"])
         if isinstance(snapshot, dict):
             logger.warning(
                 "Zendesk ticket %s no longer qualifies (%s); using seeded ticket %s",
