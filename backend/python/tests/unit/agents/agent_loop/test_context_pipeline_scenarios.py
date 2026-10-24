@@ -283,6 +283,28 @@ async def test_a_small_window_evicts_older_results_and_keeps_the_newest(tool) ->
     assert kept == call_ids[len(call_ids) - len(kept):], f"older results outlived newer ones: {kept}"
     assert call_ids[0] not in kept
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [
+    [FETCH, SEARCH],
+    [FETCH, FETCH, SEARCH],
+    [SEARCH, FETCH, SEARCH],
+    [SEARCH, FETCH, FETCH],
+], ids=["fetch-search", "fetch-fetch-search", "search-fetch-search", "search-fetch-fetch"])
+async def test_a_small_window_keeps_the_newest_call_whichever_tools_came_before(tools) -> None:
+    """SC-13: protected groups (a fetch's [refN] text) outlived unprotected
+    ones, so a search after a fetch was evicted and the older fetch sent: the
+    same lost result, one call later. The newest call's result goes last."""
+    hooks = _chain()
+    budget = _budget(24_000, 15_414)
+    stored = [UserMessage(content=CURRENT)]
+    for turn, tool in enumerate(tools, start=1):
+        call_id = _tailed_round(stored, turn, 27_100, tool)
+        sent = await _send(hooks, stored, budget, turn)
+        assert _result(sent, call_id) is not None, f"call {turn} ({tool}): the newest result was evicted"
+        assert count_tokens(sent) <= budget.effective_max_tokens
+        _assert_current_question_sent(sent)
+
 _SETTINGS = settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 
 

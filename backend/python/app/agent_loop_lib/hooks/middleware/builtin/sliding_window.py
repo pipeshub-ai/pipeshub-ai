@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.protection import current_request_index, protected_indices
 from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import MessageRole
@@ -33,6 +33,11 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
     (`context/protection.py`). Tool groups that called one of
     `protected_tools` are evicted only when nothing unprotected is left and
     the call still does not fit, oldest first, so the budget stays reachable.
+    The newest tool-call group of the current request goes last of all,
+    protected or not: it holds the result the model is waiting for, and
+    budget reduction sized it to fit on its own under the low-water mark.
+    Ranking it with the other unprotected groups evicted a search made after
+    a fetch while the older fetch was sent.
 
     Once it has to evict, it evicts down to the low-water mark below the
     budget in one pass (``context/watermark.py``), and every message it
@@ -54,6 +59,7 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
         budget = ctx.budget.effective_max_tokens
         memo = ctx.compaction_memo
         never = protected_indices(messages)
+        newest = _newest_call_group(messages)
         working, index_map = _replay_evictions(memo, messages, never)
         replayed = len(messages) - len(working)
         before = count_tokens(messages)
@@ -61,10 +67,10 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
         low_water = watermarks(ctx.budget, budget).low_water
         if total > budget:
             total = _evict_until(working, index_map, total, low_water,
-                                 protected_indices(messages, protected_tools=protected_tools))
+                                 protected_indices(messages, protected_tools=protected_tools) | newest)
             evicted_unprotected = len(messages) - len(working) - replayed
             if total > budget and protected_tools:
-                total = _evict_until(working, index_map, total, low_water, never)
+                total = _evict_until(working, index_map, total, low_water, never | newest)
                 evicted_protected = len(messages) - len(working) - replayed - evicted_unprotected
                 if evicted_protected:
                     logger.warning(
@@ -72,6 +78,8 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
                         "to fit the budget, %d tokens (run=%s, turn=%d, budget=%d)",
                         evicted_protected, total, ctx.run_id, ctx.turn_index, budget,
                     )
+            if total > budget and newest:
+                total = _evict_until(working, index_map, total, low_water, never)
             if memo is not None:
                 kept = set(index_map)
                 for i, msg in enumerate(messages):
@@ -89,6 +97,26 @@ def shape_sliding_window(protected_tools: frozenset[str] = frozenset()):
         await next_fn()
 
     return _middleware
+
+
+def _newest_call_group(messages: list[Message]) -> frozenset[int]:
+    """Indices of the last tool-call group after the current request: the
+    assistant message that made the calls and their results."""
+    current = current_request_index(messages)
+    stop = current if current is not None else -1
+    for i in range(len(messages) - 1, stop, -1):
+        calls = getattr(messages[i], "tool_calls", None)
+        if messages[i].role != MessageRole.ASSISTANT or not calls:
+            continue
+        call_ids = {call.id for call in calls}
+        group = {i}
+        j = i + 1
+        while j < len(messages) and messages[j].role == MessageRole.TOOL:
+            if getattr(messages[j], "tool_call_id", None) in call_ids:
+                group.add(j)
+            j += 1
+        return frozenset(group)
+    return frozenset()
 
 
 def _replay_evictions(

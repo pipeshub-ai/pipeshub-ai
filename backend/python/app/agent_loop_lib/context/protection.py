@@ -24,7 +24,9 @@ listed above under the sliding window's low-water mark), the one bound that
 keeps protected content able to fit. When even that does not fit, the sliding window evicts
 protected tool groups, oldest first, after every unprotected message: a
 citation the model can no longer read is better than a request the provider
-rejects. The current request, pinned and system messages are never evicted;
+rejects. The newest tool-call group of the current request, protected or not,
+is evicted last of all, since it holds the result the model is waiting for.
+The current request, pinned and system messages are never evicted;
 if they alone exceed the window, the final guard raises
 ``ContextBudgetExceeded``.
 """
