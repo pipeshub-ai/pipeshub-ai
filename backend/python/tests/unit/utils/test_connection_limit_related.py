@@ -27,6 +27,7 @@ from app.utils.fetch_full_record import (
     _apply_live_ticket_context_metadata,
     _enrich_sql_table_with_fk_relations,
 )
+from tests.support.edition_defaults import FK_CHILD_FIELD
 
 OUTSIDE = "app.modules.retrieval.selection_scope.outside_connection"
 FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["hit"]}
@@ -252,7 +253,7 @@ class TestForeignKeyTables:
                 {"id": "t-hit"}, _fk_graph(), "u", "o", connection_sources=limit,
             )
 
-        assert [rel["record_id"] for rel in enriched["fk_child_record_ids"]] == shown
+        assert [rel["record_id"] for rel in enriched[FK_CHILD_FIELD]] == shown
 
 
 class TestForeignKeyTablesWhenTheCheckFails:
