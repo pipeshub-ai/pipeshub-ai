@@ -22,9 +22,10 @@ from app.models.blocks import (
     ImageMetadata,
     SemanticMetadata,
 )
-from app.models.entities import Record, RecordType
+from app.models.entities import Priority, Record, RecordType, Status, TicketRecord
+from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts import store as store_module
-from app.modules.artifacts.models import MANIFEST_PATH
+from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH
 from app.modules.artifacts.store import MAX_FILES_PER_CALL, NodeArtifactStore
 from app.modules.artifacts.writer import (
     PART_MAX_BYTES,
@@ -33,6 +34,7 @@ from app.modules.artifacts.writer import (
     canonical_json,
     shard_lines,
 )
+from app.modules.record_metadata.builtin import ticket_metadata
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:
@@ -272,3 +274,45 @@ class TestWriteRevision:
         with pytest.raises(ValueError, match="revision"):
             await _writer(storage).write_revision(record, "org-1", "vr-1", "NOT-HEX", record.block_containers)
         assert storage.presign_calls == []
+
+
+def _ticket(**fields: object) -> TicketRecord:
+    return TicketRecord(
+        id="rec-1", record_name="PA-1 Login fails", record_type=RecordType.TICKET, external_record_id="PA-1",
+        version=1, origin="CONNECTOR", connector_name=Connectors.JIRA, connector_id="conn-1", org_id="org-1",
+        virtual_record_id="vr-1", block_containers=BlocksContainer(blocks=_text_blocks(2, 10), block_groups=[]),
+        **fields,
+    )
+
+
+class TestProperties:
+    async def test_a_tickets_properties_round_trip_and_are_listed(self, storage: FakeStorage) -> None:
+        record = _ticket(status=Status.OPEN, priority=Priority.HIGH, assignee="Ada", labels=["auth"],
+                         due_date=1_767_225_600_000)
+
+        written = await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert written is not None
+        data = storage.puts[f"{FakeStorage.root('vr-1', REV)}/{PROPERTIES_PATH}"].data
+        assert data == canonical_json(json.loads(data))
+        assert RecordMetadata.model_validate_json(data) == ticket_metadata(record)
+        assert set(json.loads(data)) == {"schemaId", "values"}
+        entry = written.manifest.artifacts["properties"]
+        assert entry.path == PROPERTIES_PATH and entry.count == 5
+        assert entry.size == len(data) and entry.sha256 == hashlib.sha256(data).hexdigest()
+        assert written.manifest.writerVersion == 2
+
+    def test_a_record_without_values_has_no_file(self) -> None:
+        for record in (_record(_text_blocks(1, 1)), _ticket()):
+            built = build_revision(record, record.block_containers)
+            assert PROPERTIES_PATH not in built.files and "properties" not in built.artifacts
+
+    def test_not_written_when_record_json_is_another_records(self) -> None:
+        record = _ticket(status=Status.OPEN)
+        assert PROPERTIES_PATH in build_revision(record, record.block_containers).files
+
+        own = build_revision(record, record.block_containers, stored_record_fields={"id": "rec-1"})
+        owners = build_revision(record, record.block_containers, stored_record_fields={"id": "rec-0"})
+
+        assert PROPERTIES_PATH in own.files
+        assert PROPERTIES_PATH not in owners.files

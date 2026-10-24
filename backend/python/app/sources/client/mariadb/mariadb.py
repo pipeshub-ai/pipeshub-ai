@@ -15,6 +15,7 @@ from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.utils.url_fetcher import vetted_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,13 @@ class MariaDBClient:
                     f"{self.host}:{self.port}{db_part} (max_size={self._max_pool_size})"
                 )
 
+                # The deployment's rule for database hosts users type, as for PostgreSQL. Dial
+                # the checked address, unless TLS needs the name to verify the certificate.
+                # shortcut: with ssl_ca the driver looks the name up again; pin it if the driver
+                # gains a separate TLS server name.
+                addresses = await vetted_addresses(self.host, lookup_timeout_s=float(self.timeout))
                 connect_kwargs: dict[str, Any] = {
-                    "host": self.host,
+                    "host": str(addresses[0]) if addresses and not self.ssl_ca else self.host,
                     "port": self.port,
                     "user": self.user,
                     "password": self.password,

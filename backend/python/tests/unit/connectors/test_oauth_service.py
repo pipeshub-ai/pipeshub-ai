@@ -457,10 +457,13 @@ class TestOAuthProviderSession:
         assert not session2.closed
         await session2.close()
 
-    async def test_session_reads_a_header_longer_than_aiohttps_default(self, oauth_provider) -> None:
+    async def test_session_reads_a_header_longer_than_aiohttps_default(self, oauth_provider, monkeypatch) -> None:
         """GitHub's token endpoint sends a ~9 KB Content-Security-Policy header."""
         from aiohttp import web
         from aiohttp.test_utils import TestServer
+
+        # The test server is on loopback, which the address guard refuses.
+        monkeypatch.setattr(oauth_service, "guarded_session_kwargs", lambda **_: {})
 
         async def token(_request: web.Request) -> web.Response:
             return web.json_response({"access_token": "t"}, headers={"Content-Security-Policy": "a" * 9243})

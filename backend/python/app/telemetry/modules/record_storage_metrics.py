@@ -30,7 +30,8 @@ def record_artifact_write(outcome: str) -> None:
 
 
 # outcome: served, or why the artifact set could not be: no_pointer (no current
-# revision on the mapping), missing (a file or the set is gone), too_large,
+# revision on the mapping), stale (the stored record holds another revision, or
+# the mapping does not say which), missing (a file or the set is gone), too_large,
 # integrity (a file's size or sha256 is not the manifest's), invalid (a manifest
 # or file this reader cannot use), failed (storage or another error).
 ARTIFACT_READS = METRICS_BACKEND.counter(

@@ -158,10 +158,12 @@ def admin_routes_in_file(path: Path, prefix: str) -> list[DiscoveredRoute]:
         if method == "use":
             if args and _STRING.match(args[0]):
                 continue  # a sub-path mount, not a middleware for every route
-            if any(_is_admin(a) for a in args):
+            use_admin_at = next((i for i, a in enumerate(args) if _is_admin(a)), None)
+            if not admin_from_here:
+                ahead = args if use_admin_at is None else args[:use_admin_at]
+                used_before.extend(n for n in map(_middleware_name, ahead) if n)
+            if use_admin_at is not None:
                 admin_from_here = True
-            elif not admin_from_here:
-                used_before.extend(n for n in map(_middleware_name, args) if n)
             continue
         if not args:
             continue

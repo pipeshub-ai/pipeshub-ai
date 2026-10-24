@@ -62,7 +62,7 @@ const connectorIdSchema = z
 // The only files a revision holds. Anything else, including any `..`, a leading
 // `/` or a backslash, never reaches a storage key.
 const ARTIFACT_FILE_PATH =
-  /^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)\/part-\d{4}\.jsonl|images\/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich\/[a-z0-9_.-]+@\d+\.json)$/;
+  /^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)\/part-\d{4}\.jsonl|images\/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich\/[a-z0-9_.-]+@\d+\.json)$/;
 
 export const artifactPathSchema = z
   .string()

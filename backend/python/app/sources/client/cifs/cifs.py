@@ -24,6 +24,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
+from app.sources.client.smb.smb import dial_address
 
 smb_structs.SUPPORT_SMB2 = False
 
@@ -141,7 +142,8 @@ class CifsClient(IClient):
             return
         conn = self._new_connection()
         try:
-            ok = conn.connect(self.server, self.port)
+            # The address SMB checks for its sessions: loopback, link-local and metadata never.
+            ok = conn.connect(dial_address(self.server), self.port)
         except Exception as exc:
             with suppress(Exception):
                 conn.close()
