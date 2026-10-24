@@ -997,6 +997,7 @@
     "toolCard": {
       "arguments": "인수",
       "query": "쿼리",
+      "queryCutOff": "… [잘림]",
       "result": "결과",
       "error": "오류",
       "blocked": "차단됨",

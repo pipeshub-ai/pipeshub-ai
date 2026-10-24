@@ -870,6 +870,7 @@
     "toolCard": {
       "arguments": "Argumente",
       "query": "Abfrage",
+      "queryCutOff": "… [gekürzt]",
       "result": "Ergebnis",
       "error": "Fehler",
       "blocked": "Blockiert",

@@ -2,7 +2,9 @@ import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
+import { getI18n } from 'react-i18next';
 import '@/lib/__tests__/test-i18n';
+import de from '@/lib/i18n/locales/de-DE.json';
 import {
   AgentActivityTimeline,
   toolActivityLabel,
@@ -541,6 +543,33 @@ describe('ToolCallCard — SQL query section', () => {
     expand({ type: 'tool_call', toolCallId: 'c', toolName: 'web_search', status: 'completed', args: '{"query":"weather"}' });
 
     expect(screen.queryByText('Query')).toBeNull();
+  });
+
+  describe('a query read from cut-off args', () => {
+    const args = JSON.stringify({ query: 'SELECT id FROM users WHERE active = true AND secret = false' });
+    const cutOff: MessagePart = {
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      args: args.slice(0, args.indexOf(' AND')),
+    };
+
+    it('ends with a truncation marker, so it never reads as the whole statement', () => {
+      expect(expand(cutOff).textContent).toContain('WHERE active = true… [truncated]');
+    });
+
+    it("words the marker in the reader's language", async () => {
+      const i18n = getI18n();
+      const previous = i18n.language;
+      if (!i18n.hasResourceBundle('de-DE', 'translation')) i18n.addResourceBundle('de-DE', 'translation', de);
+      await i18n.changeLanguage('de-DE');
+      try {
+        expect(expand(cutOff).textContent).toContain('WHERE active = true… [gekürzt]');
+      } finally {
+        await i18n.changeLanguage(previous);
+      }
+    });
   });
 });
 

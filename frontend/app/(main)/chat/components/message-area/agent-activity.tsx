@@ -963,9 +963,10 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
           <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
             {t('chat.toolCard.query')}
           </Text>
+          {/* The marker stays in the code, so a copied cut-off query fails instead of running as a prefix. */}
           <CodeBlock
             language="sql"
-            codeText={sqlQuery}
+            codeText={sqlQuery.cutOff ? `${sqlQuery.text}${t('chat.toolCard.queryCutOff')}` : sqlQuery.text}
             maxHeight="260px"
             style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
           />

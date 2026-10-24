@@ -1043,6 +1043,7 @@
     "toolCard": {
       "arguments": "Argumenty",
       "query": "Dotaz",
+      "queryCutOff": "… [zkráceno]",
       "result": "Výsledek",
       "error": "Chyba",
       "blocked": "Blokováno",

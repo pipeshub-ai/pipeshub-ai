@@ -118,8 +118,8 @@ describe('extractSqlQuery', () => {
   const args = (query: string) => JSON.stringify({ query, source_name: 'PostgreSQL', connector_id: 'conn-1' });
 
   it('returns the query of a SQL tool call', () => {
-    expect(extractSqlQuery('sql__execute_sql_query', args('SELECT 1'))).toBe('SELECT 1');
-    expect(extractSqlQuery('execute_sql_query', args('SELECT 1'))).toBe('SELECT 1');
+    expect(extractSqlQuery('sql__execute_sql_query', args('SELECT 1'))).toEqual({ text: 'SELECT 1', cutOff: false });
+    expect(extractSqlQuery('execute_sql_query', args('SELECT 1'))).toEqual({ text: 'SELECT 1', cutOff: false });
   });
 
   it('ignores other tools, even with a "query" argument', () => {
@@ -136,18 +136,20 @@ describe('extractSqlQuery', () => {
 
   it('marks a query that args cut off by the length cap leave unfinished', () => {
     const full = args('SELECT id FROM users WHERE active = true AND secret = false');
-    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf(' AND')))).toBe(
-      'SELECT id FROM users WHERE active = true… [truncated]',
-    );
+    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf(' AND')))).toEqual({
+      text: 'SELECT id FROM users WHERE active = true',
+      cutOff: true,
+    });
     const cutInEscape = JSON.stringify({ query: 'SELECT \'é\'' }).replace('é', '\\u00e9').slice(0, -6);
-    expect(extractSqlQuery('sql__execute_sql_query', cutInEscape)).toBe("SELECT '… [truncated]");
-    expect(extractSqlQuery('sql__execute_sql_query', '{"query": "SELECT \\')).toBe('SELECT … [truncated]');
+    expect(extractSqlQuery('sql__execute_sql_query', cutInEscape)).toEqual({ text: "SELECT '", cutOff: true });
+    expect(extractSqlQuery('sql__execute_sql_query', '{"query": "SELECT \\')).toEqual({ text: 'SELECT ', cutOff: true });
   });
 
   it('keeps a query whole when the cut falls in an argument after it', () => {
     const full = args('SELECT "name",\n  id FROM users');
-    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf('Postgre')))).toBe(
-      'SELECT "name",\n  id FROM users',
-    );
+    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf('Postgre')))).toEqual({
+      text: 'SELECT "name",\n  id FROM users',
+      cutOff: false,
+    });
   });
 });
