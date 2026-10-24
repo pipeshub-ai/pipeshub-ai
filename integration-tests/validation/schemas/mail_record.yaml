@@ -1,0 +1,33 @@
+name: mail_layer
+description: MailRecord fields not on Record (matches MailRecord.model_dump mode=json)
+fields:
+  subject:
+    required: false
+    type: string
+  from_email:
+    required: false
+    type: string
+  to_emails:
+    required: false
+    type: array
+  cc_emails:
+    required: false
+    type: array
+  bcc_emails:
+    required: false
+    type: array
+  thread_id:
+    required: false
+    type: string
+  is_parent:
+    required: false
+    type: boolean
+  internet_message_id:
+    required: false
+    type: string
+  conversation_index:
+    required: false
+    type: string
+  label_ids:
+    required: false
+    type: array

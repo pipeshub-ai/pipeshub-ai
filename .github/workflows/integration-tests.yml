@@ -46,6 +46,7 @@ on:
             - azure_blob
             - smb
             - azure_files
+            - outlook
             - messaging
             - oauth_clients
             - mcp
@@ -354,6 +355,12 @@ jobs:
       NOTION_TEST_API_TOKEN: ${{ secrets.NOTION_TEST_API_TOKEN }}
       NOTION_TEST_ROOT_PAGE_ID: ${{ secrets.NOTION_TEST_ROOT_PAGE_ID }}
       NOTION_TEST_ROOT_DATABASE_ID: ${{ secrets.NOTION_TEST_ROOT_DATABASE_ID }}
+      # Outlook (team, app-only): two licensed mailboxes + one M365 group in the test tenant
+      OUTLOOK_TEST_TENANT_ID: ${{ secrets.OUTLOOK_TEST_TENANT_ID }}
+      OUTLOOK_TEST_CLIENT_ID: ${{ secrets.OUTLOOK_TEST_CLIENT_ID }}
+      OUTLOOK_TEST_CLIENT_SECRET: ${{ secrets.OUTLOOK_TEST_CLIENT_SECRET }}
+      OUTLOOK_TEST_USER_IDS: ${{ secrets.OUTLOOK_TEST_USER_IDS }}
+      OUTLOOK_TEST_GROUP_ID: ${{ secrets.OUTLOOK_TEST_GROUP_ID }}
       # Google Drive Workspace (service account + domain-wide delegation)
       GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL }}
@@ -387,15 +394,16 @@ jobs:
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~125 min, shard 3
+      # times out at 300 min): shard 1 ~194 min, shard 2 ~175 min, shard 3
       # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
       # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
       # and shard 3 zammad (zammad-source). The two Google Drive suites have
       # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on CONN_SHARD_4; shards 1-3 are full.
+      # A new connector suite goes on the lightest shard (outlook went on
+      # shard 2, which was lightest); check with scripts/shard_balance.py.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
