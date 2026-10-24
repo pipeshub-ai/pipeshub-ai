@@ -73,6 +73,7 @@ from connectors.jira.constants import (  # noqa: E402
     artifact_summary,
     connector_base_url,
 )
+from connectors.jira.jira_bodies import media_adf, wiki_markup
 from connectors.jira.jira_integration_test import (  # noqa: E402
     _adf,
     _dedicated_connector,
@@ -108,31 +109,12 @@ TRASH_KEY = os.getenv("JIRA_IT_TRASH_PROJECT_KEY", "").strip()
 # =============================================================================
 
 
-def _media_adf(text: str, *, images: tuple[str, ...] = (), files: tuple[str, ...] = ()) -> dict[str, Any]:
-    """ADF that shows ``images`` inline and links ``files``, each naming its attachment by
-    ``alt`` the way Jira Cloud's own editor does (the connector reads those names)."""
-    content: list[dict[str, Any]] = [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]
-    for name in images:
-        content.append({"type": "mediaSingle", "attrs": {"layout": "align-start"}, "content": [
-            {"type": "media", "attrs": {"type": "file", "id": str(uuid.uuid4()), "collection": "", "alt": name}}]})
-    if files:
-        content.append({"type": "mediaGroup", "content": [
-            {"type": "media", "attrs": {"type": "file", "id": str(uuid.uuid4()), "collection": "", "alt": name}}
-            for name in files]})
-    return {"type": "doc", "version": 1, "content": content}
-
-
-def _wiki(text: str, *, images: tuple[str, ...] = (), files: tuple[str, ...] = ()) -> str:
-    return "\n\n".join([text, *(f"!{name}!" for name in images), *(f"[^{name}]" for name in files)])
-
-
 class JiraRaw:
     """Basic-auth calls on the test's own URL: bodies that name attachments, multipart uploads,
     bulk move and project key changes.
 
-    A body goes as v2 wiki markup where the site serves v2, which on a real site is the one way
-    text can name an attachment, and as v3 ADF with media nodes where it does not (the
-    simulator serves only v3)."""
+    A body goes as v2 wiki markup where the site serves v2 and as v3 ADF where it does not
+    (the simulator); see ``jira_bodies``."""
 
     def __init__(self) -> None:
         self.base = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
@@ -158,11 +140,11 @@ class JiraRaw:
         """``place(body)`` puts the body where the request carries it."""
         if not self.v3_only:
             status, body = await self.call(
-                method, f"/rest/api/2{path}", json={**place(_wiki(text, images=images, files=files)), **extra})
+                method, f"/rest/api/2{path}", json={**place(wiki_markup(text, images=images, files=files)), **extra})
             if status != 404:
                 return status, body
         status, body = await self.call(
-            method, f"/rest/api/3{path}", json={**place(_media_adf(text, images=images, files=files)), **extra})
+            method, f"/rest/api/3{path}", json={**place(media_adf(text, images=images, files=files)), **extra})
         # A 404 on v2 that v3 answers means the site has no v2, not that the issue is missing.
         self.v3_only = self.v3_only or status < 300
         return status, body

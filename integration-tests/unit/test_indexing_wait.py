@@ -73,3 +73,10 @@ def test_a_queue_that_moves_forever_stops_at_the_cap() -> None:
     with pytest.raises(TimeoutError, match=r"cap"):
         asyncio.run(_wait(_Graph(done_at=None), queue_progress=_queue(rising_for=10), max_wait=2 * _TIMEOUT))
     assert time.monotonic() - started < 3 * _TIMEOUT
+
+
+def test_a_cap_below_the_budget_holds_when_nothing_moves() -> None:
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"cap"):
+        asyncio.run(_wait(_Graph(done_at=None), queue_progress=_queue(rising_for=0), max_wait=_TIMEOUT / 3))
+    assert time.monotonic() - started < _TIMEOUT, "the wait ran past max_wait"

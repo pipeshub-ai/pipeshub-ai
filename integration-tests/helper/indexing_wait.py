@@ -69,8 +69,8 @@ async def wait_until_record_indexing_completed(
         TimeoutError: If COMPLETED is not reached within ``timeout`` seconds.
     """
     start = time.time()
-    deadline = start + timeout
     hard_deadline = start + (max_wait if max_wait is not None else 5 * timeout)
+    deadline = min(start + timeout, hard_deadline) if queue_progress is not None else start + timeout
     progress = await queue_progress() if queue_progress is not None else 0
     attempt = 0
     last_status: str | None = None
