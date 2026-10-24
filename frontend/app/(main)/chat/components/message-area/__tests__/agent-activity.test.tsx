@@ -537,6 +537,7 @@ describe('ToolCallCard — SQL query section', () => {
     expect(screen.getByText('Running SQL query on "PostgreSQL"')).toBeTruthy();
     // Syntax highlighting splits the SQL across token spans.
     expect(container.textContent).toContain('SELECT id, name FROM users WHERE active = true');
+    expect(screen.getByText('Copy')).toBeTruthy();
   });
 
   it('has no Query section for another tool with a "query" argument', () => {
@@ -545,27 +546,34 @@ describe('ToolCallCard — SQL query section', () => {
     expect(screen.queryByText('Query')).toBeNull();
   });
 
-  describe('a query read from cut-off args', () => {
-    const args = JSON.stringify({ query: 'SELECT id FROM users WHERE active = true AND secret = false' });
+  describe('a cut-off query', () => {
+    // Cut inside the `--` comment, the copied prefix would still run, without its WHERE clause.
+    const args = JSON.stringify({ query: 'SELECT id FROM users -- active only\nWHERE active = true' });
     const cutOff: MessagePart = {
       type: 'tool_call',
       toolCallId: 'c',
       toolName: 'sql__execute_sql_query',
       status: 'completed',
-      args: args.slice(0, args.indexOf(' AND')),
+      args: args.slice(0, args.indexOf('\\n')),
     };
 
-    it('ends with a truncation marker, so it never reads as the whole statement', () => {
-      expect(expand(cutOff).textContent).toContain('WHERE active = true… [truncated]');
+    it('offers no copy or download, and says only its start was kept', () => {
+      const container = expand(cutOff);
+
+      expect(container.textContent).toContain('SELECT id FROM users -- active only');
+      expect(screen.queryByText('Copy')).toBeNull();
+      expect(screen.queryByText('Download')).toBeNull();
+      expect(screen.getByText("Only the start of this query was kept, so it can't be copied.")).toBeTruthy();
     });
 
-    it("words the marker in the reader's language", async () => {
+    it("says so in the reader's language", async () => {
       const i18n = getI18n();
       const previous = i18n.language;
       if (!i18n.hasResourceBundle('de-DE', 'translation')) i18n.addResourceBundle('de-DE', 'translation', de);
       await i18n.changeLanguage('de-DE');
       try {
-        expect(expand(cutOff).textContent).toContain('WHERE active = true… [gekürzt]');
+        expand(cutOff);
+        expect(screen.getByText(de.chat.toolCard.queryCutOff)).toBeTruthy();
       } finally {
         await i18n.changeLanguage(previous);
       }

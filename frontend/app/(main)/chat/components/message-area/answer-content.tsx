@@ -626,11 +626,14 @@ export function CodeBlock({
   codeText,
   maxHeight = '480px',
   style,
+  actions = true,
 }: {
   language: string;
   codeText: string;
   maxHeight?: string;
   style?: React.CSSProperties;
+  /** Show the download and copy buttons. */
+  actions?: boolean;
 }) {
   const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
@@ -675,19 +678,21 @@ export function CodeBlock({
         >
           {language || 'text'}
         </Text>
-        <Flex align="center" gap="1">
-          <CodeHeaderButton
-            icon="download"
-            label={t('action.download')}
-            onClick={() => downloadCode(codeText, language)}
-          />
-          <CodeHeaderButton
-            icon={copied ? 'check' : 'content_copy'}
-            label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-            active={copied}
-            onClick={() => void copy(codeText)}
-          />
-        </Flex>
+        {actions && (
+          <Flex align="center" gap="1">
+            <CodeHeaderButton
+              icon="download"
+              label={t('action.download')}
+              onClick={() => downloadCode(codeText, language)}
+            />
+            <CodeHeaderButton
+              icon={copied ? 'check' : 'content_copy'}
+              label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+              active={copied}
+              onClick={() => void copy(codeText)}
+            />
+          </Flex>
+        )}
       </Flex>
 
       {/* Syntax-highlighted code body */}

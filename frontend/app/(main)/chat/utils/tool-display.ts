@@ -126,12 +126,15 @@ export function toolStatusLabel(toolName: string, displayName?: string): string 
  * `tool_summarizer.py`) and in chat modes (`execute_sql_query`). */
 const SQL_QUERY_TOOL_NAMES = new Set(['sql__execute_sql_query', 'execute_sql_query']);
 
-/** A SQL tool call's query. `cutOff`: read out of cut-off args, so `text` is only
- * the start of the statement (a prefix such as `... WHERE active = true`). */
+/** A SQL tool call's query. `cutOff`: `text` is only the start of the statement (a
+ * prefix such as `... WHERE active = true`), shortened by the server or cut with the args. */
 export interface SqlQuery {
   text: string;
   cutOff: boolean;
 }
+
+/** What `serialize_tool_args` (`transcript_collector.py`) appends to a value it shortens. */
+const SERVER_CUT_NOTE = /… \[truncated, \d+ of \d+ chars\]$/;
 
 /** Reads a JSON string field out of JSON that may be cut off: args streamed by a
  * server that sends no `argsPreview`, or saved before the server shortened values
@@ -156,7 +159,9 @@ export function extractSqlQuery(toolName: string | undefined, args: string | und
   try {
     const parsed: unknown = JSON.parse(args);
     const query = (parsed as { query?: unknown } | null)?.query;
-    return typeof query === 'string' && query.trim() ? { text: query, cutOff: false } : undefined;
+    if (typeof query !== 'string' || !query.trim()) return undefined;
+    const note = SERVER_CUT_NOTE.exec(query);
+    return note ? { text: query.slice(0, note.index), cutOff: true } : { text: query, cutOff: false };
   } catch {
     return extractTruncatedJsonStringField(args, 'query');
   }

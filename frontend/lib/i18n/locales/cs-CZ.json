@@ -1043,7 +1043,7 @@
     "toolCard": {
       "arguments": "Argumenty",
       "query": "Dotaz",
-      "queryCutOff": "… [zkráceno]",
+      "queryCutOff": "Uložil se jen začátek tohoto dotazu, proto ho nelze zkopírovat.",
       "result": "Výsledek",
       "error": "Chyba",
       "blocked": "Blokováno",
