@@ -24,6 +24,9 @@ from object_store_behaviour_fakes import (
 )
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.services.notification.types import NotificationType
 
@@ -561,6 +564,32 @@ class TestFailureReports:
         assert path("good.txt") in db.paths()
 
     @pytest.mark.asyncio
+    async def test_files_refused_for_their_credentials_are_reported_as_an_auth_error(
+        self, connector, store, db, caplog,
+    ) -> None:
+        store.put("bad.txt")
+        store.put("good.txt")
+        real = connector._process_azure_blob
+
+        async def refuse_bad(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "bad.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(blob, *args)
+        connector._process_azure_blob = refuse_bad
+
+        with caplog.at_level(logging.DEBUG):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert sent["title"].endswith("Credentials rejected")
+        assert "HTTP 403 AuthorizationPermissionMismatch" in sent["message"]
+        assert "1 file(s) could not be synced" in sent["message"]
+        assert_nothing_secret(sent["message"])
+        assert_nothing_secret(caplog.text)
+        assert path("good.txt") in db.paths()
+
+    @pytest.mark.asyncio
     async def test_a_refused_container_list_is_an_auth_error(self, connector, config) -> None:
         choose_containers(connector, config, None)
         refused = Response(False, None, "HTTP 403 AuthenticationFailed: Server failed to authenticate the request.")
@@ -650,10 +679,17 @@ class TestFolderTimes:
         await connector.run_sync()
         folder = db.by_path()[path("a")]
         assert (folder.source_created_at, folder.source_updated_at) == (first_ms, first_ms)
+        stored = folder.model_copy()
 
         store.put("a/y.txt")
         await connector.run_sync()
 
-        # Sent without times, which the processor answers by keeping the stored ones.
-        rewritten = db.by_path()[path("a")]
-        assert (rewritten.source_created_at, rewritten.source_updated_at) == (None, None)
+        # The fake store replaces records whole; the real processor is what keeps stored times.
+        sent = db.by_path()[path("a")]
+        graph = AsyncMock()
+        graph.get_record_by_external_id = AsyncMock(return_value=stored)
+        graph.get_record_group_by_external_id = AsyncMock(return_value=None)
+        processor = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), AsyncMock())
+        processor.org_id = stored.org_id
+        saved, _ = await processor._process_record(sent, [], graph)
+        assert (saved.source_created_at, saved.source_updated_at) == (first_ms, first_ms)

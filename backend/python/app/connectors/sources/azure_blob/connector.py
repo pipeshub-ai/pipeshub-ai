@@ -776,7 +776,14 @@ class AzureBlobConnector(BaseConnector):
                         "The next sync retries them.",
                     )
                 raise RuntimeError(f"Azure Blob sync failed for container(s): {names}")
-            if self._failed_blob_count:
+            if self._failed_blob_count and self._auth_error:
+                await self._notify_error(
+                    NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected",
+                    f"Azure refused the connector's credentials while syncing files: {self._auth_error}. "
+                    f"{self._failed_blob_count} file(s) could not be synced. "
+                    "Update the credentials or their permissions.",
+                )
+            elif self._failed_blob_count:
                 await self._notify_error(
                     NotificationType.CONNECTOR_SYNC_ERROR, "Some files failed to sync",
                     f"{self._failed_blob_count} file(s) could not be synced. The next sync retries them; "
