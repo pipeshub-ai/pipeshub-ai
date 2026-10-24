@@ -1151,11 +1151,12 @@ class AzureBlobConnector(BaseConnector):
             complete = complete and prefix_complete
         # One pass after every prefix: a rename into a folder listed later is
         # still stored under its old path until that folder is processed.
-        if complete:
-            await self._claim_records_of_gone_copies(container_name, unrecorded, listed, recorded)
-        else:
+        if not complete:
             self._sync_incomplete = True
             self.logger.info(f"Not removing records in container {container_name}: a listing did not cover every blob")
+        elif not await self._claim_records_of_gone_copies(container_name, unrecorded, listed, recorded):
+            complete = False
+            self.logger.info(f"Not removing records in container {container_name}: a blob's content could not be looked up")
 
         # Only the unlisted records wait for the other containers, not the whole listing.
         unlisted = {ext: rid for ext, rid in recorded.items() if ext not in listed} if complete else {}
@@ -1178,7 +1179,7 @@ class AzureBlobConnector(BaseConnector):
 
     async def _claim_records_of_gone_copies(
         self, container_name: str, unrecorded: list[dict], listed: set[str], recorded: Container[str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Process the unchanged blobs that have no record of their own, when that is safe.
 
         The connectors take equal content at a new key for a move, so one record can
@@ -1187,16 +1188,22 @@ class AzureBlobConnector(BaseConnector):
         key that is still there gets a record of its own (``_process_azure_blob`` tells
         a copy from a move), so the record does not move back and forth between two
         live keys and the copy is still indexed.
+
+        Returns False when the record holding some blob's content could not be looked
+        up: any unlisted record may be that one, so none may be removed.
         """
+        holders_known = True
         for blob_dict in unrecorded:
             blob_name = blob_dict.get("name", "")
             holder = None
+            looked_up = False
             try:
                 revision = self._get_azure_blob_revision_id(blob_dict)
                 holder = (
                     await self.data_entities_processor.get_record_by_external_revision_id(self.connector_id, revision)
                     if revision else None
                 )
+                looked_up = True
                 segments = get_folder_path_segments_from_blob_name(blob_name)
                 if segments:
                     await self._ensure_parent_folders_exist(container_name, segments, recorded, blob_dict)
@@ -1216,6 +1223,9 @@ class AzureBlobConnector(BaseConnector):
             if holder is not None:
                 # Keep the record rather than delete content that is still listed.
                 listed.add(holder.external_record_id or "")
+            elif not looked_up:
+                holders_known = False
+        return holders_known
 
     async def _sync_container_prefix(
         self, container_name: str, prefix: str, scope: FolderScope, recorded: Container[str], unrecorded: list[dict],

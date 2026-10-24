@@ -683,6 +683,20 @@ class TestFailureReports:
         assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_keeps_the_record_of_a_moved_blob(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        store.delete("b.txt")  # its content is now only at a.pdf, which would take over its record
+
+        db.get_record_by_external_revision_id = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        assert path("b.txt") in db.paths()
+
+    @pytest.mark.asyncio
     async def test_a_refused_container_list_is_an_auth_error(self, connector, config) -> None:
         choose_containers(connector, config, None)
         refused = Response(False, None, "HTTP 403 AuthenticationFailed: Server failed to authenticate the request.")
