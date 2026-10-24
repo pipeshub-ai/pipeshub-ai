@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
@@ -45,6 +45,7 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
@@ -408,6 +409,11 @@ class EntityIndexRebuilder:
         phase, after_key = run.phase, run.after_key
         limit = self.page_size if run.collection == _APPS else self.taxonomy_page_size
         rows = await self.graph.page_entity_index_source(phase, run.key, after_key, limit)
+        # A store that keeps a collection per org cannot recreate them all in
+        # ``embedding_fingerprint``; each is recreated when its org comes up.
+        orgs = {run.key} if run.collection == _ORGS else {_text(row.get("orgId")) for row in rows}
+        for org_id in sorted(orgs - {""}):
+            await self.store.recreate_stale_collection(org_id)
         if run.collection == _APPS:
             failed = await self._project_connector_rows(run, phase, rows)
         else:
@@ -507,7 +513,7 @@ class EntityIndexRebuilder:
             if phase == _RECORD_GROUPS:
                 entities.append(EntityRecord.for_record_group(key, name, org_id, run.key))
                 continue
-            if row.get("indexingStatus") != ProgressStatus.COMPLETED.value or row.get("isDeleted"):
+            if not is_searchable_record(row) or row.get("isDeleted"):
                 continue
             entities.append(EntityRecord.for_record(
                 key, name, org_id, run.key, _text(row.get("recordGroupId")) or None,
@@ -538,6 +544,9 @@ class EntityIndexRebuilder:
         offset = org.get(EntityIndexState.SWEEP_OFFSET)
         offset = offset if isinstance(offset, str) and offset else None
         try:
+            # No pass re-runs for a model the org was already projected under
+            # (switched away and back), so this is where its collection is checked.
+            await self.store.recreate_stale_collection(org_id)
             # Scrolling fails too, not only lookups: Redis refuses offsets
             # past its 10,000-result window on a large org.
             refs, next_offset = await self._scan(org_id, offset)
@@ -656,7 +665,7 @@ def _key_of(doc: dict[str, Any]) -> str | None:
     return key if isinstance(key, str) and key else None
 
 
-async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
+async def resolve_entity_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
     getter = getattr(app_container, "entity_vector_store", None)
     if getter is None:
         return None
@@ -709,7 +718,7 @@ async def run_entity_index_rebuild_loop(
                     )
                     rebuilder = None
                 if rebuilder is None:
-                    store = await _resolve_store(app_container)
+                    store = await resolve_entity_store(app_container)
                     if store is not None:
                         rebuilder = EntityIndexRebuilder(
                             logger=logger, graph_provider=graph_provider, store=store, lock=lock,
@@ -747,5 +756,6 @@ __all__ = [
     "EntityIndexState",
     "entity_index_marker",
     "fingerprint_of",
+    "resolve_entity_store",
     "run_entity_index_rebuild_loop",
 ]

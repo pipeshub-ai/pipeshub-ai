@@ -9,12 +9,24 @@ from app.config.constants.arangodb import ProgressStatus
 
 
 class PermissionRole(str, Enum):
-    """Valid permission roles for knowledge base access"""
+    """Roles a stored KB grant may carry.
+
+    ORGANIZER, FILEORGANIZER and COMMENTER cannot be granted (see
+    GrantablePermissionRole); they stay here so grants already stored with them
+    still deserialise and read as access.
+    """
     OWNER = "OWNER"
     ORGANIZER = "ORGANIZER"
     FILEORGANIZER = "FILEORGANIZER"
     WRITER = "WRITER"
     COMMENTER = "COMMENTER"
+    READER = "READER"
+
+
+class GrantablePermissionRole(str, Enum):
+    """Roles a new grant may use."""
+    OWNER = "OWNER"
+    WRITER = "WRITER"
     READER = "READER"
 
 
@@ -74,7 +86,7 @@ class CreatePermissionRequest(BaseModel):
     requesterId : str = Field(..., description ="User id granting others access", min_length=1)
     userIds: Optional[List[str]] = Field(None, description="List of user IDs to grant permissions to", min_items=0)
     teamIds: Optional[List[str]] = Field(None, description="List of team IDs to grant permissions to", min_items=0)
-    role: PermissionRole = Field(..., description="Role to grant")
+    role: GrantablePermissionRole = Field(..., description="Role to grant")
 
 
 class UpdatePermissionRequest(BaseModel):
@@ -82,7 +94,7 @@ class UpdatePermissionRequest(BaseModel):
     requesterId : str = Field(..., description ="User id granting others access", min_length=1)
     userIds : Optional[List[str]] = Field(None, description ="User id", min_items=0)
     teamIds : Optional[List[str]] = Field(None, description ="Team id", min_items=0)
-    role: PermissionRole = Field(..., description="New role")
+    role: GrantablePermissionRole = Field(..., description="New role")
 
 class RemovePermissionRequest(BaseModel):
     """Request model for removing a permission"""
@@ -195,13 +207,6 @@ class PermissionResponse(BaseModel):
     type: str = Field(..., description="Permission type")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
-
-
-class FolderContentsResponse(BaseModel):
-    """Response model for folder contents"""
-    folder: FolderResponse = Field(..., description="Folder information")
-    contents: List[RecordResponse] = Field(..., description="List of records in folder")
-    totalItems: int = Field(..., description="Total number of items")
 
 
 class PaginationResponse(BaseModel):
@@ -412,13 +417,6 @@ class ListTrashResponse(BaseModel):
     items: list[TrashItem] = Field(..., description="Deleted items, newest first")
     pagination: PaginationResponse = Field(..., description="Pagination information")
     retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
-
-
-class ListAllRecordsResponse(ListRecordsResponse):
-    """Response model for listing all records (across KBs)"""
-    pass
-
-
 class FileUploadResponse(BaseModel):
     """Response model for file upload"""
     success: bool = Field(..., description="Success status")

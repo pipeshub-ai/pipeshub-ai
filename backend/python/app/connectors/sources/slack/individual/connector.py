@@ -64,6 +64,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_processor.record_links import (
+    canonical_address,
+    related_for_urls,
+)
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
@@ -99,6 +103,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -132,11 +137,9 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordGroupType,
-    RecordRelations,
     RecordType,
     RelatedExternalRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
@@ -148,6 +151,7 @@ if TYPE_CHECKING:
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    from app.models.permission import Permission
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -387,10 +391,17 @@ class RateLimiter:
         .add_filter_field(FilterField(
             name="sync_window",
             display_name="Sync Messages From",
-            description="How far back to sync messages on initial sync",
+            description=(
+                "How far back to sync messages on the first sync. If this filter "
+                "is not set, only the last 30 days are synced; choose an earlier "
+                "date to include older history."
+            ),
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            default_operator=FilterOperator.LAST_30_DAYS))
+            default_operator=FilterOperator.LAST_30_DAYS,
+            # What _compute_sync_window_oldest uses when no filter is saved; the
+            # panel shows it while the filter is cleared.
+            fallback_operator=FilterOperator.LAST_30_DAYS))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters
         .add_filter_field(FilterField(
@@ -537,6 +548,22 @@ class SlackIndividualConnector(BaseConnector):
         FilterOperator.LAST_180_DAYS: 180 * 86400,
         FilterOperator.LAST_365_DAYS: 365 * 86400,
     }
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync reads messages from the sync window on, and a thread only
+        when its first message is inside the window. So a message or thread
+        older than the window that it did not see was not read, not deleted.
+
+        Asked after the sync: the window start is computed now, a little later
+        than the one the sync used, so nothing the sync could have read is
+        counted as outside it.
+        """
+        oldest = self._compute_sync_window_oldest()
+        return FullSyncCoverage(
+            complete=not getattr(self, "_full_sync_read_failed", False),
+            window_start_ms=int(float(oldest) * 1000) if oldest else None,
+            windowed_group_types=frozenset({RecordGroupType.SLACK_THREAD.value}),
+        )
 
     def _compute_sync_window_oldest(self) -> Optional[str]:
         """
@@ -722,6 +749,10 @@ class SlackIndividualConnector(BaseConnector):
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
 
+            # Set when a read fails and the sync carries on without it; see
+            # full_sync_coverage.
+            self._full_sync_read_failed = False
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack", self.connector_id, self.logger
             )
@@ -748,6 +779,7 @@ class SlackIndividualConnector(BaseConnector):
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
                     except Exception as exc:
+                        self._full_sync_read_failed = True
                         self.logger.error(
                             f"Channel message sync failed for "
                             f"{rg.external_group_id}: {exc}",
@@ -1138,6 +1170,9 @@ class SlackIndividualConnector(BaseConnector):
 
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
 
                     if rg.name:
@@ -1150,6 +1185,9 @@ class SlackIndividualConnector(BaseConnector):
                     total += 1
 
                 except Exception as exc:
+                    # Not written, so not seen: without this the unlink after the
+                    # sync would take the channel's links away.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to process channel {cd.get('name')}: {exc}"
                     )
@@ -1176,23 +1214,14 @@ class SlackIndividualConnector(BaseConnector):
         channel_data: dict[str, Any],
     ) -> list[Permission]:
         """
-        Return HAS_PERMISSION list for the authenticated user only.
-
-        In the individual connector every visible channel (public, private,
-        IM, MPIM) gets a single direct USER edge for the authenticated user.
-        No AppRole indirection is needed.
+        Return no grant: every visible channel inherits the app, and only the
+        authenticated user is linked to the app.
         """
         if not self.authenticated_user_email:
             self.logger.warning(
-                "⚠️  authenticated_user_email not set — cannot create permission"
+                "authenticated_user_email not set — channel will inherit the app with no grant"
             )
-            return []
-
-        return [Permission(
-            email=self.authenticated_user_email,
-            entity_type=EntityType.USER,
-            type=PermissionType.READ,
-        )]
+        return []
 
     async def _fetch_channel_members(self, channel_id: str) -> list[str]:
         """
@@ -1577,6 +1606,9 @@ class SlackIndividualConnector(BaseConnector):
                         f"channel={dt.ctx.channel_id}: {exc}",
                         exc_info=True,
                     )
+
+        if history_error or incomplete_threads:
+            self._full_sync_read_failed = True
 
         # Persist checkpoint ONLY after all pages succeed
         if history_error:
@@ -2036,7 +2068,11 @@ class SlackIndividualConnector(BaseConnector):
                 source_updated_at=last_ts_ms,
                 content=aggregated_text,
                 thread_id=thread_ts,
-                has_replies=False,
+                # The thread's first burst holds its parent message.
+                has_replies=any(
+                    m.get("ts") == thread_ts and m.get("reply_count", 0) > 0
+                    for m in burst.messages
+                ),
                 is_reply=True,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
@@ -2046,6 +2082,7 @@ class SlackIndividualConnector(BaseConnector):
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=burst_authors,
+                related_external_records=self._related_for_messages(burst.messages),
             )
         except Exception as exc:
             self.logger.error(f"_build_thread_burst_record({burst_id}): {exc}")
@@ -2408,12 +2445,19 @@ class SlackIndividualConnector(BaseConnector):
                 content=aggregated_text,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
+                # True when any message in the burst started a thread, as the
+                # deferred-thread loop below decides it.
+                has_replies=any(
+                    m.get("reply_count", 0) > 0 and m.get("thread_ts") == m.get("ts")
+                    for m in burst.messages
+                ),
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=burst_authors,
+                related_external_records=self._related_for_messages(burst.messages),
             )
         except Exception as exc:
             self.logger.error(f"_process_burst create burst_rec ({burst_id}): {exc}")
@@ -2547,6 +2591,7 @@ class SlackIndividualConnector(BaseConnector):
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=[msg.get("user", "")] if msg.get("user") else [],
+                related_external_records=self._related_for_messages([msg]),
             )
         except Exception as exc:
             self.logger.error(f"_process_single({ts}): {exc}")
@@ -2735,25 +2780,16 @@ class SlackIndividualConnector(BaseConnector):
         msg: dict[str, Any],
     ) -> Optional[LinkRecord]:
         try:
-            itype, imeta = self._classify_url(url)
             unfurl       = self._unfurl_data(url, msg)
-            rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
-
-            related: list[RelatedExternalRecord] = []
-            if itype == "jira" and imeta.get("ticket_key"):
-                related.append(RelatedExternalRecord(
-                    external_record_id=imeta["ticket_key"],
-                    record_type=RecordType.TICKET,
-                    relation_type=RecordRelations.LINKED_TO,
-                ))
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=unfurl.get("title") or url[:100],
                 record_type=RecordType.LINK,
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
-                external_record_group_id=ctx.channel_id,
-                record_group_id=rg_id,
+                # A link in a thread reply sits in the thread group with its message.
+                external_record_group_id=parent.external_record_group_id or ctx.channel_id,
+                record_group_id=parent.record_group_id or ctx.channel_groups_map.get(ctx.channel_id),
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,
@@ -2762,7 +2798,9 @@ class SlackIndividualConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.MARKDOWN.value,
-                weburl=url,
+                # The canonical address, which a record indexed later looks for
+                # (record_links.addresses_linking_to); the paste stays on url.
+                weburl=canonical_address(url),
                 url=url,
                 title=unfurl.get("title"),
                 is_public=LinkPublicStatus.UNKNOWN,
@@ -2770,7 +2808,6 @@ class SlackIndividualConnector(BaseConnector):
                 is_dependent_node=True,
                 parent_node_id=parent.id,
                 inherit_permissions=True,
-                related_external_records=related,
             )
         except Exception as exc:
             self.logger.error(f"_process_link({url[:60]}): {exc}")
@@ -2866,6 +2903,9 @@ class SlackIndividualConnector(BaseConnector):
                 mentioned_group_ids=self._extract_channel_mentions(text),  # Keep original IDs for edges
                 is_edited=is_edited,
                 involved_user_source_ids=[user_id] if user_id else [],
+                # Rebuilt for a reindex, which leaves the link records alone: None keeps
+                # the message's link edges as they are, in step with those records.
+                related_external_records=None,
                 # Hierarchy
                 inherit_permissions=True,
                 preview_renderable=False,
@@ -3497,6 +3537,7 @@ class SlackIndividualConnector(BaseConnector):
                 mentioned_user_ids=self._extract_user_mentions(md.get("text", "")),
                 mentioned_group_ids=self._extract_channel_mentions(md.get("text", "")),
                 involved_user_source_ids=[md.get("user", "")] if md.get("user") else [],
+                related_external_records=self._related_for_messages([md]),
             )
             await self.data_entities_processor.on_record_content_update(updated_rec)
             return 1
@@ -3557,6 +3598,8 @@ class SlackIndividualConnector(BaseConnector):
         )
         burst_rec.content       = new_content
         burst_rec.block_containers = bc
+        # Rebuilt from every message, as the links are: saving drops the ones left out.
+        burst_rec.related_external_records = self._related_for_messages(burst_msgs)
         burst_rec.version      += 1
         # Synthetic revision forces _handle_updated_record to DB-upsert
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
@@ -3927,6 +3970,18 @@ class SlackIndividualConnector(BaseConnector):
             for m in re.findall(r"<(https?://[^>|]+)(?:\|[^>]+)?>|(https?://\S+)", text)
             if m[0] or m[1]
         ]
+
+    def _related_for_messages(self, msgs: list[dict[str, Any]]) -> list[RelatedExternalRecord]:
+        """The records these messages link to, named by address.
+
+        Saved on the message record, so the message is joined to the pull request,
+        ticket or page it pastes, in whichever connector holds it (see
+        ``record_links``). Built from every message the record holds: saving the
+        record drops the links left out.
+        """
+        return related_for_urls([
+            url for msg in msgs for url in self._extract_urls(msg.get("text", ""))
+        ])
 
     # =========================================================================
     # 10.  Link classification

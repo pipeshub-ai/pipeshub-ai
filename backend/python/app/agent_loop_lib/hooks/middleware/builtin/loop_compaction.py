@@ -138,7 +138,7 @@ def shape_loop_compaction(
     pin_first_n:
         Number of leading messages (system/goal) to never compact.
     trigger_ratio:
-        Only fires when context exceeds this fraction of budget.
+        Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_summary_lines:
         Maximum number of summary lines to keep.  When merging prior
         summaries, only the most recent lines are retained; older ones
@@ -150,8 +150,8 @@ def shape_loop_compaction(
             await next_fn()
             return
 
-        budget = ctx.budget.effective_max_tokens
-        if count_tokens(ctx.messages) <= budget * trigger_ratio:
+        total = count_tokens(ctx.messages)
+        if total <= ctx.budget.trigger_tokens(trigger_ratio):
             await next_fn()
             return
 
@@ -208,10 +208,11 @@ def shape_loop_compaction(
             injected=True,
         )
         ctx.messages = [*head, summary_msg, *tail]
-        logger.debug(
-            "loop_compaction: compressed %d messages into summary "
-            "(%d summary lines, %d artifacts) at turn %d",
-            len(middle), len(summaries), len(unique_artifacts), ctx.turn_index,
+        logger.info(
+            "loop_compaction: compressed %d messages into one summary "
+            "(%d lines, %d artifacts), %d→%d tokens (turn=%d, budget=%d)",
+            len(middle), len(summaries), len(unique_artifacts), total, count_tokens(ctx.messages),
+            ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 

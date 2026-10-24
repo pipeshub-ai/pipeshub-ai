@@ -11,7 +11,7 @@ from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 def provider():
     p = ArangoHTTPProvider(logger=AsyncMock(), config_service=AsyncMock())
     p.http_client = AsyncMock()
-    p.execute_query = AsyncMock(side_effect=[[{"id": "a1"}], [1]])
+    p.execute_query = AsyncMock(side_effect=[[{"id": "a1"}], [{"owned": True, "total": 1}]])
     return p
 
 
@@ -51,7 +51,7 @@ class TestArangoListAccessibleArtifactsQueryShape:
         count_bind = provider.execute_query.await_args_list[1].kwargs["bind_vars"]
         assert "skip" not in count_bind
         assert "limit" not in count_bind
-        assert "LENGTH(" in count_query
+        assert 'COLLECT owned = permissionEdge.role == "OWNER" WITH COUNT INTO total' in count_query
         assert "LIMIT @skip, @limit" not in count_query
 
     @pytest.mark.asyncio
@@ -91,6 +91,55 @@ class TestArangoListAccessibleArtifactsQueryShape:
         assert count_bind["date_to"] == 2
         assert "skip" not in count_bind
         assert "limit" not in count_bind
+
+
+class TestArangoGalleryOwnership:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ownership", "clause"),
+        [("mine", 'FILTER permissionEdge.role == "OWNER"'), ("shared", 'FILTER permissionEdge.role != "OWNER"')],
+    )
+    async def test_a_tab_filters_the_page_but_not_the_counts(self, provider, ownership, clause) -> None:
+        provider.execute_query = AsyncMock(
+            side_effect=[[{"id": "a1"}], [{"owned": True, "total": 4}, {"owned": False, "total": 7}]]
+        )
+        rows, counts = await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+            ownership=ownership,
+        )
+        list_query, count_query = _captured_queries(provider)
+        assert clause in list_query
+        assert clause not in count_query
+        assert rows == [{"id": "a1"}]
+        assert counts == {"mine": 4, "shared": 7}
+
+    @pytest.mark.asyncio
+    async def test_all_adds_no_role_filter(self, provider) -> None:
+        await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+        )
+        list_query, _ = _captured_queries(provider)
+        assert "permissionEdge.role" not in list_query.split("RETURN {")[0]
 
 
 class TestArangoGetArtifactDetailQueryShape:
@@ -165,16 +214,40 @@ class TestArangoGalleryReadFailuresPropagate:
         assert await provider.get_artifact_detail("user-key", "org-1", "art-1") is None
 
 
-class TestArangoListAllRecordsExcludesArtifacts:
+class TestArangoAllRecordsExcludesArtifacts:
+    """An artifact is a record with a direct grant and the connector id of no App
+    (``coding_sandbox_<org>``). The All Records list is the Knowledge Hub listing,
+    one page per App the user may enter, so an artifact stays out by never
+    reaching a page: it is in no bucket of the user's grants, its connector id
+    lists nothing, and a page picks up a granted node only of its own App."""
+
+    ARTIFACT_CONNECTOR = "coding_sandbox_org-1"
+
     @pytest.mark.asyncio
-    async def test_kb_subquery_excludes_artifact_type(self, provider):
-        provider.execute_query = AsyncMock(return_value=[{"records": [], "total": 0}])
-        await provider.list_all_records(
-            "user-key", "org-1", 0, 10, None, None, None, None, None, None, None, None,
-            "createdAtTimestamp", "desc", "all",
+    async def test_a_granted_artifact_is_in_no_connector_bucket(self, provider) -> None:
+        provider.http_client.execute_aql = AsyncMock(return_value=[{
+            "grantees": ["user-key"],
+            "gatedApps": ["app-1"],
+            "grants": [
+                {"id": "rec-1", "connectorId": "app-1"},
+                {"id": "art-1", "connectorId": self.ARTIFACT_CONNECTOR},
+            ],
+        }])
+        access = await provider.get_knowledge_hub_access_v3("user-key", "org-1")
+        assert access["by_connector"] == {"app-1": ["rec-1"]}
+
+    @pytest.mark.asyncio
+    async def test_the_connector_id_of_an_artifact_lists_nothing(self, provider) -> None:
+        provider.http_client.execute_aql = AsyncMock(return_value=[])
+        page = await provider.get_knowledge_hub_connector_page_v3(
+            self.ARTIFACT_CONNECTOR, "org-1", ["user-key"], ["app-1"], ["art-1"],
         )
-        # Page and total come from one query, so the total counts the same filtered list.
-        assert provider.execute_query.await_count == 1
-        query = provider.execute_query.await_args_list[0].args[0]
-        assert 'record.recordType != "ARTIFACT"' in query
-        assert "total: LENGTH(allRecords)" in query
+        assert page["rows"] == [] and page["total"] == 0
+        provider.http_client.execute_aql.assert_not_awaited()
+
+    def test_a_page_takes_a_granted_node_only_of_its_own_app(self, provider) -> None:
+        """The statements that read the grant list rather than walk from the App."""
+        listing = provider._kh_v3_listing_aql()
+        assert "FILTER kh_s.connectorId == @app_id" in listing["seeds"]
+        assert "g.connectorId == @app_id" in listing["declared"]
+        assert "c.connectorId == @app_id" in listing["chain_top_groups"]

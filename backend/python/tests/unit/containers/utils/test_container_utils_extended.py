@@ -233,6 +233,7 @@ class TestCreateProcessorExtended:
         mock_parsers = {"ext": MagicMock()}
         mock_extractor = MagicMock()
         mock_sink = MagicMock()
+        mock_runtime = MagicMock()
 
         with patch("app.containers.utils.utils.Processor") as MockProc:
             mock_instance = MagicMock()
@@ -240,7 +241,7 @@ class TestCreateProcessorExtended:
 
             result = await cu.create_processor(
                 mock_logger, mock_config, mock_pipeline,
-                mock_gp, mock_parsers, mock_extractor, mock_sink
+                mock_gp, mock_parsers, mock_extractor, mock_sink, mock_runtime
             )
             assert result is mock_instance
 
@@ -252,6 +253,7 @@ class TestCreateProcessorExtended:
             assert call_kwargs["parsers"] is mock_parsers
             assert call_kwargs["document_extractor"] is mock_extractor
             assert call_kwargs["sink_orchestrator"] is mock_sink
+            assert call_kwargs["stage_ingress"] is mock_runtime.ingress
 
 
 # ---------------------------------------------------------------------------

@@ -261,8 +261,38 @@
       "PRESENTATION": "Präsentation",
       "DATA_FILE": "Datendatei",
       "CODE": "Code",
-      "CODE_OUTPUT": "Codeausgabe"
-    }
+      "CODE_OUTPUT": "Codeausgabe",
+      "OTHER": "Sonstiges"
+    },
+    "tabs": {
+      "all": "Alle Artefakte",
+      "mine": "Meine",
+      "shared": "Mit mir geteilt"
+    },
+    "tabsShort": {
+      "all": "Alle",
+      "mine": "Meine",
+      "shared": "Geteilt"
+    },
+    "share": {
+      "title": "Artefakt teilen"
+    },
+    "emptyShared": "Noch nichts mit Ihnen geteilt",
+    "emptySharedHint": "Artefakte, die Ihre Teammitglieder mit Ihnen teilen, erscheinen hier.",
+    "notAvailable": "Dieses Artefakt ist nicht mehr verfügbar",
+    "deleteTitle": "Artefakt löschen?",
+    "deleteConfirmMessage": "„{{name}}“ und alle Versionen werden endgültig gelöscht. Chats, die es anzeigen, markieren es als nicht mehr verfügbar.",
+    "deleteSuccess": "„{{name}}“ gelöscht",
+    "preview": "Vorschau",
+    "moreActionsFor": "Weitere Optionen für {{name}}",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    "noMatches": "Keine Artefakte entsprechen Ihren Filtern",
+    "noMatchesHint": "Versuchen Sie eine andere Suche oder setzen Sie die Filter zurück, um alle Artefakte zu sehen.",
+    "clearFilters": "Filter zurücksetzen",
+    "gridView": "Rasteransicht",
+    "listView": "Listenansicht",
+    "closeSearch": "Suche schließen"
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -359,7 +389,8 @@
     "required": "Dieses Feld ist erforderlich",
     "invalidEmail": "Ungültige E-Mail-Adresse",
     "invalidUrl": "Ungültige URL",
-    "name": "Name"
+    "name": "Name",
+    "optional": "(optional)"
   },
   "dialog": {
     "newFolder": "Neuer Sammlungsordner",
@@ -474,7 +505,11 @@
     "openProfile": "Profil öffnen",
     "loading": "Wird geladen...",
     "moreOptions": "Weitere Optionen",
-    "docs": "Dokumentation"
+    "docs": "Dokumentation",
+    "enterprise": {
+      "label": "In EE verfügbar",
+      "tooltip": "Teil der PipesHub Enterprise Edition"
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -508,6 +543,8 @@
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
+    "connectMoreApps": "Weitere Apps verbinden",
+    "connectMoreAppsHint": "Mehr Quellen, bessere Antworten.",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
@@ -536,6 +573,13 @@
     "message": "Das Dokument wird von Grund auf neu indiziert; dies kann zusätzliche Kosten verursachen. Verwenden Sie dies, wenn Suchergebnisse veraltet sind oder das Dokument nach abgeschlossener Indizierung nicht durchsuchbar ist.",
     "confirm": "Bestätigen"
   },
+  "reindexBlocked": {
+    "title": "Dieser Eintrag kann nicht einzeln neu indexiert werden",
+    "message": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde eine einzelne Datei neu indexiert, wäre sie auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um ihn zu aktualisieren, indexiere das gesamte Repository über den Knowledge Hub neu – dabei werden alle Dateien gemeinsam neu indexiert. Eine Synchronisierung des Connectors übernimmt nur geänderte Dateien.",
+    "folderTitle": "Dieser Ordner kann nicht einzeln neu indexiert werden",
+    "folderMessage": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde ein Ordner neu indexiert, wären nur diese Dateien auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um ihn zu aktualisieren, indexiere das gesamte Repository über den Knowledge Hub neu – dabei werden alle Dateien gemeinsam neu indexiert. Eine Synchronisierung des Connectors übernimmt nur geänderte Dateien.",
+    "goToConnectors": "Zu den Connectors"
+  },
   "kb": {
     "viewToggle": "Ansicht wechseln",
     "collectionsView": "Sammlungsansicht",
@@ -557,7 +601,29 @@
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
-    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu"
+    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
+    "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
+    "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut.",
+    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können.",
+    "indexingStatus": {
+      "completed": "Abgeschlossen",
+      "inProgress": "In Bearbeitung",
+      "failed": "Fehlgeschlagen",
+      "fileTypeNotSupported": "Dateityp nicht unterstützt",
+      "notStarted": "Nicht gestartet",
+      "queued": "In der Warteschlange",
+      "manualIndexing": "Manuelle Indizierung",
+      "empty": "Leer",
+      "paused": "Pausiert",
+      "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "skipped": "Übersprungen",
+      "pending": "Ausstehend"
+    },
+    "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
+    "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden.",
+    "allRecordsLoadFailed": "Datensätze konnten nicht geladen werden"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -578,11 +644,19 @@
     "record": "Datensatz"
   },
   "chat": {
+    "answerReady": {
+      "title": "Antwort fertig",
+      "open": "Chat öffnen",
+      "unread": "Neue Antwort"
+    },
+    "jumpToNewest": "Zur neuesten Nachricht springen",
     "recordActions": {
       "preview": "Vorschau",
       "open": "{{source}} öffnen",
       "openIn": "In {{source}} öffnen",
       "openInCollections": "In Sammlungen öffnen",
+      "syncedJustNow": "Gerade synchronisiert",
+      "syncedAgo": "Vor {{age}} synchronisiert",
       "relevance": "Relevanz: {{percent}} %"
     },
     "results": "Ergebnisse",
@@ -625,7 +699,11 @@
       "browseWorkspaceMcp": "MCP-Server durchsuchen",
       "browseWorkspaceMcpAria": "MCP-Server öffnen, um Verbindungen hinzuzufügen oder zu verwalten",
       "noActionMatches": "Keine Aktionen entsprechen Ihrer Suche.",
-      "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche."
+      "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche.",
+      "notConnected": "Nicht verbunden",
+      "connect": "Verbinden",
+      "actionConnected": "{{name}} ist verbunden",
+      "limitedToCount": "· {{count}} ausgewählt"
     },
     "projectResources": {
       "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
@@ -646,6 +724,7 @@
     "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
+    "agentChat": "Agent-Chat",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -653,6 +732,12 @@
     "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
+    "treeEmpty": "Hier ist nichts",
+    "treeLoadFailed": "Diese Elemente konnten nicht geladen werden",
+    "treeRetry": "Erneut versuchen",
+    "treeIncludedWith": "In {{name}} enthalten",
+    "treeExpand": "Inhalt von {{name}} anzeigen",
+    "treeCollapse": "Inhalt von {{name}} ausblenden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "comingSoon": "Demnächst verfügbar",
     "answer": "Antwort",
@@ -678,6 +763,8 @@
     "like": "Hilfreich",
     "dislike": "Nicht hilfreich",
     "copy": "Kopieren",
+    "fork": "Chat abzweigen",
+    "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
@@ -686,6 +773,8 @@
     "copiedAsMarkdown": "Als Markdown kopiert",
     "copiedAsText": "Als Text kopiert",
     "citations": "Zitate",
+    "showMoreCitations_one": "{{count}} weiteres Zitat anzeigen",
+    "showMoreCitations_other": "{{count}} weitere Zitate anzeigen",
     "markdownWithCitations": "Markdown mit Zitaten",
     "onlyTextWithoutCitations": "Nur Text ohne Zitate",
     "differentModesOfQuery": "Verschiedene Abfragemodi",
@@ -700,6 +789,7 @@
     "backToChatHome": "Alle Chats",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Wird geladen…",
+    "sharedAgentChat": "Geteilter Agent-Chat",
     "myAgents": "Meine Agenten",
     "moreAgents": "Weitere Agenten",
     "agentHeaderMenuAria": "Agentenoptionen",
@@ -724,15 +814,55 @@
     "showDiagramSource": "Quelle anzeigen",
     "hideDiagramSource": "Quelle ausblenden",
     "stoppedMarker": "Gestoppt",
+    "toolCard": {
+      "arguments": "Argumente",
+      "result": "Ergebnis",
+      "error": "Fehler",
+      "blocked": "Blockiert",
+      "awaitingApproval": "Wartet auf Freigabe",
+      "viewRaw": "Rohdaten anzeigen",
+      "hideRaw": "Rohdaten ausblenden",
+      "showingOf": "{{shown}} von {{total}} angezeigt",
+      "open": "Öffnen",
+      "needsApproval": "Freigabe nötig",
+      "approved": "Freigegeben",
+      "declined": "Abgelehnt",
+      "expired": "Abgelaufen"
+    },
+    "mcpConnect": {
+      "title": "Verbinden Sie diese MCP-Server, um diesen Agenten zu nutzen",
+      "connect": "Verbinden",
+      "connecting": "Verbinde…",
+      "connected": "Verbunden",
+      "removed": "Entfernt. Bitten Sie den Eigentümer des Agenten, ihn zu aktualisieren.",
+      "waitingForAdmin": "Wartet darauf, dass ein Admin die gemeinsamen Anmeldedaten hinzufügt",
+      "setUpInBuilder": "Im Agent Builder einrichten",
+      "serviceAccount": "Dieser Agent nutzt eigene Anmeldedaten. Sein Eigentümer richtet sie im Agent Builder ein.",
+      "openAgentBuilder": "Agent Builder öffnen",
+      "allConnected": "Alles verbunden. Senden Sie Ihre Nachricht erneut, um fortzufahren.",
+      "tryAgain": "Erneut versuchen",
+      "unavailable": "Die Anmeldung konnte hier nicht gestartet werden. Verbinden Sie den Server unter Workspace → MCP-Server."
+    },
+    "mcpSignIn": {
+      "title": "Melden Sie sich erneut an, um diesen MCP-Servern die angeforderte Berechtigung zu geben",
+      "needs": "Benötigt: {{scopes}}",
+      "signIn": "Erneut anmelden",
+      "signingIn": "Anmeldung läuft…",
+      "signedIn": "Angemeldet",
+      "askAnEditor": "Bitten Sie jemanden, der diesen Agenten bearbeiten darf, sich erneut anzumelden",
+      "allSignedIn": "Angemeldet. Versuchen Sie die Anfrage erneut.",
+      "retryMessage": "Ich habe mich erneut bei {{servers}} angemeldet. Bitte versuche es noch einmal."
+    },
     "fullTableView": "Vollständige Tabellenansicht",
+    "downloadCsv": "Als CSV herunterladen",
     "toasts": {
       "stopStreamTitle": "Wird gestoppt…",
       "stopStreamDescription": "Die Antwort wird in Kürze gestoppt. Eine bereits erzeugte Teilantwort bleibt erhalten.",
-      "editComingSoonTitle": "Demnächst verfügbar",
-      "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
       "openAgentBuilder": "Agent Builder öffnen",
-      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "forkSuccess": "Neuer Chat ab diesem Punkt gestartet",
+      "forkError": "Der Chat konnte nicht abgezweigt werden. Bitte erneut versuchen."
     },
     "queryModes": {
       "chat": {
@@ -873,6 +1003,18 @@
     "deleteAgentDescription": "Der Agent mit dem Namen",
     "deleteAgentWarning": "wird dauerhaft aus Pipeshub entfernt. Chats, die ihn verwenden, funktionieren möglicherweise nicht mehr wie erwartet.",
     "deleteChat": "Löschen",
+    "pin": "Anheften",
+    "unpin": "Lösen",
+    "pinned": "Angepinnt",
+    "pinFailed": "Der Chat konnte nicht angeheftet werden",
+    "unpinFailed": "Der Chat konnte nicht gelöst werden",
+    "export": {
+      "menuItem": "Exportieren",
+      "exporting": "Chat wird exportiert…",
+      "done": "Chat exportiert",
+      "failed": "Der Chat konnte nicht exportiert werden",
+      "assistant": "Assistent"
+    },
     "deleteChatConfirm": "Sind Sie sicher?",
     "deleteChatDescription": "Der Chat mit dem Titel",
     "deleteChatWarning": "wird dauerhaft aus Pipeshub entfernt. Alle Benutzer mit geteiltem Zugriff verlieren ihren Zugang.",
@@ -1083,7 +1225,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche"
+      "webSearch": "Websuche",
+      "deepResearch": "Tiefenrecherche",
+      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "mobileProfileComingSoon": "Die Profilseite ist bald auch auf Mobilgeräten verfügbar.",
@@ -1129,7 +1273,64 @@
     "sendMessage": "Nachricht senden",
     "demoHide": "Demodaten ausblenden",
     "demoRestrictedHint": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. So wirken Berechtigungen.",
-    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen."
+    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen.",
+    "toolApproval": {
+      "noArguments": "Keine Details",
+      "deny": "Ablehnen",
+      "showAll": "Alles anzeigen",
+      "showLess": "Weniger anzeigen",
+      "partial": "Nur der Anfang der Details wird angezeigt: Der vollständige Aufruf ist länger.",
+      "cantBeUndone": "Nicht rückgängig zu machen",
+      "allow": "Zulassen",
+      "dontAskAgain": "Für dieses Tool nicht mehr fragen",
+      "answerFailed": "Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.",
+      "needsApproval": "Benötigt Ihre Freigabe",
+      "expiresIn_one": "läuft in {{count}} Min. ab",
+      "expiresIn_other": "läuft in {{count}} Min. ab",
+      "expiresSoon": "läuft in weniger als einer Minute ab",
+      "notice": {
+        "expired": "{{tool}} auf {{server}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen. Fragen Sie erneut, falls es noch nötig ist.",
+        "passed": "{{tool}} auf {{server}} wurde nicht freigegeben und daher nicht ausgeführt.",
+        "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung."
+      },
+      "receipt": {
+        "allowed": "Sie haben {{tool}} zugelassen",
+        "declined": "Sie haben {{tool}} abgelehnt",
+        "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen",
+        "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
+      }
+    },
+    "selectedAlone": "{{name}} (nur dieses Element)",
+    "noConnectorsFound": "Keine Konnektoren gefunden",
+    "treeSearching": "Suche läuft…",
+    "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
+    "treeSearchMatches": "Ordner und Elemente",
+    "nodeSearchTooShort": "Mindestens 2 Zeichen eingeben",
+    "mentionNodes": "Elemente",
+    "mentionNodesLabel": "Passende Elemente",
+    "mentionTypeToSearch": "Namen zum Suchen eingeben",
+    "mentionSearching": "Suche läuft…",
+    "mentionNone": "Keine passenden Elemente",
+    "mentionYourApps": "Ihre Apps",
+    "mentionCollections": "Sammlungen",
+    "sourceUnavailable": "Eine Quelle, die du nicht öffnen kannst",
+    "sourceLoading": "Wird geladen…",
+    "mentionBack": "Zurück",
+    "mentionRemove": "{{name}} entfernen",
+    "artifactsPanel": {
+      "generated_one": "{{count}} Artefakt erstellt",
+      "generated_other": "{{count}} Artefakte erstellt",
+      "newerVersion": "Neuere Version verfügbar (v{{version}})",
+      "unavailable": "Nicht mehr verfügbar",
+      "viewSource": "Quellcode anzeigen",
+      "loadingSource": "Quellcode wird geladen",
+      "viewSourceTitle": "Den Code anzeigen, der dieses Artefakt erzeugt hat",
+      "preview": "Artefakt-Vorschau",
+      "loadingPreview": "Vorschau wird geladen",
+      "download": "Artefakt herunterladen",
+      "downloading": "Artefakt wird heruntergeladen"
+    },
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -1458,7 +1659,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Verwalten Sie OAuth-2.0-Anwendungen, die über Pipeshub auf Ihre Organisation zugreifen können",
+      "subtitle": "Erstellen und verwalten Sie die von Ihnen registrierten OAuth-Apps. Nur Sie sehen Ihre Apps hier.",
       "searchPlaceholder": "Anwendungen nach Name oder Beschreibung suchen...",
       "newApplication": "Neue OAuth-Anwendung",
       "emptyTitle": "Keine OAuth-2.0-Anwendungen",
@@ -1553,6 +1754,7 @@
         "createDisabledScopesTooltip": "Wählen Sie mindestens einen Berechtigungs-Scope, um die Anwendung zu erstellen.",
         "tabGeneral": "Allgemein",
         "tabPermissions": "Berechtigungen & Scopes",
+        "tabGranular": "Detaillierte Berechtigungen",
         "appNameLabel": "App-Name",
         "appNamePlaceholder": "Meine Anwendung",
         "descriptionLabel": "Beschreibung",
@@ -1587,7 +1789,15 @@
         "returnToAppsButton": "Zurück zu OAuth-2.0-Apps",
         "showSecretAria": "Client-Geheimnis anzeigen",
         "hideSecretAria": "Client-Geheimnis ausblenden",
-        "clientCredentialsWarning": "Mit Client-Credentials-Token erfolgt der Zugriff auf Pipeshub immer als der Benutzer, der diese Anwendung erstellt hat — nicht als der Aufrufer des Token-Endpunkts. Im Rahmen der von Ihnen vergebenen Scopes erreicht das Token alles, worauf diese Person zugreifen kann, und es übernimmt deren Rolle: Eine von einem Administrator erstellte Anwendung hat also Administratorzugriff. Wird dieses Konto gelöscht, funktioniert das Token nicht mehr. Wenn diese Anwendung auch den Authorization-Code-Flow unterstützt, können Benutzer sie weiterhin auf diesem Weg für sich selbst autorisieren.",
+        "serviceAccountHeading": "Dienstkonto, in dessen Namen diese Anwendung handelt",
+        "clientCredentialsIdentityNote": "Die Tokens dieser Anwendung handeln im Namen des zugewiesenen Dienstkontos, und andernfalls im Namen der Person, die sie erstellt hat — bei einem Administrator bedeutet das Administratorzugriff.",
+        "serviceAccountHelper": "Tokens mit Client-Anmeldedaten enthalten keine Person, daher benötigt diese Anwendung eine eigene Identität. Ein Dienstkonto ist immer Mitglied, nie Administrator, und kann sich nicht anmelden. Ohne ein solches würde die Anwendung im Namen derjenigen Person handeln, die sie erstellt hat.",
+        "serviceAccountPlaceholder": "Dienstkonto auswählen",
+        "serviceAccountLoading": "Dienstkonten werden geladen…",
+        "serviceAccountNone": "Es gibt noch keine Dienstkonten. Erstellen Sie eines unter Arbeitsbereich → Dienstkonten und kehren Sie dann hierher zurück.",
+        "serviceAccountLoadError": "Dienstkonten konnten nicht geladen werden. Versuchen Sie es gleich noch einmal.",
+        "serviceAccountRetry": "Erneut versuchen",
+        "errorServiceAccountRequired": "Wählen Sie das Dienstkonto aus, in dessen Namen diese Anwendung handelt.",
         "successTitle": "Anwendung erstellt",
         "successDescription": "Ihre OAuth-Anwendung wurde erfolgreich erstellt.",
         "errorCreateTitle": "Anwendung konnte nicht erstellt werden",
@@ -1725,6 +1935,11 @@
         "video": {
           "label": "Video",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Entscheidung",
+          "badge": "Entscheidung",
+          "sectionTab": "Für Entscheidungen"
         }
       },
       "fetchingModels": "Modelle werden geladen…",
@@ -1744,6 +1959,59 @@
       "rotateCredentialsPlaceholder": "Neuer API-Schlüssel",
       "rotateCredentialsSave": "Schlüssel speichern",
       "rotateCredentialsFailed": "Schlüssel konnte nicht aktualisiert werden",
+      "identity": {
+        "menuItem": "Identitätsweiterleitung",
+        "title": "Identitätsweiterleitung",
+        "hint": "Teilt dem Gateway mit, wer fragt, damit es Budgets, Limits und Modellzugriff pro Person anwenden kann. Gilt für jedes Modell dieser Verbindung.",
+        "enabled": "Benutzeridentität weiterleiten",
+        "format": "Format",
+        "formatHeaders": "LiteLLM-Header",
+        "formatTemplate": "Header-Vorlage",
+        "formatSignedJwt": "Signiertes Token (Enterprise)",
+        "preset": "Gateway-Voreinstellung",
+        "presetCustom": "Eigene Header",
+        "templates": "Header-Vorlagen",
+        "templatesHint": "Eine pro Zeile als Header-Name: Wert. Verfügbar: {{placeholders}}.",
+        "serviceKey": "Schlüssel für Hintergrundaufgaben",
+        "serviceKeyPlaceholder": "Gateway-Schlüssel für Indexierung und Extraktion",
+        "serviceKeySaved": "Ein Schlüssel ist gespeichert. Zum Ersetzen neu eingeben.",
+        "serviceKeyHint": "Indexierung und Extraktion haben keine angemeldete Person. Geben Sie ihnen einen eigenen Gateway-Schlüssel, damit ihre Kosten getrennt budgetiert werden.",
+        "serviceKeyRemove": "Gespeicherten Schlüssel entfernen",
+        "preview": "Vorschau",
+        "previewTitle": "Das würde für Sie gesendet",
+        "previewNone": "Es wird nichts gesendet.",
+        "previewFailed": "Vorschau konnte nicht erstellt werden",
+        "save": "Speichern",
+        "saved": "Identitätsweiterleitung gespeichert",
+        "saveFailed": "Identitätsweiterleitung konnte nicht gespeichert werden"
+      },
+      "identityPolicy": {
+        "open": "Identitätsrichtlinie",
+        "damaged": "Die gespeicherte Identitätsrichtlinie konnte nicht gelesen werden, daher werden die Standardwerte angezeigt. Speichern ersetzt sie.",
+        "title": "Identitätsrichtlinie",
+        "hint": "Was PipesHub einem Modell-Gateway über die fragende Person mitteilen darf. Gilt für jede Verbindung, die Identität weiterleitet.",
+        "subjectSource": "Personen identifizieren über",
+        "subjectUserId": "Benutzer-ID",
+        "subjectEmail": "E-Mail-Adresse",
+        "subjectIdp": "Objekt-ID des Identitätsanbieters",
+        "includeEmail": "E-Mail-Adresse einschließen",
+        "includeDisplayName": "Anzeigenamen einschließen",
+        "pseudonymize": "Identitäten hinter einem stabilen Pseudonym verbergen",
+        "pseudonymizeHint": "Das Gateway sieht eine undurchsichtige ID statt der echten. Die Zuordnung ist nicht umkehrbar.",
+        "groups": "Gruppenmitgliedschaft weiterleiten",
+        "groupsHint": "Ermöglicht dem Gateway Zugriff und Budgets pro Gruppe.",
+        "allowList": "Nur diese Gruppen weiterleiten",
+        "allowListHint": "Eine Gruppen-ID pro Zeile. Leer lassen, um alle Gruppen bis zum Limit unten weiterzuleiten.",
+        "maxGroups": "Maximal weitergeleitete Gruppen",
+        "blockMissing": "Anfragen ohne angemeldete Person ablehnen",
+        "blockMissingHint": "Wenn Identität weitergeleitet wird, wird ein interaktiver Aufruf ohne Personenbezug abgelehnt statt als Dienst gesendet.",
+        "embeddingAsService": "Such-Embeddings dem Dienst zuordnen",
+        "embeddingAsServiceHint": "Aus: Das Budget der Person trägt das Embedding ihrer Suchanfrage.",
+        "servicePrefix": "Präfix der Dienstidentität",
+        "saved": "Identitätsrichtlinie gespeichert",
+        "saveFailed": "Identitätsrichtlinie konnte nicht gespeichert werden",
+        "loadFailed": "Identitätsrichtlinie konnte nicht geladen werden"
+      },
       "batchStatus": {
         "pending": "Wartet",
         "checking": "Prüfung",
@@ -1837,7 +2105,7 @@
       "title": "Aktionen",
       "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datensätzen, Aktualisieren von Feldern oder Auslösen von Workflows. Jede App bietet eine Aktion, die auf ihre unterstützten Funktionen zugeschnitten ist.",
       "yourActionsTitle": "Ihre Aktionen",
-      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator für Ihr Konto bereitgestellt hat.",
+      "yourActionsSubtitle": "Melden Sie sich bei den Aktionen an, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
       "tabs": {
         "all": "Alle",
         "configured": "Konfiguriert",
@@ -1857,7 +2125,7 @@
         "unavailable": "Nicht verfügbar",
         "notConfigured": "Nicht konfiguriert",
         "manage": "Verwalten",
-        "adminSetupRequired": "Einrichtung durch einen Administrator erforderlich"
+        "add": "Hinzufügen"
       },
       "trailingYourActions": "Ihre Aktionen",
       "loading": "Aktionen werden geladen…",
@@ -1917,7 +2185,7 @@
         "refreshingList": "Liste wird aktualisiert…",
         "searchInstances": "Instanzen suchen…",
         "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen können Ihren Agenten hinzugefügt werden.",
-        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung können Sie diese Aktionen in Ihren Agenten verwenden.",
+        "personalInstanceInfo": "Melden Sie sich bei den Aktionen Ihrer Organisation an oder fügen Sie eigene hinzu. Nach der Anmeldung können Sie sie in Ihren Agenten verwenden.",
         "instanceTabs": {
           "all": "Alle ({{count}})",
           "authenticated": "Authentifiziert ({{count}})",
@@ -1976,10 +2244,36 @@
         "maxLength": "{{field}} darf höchstens {{maxLength}} Zeichen lang sein",
         "email": "{{field}} muss eine gültige E-Mail-Adresse sein",
         "url": "{{field}} muss eine gültige URL sein",
-        "urlProtocol": "{{field}} muss http oder https verwenden"
+        "urlProtocol": "{{field}} muss http oder https verwenden",
+        "numberRange": "Geben Sie eine ganze Zahl von {{min, number}} bis {{max, number}} ein.",
+        "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
+        "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
-      "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können."
+      "toolRules": {
+        "open": "Tool-Freigaben",
+        "title": "Tool-Freigaben: {{name}}",
+        "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
+        "readOnly": "Nur ein Administrator kann diese ändern.",
+        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden.",
+        "defaults": "Tools, die Daten lesen oder ändern, werden ausgeführt. Ein Tool, das Daten löscht, eine Tabelle leert oder E-Mails sendet, fragt zuerst im Chat in der PipesHub-App nach und wird nicht ausgeführt, wo niemand antworten kann, etwa im Slack-Bot oder über die API.",
+        "enterpriseTitle": "Tool-Freigaben der Organisation",
+        "enterpriseDescription": "Legen Sie fest, welche Tools dieses Toolsets ausgeführt werden, zuerst nachfragen oder nie ausgeführt werden – für alle in Ihrer Organisation."
+      },
+      "personal": {
+        "setupCallout": "Nur Sie können diese Aktion sehen und verwenden, und sie kann nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind. Melden Sie sich nach dem Hinzufügen bei ihr an.",
+        "yours": "Ihre",
+        "addOwn": "Eigene hinzufügen",
+        "added": "Aktion hinzugefügt.",
+        "delete": "Aktion löschen",
+        "deleteTitle": "{{name}} löschen?",
+        "deleteBody": "Ihre Anmeldung und die Tool-Freigaben dafür werden ebenfalls gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "deleted": "Aktion gelöscht.",
+        "adminOnly": "Nur ein Administrator kann {{name}} hinzufügen: Die Aktion verbindet sich über den Hostnamen mit einem Server. Bitten Sie Ihren Administrator, sie für Ihre Organisation hinzuzufügen."
+      },
+      "enterprise": {
+        "userActionsTitle": "Eigene Aktionen der Mitglieder",
+        "userActionsDescription": "Prüfen und entfernen Sie die Aktionen, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",
@@ -2100,7 +2394,9 @@
       },
       "featureFlags": {
         "title": "Feature-Flags",
-        "subtitle": "Aktivieren oder deaktivieren Sie experimentelle Funktionen für alle Agenten in diesem Arbeitsbereich."
+        "subtitle": "Aktivieren oder deaktivieren Sie experimentelle Funktionen für alle Agenten in diesem Arbeitsbereich.",
+        "advancedTitle": "Erweiterte Feature-Flags anzeigen",
+        "advancedSubtitle": "Interne Flags, die die meisten Arbeitsbereiche bei den Standardwerten belassen können."
       },
       "vectorStore": {
         "title": "Vektorspeicher",
@@ -2357,7 +2653,13 @@
         "syncStrategyHelper": "Wählen Sie, wie Daten von {{name}} synchronisiert werden",
         "syncInterval": "Synchronisierungsintervall",
         "syncIntervalPlaceholder": "Intervall wählen...",
-        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
+        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden",
+        "lastRunLimit": {
+          "saved": "Letzte Synchronisierung: {{count, number}} Seiten gespeichert",
+          "stoppedAtLimit": "bei diesem Limit angehalten",
+          "leftOut": "{{count, number}} ausgelassen",
+          "nearLimit": "Dieser Connector speichert bereits mindestens 90 % dieses Limits. Erhöhen Sie es, um mehr Seiten dieser Website zu behalten."
+        }
       },
       "instancePanel": {
         "overview": "Übersicht",
@@ -2390,7 +2692,50 @@
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "classification": "Klassifizierung",
+        "classificationSkipped": "Übersprungen",
+        "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
+        "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
+        "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
+        "codeGraph": {
+          "title": "Code-Graph",
+          "status": {
+            "never_built": "Noch nicht erstellt",
+            "building": "Wird erstellt",
+            "ready": "Bereit",
+            "stale": "Wird aktualisiert",
+            "waiting_on_indexing": "Wartet auf Indexierung",
+            "retrying": "Neuer Versuch",
+            "failed": "Fehlgeschlagen",
+            "too_large": "Zu groß",
+            "unknown": "Unbekannt"
+          }
+        },
+        "lastRun": {
+          "title": "Letzte Synchronisierung",
+          "outcome": {
+            "succeeded": "Abgeschlossen",
+            "failed": "Fehlgeschlagen",
+            "stopped": "Angehalten",
+            "skipped": "Übersprungen"
+          },
+          "stopReason": {
+            "max_pages": "Seitenlimit erreicht",
+            "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
+            "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+          },
+          "pagesSaved": "{{count}} Seiten gespeichert",
+          "failed": "{{count}} Seiten fehlgeschlagen",
+          "robotsSkipped": "{{count}} durch robots.txt übersprungen",
+          "noindexSkipped": "{{count}} sollen nicht indexiert werden",
+          "skippedMaxPages": "{{count}} wegen des Seitenlimits ausgelassen",
+          "pruned": "{{count}} entfernt, nicht mehr auf der Website",
+          "sitemapUrls": "{{count}} in Sitemaps gefunden",
+          "resumed": "Unvollständige Synchronisierung fortgesetzt",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -2507,6 +2852,7 @@
         "add": "Filter hinzufügen",
         "incomplete": "Vervollständigen Sie unten für jeden Filter den Operator und den Wert, um hier eine Zusammenfassung zu sehen.",
         "empty": "Noch keine Filter. Wählen Sie über „Filter hinzufügen“ einen der unterstützten Filter aus.",
+        "unsetFallback": "{{field}}: {{value}} (Standard)",
         "operator": "Operator",
         "chooseOperator": "Operator auswählen…",
         "value": "Wert",
@@ -2579,12 +2925,115 @@
           "confirm": "Neuindizierung starten"
         },
         "typePrompt": "Geben Sie zur Bestätigung {{token}} ein."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "Start-URL",
+            "help": "Die erste Seite, die PipesHub aufruft. Nach dem Speichern lässt sie sich nicht mehr ändern; für eine andere Website fügen Sie einen weiteren Connector hinzu."
+          },
+          "type": {
+            "label": "Crawlen",
+            "options": {
+              "single": "Nur diese Seite",
+              "recursive": "Diese Seite und die darauf verlinkten Seiten"
+            }
+          },
+          "discovery": {
+            "label": "Seiten finden über",
+            "help": "Sitemaps sind am schnellsten; Links finden Seiten, die in keiner Sitemap stehen.",
+            "options": {
+              "sitemap_and_links": "Sitemaps und Links (empfohlen)",
+              "links": "Nur Links",
+              "sitemap": "Nur Sitemaps"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "In diesem Bereich bleiben",
+            "help": "Nur Seiten unterhalb des Pfads der Start-URL, etwa /docs/."
+          },
+          "max_pages": {
+            "label": "Maximale Seitenzahl",
+            "help": "PipesHub behält höchstens so viele Seiten dieser Website. Dateien wie PDFs zählen als Seiten.",
+            "unit": "Seiten"
+          },
+          "url_should_contain": {
+            "label": "Nur Seiten speichern, deren URL Folgendes enthält",
+            "help": "Leer lassen, um alle Seiten zu speichern. Nicht passende Seiten werden nicht aufgerufen, ihren Links wird also auch nicht gefolgt."
+          },
+          "ignore_query_params": {
+            "label": "Gleiche Seite, andere URL",
+            "help": "URL-Parameter, die die Seite nicht verändern, etwa sort oder ref. * steht für alle. Tracking-Parameter (utm_…) werden immer ignoriert."
+          },
+          "depth": {
+            "label": "Klicks von der Startseite",
+            "help": "Wie weit Links gefolgt wird. Seiten aus einer Sitemap zählen als ein Klick.",
+            "unit": "Klicks"
+          },
+          "max_size_mb": {
+            "label": "Größte herunterzuladende Datei",
+            "help": "Größere Seiten und Dateien werden übersprungen und in der letzten Synchronisierung aufgeführt.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Auch Links zu anderen Websites folgen",
+            "help": "Meist aus: Der Crawl kann sich weit über diese Website hinaus ausdehnen."
+          },
+          "use_headless_browser": {
+            "label": "Immer einen Browser verwenden (langsamer)",
+            "help": "Aus: PipesHub erkennt Seiten, die JavaScript brauchen, und nutzt nur für diese Websites einen Browser."
+          },
+          "browser_like_identity": {
+            "label": "Als Webbrowser ausgeben",
+            "help": "Aus: Anfragen geben sich als PipesHub-Crawler zu erkennen. Nur für eine Website einschalten, die Sie crawlen dürfen und die Crawler blockiert; robots.txt wird weiterhin beachtet."
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt beachten",
+            "help": "Seiten überspringen, die Crawler laut Website nicht besuchen oder indexieren sollen."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Website"
+          },
+          "crawl": {
+            "title": "Was gecrawlt wird"
+          },
+          "skip": {
+            "title": "Was übersprungen wird"
+          },
+          "advanced": {
+            "title": "Erweitert",
+            "description": "Crawl-Tiefe, Dateigröße, Browser und Crawler-Kennung."
+          }
+        },
+        "summaryOn": "{{label}} an",
+        "summaryOff": "{{label}} aus",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Ausgangspunkt",
+        "custom": "Benutzerdefiniert",
+        "suggested": "Vorschlag für diese Adresse: {{name}}",
+        "replaceTitle": "Aktuelle Einstellungen ersetzen?",
+        "replaceMessage": "„{{name}}“ ersetzt Ihre aktuellen Crawl-Einstellungen.",
+        "replaceConfirm": "Ersetzen",
+        "web": {
+          "docs": "Dokumentation",
+          "helpCenter": "Hilfe-Center",
+          "wholeSite": "Ganze Website",
+          "onePage": "Eine Seite"
+        }
       }
     },
     "mcpServers": {
       "searchPlaceholder": "MCP-Server durchsuchen...",
       "loading": "MCP-Server werden geladen…",
       "noResults": "Keine MCP-Server entsprechen Ihrer Suche",
+      "replacedNotice": "Wird nicht mehr gepflegt. Fügen Sie stattdessen {{name}} hinzu.",
       "addServer": "Server hinzufügen",
       "custom": "Benutzerdefiniert",
       "inherited": "Geerbt",
@@ -2593,17 +3042,33 @@
       "sharedAuth": "Gemeinsame Admin-Authentifizierung",
       "toolsCount_one": "{{count}} Tool",
       "toolsCount_other": "{{count}} Tools",
+      "toolsCachedAt": "Tools mit Stand {{time}}",
+      "editImpact": {
+        "title": "Gespeicherte Anmeldungen entfernen?",
+        "body": "Wenn Sie ändern, wie dieser Server erreicht oder angemeldet wird, werden die Anmeldedaten entfernt, die Personen und Agenten dafür gespeichert haben. Alle müssen sich neu verbinden.",
+        "personalBody": "Wenn Sie ändern, wie dieser Server erreicht oder angemeldet wird, werden die Anmeldedaten entfernt, die Sie und Ihre Agenten dafür gespeichert haben. Sie müssen sich neu verbinden.",
+        "sharedBody": "Wenn Sie die gemeinsamen Anmeldedaten deaktivieren, werden sie entfernt. Alle müssen sich mit eigenen Anmeldedaten verbinden.",
+        "confirm": "Speichern und Anmeldungen entfernen"
+      },
       "cta": {
         "manage": "Verwalten",
         "delete": "Löschen",
         "reauthenticate": "Erneut authentifizieren",
+        "reconnect": "Neu verbinden",
         "disconnect": "Trennen",
         "connect": "Verbinden",
-        "addInstance": "Instanz hinzufügen"
+        "addInstance": "Instanz hinzufügen",
+        "edit": "Bearbeiten"
       },
       "status": {
-        "ready": "Bereit",
+        "ready": "Verbunden",
         "notConnected": "Nicht verbunden",
+        "reconnectNeeded": "Neue Verbindung nötig",
+        "waitingForAdmin": "Wartet auf Admin",
+        "sharedCredentialMissing": "Gemeinsame Anmeldedaten fehlen",
+        "blocked": "Durch Richtlinie blockiert",
+        "unreachable": "Server nicht erreichbar",
+        "slow": "Antwortet langsam",
         "needsAuth": "Authentifizierung erforderlich",
         "disabled": "Deaktiviert"
       },
@@ -2615,9 +3080,17 @@
       },
       "personal": {
         "title": "MCP-Server",
-        "subtitle": "Authentifizieren Sie sich bei den MCP-Servern, die Ihr Administrator bereitgestellt hat.",
+        "subtitle": "Verbinden Sie sich mit den MCP-Servern, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
         "emptyTitle": "Keine MCP-Server verfügbar",
-        "emptyDescription": "Ihr Administrator hat noch keine MCP-Server hinzugefügt."
+        "emptyDescription": "Fügen Sie einen eigenen hinzu oder bitten Sie Ihren Administrator, einen für alle hinzuzufügen.",
+        "yourServersDescription": "Von Ihnen hinzugefügte Server. Nur Sie können sie sehen und verwenden, und sie können nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind.",
+        "tabs": {
+          "all": "Alle",
+          "connected": "Verbunden",
+          "notConnected": "Nicht verbunden"
+        },
+        "yours": "Ihrer",
+        "noneInTab": "Hier gibt es keine MCP-Server."
       },
       "details": {
         "breadcrumbLabel": "MCP-Server",
@@ -2637,12 +3110,14 @@
         "authBannerTitle": "Authentifizierung erforderlich",
         "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
         "authBannerAuthenticatedTitle": "Verbunden",
+        "reconnectBannerDescription": "Die Anmeldung für diesen Server ist abgelaufen oder wurde abgelehnt. Verbinden Sie ihn neu, um ihn weiter zu nutzen.",
         "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
         "createdBy": "Erstellt von"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
-        "body": "Der Server \"{{name}}\" wird endgültig entfernt. Teammitglieder, die ihn verwenden, verlieren den Zugriff."
+        "body": "Der Server \"{{name}}\" wird endgültig entfernt. Teammitglieder, die ihn verwenden, verlieren den Zugriff.",
+        "personalBody": "Der Server \"{{name}}\" und seine gespeicherten Anmeldedaten werden endgültig entfernt."
       },
       "toasts": {
         "loadError": "MCP-Server konnten nicht geladen werden",
@@ -2656,10 +3131,15 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "credentialsSaved": "Anmeldedaten gespeichert",
+        "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
+        "oauthTimedOut": "Die Anmeldung hat zu lange gedauert und wurde abgebrochen. Versuchen Sie es erneut.",
+        "oauthProviderError": "Anmeldung fehlgeschlagen: {{message}}",
         "discoveryError": "Tools konnten nicht erkannt werden"
       },
       "authDialog": {
         "title": "Bei {{name}} authentifizieren",
+        "docsLink": "Wo Sie das finden",
         "description": "Geben Sie Ihre Anmeldedaten ein, um diesen MCP-Server zu verbinden."
       },
       "form": {
@@ -2671,6 +3151,7 @@
         "argsPlaceholder": "Argument hinzufügen",
         "requiredEnv": "Erforderliche Umgebungsvariablen",
         "requiredEnvPlaceholder": "Umgebungsvariable hinzufügen (z. B. API_KEY)",
+        "defaultTokenEnvHint": "Ohne angegebene Variablen wird das Token als {{name}} an den Befehl übergeben.",
         "url": "URL",
         "authMode": "Authentifizierungsmodus",
         "headerName": "Header-Name",
@@ -2686,14 +3167,56 @@
         "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
-        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden."
+        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden.",
+        "timeoutsHeading": "Zeitlimits",
+        "connectTimeout": "Verbindungszeitlimit (Sekunden)",
+        "callTimeout": "Zeitlimit für Tool-Aufrufe (Sekunden)",
+        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer."
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
         "createTitle": "MCP-Server hinzufügen",
         "tabs": {
           "configuration": "Konfiguration",
-          "connection": "Verbindung & Tools"
+          "tools": "Tools & Freigaben",
+          "toolList": "Tools"
+        },
+        "synced": "Synchronisiert {{time}}",
+        "refreshTools": "Tool-Liste aktualisieren",
+        "signInForTools": "Melden Sie sich an, um die Tools dieses Servers zu sehen.",
+        "toolsError": "Die Tool-Liste konnte nicht geladen werden",
+        "toolsErrorSignIn": "Der Server verlangt eine erneute Anmeldung.",
+        "rulesKept": "Ihre gespeicherten Freigaberegeln bleiben erhalten.",
+        "tryAgain": "Erneut versuchen",
+        "findingTools": "Tools auf diesem Server werden gesucht",
+        "rulesUnlock": "Freigaberegeln sind verfügbar, sobald die Liste bereit ist.",
+        "unsaved_one": "{{count}} ungespeicherte Änderung",
+        "unsaved_other": "{{count}} ungespeicherte Änderungen",
+        "allSaved": "Alle Regeln gespeichert",
+        "discard": "Verwerfen",
+        "saveRules": "Regeln speichern",
+        "discardTitle": "Ungespeicherte Regeländerungen verwerfen?",
+        "discardBody_one": "Sie haben die Regel für {{count}} Tool geändert. Beim Schließen geht diese Änderung verloren.",
+        "discardBody_other": "Sie haben die Regeln für {{count}} Tools geändert. Beim Schließen gehen diese Änderungen verloren.",
+        "noSignIn": "Keine Anmeldung nötig · {{transport}}",
+        "signInExpired": "Anmeldung abgelaufen",
+        "sharedMissing": "Gemeinsame Anmeldung fehlt",
+        "signInExpiredBody": "Tools dieses Servers können erst wieder laufen, wenn sich jemand erneut anmeldet.",
+        "notSignedIn": "Nicht angemeldet",
+        "notSignedInDetail": "Melden Sie sich an, um die Tools dieses Servers zu nutzen.",
+        "signedIn": "Angemeldet",
+        "sharedSignIn": "Gemeinsame Anmeldung",
+        "signedInDetail": "{{transport}} · angemeldet {{time}}",
+        "menu": {
+          "label": "Weitere Aktionen",
+          "copyUrl": "Server-URL kopieren",
+          "copied": "Server-URL kopiert",
+          "copyFailed": "Die Server-URL konnte nicht kopiert werden",
+          "addedBy": "Hinzugefügt von {{name}}",
+          "disconnectHint": "Meldet Sie ab. Einstellungen und Regeln bleiben.",
+          "remove": "Server entfernen",
+          "removeHint": "Löscht ihn für alle.",
+          "removeHintPersonal": "Löscht ihn und Ihre Anmeldung."
         }
       },
       "oauthConfig": {
@@ -2713,7 +3236,9 @@
         "callbackUrlLabel": "Callback-URL",
         "copyCallbackUrl": "Callback-URL kopieren",
         "callbackUrlCopied": "Callback-URL kopiert",
-        "providerDocsLink": "Setup-Dokumentation des Anbieters anzeigen"
+        "providerDocsLink": "Setup-Dokumentation des Anbieters anzeigen",
+        "clientSecretPrefixHint": "Beginnt mit {{prefix}}. Kopieren Sie das ganze Secret, einschließlich dieses Teils.",
+        "clientSecretPrefixMissing": "Dies beginnt nicht mit {{prefix}}, daher lehnt der Anbieter es ab. Beim Kopieren per Doppelklick fehlt dieser Teil: Kopieren Sie das ganze Secret."
       },
       "oauth": {
         "completingTitle": "Anmeldung wird abgeschlossen…",
@@ -2733,6 +3258,68 @@
         "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
         "unavailableHint": "Server mit lokalem Befehl (STDIO) sind in dieser Installation deaktiviert. Um sie zuzulassen, muss der Betreiber {{flag}}=true setzen.",
         "enabledWarning": "Dieser Befehl läuft auf dem PipesHub-Server mit den Rechten des Dienstes, einschließlich seines Netzwerkzugriffs und seiner Zugangsdaten. Fügen Sie nur Befehle hinzu, denen Sie vertrauen."
+      },
+      "addDialog": {
+        "title": "MCP-Server hinzufügen",
+        "description": "Wählen Sie einen Server aus dem Katalog oder verbinden Sie einen beliebigen Remote-MCP-Server über seine URL. Nur Sie sehen ihn.",
+        "custom": "Benutzerdefinierter Server",
+        "customDescription": "Ein beliebiger Remote-MCP-Server über seine URL."
+      },
+      "toolRules": {
+        "open": "Tool-Freigaben",
+        "title": "Tool-Freigaben: {{name}}",
+        "description": {
+          "personal": "Legen Sie fest, was passiert, wenn ein Assistent oder Agent in Ihren Chats eines dieser Tools verwenden möchte."
+        },
+        "loading": "Wird geladen…",
+        "loadError": "Die Regeln konnten nicht geladen werden.",
+        "search": "Nach Name oder ID suchen",
+        "empty": "Noch keine Tools. Verbinden Sie den Server, um seine Tools zu sehen.",
+        "rule": {
+          "allow": "Vorab freigegeben",
+          "ask": "Nach Freigabe erlauben",
+          "block": "Ablehnen"
+        },
+        "saved": "Tool-Freigaben gespeichert",
+        "saveError": "Die Tool-Freigaben konnten nicht gespeichert werden",
+        "kindSource": {
+          "name": "Nach dem Namen eingeordnet: Der Server gibt nicht an, was dieses Tool tut.",
+          "none": "Der Server gibt nicht an, was dieses Tool tut, daher gilt es als datenändernd."
+        },
+        "group": {
+          "destructive": "Nicht rückgängig zu machen",
+          "write": "Ändert Daten",
+          "read": "Nur lesend",
+          "notOffered": "Derzeit nicht angeboten",
+          "byName": "Nach Name festgelegte Regeln"
+        },
+        "groupHint": {
+          "destructive": "Diese zuerst prüfen",
+          "read": "Schlägt nur nach"
+        },
+        "noMatch": "Keine Tools passen zu Ihrer Suche.",
+        "clearSearch": "Suche zurücksetzen",
+        "noTools": "Keine Tools vorhanden."
+      },
+      "disconnectDialog": {
+        "title": "{{name}} trennen?",
+        "yours_one": "Sie können sein {{count}} Tool erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "yours_other": "Sie können seine {{count}} Tools erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "yoursUnknown": "Sie können seine Tools erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "shared_one": "Agenten in Ihrer Organisation können sein {{count}} Tool sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "shared_other": "Agenten in Ihrer Organisation können seine {{count}} Tools sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "sharedUnknown": "Agenten in Ihrer Organisation können seine Tools sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "keeps": "Servereinstellungen und Freigaberegeln bleiben erhalten",
+        "reconnect": "Jederzeit durch erneute Anmeldung wieder verbinden",
+        "deletesYours": "Ihre gespeicherte Anmeldung wird gelöscht",
+        "deletesShared": "Die gemeinsame Anmeldung wird gelöscht",
+        "disconnecting": "Wird getrennt …"
+      },
+      "enterprise": {
+        "orgRulesTitle": "Freigaberegeln der Organisation",
+        "orgRulesDescription": "Legen Sie für alle in Ihrer Organisation fest, welche Tools laufen, zuerst nachfragen oder nie laufen. Hier legt jede Person ihre eigenen Regeln auf ihrer MCP-Server-Seite fest.",
+        "userServersTitle": "Eigene MCP-Server der Mitglieder",
+        "userServersDescription": "Prüfen und entfernen Sie die MCP-Server, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
       }
     },
     "bots": {
@@ -3156,6 +3743,12 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",
+        "message": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; die Vektordatenbank hat etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "messageHost": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; der Server der Vektordatenbank hat insgesamt nur etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "guide": "Leitfaden zur Größe der Vektordatenbank"
       }
     },
     "tenants": {
@@ -3627,7 +4220,43 @@
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
       "disableConfirm": "Deaktivieren",
-      "memberBadge": "Dienstkonto"
+      "memberBadge": "Dienstkonto",
+      "manageDelegations": "Für wen es handeln darf",
+      "delegations": {
+        "title": "Im Namen einer Person handeln",
+        "explainer": "Dieses Dienstkonto kann die Erlaubnis erhalten, für namentlich genannte Personen zu handeln. Dabei liest es genau das, was diese Person lesen darf, und das ausgestellte Token gilt fünf Minuten. Administratoren können hier nicht genannt werden.",
+        "unavailableTitle": "Das Handeln im Namen einer Person ist eine Enterprise-Funktion",
+        "unavailableBody": "Diesem Dienstkonto zu erlauben, als benannte Kollegin oder benannter Kollege zu handeln — die Freigabeliste, das fünf Minuten gültige Token im Namen dieser Person und die Aufzeichnung jedes Versuchs — gehört zur Enterprise-Edition und ist in dieser Edition nicht enthalten.",
+        "unavailableAvailableHere": "Was diese Edition enthält: das Dienstkonto selbst, seinen eigenen Zugriff auf die von Ihnen freigegebenen Wissensdatenbanken sowie Token, die Sie ausstellen und widerrufen können. Das deckt jede Integration ab, die mit eigenen Berechtigungen arbeitet statt mit denen einer anderen Person.",
+        "addTitle": "Erlauben, für jemanden zu handeln",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@beispiel.de",
+        "subjectHelp": "Geben Sie die E-Mail-Adresse der Person ein, für die dieses Dienstkonto handeln darf.",
+        "reasonLabel": "Grund",
+        "reasonPlaceholder": "Warum das nötig ist",
+        "reasonHelp": "Wird angezeigt, wer diese Liste später prüft.",
+        "addConfirm": "Erlauben",
+        "listTitle": "Darf handeln für",
+        "none": "Dieses Dienstkonto kann für niemanden handeln. Es liest nur mit eigenen Berechtigungen.",
+        "loading": "Wird geladen…",
+        "inactive": "Nicht mehr verfügbar",
+        "revoke": "Entfernen",
+        "revokeTitle": "Diese Berechtigung entfernen?",
+        "revokeDescription": "Dieses Dienstkonto kann dann nicht mehr für {{subject}} handeln.",
+        "revokeSuccessTitle": "Berechtigung entfernt",
+        "revokeErrorTitle": "Berechtigung konnte nicht entfernt werden",
+        "grantSuccessTitle": "Berechtigung erteilt",
+        "grantErrorTitle": "Berechtigung konnte nicht erteilt werden",
+        "loadErrorTitle": "Delegationseinstellungen konnten nicht geladen werden",
+        "logTitle": "Letzte Aktivität",
+        "logHelp": "Jede Änderung an dieser Liste und jedes Mal, wenn das Dienstkonto für jemanden handeln wollte – einschließlich der abgelehnten Versuche.",
+        "logNone": "Noch nichts aufgezeichnet.",
+        "outcomeIssued": "Erlaubt",
+        "outcomeRefused": "Abgelehnt",
+        "outcomeGranted": "Berechtigung hinzugefügt",
+        "outcomeRevoked": "Berechtigung entfernt",
+        "byAdmin": "von {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -3810,6 +4439,9 @@
     "configureMcpTooltip": "Anmeldedaten verwalten",
     "authenticateMcpTooltip": "Diesen MCP-Server authentifizieren",
     "mcpAuthUpdatedNotify": "MCP-Authentifizierung aktualisiert.",
+    "mcpServersUnavailable": "Die MCP-Server dieses Agenten konnten nicht geladen werden",
+    "mcpServersUnavailableHint": "Sie werden hier nicht angezeigt, und Speichern ändert sie nicht. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "mcpServersUnavailableNoDrop": "Die MCP-Server dieses Agenten konnten nicht geladen werden. Bis die Seite neu geladen ist, können keine hinzugefügt werden.",
     "mcpAuthSaveError": "MCP-Anmeldedaten konnten nicht gespeichert werden.",
     "mcpAuthRemoveError": "MCP-Anmeldedaten konnten nicht entfernt werden.",
     "loadingSchema": "Schema wird geladen…",
@@ -3956,7 +4588,7 @@
     "noSkills": "Noch keine Skills — erstellen oder importieren Sie einen unter „Ihre Skills“",
     "connectionSkillToSkillsHandle": "Skills müssen mit dem Skills-Anschluss des Agenten verbunden werden",
     "dropDuplicateSkill": "{{name}} wurde diesem Agenten bereits hinzugefügt",
-    "mcpServerAlreadyAttachedNotify": "{{name}} wurde diesem Agenten bereits hinzugefügt",
+    "mcpServerAlreadyAttachedNotify": "Dieser Agent hat bereits einen anderen Server desselben Typs wie {{name}}. Ein Agent kann einen Server pro Typ verwenden.",
     "webSearchOnlyOne": "Es kann nur ein Websuchanbieter hinzugefügt werden",
     "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
     "noMcpServersAvailable": "Keine MCP-Server verfügbar",
@@ -3970,7 +4602,24 @@
     "mcpServerWithToolCount_other": "MCP-Server mit {{count}} Tools",
     "deprecatedToolsBanner_one": "{{count}} Tool dieses Agenten ist veraltet. Entfernen Sie es: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} Tools dieses Agenten sind veraltet. Entfernen Sie diese: {{tools}}",
-    "skillDisabled": "Dieser Skill ist deaktiviert und steht dem Agenten erst wieder zur Verfügung, wenn er erneut aktiviert wird."
+    "skillDisabled": "Dieser Skill ist deaktiviert und steht dem Agenten erst wieder zur Verfügung, wenn er erneut aktiviert wird.",
+    "mcpAllTools": "Alle Tools",
+    "mcpAllToolsHint": "Einschließlich Tools, die der Server später hinzufügt.",
+    "mcpServerUnavailable": "Nicht verfügbar",
+    "mcpServerUnavailableHint": "Dieser Server gehört nicht zu Ihren MCP-Servern: Er wurde gelöscht oder nicht für Sie freigegeben.",
+    "mcpToolNotOnServer": "Nicht auf dem Server",
+    "mcpToolNotOnServerHint": "Der Server bietet dieses Tool nicht mehr an. Entfernen Sie es, sonst kann der Agent es nicht verwenden.",
+    "mcpAllToolsNoneYet": "Der Server hat noch keine Tools aufgelistet. Der Agent erhält alles, was er anbietet.",
+    "mcpNoToolsSelected": "Keine Tools ausgewählt. Fügen Sie Tools hinzu oder aktivieren Sie „Alle Tools“.",
+    "mcpServerNeedsToolsTooltip": "Wählen Sie Tools für jeden MCP-Server aus oder aktivieren Sie „Alle Tools“.",
+    "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
+    "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
+    "mcpAgentApprovals": "Tool-Freigaben pro Agent",
+    "limitSource": "Auswählen, was {{name}} durchsucht",
+    "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
   },
   "recordView": {
     "sections": {
@@ -3998,6 +4647,13 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Geparst",
+    "stageSearchable": "Durchsuchbar",
+    "stageClassified": "Klassifiziert",
+    "stageEntities": "Entitäten",
+    "stageAttempt": "Versuch {{n}}",
+    "stageDetailsAria": "Phasendetails",
     "tabRecordInformation": "Datensatzinformationen",
     "tabDocumentDetails": "Dokumentdetails",
     "chat": "Chat",
@@ -4085,6 +4741,7 @@
     "missingRecordId": "Datensatz-ID fehlt"
   },
   "oauthConsent": {
+    "workspace": "Arbeitsbereich: {{name}}",
     "loading": "Autorisierungsanfrage wird geladen…",
     "missingParams": "Fehlende erforderliche OAuth-Parameter (client_id, redirect_uri).",
     "noData": "Keine Autorisierungsdaten verfügbar.",
@@ -4239,6 +4896,7 @@
     },
     "desktopHandoff": {
       "title": "Anmeldung an PipesHub gesendet",
+      "integrationTitle": "Autorisierung an PipesHub gesendet",
       "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
       "openApp": "PipesHub öffnen"
     }
@@ -4281,8 +4939,34 @@
     "deniedTitle": "Anfrage abgelehnt",
     "deniedLine": "Dem Gerät wurde kein Zugriff gewährt."
   },
+  "knowledgeLimit": {
+    "title": "Was darf {{appName}} sehen?",
+    "help": "Die App kann nur durchsuchen und lesen, was Sie hier erlauben, und nie mehr, als Sie selbst sehen.",
+    "everything": "Alles, was ich sehen kann",
+    "everythingHint": "Schließt Quellen ein, die Sie später hinzufügen.",
+    "only": "Nur, was ich auswähle",
+    "onlyHint": "Wählen Sie ganze Quellen, oder öffnen Sie eine, um Bereiche, Ordner oder Dateien zu wählen.",
+    "pickOne": "Wählen Sie mindestens eine Quelle, einen Bereich, einen Ordner oder eine Datei.",
+    "tooMany": "Wählen Sie höchstens {{max}} Elemente, oder wählen Sie stattdessen eine ganze Quelle.",
+    "selectedCount_one": "{{count}} Element ausgewählt",
+    "selectedCount_other": "{{count}} Elemente ausgewählt",
+    "canSeeEverything": "Sieht: alles, was Sie sehen",
+    "canSeeSome_one": "Sieht: {{count}} ausgewähltes Element",
+    "canSeeSome_other": "Sieht: {{count}} ausgewählte Elemente",
+    "thisToken": "dieses Token",
+    "app": {
+      "thisApp": "diese App",
+      "help": "Nutzer, die diese App verbinden, können nur durchsuchen und lesen, was Sie hier auswählen, und nie mehr, als sie selbst sehen können.",
+      "everything": "Alles, was jeder Nutzer sehen kann",
+      "everythingHint": "Gilt auch für später hinzugefügte Quellen."
+    },
+    "appLimited_one": "{{appName}} kann nur {{count}} vom Ersteller ausgewähltes Element sehen, und nur, wenn Sie es sehen können.",
+    "appLimited_other": "{{appName}} kann nur {{count}} vom Ersteller ausgewählte Elemente sehen, und nur die, die Sie sehen können."
+  },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Klassifizierung erneut eingeplant",
+      "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
       "title": "Analysen",
       "menuLabel": "Analysen",
       "fetchError": "Indexierungsstatistiken konnten nicht geladen werden",
@@ -4383,7 +5067,8 @@
     "isAnyOf": "ist einer von",
     "loadingOptions": "Optionen werden geladen…",
     "refreshingOptions": "Optionen werden aktualisiert…",
-    "loadingMore": "Weitere werden geladen…"
+    "loadingMore": "Weitere werden geladen…",
+    "clear": "Filter {{label}} löschen"
   },
   "moveFolder": {
     "moving": "Wird verschoben...",

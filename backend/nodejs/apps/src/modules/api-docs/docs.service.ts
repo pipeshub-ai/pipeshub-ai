@@ -68,8 +68,55 @@ export interface UnifiedApiDocs {
   schemas: Record<string, any>;
 }
 
+const specOverlays: string[] = [];
+
+type SpecNode = Record<string, unknown>;
+
+const isPlainObject = (value: unknown): value is SpecNode =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Objects merge key by key; arrays keep every distinct item; anything else is replaced.
+ * An object is always copied through this walk, never assigned whole, so a nested
+ * __proto__ key cannot ride in on a value that replaces a non-object.
+ */
+function mergeSpec(target: SpecNode, source: SpecNode): void {
+  for (const [key, value] of Object.entries(source)) {
+    // Keys that would write through to Object.prototype instead of the spec.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype')
+      continue;
+    const current = target[key];
+    if (isPlainObject(value)) {
+      const into: SpecNode = isPlainObject(current) ? current : {};
+      mergeSpec(into, value);
+      target[key] = into;
+    } else if (Array.isArray(current) && Array.isArray(value)) {
+      const existing: unknown[] = current;
+      const added: unknown[] = value;
+      const seen = new Set(existing.map((item) => JSON.stringify(item)));
+      target[key] = [
+        ...existing,
+        ...added.filter((item) => !seen.has(JSON.stringify(item))),
+      ];
+    } else {
+      target[key] = value;
+    }
+  }
+}
+
 @injectable()
 export class ApiDocsService {
+  /** An extra spec file merged into the loaded spec, for paths documented outside this file. */
+  static registerSpecOverlay(filePath: string): void {
+    if (!specOverlays.includes(filePath)) {
+      specOverlays.push(filePath);
+    }
+  }
+
+  static clearSpecOverlays(): void {
+    specOverlays.length = 0;
+  }
+
   private mergedSpec: Record<string, any> | null = null;
   private modules: ModuleInfo[] = [];
   private logger: Logger;
@@ -121,7 +168,21 @@ export class ApiDocsService {
     }
 
     try {
-      this.mergedSpec = yaml.load(fs.readFileSync(specPath, 'utf8')) as any;
+      const spec = yaml.load(fs.readFileSync(specPath, 'utf8')) as SpecNode;
+      this.mergedSpec = spec;
+      for (const overlayPath of specOverlays) {
+        try {
+          mergeSpec(
+            spec,
+            yaml.load(fs.readFileSync(overlayPath, 'utf8')) as SpecNode,
+          );
+        } catch (error) {
+          this.logger.warn('Skipped an OpenAPI spec overlay', {
+            overlayPath,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
       this.logger.info('Merged OpenAPI spec loaded successfully');
     } catch (error) {
       this.logger.warn('Failed to load merged OpenAPI spec', {

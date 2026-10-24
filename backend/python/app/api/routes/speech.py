@@ -16,6 +16,9 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.containers.query import QueryAppContainer
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.aimodels import iter_model_names, tts_format_mime
 from app.utils.llm import (
     get_stt_config,
@@ -26,6 +29,16 @@ from app.utils.llm import (
 from app.utils.user_messages import action_failed
 
 router = APIRouter()
+
+
+def _speech_scope(request: Request | None, config_service: ConfigurationService) -> call_scope:
+    user = getattr(getattr(request, "state", None), "user", None)
+    return call_scope(
+        principal_from_request_user(user if isinstance(user, dict) else None),
+        Workload.SPEECH,
+        config_service=config_service,
+        container=getattr(getattr(request, "app", None), "container", None),
+    )
 
 # Matches OpenAI's audio.transcriptions.create ceiling and keeps self-hosted
 # faster-whisper inside a sane single-request budget. Anything above this is
@@ -74,6 +87,7 @@ async def transcribe_audio(
     language: str | None = Form(None),
     config_service: ConfigurationService = Depends(get_config_service),
     logger: Any = Depends(get_logger),
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Transcribe an uploaded audio blob using the configured STT provider.
 
@@ -111,12 +125,13 @@ async def transcribe_audio(
         language,
     )
     try:
-        text = await adapter.transcribe(
-            audio_bytes,
-            mime=mime,
-            filename=file.filename,
-            language=language,
-        )
+        async with _speech_scope(request, config_service):
+            text = await adapter.transcribe(
+                audio_bytes,
+                mime=mime,
+                filename=file.filename,
+                language=language,
+            )
     except RuntimeError as exc:
         # Common operator misconfigurations:
         #   - 'whisper': faster-whisper missing (broken env).
@@ -161,6 +176,7 @@ async def synthesize_speech(
     payload: SpeakRequest,
     config_service: ConfigurationService = Depends(get_config_service),
     logger: Any = Depends(get_logger),
+    request: Request = None,  # type: ignore[assignment]
 ) -> Response:
     """Synthesize audio for ``payload.text`` using the configured TTS provider.
 
@@ -206,12 +222,13 @@ async def synthesize_speech(
     )
 
     try:
-        audio_bytes = await adapter.synthesize(
-            payload.text,
-            voice=payload.voice,
-            response_format=requested_format,
-            speed=speed,
-        )
+        async with _speech_scope(request, config_service):
+            audio_bytes = await adapter.synthesize(
+                payload.text,
+                voice=payload.voice,
+                response_format=requested_format,
+                speed=speed,
+            )
     except HTTPException:
         raise
     except Exception as exc:

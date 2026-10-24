@@ -31,6 +31,7 @@ on:
             - sharepoint
             - confluence
             - jira
+            - zendesk
             - linear
             - github_teams
             - github
@@ -167,13 +168,12 @@ jobs:
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Three
+        # slow connector suites do not all serialize on one worker. Four
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
-        # Each shard's marker is derived in the test step from CONN_SHARD_1 /
-        # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
-        # those three and "demo" do not own, so the five partition -m "integration"
-        # exactly.
+        # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
+        # CONN_SHARD_4 (one source of truth); "core" is everything those four
+        # and "demo" do not own, so the six partition -m "integration" exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -187,7 +187,7 @@ jobs:
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]') || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -249,6 +249,7 @@ jobs:
       MINIO_ROOT_USER: pipeshubtest
       MINIO_ROOT_PASSWORD: pipeshubtest123
       MINIO_TEST_BUCKET: pipeshub-connector-test
+      MINIO_SECOND_TEST_BUCKET: pipeshub-connector-test-2
       # The Web and RSS connectors sync from the web-fixtures service in the
       # integration stack: the connector by service name, the test process
       # (which changes pages through its control API) on the published port.
@@ -272,9 +273,13 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
+      # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
+      S3_ROLE_ARN: ${{ secrets.S3_ROLE_ARN }}
+      S3_EXTERNAL_ID: ${{ secrets.S3_EXTERNAL_ID }}
+      S3_SECOND_TEST_BUCKET: ${{ secrets.S3_SECOND_TEST_BUCKET }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
@@ -300,10 +305,17 @@ jobs:
       # The demo test's answer judge uses the Azure settings above. Without it,
       # facts a question lists for the judge would go unchecked yet pass.
       PIPESHUB_REQUIRE_JUDGE: '1'
-      CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-      CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-      CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-      CONFLUENCE_TEST_SPACE_KEY: ${{ secrets.CONFLUENCE_TEST_SPACE_KEY }}
+      # Confluence and Jira sync from the confluence-sim and jira-sim services
+      # (atlassian-sim profile); their settings come from
+      # integration-tests/connectors/atlassian_sim.env, loaded by the
+      # "Use the Atlassian simulators" step. CONNSIM_REF pins the simulator commit
+      # the image is built from and CONNSIM_PACK_* the content pack it serves;
+      # together they fix every fixture value in that env file.
+      CONNSIM_REF: fcfe407746e1ecd254b30731a8d78479c58f59d9
+      CONNSIM_IMAGE: pipeshub/connectors-simulator:it
+      CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-1.tar.gz
+      CONNSIM_PACK_SHA256: d39e021dc029ebd3c6e8af29b7dc8de161020ecc0818411204d6ce585db2d725
+      NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -315,10 +327,7 @@ jobs:
       # message as having no credentials at all.
       SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
       SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
-      JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-      JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-      JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
-      JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
+      ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -370,18 +379,21 @@ jobs:
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these three and the `demo` shard do not own, built in the test step
+      # these four and the `demo` shard do not own, built in the test step
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two):
-      # shard 1 ~194 min, shard 2 ~204 min, shard 3 ~209 min, of which ~60 min
-      # each is the scenario matrix (an estimate until a nightly measures it; it
-      # runs on the Neo4j leg only). Shard 1 keeps
-      # nextcloud and bookstack, the only suites needing selfhosted-sources.
+      # one job, so a shard's wall clock is the sum of the two, and the job
+      # times out at 300 min): shard 1 ~194 min, shard 2 ~125 min, shard 3
+      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
+      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
+      # and shard 3 zammad (zammad-source). The two Google Drive suites have
+      # shard 4: together they pushed shard 2 past the job timeout.
+      # A new connector suite goes on CONN_SHARD_4; shards 1-3 are full.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -427,6 +439,40 @@ jobs:
       # cache so compose build does not rebuild Dockerfile.base on every run.
       # From GHCR so CI neither spends nor inflates Docker Hub pulls; the compose
       # build reads the exported names. Docker Hub is the fallback per image.
+      # The simulator repository is private, so its checkout needs a token that can
+      # read it (CONNSIM_REPO_TOKEN). Without one the step fails rather than letting
+      # the Confluence and Jira suites skip on a missing source.
+      - name: Check out the Atlassian simulators
+        if: env.NEEDS_ATLASSIAN_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator
+          persist-credentials: false
+
+      # The pack is the simulators' dataset (lumenfold@1, about 24 MB), kept out of
+      # git in S3. A missing secret or a changed object fails here, not as skips.
+      - name: Use the Atlassian simulators
+        if: env.NEEDS_ATLASSIAN_SIM == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CONNSIM_DATASET_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CONNSIM_DATASET_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::CONNSIM_DATASET_AWS_ACCESS_KEY_ID / CONNSIM_DATASET_AWS_SECRET_ACCESS_KEY are not set; the simulators cannot load their dataset."
+            exit 1
+          fi
+          docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
+          aws s3 cp --only-show-errors "$CONNSIM_PACK_URI" "$RUNNER_TEMP/connsim-pack.tar.gz"
+          echo "$CONNSIM_PACK_SHA256  $RUNNER_TEMP/connsim-pack.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/connsim-pack"
+          tar -xzf "$RUNNER_TEMP/connsim-pack.tar.gz" -C "$RUNNER_TEMP/connsim-pack" --strip-components=1
+          echo "CONNSIM_PACK_DIR=$RUNNER_TEMP/connsim-pack" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/atlassian_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -471,6 +517,20 @@ jobs:
         run: |
           uv venv
           uv pip install -e .
+
+      # client_credentials grant: a fresh token every run, nothing rotates or is written back.
+      # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
+      - name: Mint Zendesk test token
+        if: ${{ matrix.shard == 'connectors-2' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk') }}
+        working-directory: integration-tests
+        env:
+          ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}
+          ZENDESK_TEST_CLIENT_SECRET: ${{ secrets.ZENDESK_TEST_CLIENT_SECRET }}
+        run: |
+          source .venv/bin/activate
+          export ZENDESK_TEST_ACCESS_TOKEN_FILE="$RUNNER_TEMP/zendesk-access-token"
+          printf 'ZENDESK_TEST_ACCESS_TOKEN_FILE=%s\n' "$ZENDESK_TEST_ACCESS_TOKEN_FILE" >> "$GITHUB_ENV"
+          python connectors/zendesk/prepare_token.py
 
       # Pure helper unit tests (mocks only) — fail fast before Docker/services come up.
       - name: Run helper unit tests
@@ -536,6 +596,7 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'Neo4j: Skip onboarding'
+        id: neo4j-ready
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           HEADERS=$(mktemp)
@@ -580,7 +641,8 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
+            connectors-4) MARKERS="$CONN_SHARD_4" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -604,7 +666,7 @@ jobs:
 
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: ${{ !cancelled() && env.RUN_PLAYWRIGHT == 'true' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -624,7 +686,7 @@ jobs:
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
       - name: 'Neo4j: Run resilience tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -636,7 +698,7 @@ jobs:
       # These repoint the whole deployment's storage while they run, so they go
       # last, after everything else has finished with this stack.
       - name: 'Neo4j: Run storage-backend tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -663,12 +725,14 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml down -v
 
       - name: 'ArangoDB: Start services'
+        id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml up -d
 
       - name: 'ArangoDB: Wait for core services'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-core
+        if: ${{ !cancelled() && steps.arango-start.outcome == 'success' }}
         run: |
           echo "Waiting for core services..."
           timeout 300 bash -c '
@@ -683,7 +747,8 @@ jobs:
           echo "Core services are healthy!"
 
       - name: 'ArangoDB: Wait for Python microservices'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-python
+        if: ${{ !cancelled() && steps.arango-core.outcome == 'success' }}
         run: |
           echo "Waiting for connector and query services..."
           timeout 300 bash -c '
@@ -698,7 +763,8 @@ jobs:
           echo "All services are healthy!"
 
       - name: 'ArangoDB: Create organization and admin user'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-org
+        if: ${{ !cancelled() && steps.arango-python.outcome == 'success' }}
         run: |
           echo "Creating organization..."
           # jq reads the credentials from the environment, so quotes or backslashes
@@ -718,7 +784,8 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'ArangoDB: Skip onboarding'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-ready
+        if: ${{ !cancelled() && steps.arango-org.outcome == 'success' }}
         run: |
           HEADERS=$(mktemp)
           jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
@@ -747,7 +814,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -766,7 +833,8 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
+            connectors-4) MARKERS="$CONN_SHARD_4" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -788,7 +856,7 @@ jobs:
             --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
-        if: ${{ !cancelled() && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'

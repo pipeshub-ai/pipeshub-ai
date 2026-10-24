@@ -80,6 +80,12 @@ import {
   discoverAIModels,
   rotateConnectionCredentials,
 } from '../controller/ai_models_batch.controller';
+import {
+  getIdentityPolicy,
+  previewIdentityForwarding,
+  putIdentityPolicy,
+  setConnectionIdentityForwarding,
+} from '../controller/ai_gateway_identity.controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -103,6 +109,9 @@ import {
   batchAddModelsRequestSchema,
   discoverModelsRequestSchema,
   rotateConnectionCredentialsSchema,
+  connectionIdentityForwardingSchema,
+  identityPolicySchema,
+  identityPreviewSchema,
   updateProviderRequestSchema,
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
@@ -928,6 +937,49 @@ export function createConfigurationManagerRouter(container: Container): Router {
     ValidationMiddleware.validate(rotateConnectionCredentialsSchema),
     rotateConnectionCredentials(keyValueStoreService, appConfig),
   );
+
+  // AuthMiddleware binds `authenticate` in its constructor, so passing the
+  // reference is safe; the route guard test also needs that exact reference.
+  /* eslint-disable @typescript-eslint/unbound-method */
+  router.put(
+    '/ai-models/connections/:connectionId/identity-forwarding',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(connectionIdentityForwardingSchema),
+    setConnectionIdentityForwarding(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+    ),
+  );
+
+  router.get(
+    '/ai-models/identity-policy',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getIdentityPolicy(keyValueStoreService),
+  );
+
+  router.put(
+    '/ai-models/identity-policy',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(identityPolicySchema),
+    putIdentityPolicy(keyValueStoreService),
+  );
+
+  router.post(
+    '/ai-models/identity/preview',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    ValidationMiddleware.validate(identityPreviewSchema),
+    previewIdentityForwarding(keyValueStoreService, appConfig),
+  );
+  /* eslint-enable @typescript-eslint/unbound-method */
 
   /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType

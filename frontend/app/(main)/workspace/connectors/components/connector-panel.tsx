@@ -30,7 +30,8 @@ import {
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
 import { trimAuthPayloadForApi, trimConnectorConfig, stripLinkedOAuthAppCredentials } from '../utils/trim-config';
-import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
+import { collectSyncCustomFieldErrors, syncCustomFieldErrorMessage } from '../utils/sync-custom-fields-validation';
+import { connectorTypeKey, localizeSyncField } from '../utils/localize-sync-field';
 import {
   visibleAuthSchemaFields,
   collectAuthFieldErrors,
@@ -44,6 +45,7 @@ import {
 import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { isLocalFsConfigReadOnly } from '../utils/local-fs-helpers';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 let connectionCheckSeq = 0;
 
@@ -563,7 +565,7 @@ export function ConnectorPanel() {
               connectorScope: selectedScope,
             },
           },
-          baseUrl: window.location.origin,
+          baseUrl: browserOAuthBaseUrl(),
         })) as {
           connector?: { connectorId?: string };
           _key?: string;
@@ -630,7 +632,7 @@ export function ConnectorPanel() {
             ...finalAuth,
             connectorScope: selectedScope,
           },
-          baseUrl: window.location.origin,
+          baseUrl: browserOAuthBaseUrl(),
         });
 
         const editId = panelConnectorId!;
@@ -711,14 +713,11 @@ export function ConnectorPanel() {
     const trimmedCustomValues = trimConnectorConfig(
       formData.sync.customValues
     ) as Record<string, unknown>;
+    const typeKey = connectorTypeKey(connectorType);
     const syncFieldErrors = collectSyncCustomFieldErrors(
-      syncCustomFields,
+      syncCustomFields.map((field) => localizeSyncField(field, typeKey, t)),
       trimmedCustomValues,
-      (field, error) => t(`workspace.actions.validation.${error}`, {
-        field: field.displayName,
-        minLength: field.validation?.minLength,
-        maxLength: field.validation?.maxLength,
-      })
+      (field, error) => syncCustomFieldErrorMessage(t, field, error)
     );
 
     const syncErrorPatch: Record<string, string | null | undefined> = {};
@@ -764,7 +763,7 @@ export function ConnectorPanel() {
           sync: { values: formData.filters.sync },
           indexing: { values: formData.filters.indexing },
         },
-        baseUrl: window.location.origin,
+        baseUrl: browserOAuthBaseUrl(),
       });
 
       // After successful save, navigate to the connector type page
@@ -830,14 +829,11 @@ export function ConnectorPanel() {
     const trimmedCustomValues = trimConnectorConfig(
       formData.sync.customValues
     ) as Record<string, unknown>;
+    const typeKey = connectorTypeKey(connectorType);
     const syncFieldErrors = collectSyncCustomFieldErrors(
-      syncCustomFields,
+      syncCustomFields.map((field) => localizeSyncField(field, typeKey, t)),
       trimmedCustomValues,
-      (field, error) => t(`workspace.actions.validation.${error}`, {
-        field: field.displayName,
-        minLength: field.validation?.minLength,
-        maxLength: field.validation?.maxLength,
-      })
+      (field, error) => syncCustomFieldErrorMessage(t, field, error)
     );
 
     const syncErrorPatch: Record<string, string | null | undefined> = {};
@@ -891,6 +887,8 @@ export function ConnectorPanel() {
     performSaveConfig,
     setSaveError,
     addToast,
+    connectorType,
+    t,
   ]);
 
   const handleConfirmSyncSave = useCallback(() => {

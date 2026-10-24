@@ -40,7 +40,7 @@ DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS = (
 DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
     "headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}"
+    f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (
@@ -76,4 +76,7 @@ DRIVE_FOLDER_EXPANSION_LIST_FIELDS = (
     "nextPageToken, incompleteSearch, files(id, capabilities/canListChildren)"
 )
 
-DRIVE_FOLDER_EXPANSION_GET_FIELDS = "id, capabilities/canListChildren, driveId"
+# mimeType + shortcutDetails let a selected folder that is a shortcut be followed to its target.
+DRIVE_FOLDER_EXPANSION_GET_FIELDS = (
+    "id, mimeType, capabilities/canListChildren, driveId, shortcutDetails/targetId"
+)

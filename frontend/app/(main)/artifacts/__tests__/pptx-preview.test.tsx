@@ -141,7 +141,7 @@ describe('artifact pptx preview', () => {
     await screen.findByText('preview-type:application/pdf');
     fireEvent.click(screen.getByRole('button', { name: 'Download preview' }));
     await waitFor(() => {
-      expect(api.streamDownloadRecord).toHaveBeenCalledWith('art-1', 'deck.pptx', { version: 2 });
+      expect(api.streamDownloadRecord).toHaveBeenCalledWith('art-1', 'deck.pptx', expect.objectContaining({ version: 2 }));
     });
   });
 

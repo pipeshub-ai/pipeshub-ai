@@ -16,6 +16,7 @@ export interface MailBody {
   subject?: string;
   templateData?: Record<string, any>;
   sendCcTo?: string[];
+  replyTo?: string;
   attachments?: any[];
 }
 

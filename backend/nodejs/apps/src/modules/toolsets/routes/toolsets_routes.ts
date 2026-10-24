@@ -39,6 +39,8 @@ import {
   reauthenticateToolsetInstance,
   getInstanceOAuthAuthorizationUrl,
   getInstanceStatus,
+  getToolsetToolRules,
+  updateToolsetToolRules,
   listToolsetOAuthConfigs,
   updateToolsetOAuthConfig,
   deleteToolsetOAuthConfig,
@@ -105,6 +107,8 @@ const createToolsetInstanceSchema = z.object({
     baseUrl: z.string().optional(),
     oauthConfigId: z.string().optional(),
     oauthInstanceName: z.string().optional(),
+    // 'personal' for the caller's own instance; otherwise an administrator's is the org's.
+    scope: z.enum(['org', 'personal']).optional(),
   }),
 });
 
@@ -177,6 +181,15 @@ const handleOAuthCallbackSchema = z.object({
 /**
  * Schema for updating user's credentials for a non-OAuth toolset instance
  */
+const toolsetToolRulesSchema = z.object({
+  body: z.object({
+    tools: z.record(z.enum(['allow', 'ask', 'block'])),
+  }),
+  params: z.object({
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+});
+
 const updateUserToolsetInstanceSchema = z.object({
   body: z.object({
     auth: z.object({
@@ -228,6 +241,8 @@ const getMyToolsetsSchema = z.object({
     authStatus: z
       .enum(['authenticated', 'not-authenticated'])
       .optional(),
+    /** 'org' leaves the caller's own personal instances out (the admin catalog). */
+    scope: z.enum(['org']).optional(),
   }),
 });
 
@@ -446,7 +461,7 @@ export function createToolsetsRouter(container: Container): Router {
 
   /**
    * POST /instances
-   * Create a new toolset instance (admin only)
+   * Create a toolset instance: an org instance for an administrator, a personal one otherwise
    */
   router.post(
     '/instances',
@@ -545,6 +560,27 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/status',
     authMiddleware.authenticate,
     getInstanceStatus(config)
+  );
+
+  /**
+   * GET /instances/:instanceId/tool-rules
+   * The instance's tool approval rules: everyone reads them, admins change them
+   */
+  router.get(
+    '/instances/:instanceId/tool-rules',
+    authMiddleware.authenticate.bind(authMiddleware),
+    getToolsetToolRules(config),
+  );
+
+  /**
+   * PUT /instances/:instanceId/tool-rules
+   * Replace the instance's tool approval rules (admin only)
+   */
+  router.put(
+    '/instances/:instanceId/tool-rules',
+    authMiddleware.authenticate.bind(authMiddleware),
+    ValidationMiddleware.validate(toolsetToolRulesSchema),
+    updateToolsetToolRules(config),
   );
 
   /**

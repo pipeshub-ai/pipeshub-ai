@@ -95,7 +95,7 @@ detect_sudo() {
 
 container_state() {
     detect_docker 2>/dev/null || return 1
-    $DOCKER inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null
+    $DOCKER inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null | tr -d '\r'
 }
 
 # A running container wins over a host process: if both exist, the container is
@@ -152,7 +152,13 @@ require_target() {
 query_pid() {
     if [ -n "$PIPESHUB_QUERY_PID" ]; then echo "$PIPESHUB_QUERY_PID"; return 0; fi
     local pid=""
-    if command -v pgrep >/dev/null 2>&1; then
+    # Docker: the host pid of THIS container's query service. A host-wide pgrep
+    # picks whichever stack's query_main has the lowest pid when several run.
+    if [ "${PIPESHUB_MODE:-}" = "docker" ] && [ -n "${DOCKER:-}" ]; then
+        pid=$($DOCKER top "$CONTAINER" -eo pid,args 2>/dev/null \
+            | awk '/app[._]query_main/ && !/spawn_main/ {print $1}' | sort -n | head -1)
+    fi
+    if [ -z "$pid" ] && command -v pgrep >/dev/null 2>&1; then
         # Lowest match = the master. `query_rss_mb` sums its children and
         # py-spy runs with --subprocesses, so starting at the master covers the
         # workers; starting at a worker would miss its siblings.
@@ -180,9 +186,32 @@ log_mark() {
     fi
 }
 
+# Exactly one of these per finished turn (respond.py). The OK form leaves out
+# turns answered with an error message.
+TURN_DONE_OK_RE='AnswerFinalizer: (finalized (STOPPED )?response|empty response, using fallback)'
+TURN_DONE_RE="$TURN_DONE_OK_RE|AnswerFinalizer: agent run failed"
+
+# Epochs as UTC ISO seconds, one line per argument. Python, not `date -d`, which
+# BSD/macOS date lacks.
+iso_utc() {
+    detect_python || return 1
+    "$PYTHON" -c 'import sys, time
+for a in sys.argv[1:]: print(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(a))))' "$@"
+}
+
+# PIPESHUB_LOG_CAPTURE names a file that `docker logs --follow --timestamps`
+# wrote during the run (perftest.sh sets it). Reading it instead of `docker logs`
+# after the fact matters: under indexing load the 20 MB rotation happens inside a
+# run, rotated files are not served back, and the window silently reads as zero.
 log_read() {
-    local mark=$1
-    if [ "$PIPESHUB_MODE" = "docker" ]; then
+    local mark=$1 from="" to=""
+    if [ "$PIPESHUB_MODE" = "docker" ] && [ -n "${PIPESHUB_LOG_CAPTURE:-}" ] && [ -s "$PIPESHUB_LOG_CAPTURE" ]; then
+        { read -r from; read -r to; } < <(iso_utc "$mark" "${2:-4102444800}" 2>/dev/null | tr -d '\r')
+    fi
+    if [ -n "$from" ] && [ -n "$to" ]; then
+        awk -v f="$from" -v t="$to" '{ ts = substr($1, 1, 19) }
+            ts >= f && ts < t { sub(/^[^ ]+ /, ""); print }' "$PIPESHUB_LOG_CAPTURE"
+    elif [ "$PIPESHUB_MODE" = "docker" ]; then
         $DOCKER logs "$CONTAINER" --since "$mark" ${2:+--until "$2"} 2>&1
     elif [ -n "$PIPESHUB_QUERY_LOG" ] && [ -f "$PIPESHUB_QUERY_LOG" ]; then
         tail -c "+$((mark + 1))" "$PIPESHUB_QUERY_LOG" 2>/dev/null
@@ -198,8 +227,10 @@ log_available() {
 query_rss_mb() {
     if [ "$PIPESHUB_MODE" = "docker" ]; then
         $DOCKER exec "$CONTAINER" sh -c '
-            par=$(pgrep -f "python -m uvicorn app.query_main" | head -1)
-            [ -n "$par" ] || par=$(pgrep -f "python -m app.query_main" | head -1)
+            # Bracketed: this sh -c carries the pattern in its own argv, so a bare
+            # pattern matches the shell and reports its ~1 MB as the service.
+            par=$(pgrep -f "[p]ython -m uvicorn app.query_main" | head -1)
+            [ -n "$par" ] || par=$(pgrep -f "[p]ython -m app.query_main" | head -1)
             [ -n "$par" ] || { echo 0; exit 0; }
             tot=0
             for p in $par $(pgrep -P $par 2>/dev/null); do

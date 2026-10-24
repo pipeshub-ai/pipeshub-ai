@@ -101,6 +101,8 @@ def _build_frontier_prompt(fixture_name: str) -> str:
 #   service_only:           8,280 →  8,750  (unaffected: no knowledge sources)
 #   lazy_with_pinned:      14,504 → 16,000
 #   kb_with_full_record:   13,727 → 15,100
+#   kb_with_calculator:    13,238 → 14,550  (kb_only plus "## Exact Numbers")
+#   lazy_with_calculator:  15,165 → 16,700
 # ---------------------------------------------------------------------------
 _MID_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            7_900,
@@ -114,6 +116,13 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
     "service_only":          8_750,
     "lazy_with_pinned":     16_000,
     "kb_with_full_record":  15_100,
+    # Code knowledge graph fixtures: these carry the gated "Navigating Code"
+    # section, which only renders when a codegraph tool is callable, so they
+    # sit above the rest. Measured 16,891 / 14,488 on main → ~7% / ~5% headroom.
+    "lazy_with_bound_codegraph":      18_100,
+    "lazy_with_pinned_and_codegraph": 15_200,
+    "kb_with_calculator":   14_550,
+    "lazy_with_calculator": 16_700,
 }
 
 # ---------------------------------------------------------------------------
@@ -135,6 +144,8 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
 #   service_only:          5,686 →  5,900
 #   lazy_with_pinned:     11,910 → 13,100
 #   kb_with_full_record:  11,133 → 12,250
+#   kb_with_calculator:   10,644 → 11,700
+#   lazy_with_calculator: 12,571 → 13,850
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            5_050,
@@ -148,6 +159,11 @@ _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "service_only":          5_900,
     "lazy_with_pinned":     13_100,
     "kb_with_full_record":  12_250,
+    # Both measured 11,894 on main (no worked traces, same gated section) → ~4%.
+    "lazy_with_bound_codegraph":      12_350,
+    "lazy_with_pinned_and_codegraph": 12_350,
+    "kb_with_calculator":   11_700,
+    "lazy_with_calculator": 13_850,
 }
 
 

@@ -26,6 +26,7 @@ class LinearGraphQLOperations:
                 key
                 description
                 private
+                visibility
                 parent {
                     id
                     name
@@ -159,6 +160,7 @@ class LinearGraphQLOperations:
                         name
                         key
                         private
+                        visibility
                     }
                 }
                 issues {

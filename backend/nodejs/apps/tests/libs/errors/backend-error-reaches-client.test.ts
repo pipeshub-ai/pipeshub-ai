@@ -170,6 +170,18 @@ describe('what this module writes reaches the client', () => {
     expect(sendThroughMiddleware(mapped).message).to.equal(detail)
   })
 
+  for (const message of [
+    'The search index took too long to respond, so no results are shown. Please try again in a minute.',
+    "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
+  ]) {
+    it(`passes search's sentence for a vector store that did not answer: ${message}`, () => {
+      // Search sends it as `message` in its own body, not as `detail`.
+      const mapped = handleBackendError({ statusCode: 503, data: { message } }, 'Search')
+
+      expect(sendThroughMiddleware(mapped).message).to.equal(message)
+    })
+  }
+
   // Messages other modules already write for readers. They are HttpErrors our
   // own code builds, and each one merged in its own PR; a future tightening of
   // the middleware must not quietly flatten them.

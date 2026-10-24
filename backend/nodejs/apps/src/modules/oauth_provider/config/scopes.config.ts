@@ -246,6 +246,14 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Code graph
+  'code:read': {
+    name: 'code:read',
+    description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
+    requiresUserConsent: true,
+  },
+
   // Configuration (Admin only)
   'config:read': {
     name: 'config:read',
@@ -339,6 +347,7 @@ export const DefaultMcpScopes = [
   'agent:read',
   'agent:execute',
   'connector:read',
+  'code:read',
 ];
 
 /**
@@ -357,6 +366,7 @@ export const AgentMcpScopes = [
   'kb:read',
   'user:read',
   'connector:read',
+  'code:read',
 ] as const;
 
 export const ScopeCategories = [
@@ -373,6 +383,7 @@ export const ScopeCategories = [
   'MCP Servers',
   'Projects',
   'Connectors',
+  'Code',
   'Configuration',
   'Crawling',
 ];

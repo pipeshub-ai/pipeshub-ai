@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 from neo4j.exceptions import Neo4jError
 
+from app.agents.constants.mcp_server_constants import get_mcp_instance_path
 from app.api.routes.agent import create_agent
 from app.api.routes.entity import create_team
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -170,8 +171,47 @@ class TestTheOptIn:
             assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
 
         kwargs = client_cls.call_args.kwargs
-        assert kwargs["explicit_transactions"] is False
+        assert kwargs["explicit_transactions"] is True
         assert kwargs["honour_explicit_requests"] is honour
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("value", "expected"), [(None, True), ("true", True), ("false", False)])
+    async def test_the_explicit_transactions_flag_defaults_on_and_false_is_honoured(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool,
+    ) -> None:
+        monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+        monkeypatch.delenv("NEO4J_CREATE_TRANSACTIONS", raising=False)
+        if value is None:
+            monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
+        else:
+            monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", value)
+        client_cls = MagicMock()
+        client_cls.return_value.connect = AsyncMock(return_value=True)
+        with patch.object(provider_module, "Neo4jClient", client_cls):
+            assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
+
+        assert client_cls.call_args.kwargs["explicit_transactions"] is expected
+
+    @pytest.mark.asyncio
+    async def test_a_plain_block_that_fails_midway_lands_nothing_by_default(self) -> None:
+        server = _Server(fail_at=2, error=RuntimeError("boom"))
+        store = GraphDataStore(MagicMock(), _provider(server, explicit_transactions=True))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with store.transaction() as tx_store:
+                assert tx_store.explicit
+                await tx_store.batch_upsert_nodes([{"id": "t1", "name": "T"}], "teams")
+                await tx_store.batch_upsert_nodes([{"id": "t2", "name": "U"}], "teams")
+
+        (tx,) = server.transactions
+        assert tx.rolled_back and not tx.committed
+        assert not server.landed
+
+    @pytest.mark.asyncio
+    async def test_with_the_flag_off_a_plain_block_is_not_marked_explicit(self) -> None:
+        store = GraphDataStore(MagicMock(), _provider(_Server()))
+        async with store.transaction() as tx_store:
+            assert not tx_store.explicit
 
     @pytest.mark.asyncio
     async def test_a_deadlock_in_an_explicit_block_is_rerun_from_a_clean_slate(self) -> None:
@@ -340,6 +380,12 @@ _AGENT_STATEMENTS = 2
 _MCP_STATEMENTS = 4
 
 
+def _writes(server: "_Server") -> list[str]:
+    """What landed, less the deletes with which a failed server's attach removes what it may
+    have left: with a real rollback they find nothing."""
+    return [statement for statement in server.landed if "DELETE" not in statement]
+
+
 async def _create_agent_with_mcp_servers(provider: Neo4jProvider) -> dict:
     provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1", "email": "a@b.co"})
     request = MagicMock()
@@ -348,6 +394,12 @@ async def _create_agent_with_mcp_servers(provider: Neo4jProvider) -> dict:
     container.retrieval_service = AsyncMock()
     container.graph_provider = AsyncMock(return_value=provider)
     container.logger.return_value = MagicMock()
+    # The org's servers, which create checks each attachment against.
+    servers = {
+        get_mcp_instance_path(instance_id): {"_id": instance_id, "orgId": "org-1", "name": name}
+        for instance_id, name in (("i1", "github"), ("i2", "linear"))
+    }
+    container.config_service.return_value.get_config = AsyncMock(side_effect=lambda key, **_: servers.get(key))
     request.body = AsyncMock(return_value=json.dumps({"name": "Helper", "mcpServers": [
         {"instanceId": "i1", "name": "github", "displayName": "GitHub", "tools": [{"name": "issues"}]},
         {"instanceId": "i2", "name": "linear", "tools": [{"name": "search"}]},
@@ -386,7 +438,7 @@ class TestAgentMcpServers:
         agent_tx, github_tx, linear_tx = server.transactions
         assert agent_tx.committed and linear_tx.committed
         assert github_tx.rolled_back and not github_tx.committed
-        assert len(server.landed) == _AGENT_STATEMENTS + _MCP_STATEMENTS
+        assert len(_writes(server)) == _AGENT_STATEMENTS + _MCP_STATEMENTS
 
     @pytest.mark.asyncio
     async def test_a_deadlock_attaching_an_mcp_server_retries_only_that_server(self) -> None:
@@ -421,4 +473,4 @@ class TestAgentMcpServers:
         assert body["status"] == "partial_success"
         assert [w["name"] for w in body["warnings"]] == ["github"]
         assert server.transactions == []
-        assert len(server.landed) == _AGENT_STATEMENTS + _MCP_STATEMENTS
+        assert len(_writes(server)) == _AGENT_STATEMENTS + _MCP_STATEMENTS

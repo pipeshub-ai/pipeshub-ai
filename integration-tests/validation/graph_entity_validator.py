@@ -37,6 +37,7 @@ from validation.graph_edge_validator import (  # noqa: E402
     build_record_edge_expectations,
     build_record_group_edge_expectations,
     build_user_edge_expectations,
+    resolve_parent_record,
 )
 
 _SCHEMA_DIR: Final = Path(__file__).resolve().parent / "schemas"
@@ -69,12 +70,12 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 ]
 
 # Things integration tests often cannot know ahead of time or that change after sync.
-# indexing_status, parsing_status and queued_at belong to the indexing pipeline, which
-# keeps moving them after the connector hands the record over.
+# indexing_status, parsing_status, queued_at and processing_started_at belong to the
+# indexing pipeline, which keeps moving them after the connector hands the record over.
 # parent_record_type and record_group_type are write-time hints (edge creation, record-group
 # linkage); Record.to_arango_base_record never serializes them, so they always read back None.
 _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
-    "id", "org_id", "indexing_status", "parsing_status", "queued_at",
+    "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
 })
 
@@ -185,7 +186,7 @@ async def assert_graph_entity_with_edges(
     automatically builds and asserts the expected edges based on entity kind:
 
     - ``ticket_record`` / ``file_record`` → record edges (belongsTo, inheritPermissions,
-      isOfType, parent recordRelations)
+      isOfType, parent nodeRelations)
     - ``record_group`` → record group edges (belongsTo app, parent group hierarchy)
     - Other kinds → fields-only (no automatic edges)
     """
@@ -196,6 +197,7 @@ async def assert_graph_entity_with_edges(
     if entity in _ENTITY_KINDS_WITH_RECORD_EDGES:
         edges = build_record_edge_expectations(
             actual, connector_id, parent_relation_type=parent_relation_type,
+            parent=await resolve_parent_record(graph_provider, actual, connector_id),
         )
         await assert_graph_edges(graph_provider, edges)
     elif entity == "record_group":

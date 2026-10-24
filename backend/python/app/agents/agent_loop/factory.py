@@ -26,8 +26,8 @@ every adapter-layer piece built in Phases 2-6:
     residual instead of the raw flat tool list.
   - `compose_domain_agents` (react/planExecute; off for quick): for every
     OTHER loop kind, the top-level `spec.tool_names` is narrowed to a
-    handful of `AgentTool` delegates (coding/web/internal-search/
-    calculator/calendar) plus whatever tools no domain claimed —
+    handful of `AgentTool` delegates (coding/web/internal-search) plus
+    whatever tools no domain claimed —
     `plan_domain_agents()` runs BEFORE `select_loop_and_goal()` so the
     `planExecute` mode's planner is steered with the same composed names
     the executing agent ends up with, and `register_domain_agents()` runs
@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
@@ -103,6 +104,9 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
@@ -110,24 +114,37 @@ from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
 )
+from app.agents.agent_loop.entity_search_tool import (
+    ENTITY_SEARCH_OFFERED_STATE_KEY,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    entity_search_tool_offered,
+)
 from app.agents.agent_loop.hooks import (
     CitationCollector,
+    RepeatedReadGuard,
     ToolErrorTracker,
     artifact_context_reminder,
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
     completion_gate,
     conversation_enrichment,
     progressive_entity_tools,
+    # repo_instructions_after_tools,
+    # repo_instructions_on_turn,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
+    retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
+    selected_nodes_prompt,
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+    sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
@@ -163,6 +180,8 @@ from app.agents.agent_loop.output_cap_transport import (
     max_turn_output_chars,
     with_output_cap,
 )
+from app.agents.agent_loop.parked_turn import ASK_USER_QUESTION_RESUME_PREFIX
+from app.agents.agent_loop.period_summary import period_summary_hint
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -183,14 +202,26 @@ from app.agents.agent_loop.skills_wiring import (
     skills_enabled,
 )
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
+from app.agents.agent_loop.tool_approvals import (
+    WAITING_PREFIX,
+    approval_gate,
+    begin_resume,
+    hold_history,
+    resume_parked_call,
+)
+from app.agents.agent_loop.tool_approvals import (
+    is_resume_query as is_tool_approval_resume_query,
+)
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
+from app.utils.render_budget import fetch_result_cap
 
 
-def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
+def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
     """Register FinalAnswerTool when PIPESHUB_ENABLE_FINAL_ANSWER is set."""
     from app.agent_loop_lib.tools.builtin.planning.final_answer import (
         FinalAnswerTool,
@@ -198,7 +229,7 @@ def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
     )
     if final_answer_enabled():
         tool_registry.register_tool(FinalAnswerTool())
-from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.agents.qna.tool_system import code_execution_enabled  # noqa: E402
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -217,10 +248,54 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__lookup_record",
 })
 
+# Code structure is cross-cutting: the exploring agent is where code questions
+# land, and routing them back through the parent costs a turn and loses the
+# child's context. The full codegraph set ships as shared so a search that
+# unlocks the toolset can walk edges and read symbols without another
+# delegation.
+#
+# SHARED, never claimed. `plan_domain_agents` claiming is exclusive, so listing
+# these on a definition would take them OFF the parent -- flipping
+# `surfaces.code_graph` to False and deleting the tool's own entry from the
+# parent's source list. Shared names never enter `claimed`, which is the same
+# mechanism `_DOMAIN_SHARED_NAV_TOOL_NAMES` relies on.
+_DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
+    "codegraph__query_code_graph",
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+    "codegraph__search_code",
+    "codegraph__outline",
+    "codegraph__impact",
+    "codegraph__entry_points",
+})
+# Tools a deployment switch adds to the knowledge tools. Not counted toward
+# the lazy-disclosure threshold, so turning one on never hides web search or
+# connector tools behind fetch_tools for a request that was eager without it.
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME, TIMELINE_TOOL_NAME})
+
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+# Deep research searches, reads and cross-checks before answering; its web budget bounds the cost.
+_DEEP_RESEARCH_MAX_TURNS = 30
+
+#: Traversal results L3 keeps past its turn window. A walk spans more turns
+#: than the window holds, and each hop is the address the next one needs —
+#: clearing an earlier hop strands the walk. Measured on the eval fixture
+#: (A-8-result-size): a one-hop walk is ~3KB median / 7KB p90, a two-hop walk
+#: ~15KB / 22KB, a symbol read under 1KB. A run of two-hop walks is the costly
+#: case; L4-L7 still compact by budget, which bounds it. `query_code_graph` is
+#: deliberately absent — its listings are re-callable, not something to carry.
+_CODE_TRAVERSAL_TOOLS = frozenset({
+    "codegraph__get_neighbour",
+    "codegraph__read_code",
+    "codegraph__find_symbol_path",
+    # A walk too, grouped by file; and an outline is a few hundred bytes.
+    "codegraph__impact",
+    "codegraph__outline",
+})
 
 
 DIRECT_TRANSPORT = "direct"
@@ -354,14 +429,17 @@ class PipesHubAgentFactory:
                 ),
             )
 
+        # Opt-in: every agent of this request resolves its model from this
+        # registry, so its transports are where each call's usage is counted.
+        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
         # Same model as "langchain" above, reached through the provider's own
         # SDK instead. LangChain builds an AIMessageChunk per streamed token and
@@ -403,11 +481,11 @@ class PipesHubAgentFactory:
 
         transport_registry.register(
             DIRECT_TRANSPORT,
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 _direct_or_langchain,
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -442,6 +520,7 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
+        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = await entity_search_tool_offered(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
@@ -579,9 +658,11 @@ class PipesHubAgentFactory:
         )
 
         resume_answers = query if is_ask_user_question_resume_query(query) else None
+        # An answer to a tool approval card carries on the turn that stopped on it.
+        approval_resume = bool(context.previous_conversations) and begin_resume(context, query)
         goal_query = (
-            last_real_user_query(context.previous_conversations, query)
-            if resume_answers
+            last_real_user_query(context.previous_conversations, query, answers=resume_answers)
+            if resume_answers or approval_resume
             else query
         )
         if resume_answers:
@@ -757,6 +838,7 @@ class PipesHubAgentFactory:
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
                 essential_names=frozenset(essential_toolset_names),
                 context=context,
+                uncounted_names=_SWITCHED_TOOL_NAMES,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
@@ -766,6 +848,7 @@ class PipesHubAgentFactory:
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
                 ),
+                code_tool_names=_DOMAIN_SHARED_CODE_TOOL_NAMES,
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(
@@ -847,6 +930,7 @@ class PipesHubAgentFactory:
             ),
             essential_names=frozenset(essential_toolset_names),
             context=context,
+            uncounted_names=_SWITCHED_TOOL_NAMES,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above
@@ -899,7 +983,7 @@ class PipesHubAgentFactory:
             pinned_toolsets=pinned_toolsets,
             model=ModelSpec(provider=_transport_provider(), model=model_name, context_window=configured_window),
             loop=loop,
-            max_turns=_MAX_TURNS,
+            max_turns=_DEEP_RESEARCH_MAX_TURNS if context.deep_research else _MAX_TURNS,
         )
         # Let `hooks/citations.py` grant `dynamic_fetch_full_record` to this
         # spec too once any nested search populates it — see
@@ -924,16 +1008,19 @@ class PipesHubAgentFactory:
             _mark("f:runtime+compose")
             await self._seed_conversation_history(agent, context.previous_conversations, context)
             _mark("f:seed_history")
+            hold_history(context, agent)
 
         if resume_answers:
             # User already answered the card — do not re-emit clarification.
             clarifying_questions = []
+            # The turn that asked, as the model had it (its history copy has only result summaries).
+            await parked_turn.restore_question(context, agent.context)
             await inject_ask_user_question_resume(agent, resume_answers)
 
         return agent, runtime, goal, clarifying_questions
 
     @staticmethod
-    def _build_event_emitter(context: "AgentContext") -> Any:
+    def _build_event_emitter(context: "AgentContext") -> Any:  # noqa: ANN401
         """`AGUIEventEmitter` composed with a `TranscriptCollector` (see
         that module's docstring for why it has to be wired at this same
         `EventEmitter` layer rather than downstream of it) when this
@@ -953,9 +1040,9 @@ class PipesHubAgentFactory:
 
     @staticmethod
     def _build_hooks(
-        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
-        artifact_store: Any = None, tool_registry: Any = None,
-        transport_registry: Any = None, model_name: str = "",
+        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,  # noqa: ANN401
+        artifact_store: Any = None, tool_registry: Any = None,  # noqa: ANN401
+        transport_registry: Any = None, model_name: str = "",  # noqa: ANN401
         supports_multipart_tool_result: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
@@ -978,7 +1065,7 @@ class PipesHubAgentFactory:
         # and annotated with ToolMessageMeta.  Full content stays for the
         # current turn; PRE_MODEL shapers below compact it on later turns.
         if artifact_store is not None:
-            def _resolve_schema(tool_name: str):
+            def _resolve_schema(tool_name: str):  # noqa: ANN202
                 if tool_registry is None:
                     return None
                 try:
@@ -1016,7 +1103,12 @@ class PipesHubAgentFactory:
             # Only registered for providers that actually need it so
             # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
+        # Fetch sized by characters gets a cap equal to its own budget, so
+        # the shared 64K cap never cuts a fetch in the middle.
+        fetch_cap = fetch_result_cap(context.context_length)
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(             # L1
+            tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else None,
+        ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
         ))
@@ -1034,7 +1126,7 @@ class PipesHubAgentFactory:
                 # Same reasoning: fetch_full_record results carry [refN]
                 # markers that AnswerFinalizer needs to build citations.
                 "knowledgegraph__fetch_record",
-            }),
+            }) | _CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
         hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
@@ -1065,20 +1157,39 @@ class PipesHubAgentFactory:
         error_tracker = ToolErrorTracker()
         hooks.on(HookEvent.PRE_TOOL_USE).use(error_tracker.pre_tool_use)
         hooks.on(HookEvent.POST_TOOL_USE).use(error_tracker.post_tool_use)
+        # Successful repeats aren't failures: without this an identical MCP read can fill every turn.
+        repeated_reads = RepeatedReadGuard(context)
+        hooks.on(HookEvent.PRE_TOOL_USE).use(repeated_reads.pre_tool_use)
+        hooks.on(HookEvent.POST_TOOL_USE).use(repeated_reads.post_tool_use)
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
         hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
+        hooks.on(HookEvent.POST_TOOL_USE).use(code_graph_unlock_after_tools(context))
+        # hooks.on(HookEvent.POST_TOOL_USE).use(repo_instructions_after_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+        if context.include_retrieval_context:
+            # Opt-in: diffs the retrieval accumulators after every tool call
+            # and streams only what is new. Off by default, so a normal
+            # request pays nothing for it.
+            hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
+        # Answers an approval card: settles the stopped call before the loop starts.
+        hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
+        hooks.on(HookEvent.PRE_AGENT).use(selected_nodes_prompt(context))
+        hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
+        hooks.on(HookEvent.PRE_TURN).use(code_graph_unlock_on_turn(context))
+        # hooks.on(HookEvent.PRE_TURN).use(repo_instructions_on_turn(context))
+        # After visibility mutations — prompt builder reads bound_tool_names.
+        hooks.on(HookEvent.PRE_TURN).use(sync_visible_tools_for_prompt(context))
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
@@ -1092,6 +1203,10 @@ class PipesHubAgentFactory:
                 hooks, context, sandbox_manager,
                 allow_network=allow_network, artifact_store=artifact_store,
             )
+
+        # Per-tool approvals. Last, so no later middleware can still deny a call it leaves
+        # waiting for a person (the card would show for a call that was refused anyway).
+        hooks.on(HookEvent.PRE_TOOL_USE).use(approval_gate(context))
 
         return hooks
 
@@ -1121,7 +1236,7 @@ class PipesHubAgentFactory:
         state = context.tool_state
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            from app.utils.chat_helpers import CitationRefMapper
             ref_mapper = CitationRefMapper()
             state["citation_ref_mapper"] = ref_mapper
 
@@ -1131,12 +1246,19 @@ class PipesHubAgentFactory:
         state["virtual_record_id_to_result"] = vrmap
 
         is_multimodal = context.is_multimodal_llm
-        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
-        from app.utils.image_admission import admission_from_state  # noqa: PLC0415
+        from app.utils.chat_helpers import ImageBudget
+        from app.utils.image_admission import admission_from_state
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
+        history: list[Message] = []
+        tool_results_at: dict[str, int] = {}
+        after_answer = False
         for turn in previous_conversations:
+            if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
+                _drop_closing_text(history)
+                after_answer = True
+                continue
             messages = _convert_conversation_turn(turn)
 
             if (
@@ -1176,9 +1298,13 @@ class PipesHubAgentFactory:
                         )
                         msg.content = f"{msg.content}\n\n{placeholder}"
 
-            for message in messages:
-                await ctx.add(message)
+            _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
+            after_answer = after_answer and turn.get("role") != "bot_response"
 
+        # After the fold: folding an approval answer relies on its repeated id.
+        _dedupe_tool_call_ids(history, set())
+        for message in history:
+            await ctx.add(message)
         agent.seed_context(ctx)
 
 
@@ -1187,8 +1313,8 @@ def _inject_images_into_message(
     image_blocks: list[dict[str, Any]],
 ) -> None:
     """Convert ``image_url`` dicts to ``ImagePart`` and set multipart content."""
-    from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
-    from app.agents.agent_loop.hooks.attachment_resolver import (  # noqa: PLC0415
+    from app.agent_loop_lib.core.messages import TextPart
+    from app.agents.agent_loop.hooks.attachment_resolver import (
         _langchain_image_to_part,
     )
 
@@ -1226,7 +1352,6 @@ _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
 
-ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
 _EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
 
 
@@ -1242,15 +1367,157 @@ def _is_empty_fallback_assistant(msg: Message) -> bool:
     )
 
 
-def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
-    """Original user goal when this request is an ask_user_question resume."""
+def _question_key(text: str) -> str:
+    """Two askings of one question differ in case, spacing or the closing mark (as the card compares them)."""
+    return re.sub(r"[\s?!.:]+$", "", re.sub(r"\s+", " ", text.lower())).strip()
+
+
+_ANSWER_LINE = re.compile(r'^\s*\d+\.\s*"(.*)"\s*→', re.MULTILINE)
+
+
+def _answered_questions(answers: str | None) -> set[str]:
+    """The questions a `User selections:` reply answers: one `N. "question" → answer` line each."""
+    return {_question_key(q) for q in _ANSWER_LINE.findall(answers or "")}
+
+
+def _asked_questions(*values: Any) -> set[str]:  # noqa: ANN401
+    """Question texts in an ask_user_question call's arguments or result, parsed or as JSON."""
+    found: set[str] = set()
+    stack = list(values)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if isinstance(value, dict):
+            question = value.get("question")
+            if isinstance(question, str):
+                found.add(_question_key(question))
+            stack.extend(v for v in value.values() if isinstance(v, (dict, list)))
+        elif isinstance(value, list):
+            stack.extend(value)
+    return found
+
+
+def _turn_asked_questions(turn: dict[str, Any]) -> set[str] | None:
+    """What a saved bot turn asked with ask_user_question; None when it asked nothing."""
+    rows = [
+        row for row in turn.get("tool_results") or []
+        if isinstance(row, dict) and "ask_user_question" in str(row.get("tool_name") or "")
+    ]
+    if not rows:
+        return None
+    return _asked_questions(*(v for row in rows for v in (row.get("args"), row.get("result"))))
+
+
+def last_real_user_query(
+    previous_conversations: list[dict[str, Any]] | None,
+    fallback: str,
+    *,
+    answers: str | None = None,
+) -> str:
+    """Original user goal when this request answers a card (ask_user_question or a tool approval).
+
+    `answers` (an ask_user_question reply) picks the user text that opened the card it answers, not
+    the latest chat: resuming from a later chat made the model redo that reply and the UI painted it
+    onto the card. A card is matched by its question text, so an older card left open while a newer
+    one was answered keeps its own goal; without a match the latest card is the one.
+    """
+    if answers is not None:
+        answered = _answered_questions(answers)
+        latest_card: str | None = None
+        matching_card: str | None = None
+        last_user: str | None = None
+        for turn in previous_conversations or []:
+            role = turn.get("role")
+            content = str(turn.get("content") or "").strip()
+            if role == "user_query":
+                if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
+                    last_user = content
+            elif role == "bot_response" and last_user:
+                asked = _turn_asked_questions(turn)
+                if asked is None:
+                    continue
+                latest_card = last_user
+                if answered & asked:
+                    matching_card = last_user
+        goal = matching_card or latest_card
+        if goal:
+            return goal
     for turn in reversed(previous_conversations or []):
         if turn.get("role") != "user_query":
             continue
         content = str(turn.get("content") or "").strip()
-        if content and not is_ask_user_question_resume_query(content):
+        if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
             return content
     return fallback
+
+
+def _find_ask_user_question_call(
+    messages: list[Message],
+    start: int,
+    end: int,
+    answered: set[str] | None = None,
+) -> tuple[int | None, str | None]:
+    """The last ask_user_question call in `messages[start:end]`; given `answered`, the last one
+    that asked any of those questions."""
+    results = {m.tool_call_id: m.text for m in messages if isinstance(m, ToolMessage)}
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i in range(start, end):
+        msg = messages[i]
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" not in (call.name or ""):
+                continue
+            if answered and not answered & _asked_questions(call.arguments, results.get(call.id)):
+                continue
+            keep_through = i
+            tool_call_id = call.id
+            break
+    return keep_through, tool_call_id
+
+
+def _drop_closing_text(history: list[Message]) -> None:
+    """A turn that stopped on an approval card closes with "Waiting for your approval…"; the
+    answer carried that turn on from the call, so those words go (and, with them, two assistant
+    messages in a row, which no transport merges)."""
+    while history and isinstance(history[-1], AssistantMessage) and not history[-1].tool_calls:
+        history.pop()
+
+
+_SHARED_CALL_IDS = ("ask_user_question", "ask_user_question_resume")
+
+
+def _append_turn(history: list[Message], messages: list[Message], tool_results_at: dict[str, int], *, fold: bool = False) -> None:
+    """`fold`: this is the reply that answered an approval card. It has the stopped call again,
+    settled, under the same id: its result replaces the waiting one in place and the repeat goes.
+    One call, one result, and no id twice (providers refuse a repeated tool-call id). Nothing else
+    is folded: some providers number their call ids per response, so a repeated id elsewhere can be
+    a different call."""
+    def _foldable(call_id: str | None) -> bool:
+        if not fold or not call_id or call_id not in tool_results_at or call_id in _SHARED_CALL_IDS:
+            return False
+        earlier = history[tool_results_at[call_id]]
+        return isinstance(earlier, ToolMessage) and isinstance(earlier.content, str) and earlier.content.startswith(WAITING_PREFIX)
+
+    repeated = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and _foldable(m.tool_call_id)}
+    for message in messages:
+        kept = message
+        if isinstance(message, ToolMessage) and message.tool_call_id in repeated:
+            history[tool_results_at[message.tool_call_id]] = message
+            continue
+        if isinstance(message, AssistantMessage) and repeated and any(call.id in repeated for call in message.tool_calls or []):
+            calls = [call for call in message.tool_calls if call.id not in repeated]
+            if not calls and not message.text:
+                continue
+            kept = message.model_copy(update={"tool_calls": calls})
+        if isinstance(kept, ToolMessage) and kept.tool_call_id:
+            tool_results_at[kept.tool_call_id] = len(history)
+        history.append(kept)
 
 
 async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
@@ -1264,30 +1531,36 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
     History replay already has the first request's tool result (the
     questions payload) plus the empty-answer fallback AssistantMessage.
     Appending a second ToolMessage after that text is invalid, so the
-    tail after the parked tool-call AssistantMessage is dropped first.
+    questions payload is replaced by the answers and the fallback tail is
+    dropped. A turn replays as one AssistantMessage carrying every call it
+    made, so the results of the other calls stay right after it.
+
+    A card left unanswered before later chat is still that older call.
+    Continuing from the later turn made the model repeat that chat; the
+    follow-up belongs under the card, so later turns stay out of this run.
     """
     ctx = agent.context
     if ctx is None:
         return
     messages = await ctx.messages()
-    # Only the newest user turn can still be parked on a card. Binding to an
-    # older turn's call — a card the user left unanswered before chatting on —
-    # would truncate every turn since; the synthetic branch below keeps them.
     turn_start = 0
     for i, msg in enumerate(messages):
         if isinstance(msg, UserMessage):
             turn_start = i
-    keep_through: int | None = None
-    tool_call_id: str | None = None
-    for i in range(turn_start, len(messages)):
-        msg = messages[i]
-        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
-            continue
-        for call in reversed(msg.tool_calls):
-            if "ask_user_question" in (call.name or ""):
-                keep_through = i
-                tool_call_id = call.id
-                break
+    # The card is the one whose questions these answers name, wherever it is: an older card answered
+    # after a newer one must not take the newer call's place.
+    answered = _answered_questions(answers)
+    keep_through, tool_call_id = (
+        _find_ask_user_question_call(messages, 0, len(messages), answered) if answered else (None, None)
+    )
+    if tool_call_id is None:
+        keep_through, tool_call_id = _find_ask_user_question_call(
+            messages, turn_start, len(messages),
+        )
+    if tool_call_id is None:
+        keep_through, tool_call_id = _find_ask_user_question_call(
+            messages, 0, turn_start,
+        )
     if tool_call_id is None:
         trimmed = list(messages)
         while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
@@ -1305,11 +1578,26 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
             )],
         ))
     else:
+        # Calls made alongside the question ran; their results stay with them.
+        alongside = {call.id for call in messages[keep_through].tool_calls} - {tool_call_id}
+        tool_block_end = keep_through + 1
+        while tool_block_end < len(messages) and isinstance(messages[tool_block_end], ToolMessage):
+            tool_block_end += 1
         await ctx.clear()
         for msg in messages[: keep_through + 1]:
             await ctx.add(msg)
+        for msg in messages[keep_through + 1 : tool_block_end]:
+            if msg.tool_call_id in alongside:
+                await ctx.add(msg)
+    # "next" is said plainly: without it a model may reply "Got it, I'll create it" and stop there.
     await ctx.add(ToolMessage(
-        content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
+        content=json.dumps({
+            "status": "answered", "answers": answers,
+            "next": (
+                "Carry on with the request using these answers: do the next step now instead of saying what you'll do. "
+                "Ask any further question with internaltools__ask_user_question, not in your reply."
+            ),
+        }, ensure_ascii=False),
         tool_call_id=tool_call_id,
     ))
 
@@ -1317,6 +1605,32 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
 def _scrub_legacy_system_note(text: str) -> str:
     text = text.replace(_V1_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
     return text.replace(_V2_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
+
+
+def _dedupe_tool_call_ids(messages: list[Message], seen: set[str]) -> None:
+    """Rename a replayed call whose id an earlier turn already used.
+
+    Node falls back to one fixed id for every saved `ask_user_question`, and a
+    provider rejects two calls sharing an id. `seen` carries the ids across turns.
+    """
+    assigned: dict[str, list[str]] = {}
+    used: dict[str, int] = {}
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for call in msg.tool_calls or []:
+                original = call.id
+                if original in seen:
+                    n = 2
+                    while f"{original}_{n}" in seen:
+                        n += 1
+                    call.id = f"{original}_{n}"
+                seen.add(call.id)
+                assigned.setdefault(original, []).append(call.id)
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
+            ids = assigned[msg.tool_call_id]
+            nth = used.get(msg.tool_call_id, 0)
+            used[msg.tool_call_id] = nth + 1
+            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
 
 
 def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:

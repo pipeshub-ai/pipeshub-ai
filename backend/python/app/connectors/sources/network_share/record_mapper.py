@@ -19,6 +19,7 @@ from app.connectors.sources.network_share.pathing import (
     identity_rel_path,
     is_ads_name,
     is_dot_entry,
+    is_excluded_name,
     is_lock_file,
     join_rel_path,
     parent_of,
@@ -30,6 +31,16 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from app.connectors.sources.network_share.entry import DirectoryEntry
+
+
+FILE_ATTRIBUTE_HIDDEN = 0x00000002
+FILE_ATTRIBUTE_SYSTEM = 0x00000004
+FILE_ATTRIBUTE_OFFLINE = 0x00001000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+_HIDDEN_SYSTEM = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+# Moved to slower storage: reading one makes the server fetch it back first.
+_NOT_ON_DISK = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
 
 
 def usable_file_id(file_id: int | None) -> bool:
@@ -108,6 +119,11 @@ class RecordMapper:
             return "alternate-data-stream"
         if entry.is_symlink:
             return "symlink"
+        if is_excluded_name(entry.name):
+            return "excluded-name"
+        # Hidden alone is a user's choice; hidden and system together is the OS's own.
+        if entry.attributes & _HIDDEN_SYSTEM == _HIDDEN_SYSTEM:
+            return "hidden-system"
         return None
 
     def classify(
@@ -186,9 +202,16 @@ class RecordMapper:
             None if parent_path is None else external_record_id(share, parent_path)
         )
         is_file = not entry.is_directory
-        indexing_status = ProgressStatus.QUEUED.value
-        if indexing_manual and is_file:
+        if not is_file:
+            # Folders are internal records and never reach indexing, which is what
+            # would mark them done; there is nothing in them to index.
+            indexing_status = ProgressStatus.COMPLETED.value
+        # A file moved to slower storage is listed but not read unasked: reading
+        # every one would make the server fetch them all back.
+        elif indexing_manual or entry.attributes & _NOT_ON_DISK:
             indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        else:
+            indexing_status = ProgressStatus.QUEUED.value
 
         return FileRecord(
             id=existing.id if existing else str(uuid.uuid4()),

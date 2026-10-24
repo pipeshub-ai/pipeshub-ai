@@ -1071,6 +1071,14 @@ _VERTEX = _static([
     ("imagen-3.0-generate-002", ["imageGeneration"]),
 ])
 
+# TypeSafe has no model list endpoint; aliases first, then pinned versions.
+_TYPESAFE = _static([
+    ("jev-latest", ["decision"]),
+    ("jev-preview", ["decision"]),
+    ("jev-1.14.0", ["decision"]),
+    ("jev-1.13.0", ["decision"]),
+])
+
 
 def build_registry() -> dict[str, DiscoveryStrategy]:
     return {
@@ -1100,4 +1108,5 @@ def build_registry() -> dict[str, DiscoveryStrategy]:
         "wispr": _StaticStrategy(_static([("flow-v1", ["stt"])])),
         "default": _StaticStrategy(_static([("BAAI/bge-large-en-v1.5", ["embedding"])])),
         "vertexAI": _StaticStrategy(_VERTEX),
+        "typesafe": _StaticStrategy(_TYPESAFE),
     }

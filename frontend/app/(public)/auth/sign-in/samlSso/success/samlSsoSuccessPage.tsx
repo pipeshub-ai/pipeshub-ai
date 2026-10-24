@@ -4,14 +4,12 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/config';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
-import { getCookie } from '@/lib/utils/cookies';
+import { SAML_WEB_VERIFIER_KEY } from '@/lib/auth/saml-web-signin';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { buildDesktopDeepLink, isDesktopOAuthState } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
-
-const ACCESS_COOKIE = 'accessToken';
-const REFRESH_COOKIE = 'refreshToken';
+import { AuthApi } from '@/app/(public)/api';
 
 /** Survives React Strict Mode remounts (useRef resets). */
 let samlBridgeRan = false;
@@ -24,7 +22,7 @@ export default function SamlSsoSuccessPage() {
   const [handoffLink, setHandoffLink] = useState<string | null>(null);
 
   // A desktop sign-in lands here in the user's browser, with a handoff code
-  // instead of cookies. Forward it to the app, which holds the PKCE verifier.
+  // instead of tokens. Forward it to the app, which holds the PKCE verifier.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const state = params.get('state');
@@ -45,9 +43,21 @@ export default function SamlSsoSuccessPage() {
     samlBridgeRan = true;
 
     const run = async () => {
-      const accessToken = getCookie(ACCESS_COOKIE);
-      const refreshToken = getCookie(REFRESH_COOKIE);
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const verifier = sessionStorage.getItem(SAML_WEB_VERIFIER_KEY);
+      sessionStorage.removeItem(SAML_WEB_VERIFIER_KEY);
 
+      if (!code) {
+        logout();
+        router.replace('/login?error=saml_sso');
+        return;
+      }
+
+      const { accessToken, refreshToken } = await AuthApi.exchangeSamlCode(
+        code,
+        verifier ?? undefined,
+      );
       if (!accessToken || !refreshToken) {
         logout();
         router.replace('/login?error=saml_sso');
@@ -63,7 +73,6 @@ export default function SamlSsoSuccessPage() {
         return;
       }
 
-      const params = new URLSearchParams(window.location.search);
       const returnTo = getSafeReturnTo(params.get('returnTo'));
       router.replace(returnTo ?? '/');
     };

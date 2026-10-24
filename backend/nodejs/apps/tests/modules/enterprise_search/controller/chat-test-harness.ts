@@ -103,6 +103,7 @@ interface QueryState {
   limit?: number
   lean: boolean
   session?: unknown
+  exclude?: string[]
 }
 
 /** Chainable, awaitable stand-in for a Mongoose query. */
@@ -127,7 +128,12 @@ class FakeQuery<T> implements PromiseLike<T> {
     this.state.lean = true
     return this
   }
-  select(): this {
+  /** Honours `-field` exclusions on `lean()` results; any other projection is ignored. */
+  select(projection?: unknown): this {
+    if (typeof projection === 'string') {
+      const excluded = projection.split(/\s+/).filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      this.state.exclude = [...(this.state.exclude ?? []), ...excluded]
+    }
     return this
   }
   populate(): this {
@@ -168,6 +174,15 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
       for (const [field, direction] of sortEntries) {
         const a = normalize((x as unknown as Doc)[field]) as number | string
         const b = normalize((y as unknown as Doc)[field]) as number | string
+        // MongoDB orders a missing or null field before every value. Without this a
+        // missing field compares as equal to everything, hiding sort-order bugs.
+        const aMissing = a === undefined || a === null
+        const bMissing = b === undefined || b === null
+        if (aMissing || bMissing) {
+          if (aMissing && !bMissing) return -direction
+          if (!aMissing && bMissing) return direction
+          continue
+        }
         if (a < b) return -direction
         if (a > b) return direction
       }
@@ -176,7 +191,12 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
   }
   if (state.skip) rows = rows.slice(state.skip)
   if (state.limit) rows = rows.slice(0, state.limit)
-  return state.lean ? rows.map((row) => row.toObject()) : rows.map((row) => bindSession(row, state))
+  if (!state.lean) return rows.map((row) => bindSession(row, state))
+  return rows.map((row) => {
+    const object = row.toObject() as Doc
+    for (const field of state.exclude ?? []) delete object[field]
+    return object
+  })
 }
 
 type SessionOption = { session?: unknown } | null | undefined
@@ -282,14 +302,24 @@ export class InMemoryChatStore {
       new FakeQuery((state) => shape(store.findSessions(filter), state))) as never)
     sinon.stub(ChatSession, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findSessions(filter).length)) as never)
-    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
+    sinon.stub(ChatSession, 'updateOne').callsFake(((filter: Filter, update: Doc) => {
+      const doc = store.findSessions(filter)[0]
+      if (doc) {
+        applyUpdate(doc, update)
+        store.writes.push('chatSession.updateOne')
+      }
+      return Promise.resolve({ acknowledged: true, matchedCount: doc ? 1 : 0, modifiedCount: doc ? 1 : 0 })
+    }) as never)
+    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: (SessionOption & { new?: boolean }) | null) => {
       assertSessionUsable(options)
       const doc = store.findSessions(filter)[0]
+      // Like the driver, the document as it was before the update unless `new: true`.
+      const before = doc ? doc.toObject() : undefined
       if (doc) {
         applyUpdate(doc, update)
         store.writes.push(update.$inc ? 'chatSession.allocateSeq' : 'chatSession.update')
       }
-      return new FakeQuery((state) => one(doc, state))
+      return new FakeQuery((state) => (options?.new === true ? one(doc, state) : (before ?? null)))
     }) as never)
 
     sinon.stub(ChatSessionMessage, 'insertMany').callsFake(((docs: Doc[], options?: SessionOption) => {
@@ -308,10 +338,6 @@ export class InMemoryChatStore {
     sinon.stub(ChatSessionMessage, 'findOne').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
       return withSession(new FakeQuery((state) => one(store.findMessages(filter)[0], state)), options)
-    }) as never)
-    sinon.stub(ChatSessionMessage, 'findById').callsFake(((id: unknown, _projection?: unknown, options?: SessionOption) => {
-      assertSessionUsable(options)
-      return withSession(new FakeQuery((state) => one(store.messages.find((m) => String(m._id) === String(id)), state)), options)
     }) as never)
     sinon.stub(ChatSessionMessage, 'findOneAndReplace').callsFake(((filter: Filter, replacement: Doc, options?: SessionOption) => {
       assertSessionUsable(options)
@@ -386,6 +412,8 @@ export class FakeSSEResponse extends EventEmitter {
   headersSent = false
   writableEnded = false
   writableFinished = false
+  /** Set once the browser's socket is gone: Node then drops writes instead of throwing. */
+  destroyed = false
   body = ''
   jsonBody: unknown
   writesAfterEnd = 0
@@ -415,7 +443,7 @@ export class FakeSSEResponse extends EventEmitter {
   }
   write(chunk: string): boolean {
     if (this.writableEnded) this.writesAfterEnd += 1
-    else this.body += chunk
+    else if (!this.destroyed) this.body += chunk
     return true
   }
   end(): this {
@@ -431,6 +459,7 @@ export class FakeSSEResponse extends EventEmitter {
 
   /** The user closed the tab or hit stop: the socket goes away before we end the response. */
   disconnect(): void {
+    this.destroyed = true
     this.emit('close')
   }
 
@@ -478,6 +507,7 @@ export class FakeAIBackend {
   readonly calls: RecordedCall[] = []
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null
   private streamReply: Reply | null = null
+  private stallStreamOpen = false
   private readonly replies: Array<{ path: RegExp; reply: Reply }> = []
   private readonly encoder = new TextEncoder()
 
@@ -489,6 +519,11 @@ export class FakeAIBackend {
       this.calls.push({ url, method: init?.method ?? 'GET', headers, body: JSON.parse(rawBody) as Record<string, unknown> })
       const registered = this.replies.find((r) => r.path.test(url))
       const isStream = /\/stream(\?|$)/.test(url)
+      if (isStream && this.stallStreamOpen) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+        })
+      }
       const reply = registered?.reply ?? (isStream ? this.streamReply : null)
       if (reply?.kind === 'reject') return Promise.reject(reply.error)
       if (reply?.kind === 'json') {
@@ -519,6 +554,11 @@ export class FakeAIBackend {
   /** Forget every registered reply, so the next turn of a multi-turn test can answer differently. */
   resetReplies(): void {
     this.replies.length = 0
+  }
+
+  /** Stream requests never get a response (the AI service is still thinking about whether to answer); only an abort ends them. */
+  stallOpen(): void {
+    this.stallStreamOpen = true
   }
 
   /** The next stream request is refused before any frame is sent. */

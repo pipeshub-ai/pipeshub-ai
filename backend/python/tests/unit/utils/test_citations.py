@@ -3,6 +3,8 @@
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.models.blocks import BlockType, GroupType
 import app.utils.citations as citations_mod
 
@@ -929,6 +931,18 @@ class TestNormalizeBracketRefs:
         text = "Link [label](https://example.com/a) end."
         assert _normalize_bracket_refs(text) == text
 
+    def test_a_copied_context_label_becomes_the_link(self) -> None:
+        """Blocks are labelled ``[12|ref5]`` for the model; a copied label must not
+        leave ``[12|`` and ``]`` around the citation."""
+        assert normalize_malformed_citations("Revenue was 5M [12|ref5].") == "Revenue was 5M [source](ref5)."
+
+    def test_a_list_of_copied_context_labels_becomes_links(self) -> None:
+        out = normalize_malformed_citations("Both [12|ref5, 13|ref6] agree.")
+        assert out == "Both [source](ref5) [source](ref6) agree."
+
+    def test_a_bracketed_pair_of_numbers_is_left_alone(self) -> None:
+        assert normalize_malformed_citations("Seasons [2024|2025] differ.") == "Seasons [2024|2025] differ."
+
     def test_normalize_malformed_avoids_double_brackets(self):
         """[refN] must become [source](refN) without _wrap_bare_refs adding an extra leading [."""
         out = normalize_malformed_citations("Answer per [ref7].")
@@ -1142,14 +1156,12 @@ class TestRenumberCitationLinksMarkdownPattern:
         out = _renumber_citation_links(text, matches, {page: 9})
         assert "[9]" in out
 
-    def test_descriptive_link_text_replaced_with_numeric_badge(self):
-        """``_renumber_citation_links`` always emits ``[N](full_url)`` (discards anchor text)."""
+    def test_descriptive_link_text_kept_before_numeric_badge(self):
         page = "https://readable.example/guide"
         text = f"Details in [Installation guide]({page}) please."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {page: 4})
-        assert out == f"Details in [4]({page}) please."
-        assert "[Installation guide]" not in out
+        assert out == f"Details in Installation guide [4]({page}) please."
 
 
 class TestChatDocCitation:
@@ -2487,3 +2499,151 @@ class TestDeadRefLinksWithNonNumericIds:
             )
             assert normalized == f"Shipped [1]({url}) .", answer
             assert len(cites) == 1
+
+
+class TestDescriptiveLinkTextIsKept:
+    """A model that writes a title as link text ("In the [Velora renewal](ref1), …")
+    must not lose those words when the link becomes a numbered badge."""
+
+    U1 = _url(REC1, 0)
+    U2 = _url(REC2, 3)
+    DOCS = [
+        _make_doc(REC1, 0, "discount cap 15%", block_web_url=_url(REC1, 0)),
+        _make_doc(REC2, 3, "security review", block_web_url=_url(REC2, 3)),
+    ]
+    REFS = {"ref1": _url(REC1, 0), "ref2": _url(REC2, 3)}
+    NORMALIZERS = [normalize_citations_and_chunks, normalize_citations_and_chunks_for_agent]
+
+    def _normalize(self, normalizer, answer: str) -> str:
+        text, _ = normalizer(answer, self.DOCS, records=[], ref_to_url=self.REFS)
+        return text
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_title_link_keeps_its_text_before_the_badge(self, normalizer) -> None:
+        out = self._normalize(normalizer, "In the [Velora AI Solutions opportunity](ref1), the cap is 15%.")
+        assert out == f"In the Velora AI Solutions opportunity [1]({self.U1}), the cap is 15%."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", ["source", "Sources", "1", "ref", "ref 2", "Source #3", "1, 2", "", " "])
+    def test_generic_label_becomes_only_the_badge(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"The cap is 15% [{label}](ref1).")
+        assert out == f"The cap is 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", [
+        "ref1", "https://ref1.xyz", _url(REC1, 0), "<http://app.example.com/record/x>",
+        "444d5fad-0bf9-4daa-8c29-cc133ca4a3a6", "`65f1c0de9a1b2c3d4e5f6a7b`",
+    ])
+    def test_link_text_that_restates_the_target_is_dropped(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"The cap is 15% [{label}](ref1).")
+        assert out == f"The cap is 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_several_links_in_one_sentence(self, normalizer) -> None:
+        out = self._normalize(
+            normalizer,
+            "Both the [Velora renewal](ref2) and the [pricing review](ref1) cap it [source](ref1).",
+        )
+        assert out == (
+            f"Both the Velora renewal [1]({self.U2}) and the pricing review [2]({self.U1})"
+            f" cap it [2]({self.U1})."
+        )
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_same_target_gets_the_same_number(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The [pricing review](ref1) says 15%; the [pricing review](ref1) also caps it.")
+        assert out == (
+            f"The pricing review [1]({self.U1}) says 15%; the pricing review [1]({self.U1}) also caps it."
+        )
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_already_written_before_the_link_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The pricing review [Pricing Review](ref1) caps it.")
+        assert out == f"The pricing review [1]({self.U1}) caps it."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_is_not_dropped_for_a_partial_word_match(self, normalizer) -> None:
+        out = self._normalize(normalizer, "An opinion [ion](ref1) here.")
+        assert out == f"An opinion ion [1]({self.U1}) here."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_one_link_to_several_refs_writes_the_text_once(self, normalizer) -> None:
+        out = self._normalize(normalizer, "Per the [pricing review](ref1, ref2), 15%.")
+        assert out == f"Per the pricing review [1]({self.U1}) [2]({self.U2}), 15%."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_ref_keeps_descriptive_text_and_drops_a_label(self, normalizer) -> None:
+        out = self._normalize(normalizer, "In the [Q2 forecast](ref99), it held [source](ref98). Cap 15% [source](ref1).")
+        assert out == f"In the Q2 forecast, it held . Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_web_ref_keeps_a_url_written_as_its_text(self, normalizer) -> None:
+        out = self._normalize(normalizer, "See [https://docs.vendor.com/pricing](https://ref99.xyz). Cap 15% [source](ref1).")
+        assert out == f"See https://docs.vendor.com/pricing. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("links", [
+        "[https://docs.vendor.com/pricing](https://ref99.xyz) [Pricing review](https://ref99.xyz)",
+        "[Pricing review](https://ref99.xyz) [https://docs.vendor.com/pricing](https://ref99.xyz)",
+    ])
+    def test_dead_web_ref_keeps_a_url_text_over_a_title_on_the_same_target(self, normalizer, links) -> None:
+        out = self._normalize(normalizer, f"See {links}. Cap 15% [source](ref1).")
+        assert out == f"See https://docs.vendor.com/pricing. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("links", [
+        "[Pricing review](https://ref99.xyz) [https://ref99.xyz](https://ref99.xyz)",
+        "[Pricing review](ref99) [https://ref99.xyz](ref99)",
+        "[https://ref99.xyz](https://ref99.xyz) [Pricing review](https://ref99.xyz)",
+    ])
+    def test_dead_ref_keeps_a_title_over_a_ref_token_written_as_a_url(self, normalizer, links) -> None:
+        out = self._normalize(normalizer, f"See {links}. Cap 15% [source](ref1).")
+        assert out == f"See Pricing review. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", ["ref99", "https://ref99.xyz", "444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"])
+    def test_dead_ref_drops_a_ref_or_id_written_as_its_text(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"It held [{label}](https://ref99.xyz). Cap 15% [source](ref1).")
+        assert out == f"It held . Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_ref_text_already_written_before_the_link_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The Q2 forecast [Q2 forecast](ref99) slipped. Cap 15% [source](ref1).")
+        assert out == f"The Q2 forecast  slipped. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("first,second", [("ref98", "https://ref99.xyz"), ("https://ref99.xyz", "ref98")])
+    def test_two_dead_links_of_either_shape_write_their_text_once(self, normalizer, first, second) -> None:
+        out = self._normalize(normalizer, f"See [Q2 forecast]({first}) [Q2 forecast]({second}). Cap 15% [source](ref1).")
+        assert out == f"See Q2 forecast . Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("dead", ["ref99", "https://ref99.xyz", "ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"])
+    def test_a_dead_link_before_a_live_one_with_the_same_text_writes_it_once(self, normalizer, dead) -> None:
+        out = self._normalize(normalizer, f"See [Q2 forecast]({dead}) [Q2 forecast](ref1).")
+        assert out == f"See Q2 forecast [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_of_a_plain_link_just_before_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "See the [Q2 forecast](https://example.com/q2) [Q2 forecast](ref1).")
+        assert out == f"See the [Q2 forecast](https://example.com/q2) [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_a_label_and_a_title_on_the_same_target_keep_the_title(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The cap is 15% [source](ref1) [Pricing review](ref1).")
+        assert out == f"The cap is 15% Pricing review [1]({self.U1})."
+
+    def test_streamed_prefixes_only_ever_grow(self) -> None:
+        """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
+        normalized text of a prefix must be a prefix of the next one."""
+        answer = (
+            "In the [Velora renewal](ref2), the [pricing review](ref1) caps it at 15% [source](ref1); "
+            "the pricing review [pricing review](ref1) also names an owner."
+        )
+        cuts = [m.end() for m in re.finditer(r"\)", answer)] + [len(answer)]
+        previous = ""
+        for cut in cuts:
+            current = self._normalize(normalize_citations_and_chunks, answer[:cut])
+            assert current.startswith(previous)
+            previous = current
+        assert "Velora renewal [1]" in previous and "pricing review [2]" in previous

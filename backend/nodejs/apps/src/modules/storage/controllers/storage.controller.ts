@@ -586,6 +586,36 @@ export class StorageController {
   }
 
   /**
+   * Removes every file the assistant stored for a conversation, when the
+   * conversation is deleted: registered artifacts under `artifacts/{id}` and
+   * older unregistered outputs under `conversations/{id}`. Only those exact
+   * folders, never anything below or beside them.
+   */
+  async purgeConversationDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const conversationId = String(req.params.conversationId);
+      const documents = await DocumentModel.find({
+        orgId,
+        documentPath: {
+          $in: ['artifacts', 'conversations'].map((folder) =>
+            getFullDocumentPath(orgIdText, `${folder}/${conversationId}`),
+          ),
+        },
+      });
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Files first, metadata last: if a file cannot be removed its document is kept,
    * so the next attempt can still find the file.
    */
@@ -966,11 +996,12 @@ export class StorageController {
       // The query matches only on documentPath, so every result is guaranteed
       // to have one -- .lean<T>() reflects that, unlike the base Document
       // type where documentPath is optional. Org isolation comes from the
-      // "${orgId}/PipesHub/" prefix baked into oldFullPath (orgId is not a
-      // declared schema field, so it can't be filtered on reliably).
+      // "${orgId}/PipesHub/" prefix baked into oldFullPath, and the orgId
+      // condition below enforces it independently of the path string.
       // Soft-deleted rows are kept in underPrefix: a local renameTree moves
       // their files too, so their paths must be rewritten with the rest.
       const underPrefix = await DocumentModel.find({
+        orgId,
         $or: [
           { documentPath: oldFullPath },
           { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
@@ -1451,7 +1482,12 @@ export class StorageController {
       );
 
       if (bufferResult.statusCode === HTTP_STATUS.OK) {
-        res.status(HTTP_STATUS.OK).json(bufferResult.data);
+        // Raw bytes: res.json() spells every byte as a number, and past ~140 MB
+        // that string outgrows V8's limit and kills the process.
+        res
+          .status(HTTP_STATUS.OK)
+          .type('application/octet-stream')
+          .send(bufferResult.data);
       } else {
         res.status(HTTP_STATUS.INTERNAL_SERVER).json('Failed to get buffer');
       }

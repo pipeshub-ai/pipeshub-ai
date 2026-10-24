@@ -20,8 +20,10 @@ import { resolveAuthFields, formatAuthTypeName } from './helpers';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
+import { joinRedirectUri } from '@/lib/api/frontend-public-url';
 import { ConnectorsApi } from '../../api';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   nestedConfigFromOAuthRegistrationDoc,
   readAuthValueFromFlatRecord,
@@ -40,6 +42,7 @@ export function AuthenticateTab() {
   const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
+  const frontendPublicUrl = useFrontendPublicUrl();
   const {
     connectorSchema,
     panelConnector,
@@ -257,9 +260,7 @@ export function AuthenticateTab() {
     (authConfig?.schemas?.[selectedAuthType] as { displayRedirectUri?: boolean } | undefined)
       ?.displayRedirectUri ?? authConfig?.displayRedirectUri;
   const callbackUrl =
-    redirectPath && typeof window !== 'undefined'
-      ? `${window.location.origin.replace(/\/$/, '')}/${redirectPath.replace(/^\//, '')}`
-      : null;
+    redirectPath && frontendPublicUrl ? joinRedirectUri(frontendPublicUrl, redirectPath) : null;
 
   const docLinks = connectorSchema.documentationLinks ?? [];
 
@@ -509,7 +510,7 @@ export function AuthenticateTab() {
             required
             error={instanceNameError ?? undefined}
           >
-            <input
+            <FormFieldInput
               type="text"
               data-ph-connector-instance-name
               value={instanceName}
@@ -617,4 +618,9 @@ export function AuthenticateTab() {
       )}
     </Flex>
   );
+}
+
+/** An input that takes its id from the enclosing FormField, so the label names it. */
+function FormFieldInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...useFormFieldControl()} {...props} />;
 }

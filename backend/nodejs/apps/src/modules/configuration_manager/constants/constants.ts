@@ -45,6 +45,7 @@ export const AI_MODEL_TYPES = [
   'imageGeneration',
   'tts',
   'stt',
+  'decision',
 ] as const;
 
 export type AIModelType = (typeof AI_MODEL_TYPES)[number];
@@ -63,6 +64,7 @@ export const aiModelsTypes = {
   IMAGE_GENERATION: 'imageGeneration',
   TTS: 'tts',
   STT: 'stt',
+  DECISION: 'decision',
 } as const;
 
 /**
@@ -100,6 +102,11 @@ export interface PlatformFeatureFlagDef {
    * Labs UI. Use for legacy / internal-only flags we don't want users to toggle.
    */
   hidden?: boolean;
+  /**
+   * When true, Labs keeps the flag off the main list and shows it only after
+   * the admin opens "Show advanced feature flags".
+   */
+  advanced?: boolean;
 }
 
 export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
@@ -115,7 +122,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable MCP Servers',
     description:
       'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     key: 'ENABLE_ACTIONS',
@@ -130,6 +137,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       'Allow admins to clean up (delete all embeddings) and reindex the vector store from the Connectors page. Disable to hide these actions.',
     defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_PROJECTS',
@@ -146,18 +154,20 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: true,
   },
   {
-    key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
-    label: 'Enable Container Permission Filter',
-    description:
-      'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
-    defaultEnabled: false,
-  },
-  {
     key: 'ENABLE_SOFT_DELETE',
     label: 'Move Deleted Records to the Trash',
     description:
       'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. Files and folders deleted from a collection can be restored from its Recently deleted page (or the records API), and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Every two weeks a cleanup permanently removes records that have been in the trash for at least 14 days, with their files; this cannot be undone. Disable to delete records immediately, as before; records already in the trash are still removed on that schedule.',
     defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_NAMED_ENTITY_EXTRACTION',
+    label: 'Extract Named Entities',
+    description:
+      'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
+    defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_USER_CONTEXT',
@@ -165,5 +175,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
     defaultEnabled: true,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_KH_SCOPE_LISTING',
+    label: 'All Records Cache',
+    description:
+      'Store, for each connector, who can see which of its records and how they sort, refreshed after every sync, and build the All Records page from that instead of working out access on every request. The page shows the same records either way. The page is built the usual way for a connector that is syncing or cannot use the cache (permissions set on whole groups, items in several places), and for a search, a filter other than source or connector, or sorting by size or type. Neo4j only. Disable to always build the page on each request.',
+    defaultEnabled: false,
   },
 ];

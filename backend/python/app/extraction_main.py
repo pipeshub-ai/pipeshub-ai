@@ -20,9 +20,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app.containers.extraction import ExtractionAppContainer, initialize_container
-from app.modules.transformers.document_extraction import DocumentExtraction
 from app.api.routes.extraction import router as extraction_router
+from app.containers.extraction import ExtractionAppContainer, initialize_container
+from app.edition_services import configure_app
+from app.modules.transformers.document_extraction import DocumentExtraction
+from app.services.llm_gateway.gateway import get_llm_gateway
+from app.utils.env_utils import env_int
+from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("extraction_main")
@@ -65,6 +69,7 @@ class _NoOpGraphProvider:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
+    install_log_redaction()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 
@@ -73,6 +78,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # DocumentExtraction is constructed with a no-op graph provider because
     # the extraction service API accepts pre-fetched departments directly.
+    app.state.entity_extraction_semaphore = asyncio.Semaphore(
+        env_int("MAX_CONCURRENT_ENTITY_EXTRACTIONS", 8, lo=1)
+    )
     app.state.document_extraction = DocumentExtraction(
         logger=app_logger,
         graph_provider=_NoOpGraphProvider(),
@@ -96,13 +104,22 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "extraction")
 
 app.include_router(extraction_router)
 
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    return JSONResponse(content={"status": "healthy", "service": "extraction"})
+    content: dict[str, object] = {"status": "healthy", "service": "extraction"}
+    try:
+        # Classification calls the model through this process's gateway: its cap and breakers.
+        content["llm_gateway"] = get_llm_gateway().stats()
+    except Exception:
+        # Logged, not returned: exception text does not belong in an unauthenticated response.
+        logger.exception("Could not read the LLM gateway's stats")
+        content["llm_gateway"] = {"error": "unavailable"}
+    return JSONResponse(content=content)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import { SUPPORTED_LNG_KEYS, SUPPORTED_LANGUAGES } from './supported-languages';
 import { locales } from './locales';
 import localePolicy from './locale-policy.json';
 import { addFormatters } from './formatters';
+import { DEFAULT_BRAND, i18nBrandVariables } from '@/lib/branding/defaults';
 
 const resources = Object.fromEntries(
   (Object.keys(SUPPORTED_LANGUAGES) as (keyof typeof SUPPORTED_LANGUAGES)[]).map(
@@ -23,6 +24,7 @@ i18n
     supportedLngs: SUPPORTED_LNG_KEYS,
     interpolation: {
       escapeValue: false, // React already escapes
+      defaultVariables: i18nBrandVariables(DEFAULT_BRAND),
     },
     detection: {
       order: ['localStorage', 'navigator'],

@@ -114,8 +114,12 @@ class GitHubDataSource:
     # -----------------------
     # Internal helpers
     # -----------------------
-    def _repo(self, owner: str, repo: str) -> Repository:
-        return self._sdk.get_repo(f"{owner}/{repo}")
+    def _repo(self, owner: str, repo: str, *, lazy: bool = False) -> Repository:
+        """``lazy`` skips the ``GET /repos/{owner}/{repo}`` a method that only
+        reads a sub-resource does not need: a missing repository still fails,
+        as a 404 from that sub-resource. It halves the cost of a content fetch
+        or tree walk against the hourly rate limit."""
+        return self._sdk.get_repo(f"{owner}/{repo}", lazy=lazy)
 
     @staticmethod
     def _err(e: Exception) -> GitHubResponse:
@@ -1058,7 +1062,7 @@ class GitHubDataSource:
     ) -> GitHubResponse[ContentFile | list[ContentFile]]:
         """Get file contents. Returns a list when ``path`` names a directory."""
         try:
-            r = self._repo(owner, repo)
+            r = self._repo(owner, repo, lazy=True)
             params = self._not_none(ref=ref)
             content = r.get_contents(path, **params)
             return GitHubResponse(success=True, data=content)
@@ -1227,7 +1231,7 @@ class GitHubDataSource:
         call (subject to GitHub's 100,000-entry / 7MB truncation limit — check
         ``.truncated`` on the returned ``GitTree``)."""
         try:
-            r = self._repo(owner, repo)
+            r = self._repo(owner, repo, lazy=True)
             tree = r.get_git_tree(sha=tree_sha, recursive=recursive)
             return GitHubResponse(success=True, data=tree)
         except Exception as e:
@@ -1238,7 +1242,7 @@ class GitHubDataSource:
         ``.status`` may be 'diverged' on a force-push/history rewrite — callers
         must fall back to a full sync in either overflow case."""
         try:
-            r = self._repo(owner, repo)
+            r = self._repo(owner, repo, lazy=True)
             comparison = r.compare(base=base, head=head)
             return GitHubResponse(success=True, data=comparison)
         except Exception as e:
@@ -1252,7 +1256,7 @@ class GitHubDataSource:
         code files whose sha is already recorded.
         """
         try:
-            r = self._repo(owner, repo)
+            r = self._repo(owner, repo, lazy=True)
             return GitHubResponse(success=True, data=r.get_git_blob(sha))
         except Exception as e:
             return self._err(e)

@@ -52,6 +52,7 @@ TEST_CLIENT_SCOPES = (
     "connector:write",
     "connector:sync",
     "connector:delete",
+    "code:read",
     "config:read",
     "config:write",
     "crawl:read",

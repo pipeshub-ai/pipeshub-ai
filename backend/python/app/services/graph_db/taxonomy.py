@@ -74,6 +74,7 @@ RECORD_ENRICHMENT_EDGE_COLLECTIONS: tuple[str, ...] = (
     CollectionNames.BELONGS_TO_CATEGORY.value,
     CollectionNames.BELONGS_TO_LANGUAGE.value,
     CollectionNames.BELONGS_TO_TOPIC.value,
+    CollectionNames.MENTIONS_ENTITY.value,
 )
 
 # The edge collection a record reaches each taxonomy collection over.
@@ -88,6 +89,16 @@ TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
 )
+
+# The entity type of each taxonomy collection's points in the entity index
+# (departments included).
+TAXONOMY_ENTITY_TYPE_BY_COLLECTION: dict[str, str] = {
+    CollectionNames.CATEGORIES.value: "category",
+    **dict.fromkeys(SUBCATEGORY_LEVELS, "subcategory"),
+    CollectionNames.TOPICS.value: "topic",
+    CollectionNames.LANGUAGES.value: "language",
+    CollectionNames.DEPARTMENTS.value: "department",
+}
 
 def subcategory_level(collection: str | None) -> str | None:
     """The subcategory level of ``collection``, or ``None`` for other taxonomy."""
@@ -123,6 +134,7 @@ __all__ = [
     "TAXONOMY_COLLECTIONS",
     "TAXONOMY_EDGE_COLLECTIONS",
     "TAXONOMY_ENTITY_TYPES",
+    "TAXONOMY_ENTITY_TYPE_BY_COLLECTION",
     "TaxonomyLink",
     "alias_pairs",
     "is_taxonomy_collection",

@@ -71,6 +71,20 @@ export const getActiveUserOrgRole = async (
   if (!user) {
     return null;
   }
+  // A service account is a member whatever its record says.
+  //
+  // The schema refuses it the admin role on every write path, so today this
+  // cannot differ. It is here because the two sibling queries in the
+  // repository already exclude service accounts and this one could not, and
+  // three queries in one file disagreeing about the same rule is what gets
+  // lost in a refactor. It also matches the auth middleware, which clamps the
+  // role on a token rather than trusting the record.
+  //
+  // Clamped rather than refused: this answers "what is this caller", and the
+  // caller may legitimately be a service account.
+  if (user.kind === 'service') {
+    return 'member';
+  }
   return user.role === 'admin' ? 'admin' : 'member';
 };
 

@@ -7,11 +7,13 @@ import { Box, Button, Flex, Separator, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
-import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
-import { useAuthStore } from '@/config';
+import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
+import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -30,6 +32,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 interface ConsentData {
@@ -39,6 +42,9 @@ interface ConsentData {
   user: {
     email: string;
     name?: string;
+  };
+  workspace?: {
+    name: string;
   };
   redirectUri: string;
   state?: string;
@@ -72,8 +78,14 @@ function extractOAuthErrorCode(data: unknown): string | null {
   return null;
 }
 
+/** apiClient rejects with a ProcessedError; the server's body is on its originalError. */
+function unwrapApiError(err: unknown): unknown {
+  return isProcessedError(err) && err.originalError ? err.originalError : err;
+}
+
 /** Extract the best human-readable message from an error, preferring error_description. */
-function errorMessageFromUnknown(err: unknown): string {
+function errorMessageFromUnknown(raw: unknown): string {
+  const err = unwrapApiError(raw);
   if (isAxiosError(err)) {
     const data = err.response?.data;
     // Prefer error_description (OAuth-style) over the generic error code
@@ -96,9 +108,26 @@ function errorMessageFromUnknown(err: unknown): string {
 }
 
 /** Extract the OAuth error code from an error, if present. */
-function errorCodeFromUnknown(err: unknown): string | null {
+function errorCodeFromUnknown(raw: unknown): string | null {
+  const err = unwrapApiError(raw);
   if (isAxiosError(err)) {
     return extractOAuthErrorCode(err.response?.data);
+  }
+  return null;
+}
+
+/** The workspace that owns the app, sent when this tab's workspace is a different one. */
+function appOrgIdFromUnknown(raw: unknown): string | null {
+  const err = unwrapApiError(raw);
+  if (!isAxiosError(err)) return null;
+  const data = err.response?.data;
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'org_id' in data &&
+    typeof (data as { org_id?: string }).org_id === 'string'
+  ) {
+    return (data as { org_id: string }).org_id;
   }
   return null;
 }
@@ -139,6 +168,8 @@ export function OAuthAuthorizeView() {
   const [consentData, setConsentData] = useState<ConsentData | null>(null);
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const triedWorkspaceSwitchRef = useRef(false);
 
   const clientId = searchParams.get('client_id');
   const redirectUri = searchParams.get('redirect_uri');
@@ -180,6 +211,7 @@ export function OAuthAuthorizeView() {
     let cancelled = false;
 
     (async () => {
+      let retrying = false;
       setLoading(true);
       setError('');
       try {
@@ -220,11 +252,23 @@ export function OAuthAuthorizeView() {
       } catch (err) {
         if (axios.isCancel(err)) return;
         if (cancelled) return;
+        // A new tab starts in the person's first workspace, which may not own the app.
+        const appOrgId = appOrgIdFromUnknown(err);
+        if (
+          appOrgId &&
+          !triedWorkspaceSwitchRef.current &&
+          switchToSignedInWorkspace(appOrgId)
+        ) {
+          triedWorkspaceSwitchRef.current = true;
+          retrying = true;
+          setReloadKey((k) => k + 1);
+          return;
+        }
         const code = errorCodeFromUnknown(err);
         if (code) setErrorCode(code);
         setError(errorMessageFromUnknown(err));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !retrying) setLoading(false);
       }
     })();
 
@@ -232,7 +276,7 @@ export function OAuthAuthorizeView() {
       cancelled = true;
       controller.abort();
     };
-  }, [isHydrated, isAuthenticated, clientId, redirectUri, queryParams, t]);
+  }, [isHydrated, isAuthenticated, clientId, redirectUri, queryParams, t, reloadKey]);
 
   const successRedirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -561,6 +605,11 @@ export function OAuthAuthorizeView() {
                   ? `${consentData.user.name} (${consentData.user.email})`
                   : consentData.user.name || consentData.user.email,
             })}
+            {consentData.workspace ? (
+              <Text as="div" size="2" color="gray">
+                {t('oauthConsent.workspace', { name: consentData.workspace.name })}
+              </Text>
+            ) : null}
           </Text>
 
           <Separator size="4" />
@@ -661,6 +710,8 @@ export function OAuthAuthorizeView() {
               ) : null}
             </Flex>
           ) : null}
+
+          <KnowledgeLimitNotice appName={appName} limit={consentData.app.knowledgeLimit} />
 
           <Separator size="4" />
 

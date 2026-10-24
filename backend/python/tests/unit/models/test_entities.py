@@ -323,6 +323,36 @@ class TestRecord:
         rec = Record.from_arango_base_record(arango_doc)
         assert rec.parsing_status == ProgressStatus.NOT_STARTED.value
 
+    def test_uploaded_by_survives_a_graph_round_trip(self) -> None:
+        rec = Record(
+            org_id="org-1",
+            record_name="Upload",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            uploaded_by="user-7",
+        )
+        assert Record.from_arango_base_record(rec.to_arango_base_record()).uploaded_by == "user-7"
+
+    def test_uploaded_by_survives_a_file_record_graph_round_trip(self) -> None:
+        rec = FileRecord(
+            org_id="org-1",
+            record_name="Upload.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            is_file=True,
+            uploaded_by="user-7",
+        )
+        restored = FileRecord.from_arango_record(rec.to_arango_record(), rec.to_arango_base_record())
+        assert restored.uploaded_by == "user-7"
+
     def test_from_arango_base_record_unknown_connector(self):
         """Unknown connector name should fall back to KNOWLEDGE_BASE."""
         arango_doc = {
@@ -803,8 +833,7 @@ class TestLinkRecord:
             linked_record_id="rec-linked-1",
         ))
         ctx = rec.to_llm_context()
-        assert "URL" in ctx
-        assert "https://example.com" in ctx
+        assert "* URL: https://example.com" in ctx.splitlines()
         assert "Title" in ctx
         assert "Example Link" in ctx
         assert "Public Access" in ctx
@@ -1894,6 +1923,40 @@ class TestAppRole:
         assert ar.source_role_id == "role-1"
 
 
+class TestRecordHeaderWeekdays:
+    """Record headers carry each date's weekday, worked out in code.
+
+    Answers are asked for dates like "Mon, Jul 27, 3:45 PM PDT", but the
+    header gave only "2026-07-27 03:00:00 UTC", so the model guessed the
+    weekday. Monday 03:00 UTC is Sunday evening in California, so the weekday
+    is taken in the user's time zone when the run has one.
+    """
+
+    MON_0300_UTC = 1785121200000  # 2026-07-27 03:00:00 UTC, a Monday
+    TUE_1500_UTC = 1785250800000  # 2026-07-28 15:00:00 UTC
+
+    def _ctx(self) -> str:
+        return Record(**_record_kwargs(
+            source_created_at=self.MON_0300_UTC, source_updated_at=self.TUE_1500_UTC,
+        )).to_llm_context()
+
+    def test_header_dates_carry_their_weekday(self) -> None:
+        ctx = self._ctx()
+        assert "Created At: 2026-07-27 03:00:00 UTC (Mon, Jul 27, 2026, 3:00 AM UTC)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 3:00 PM UTC)" in ctx
+
+    def test_weekday_is_taken_in_the_users_time_zone(self) -> None:
+        from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+
+        token = set_llm_time_zone("America/Los_Angeles")
+        try:
+            ctx = self._ctx()
+        finally:
+            reset_llm_time_zone(token)
+        assert "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 8:00 AM PDT)" in ctx
+
+
 # ============================================================================
 # Record.to_llm_context edge cases (lines 232->235 branch, mime_type)
 # ============================================================================
@@ -1951,6 +2014,67 @@ class TestRecordToLlmContextEdgeCases:
 # ============================================================================
 # TicketRecord.to_llm_context with Enum values (lines 850-879)
 # ============================================================================
+
+
+class TestTicketRecordSourceStatus:
+    """Jira's own status name is shown beside the normalised one.
+
+    The value mapper stores Jira's "Backlog" and "To Do" both as NEW, and
+    "In Review" and "Testing" both as QA. With only the mapped value in its
+    context, the model answered "NEW" where Jira says "Backlog".
+    """
+
+    def _ticket(self, **overrides: object) -> TicketRecord:
+        from app.models.entities import Status
+        kwargs = {
+            "record_type": RecordType.TICKET,
+            "connector_name": Connectors.JIRA,
+            "status": Status.NEW,
+            **overrides,
+        }
+        return TicketRecord(**_record_kwargs(**kwargs))
+
+    def test_backlog_issue_shows_both_values(self) -> None:
+        ctx = self._ticket(source_status="Backlog").to_llm_context()
+        assert "* Status: NEW (Jira: Backlog)" in ctx
+
+    def test_in_review_issue_shows_both_values(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.QA, source_status="In Review").to_llm_context()
+        assert "* Status: QA (Jira: In Review)" in ctx
+
+    def test_same_name_is_not_repeated(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.IN_PROGRESS, source_status="In Progress").to_llm_context()
+        assert "* Status: IN_PROGRESS\n" in ctx + "\n"
+        assert "(Jira:" not in ctx
+
+    def test_unmapped_status_kept_as_is_is_not_repeated(self) -> None:
+        # map_status returns Jira's own name when it has no mapping for it.
+        ctx = self._ticket(status="Ready for Deploy", source_status="Ready for Deploy").to_llm_context()
+        assert "* Status: Ready for Deploy" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_record_stored_before_the_field_shows_status_alone(self) -> None:
+        ctx = self._ticket().to_llm_context()
+        assert "* Status: NEW" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_survives_the_graph_round_trip(self) -> None:
+        rec = self._ticket(id="t-1", org_id="org-1", source_status="Backlog")
+        ticket_doc = rec.to_arango_record()
+        assert ticket_doc["sourceStatus"] == "Backlog"
+        jsonschema.validate(instance=ticket_doc, schema=get_node_schema(CollectionNames.TICKETS.value))
+        record_doc = {
+            "_key": "t-1", "orgId": "org-1", "recordName": "[PROJ-1] Issue",
+            "recordType": "TICKET", "externalRecordId": "ext-123", "version": 1,
+            "origin": "CONNECTOR", "connectorName": Connectors.JIRA.value,
+            "webUrl": "https://example.atlassian.net/browse/PROJ-1", "connectorId": "conn-1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }
+        back = TicketRecord.from_arango_record(ticket_doc, record_doc)
+        assert back.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in back.to_llm_context()
 
 
 class TestTicketRecordToLlmContextEnum:

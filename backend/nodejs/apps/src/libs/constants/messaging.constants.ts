@@ -3,6 +3,7 @@ import { MessageBrokerType } from '../types/messaging.types';
 /** Environment variable names (single place for messaging-related env keys). */
 export const ENV_MESSAGE_BROKER = 'MESSAGE_BROKER';
 export const ENV_REDIS_STREAMS_MAXLEN = 'REDIS_STREAMS_MAXLEN';
+export const ENV_REDIS_STREAMS_RETENTION_MODE = 'REDIS_STREAMS_RETENTION_MODE';
 /** Partition count for the indexing topic; a Kafka fair-scheduling lane is a partition. */
 export const ENV_KAFKA_TOPIC_PARTITIONS = 'KAFKA_TOPIC_PARTITIONS';
 /** Number of Redis Streams lanes for the indexing topic (1 = laning off). */
@@ -46,7 +47,8 @@ export const MESSAGING_HEALTH_MESSAGE_TYPE = 'HEALTH_CHECK';
 
 /** Redis Streams consumer/producer tuning */
 export const REDIS_STREAMS_DEFAULTS = {
-  maxLen: 500000,
+  /** Fixed cap for the consumer-less health-check stream. */
+  healthMaxLen: 1000,
   blockMs: 2000,
   count: 10,
   maxRetryTime: 30000,

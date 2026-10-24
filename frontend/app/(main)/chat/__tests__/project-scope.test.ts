@@ -64,6 +64,23 @@ describe('buildCatalogMcpGroups', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({ label: 'GitHub', toolsetSlug: 'mcp', instanceId: 'm1', fullNames: ['m1:mcp_github_list'] });
   });
+
+  it('keeps each description and label with its own tool when one has no namespaced name', () => {
+    const [group] = buildCatalogMcpGroups([
+      {
+        _id: 'm1',
+        name: 'GitHub',
+        isAuthenticated: true,
+        tools: [
+          { name: 'broken', namespacedName: '', description: 'not listed' },
+          { name: 'list', namespacedName: 'mcp_github_list', description: 'Lists issues' },
+        ],
+      },
+    ] as never);
+    expect(group!.fullNames).toEqual(['m1:mcp_github_list']);
+    expect(group!.toolDescriptions).toEqual({ 'm1:mcp_github_list': 'Lists issues' });
+    expect(group!.toolLabels).toEqual({ 'm1:mcp_github_list': 'list' });
+  });
 });
 
 describe('restrictGroupsToBareNames', () => {
@@ -140,6 +157,43 @@ describe('buildProjectChatScope', () => {
     ]);
     expect(scope.knowledgeCollectionRows).toEqual([{ id: 'kb-1', name: 'Specs', sourceType: 'KB' }]);
     expect(scope.knowledgeDefaults).toEqual({ apps: ['app-1', 'app-2'], kb: ['kb-1'] });
+  });
+
+  it('lists what the project selects below app level as rows of their own', () => {
+    const limited = {
+      _id: 'proj-2',
+      knowledgeScope: { apps: ['app-1'], kb: [], recordGroups: ['group-1'], records: ['folder-1', 'file-9'] },
+      appliedFilters: {
+        apps: [{ id: 'app-1', name: 'Slack', nodeType: 'app', connector: 'SLACK' }],
+        recordGroups: [{ id: 'group-1', name: 'Project PT', nodeType: 'recordGroup', connector: 'Jira' }],
+        records: [{ id: 'folder-1', name: 'Specs', nodeType: 'folder', connector: 'KB' }],
+      },
+      tools: [],
+    } as never;
+
+    const scope = buildProjectChatScope(limited, catalog);
+
+    expect(scope.connectors).toEqual([
+      { id: 'app-1', label: 'Slack', connectorKind: 'SLACK' },
+      {
+        id: 'group-1',
+        label: 'Project PT',
+        connectorKind: 'Jira',
+        nodeType: 'recordGroup',
+        source: { id: 'kind:JIRA', label: '', kind: 'Jira' },
+      },
+      // Nothing is known about where an unnamed node comes from: it is not grouped.
+      { id: 'file-9', label: 'file-9', connectorKind: '', nodeType: 'folder', source: undefined },
+    ]);
+    expect(scope.knowledgeCollectionRows).toEqual([
+      { id: 'folder-1', name: 'Specs', sourceType: 'KB', nodeType: 'folder', source: { id: 'kind:KB', label: '', kind: 'KB' } },
+    ]);
+    expect(scope.knowledgeDefaults).toEqual({
+      apps: ['app-1'],
+      kb: [],
+      recordGroups: ['group-1'],
+      records: ['folder-1', 'file-9'],
+    });
   });
 
   it('restricts the catalog to project.tools, tolerating legacy prefixed entries', () => {

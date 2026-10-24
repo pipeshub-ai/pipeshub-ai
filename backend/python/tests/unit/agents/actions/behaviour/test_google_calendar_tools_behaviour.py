@@ -108,6 +108,25 @@ class TestGetCalendarEvents:
 
         assert data["nextPageToken"] == "page-2"
 
+    async def test_page_token_round_trips_to_google(self, cal, http) -> None:
+        # The tool hands nextPageToken back to the agent, so the agent must be able
+        # to send it again; otherwise events past the first page are unreachable.
+        http.on("GET", EVENTS, {"items": [{"id": "e2"}]})
+
+        ok, _ = result(await cal.get_calendar_events(page_token="page-2"))
+
+        assert ok is True
+        query = http.calls("GET", EVENTS)[0].query
+        assert query["pageToken"] == "page-2"
+
+    async def test_unset_page_token_is_not_sent(self, cal, http) -> None:
+        http.on("GET", EVENTS, {"items": []})
+
+        ok, _ = result(await cal.get_calendar_events())
+
+        assert ok is True
+        assert "pageToken" not in http.calls("GET", EVENTS)[0].query
+
     async def test_time_without_offset_is_sent_as_rfc3339_in_the_requested_zone(self, cal, http) -> None:
         # Google rejects timeMin/timeMax without an offset, so a bare local time must gain one.
         http.on("GET", EVENTS, {"items": []})
@@ -149,7 +168,7 @@ class TestGetCalendarEvents:
         ok, data = result(await cal.get_calendar_events())
 
         assert ok is False
-        assert "reconnect" in assert_safe_error(data).lower()
+        assert "under your actions" in assert_safe_error(data).lower()
 
     async def test_token_still_rejected_after_refresh_asks_to_reconnect_without_leaking_credentials(self, http) -> None:
         cal = build_calendar_tool(http, refreshable=True)
@@ -159,7 +178,7 @@ class TestGetCalendarEvents:
         ok, data = result(await cal.get_calendar_events())
 
         assert ok is False
-        assert "reconnect" in assert_safe_error(data).lower()
+        assert "under your actions" in assert_safe_error(data).lower()
         sent = [r.headers["authorization"] for r in http.calls("GET", EVENTS)]
         assert sent[0] == f"Bearer {ACCESS_TOKEN}"
         assert set(sent[1:]) == {"Bearer ya29.refreshed"}
@@ -180,7 +199,7 @@ class TestGetCalendarEvents:
 
         assert ok is False
         message = assert_safe_error(data).lower()
-        assert "permission" in message and "reconnect" in message
+        assert "permission" in message and "under your actions" in message
 
     async def test_google_outage_is_reported_as_temporary(self, cal, http) -> None:
         http.on("GET", EVENTS, google_error(503, "Backend Error", "backendError"))
@@ -591,4 +610,4 @@ class TestCalendarList:
         ok, data = result(await cal.get_calendar_list_by_id())
 
         assert ok is False
-        assert "reconnect" in assert_safe_error(data).lower()
+        assert "under your actions" in assert_safe_error(data).lower()

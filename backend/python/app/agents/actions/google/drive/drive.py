@@ -167,6 +167,7 @@ class SearchFilesInput(BaseModel):
     query: str = Field(description="Search query (e.g., 'name contains \"report\"', 'mimeType=\"application/pdf\"')")
     page_size: Optional[int] = Field(default=None, description="Maximum number of results to return")
     order_by: Optional[str] = Field(default=None, description="Sort order")
+    page_token: str | None = Field(default=None, description="Token from a previous response's nextPageToken, to fetch the next page")
 
 
 class DownloadFileInput(BaseModel):
@@ -187,12 +188,14 @@ class GetFilePermissionsInput(BaseModel):
     """Schema for getting file permissions"""
     file_id: str = Field(description="The ID of the file to get permissions for")
     page_size: Optional[int] = Field(default=None, description="Maximum number of permissions to return")
+    page_token: str | None = Field(default=None, description="Token from a previous response's nextPageToken, to fetch the next page")
 
 
 class GetSharedDrivesInput(BaseModel):
     """Schema for getting shared drives"""
     page_size: Optional[int] = Field(default=None, description="Maximum number of drives to return per page")
     query: Optional[str] = Field(default=None, description="Search query for shared drives")
+    page_token: str | None = Field(default=None, description="Token from a previous response's nextPageToken, to fetch the next page")
 
 
 class GetFileContentInput(BaseModel):
@@ -601,6 +604,7 @@ class GoogleDrive:
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query (e.g., 'name contains \"report\"', 'mimeType=\"application/pdf\"')", required=True),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
             ToolParameter(name="order_by", type=ParameterType.STRING, description="Sort order", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
         tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
         args_summary=args_template('Searching Google Drive: "{query}"', "query"),
@@ -610,7 +614,8 @@ class GoogleDrive:
         self,
         query: str,
         page_size: Optional[int] = None,
-        order_by: Optional[str] = None
+        order_by: Optional[str] = None,
+        page_token: str | None = None
     ) -> tuple[bool, str]:
         """Search for files in Google Drive using query syntax"""
         """
@@ -618,6 +623,7 @@ class GoogleDrive:
             query: Search query with Drive query syntax
             page_size: Maximum number of results
             order_by: Sort order for results
+            page_token: Token from a previous response to fetch the next page
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
@@ -633,6 +639,7 @@ class GoogleDrive:
                 q=formatted_query,
                 pageSize=page_size,
                 orderBy=order_by,
+                pageToken=page_token,
                 fields="nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, parents, size, modifiedTime, createdTime)",
             )
 
@@ -686,19 +693,22 @@ class GoogleDrive:
         parameters=[
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of drives to return per page", required=False),
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query for shared drives", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
         tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_shared_drives(
         self,
         page_size: Optional[int] = None,
-        query: Optional[str] = None
+        query: Optional[str] = None,
+        page_token: str | None = None
     ) -> tuple[bool, str]:
         """Get list of shared drives"""
         """
         Args:
             page_size: Maximum number of drives to return
             query: Search query for shared drives
+            page_token: Token from a previous response to fetch the next page
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
@@ -706,7 +716,8 @@ class GoogleDrive:
             # Use GoogleDriveDataSource method
             drives = await self.client.drives_list(
                 pageSize=page_size,
-                q=query
+                q=query,
+                pageToken=page_token
             )
 
             return True, json.dumps({
@@ -725,19 +736,22 @@ class GoogleDrive:
         parameters=[
             ToolParameter(name="file_id", type=ParameterType.STRING, description="The ID of the file to get permissions for", required=True),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of permissions to return", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page", required=False),
         ],
         tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_file_permissions(
         self,
         file_id: str,
-        page_size: Optional[int] = None
+        page_size: Optional[int] = None,
+        page_token: str | None = None
     ) -> tuple[bool, str]:
         """Get permissions for a specific file"""
         """
         Args:
             file_id: The ID of the file
             page_size: Maximum number of permissions to return
+            page_token: Token from a previous response to fetch the next page
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
@@ -745,7 +759,8 @@ class GoogleDrive:
             # Use GoogleDriveDataSource method
             permissions = await self.client.permissions_list(
                 fileId=file_id,
-                pageSize=page_size
+                pageSize=page_size,
+                pageToken=page_token
             )
 
             return True, json.dumps({

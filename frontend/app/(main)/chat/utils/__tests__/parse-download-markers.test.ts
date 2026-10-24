@@ -130,6 +130,42 @@ describe('isSignedUrl', () => {
     expect(isSignedUrl('https://evil.example/steal')).toBe(false);
     expect(isSignedUrl('https://our.api/record/r1')).toBe(false);
   });
+
+  // A marker comes from the model's output, so a signature-shaped query string
+  // proves nothing: only the storage hosts PipesHub signs URLs for count.
+  it('rejects a signature-shaped query on any other host', () => {
+    expect(isSignedUrl('https://evil.example/file.csv?X-Amz-Signature=x')).toBe(false);
+    expect(isSignedUrl('https://evil.example/f?AWSAccessKeyId=AKIA')).toBe(false);
+    expect(isSignedUrl('https://evil.example/f?se=2030&sig=abc')).toBe(false);
+    expect(isSignedUrl('https://amazonaws.com.evil.example/f?X-Amz-Signature=x')).toBe(false);
+    expect(isSignedUrl('https://ec2.amazonaws.com/f?X-Amz-Signature=x')).toBe(false);
+    expect(isSignedUrl('https://x.blob.core.windows.net.evil.example/c?se=1&sig=2')).toBe(false);
+    expect(isSignedUrl('https://evil.example/x.blob.core.windows.net?se=1&sig=2')).toBe(false);
+  });
+
+  it('rejects storage URLs that are not https or carry no signature', () => {
+    expect(isSignedUrl('http://bucket.s3.amazonaws.com/k?X-Amz-Signature=abc')).toBe(false);
+    expect(isSignedUrl('https://bucket.s3.amazonaws.com/k')).toBe(false);
+    expect(isSignedUrl('https://x.blob.core.windows.net/c/b?sig=abc')).toBe(false);
+    expect(isSignedUrl('not a url')).toBe(false);
+  });
+
+  it('answers at once for a long near-miss host (no regex backtracking)', () => {
+    const host = `s3-${'--'.repeat(5000)}x.amazonaws.co`;
+    const start = performance.now();
+    expect(isSignedUrl(`https://${host}/k?X-Amz-Signature=abc`)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it('accepts regional S3 hosts and sovereign Azure clouds', () => {
+    expect(isSignedUrl('https://bucket.s3.eu-west-1.amazonaws.com/k?X-Amz-Signature=abc')).toBe(true);
+    expect(isSignedUrl('https://bucket.s3-eu-west-1.amazonaws.com/k?X-Amz-Signature=abc')).toBe(true);
+    expect(isSignedUrl('https://s3.amazonaws.com/bucket/k?X-Amz-Signature=abc')).toBe(true);
+    expect(isSignedUrl('https://x.blob.core.usgovcloudapi.net/c/b?se=2030&sig=abc')).toBe(true);
+    expect(isSignedUrl('https://x.blob.core.chinacloudapi.cn/c/b?se=2030&sig=abc')).toBe(true);
+    expect(isSignedUrl('https://bucket.s3.cn-north-1.amazonaws.com.cn/k?X-Amz-Signature=abc')).toBe(true);
+    expect(isSignedUrl('https://evil.amazonaws.com.cn.example/k?X-Amz-Signature=abc')).toBe(false);
+  });
 });
 
 describe('isTrustedApiUrl', () => {

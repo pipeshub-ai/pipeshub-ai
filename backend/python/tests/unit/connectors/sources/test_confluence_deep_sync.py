@@ -69,7 +69,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    c = ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
+    return c
 
 
 def _resp(status=200, data=None):
@@ -888,7 +891,8 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_none(self):
+    async def test_api_failure_returns_none_not_empty(self):
+        """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_permissions_v1 = AsyncMock(return_value=_resp(500, {}))

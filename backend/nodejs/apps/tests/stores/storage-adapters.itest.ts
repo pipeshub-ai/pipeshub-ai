@@ -15,7 +15,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { randomBytes, randomUUID } from 'crypto';
-import AWS from 'aws-sdk';
+import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import mongoose from 'mongoose';
 import AmazonS3Adapter from '../../src/modules/storage/providers/s3.provider';
 import AzureBlobStorageAdapter from '../../src/modules/storage/providers/azure.provider';
@@ -49,20 +49,20 @@ function requireEnv(name: string): string {
 }
 
 async function s3Target(bucket: string): Promise<Target> {
-  // The adapter has no endpoint setting; the SDK's per-service global config
-  // points every S3 client in this process at MinIO instead of AWS.
-  AWS.config.update({
-    s3: {
-      endpoint: requireEnv('STORAGE_IT_S3_ENDPOINT'),
-      s3ForcePathStyle: true,
-      signatureVersion: 'v4',
-    },
-  } as AWS.ConfigurationOptions);
+  // The adapter reads these instead of a global SDK config, so every client
+  // in this process talks to MinIO rather than AWS.
+  const endpoint = requireEnv('STORAGE_IT_S3_ENDPOINT');
+  process.env.AWS_ENDPOINT_URL_S3 = endpoint;
+  process.env.AWS_S3_FORCE_PATH_STYLE = 'true';
   const accessKeyId = requireEnv('STORAGE_IT_S3_ACCESS_KEY');
   const secretAccessKey = requireEnv('STORAGE_IT_S3_SECRET_KEY');
-  await new AWS.S3({ accessKeyId, secretAccessKey, region: S3_REGION })
-    .createBucket({ Bucket: bucket })
-    .promise();
+  const client = new S3Client({
+    region: S3_REGION,
+    endpoint,
+    forcePathStyle: true,
+    credentials: { accessKeyId, secretAccessKey },
+  });
+  await client.send(new CreateBucketCommand({ Bucket: bucket }));
   return {
     backend: 's3',
     urlField: 's3',

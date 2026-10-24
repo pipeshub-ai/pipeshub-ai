@@ -18,6 +18,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
 
   order 1  TC-SYNC-001    — full sync baseline vs the seed manifest
   order 2  TC-USER-001    — users / USER_APP_RELATION vs live /v1/users
+  order 2  TC-AUTH-001    — no creator link: an integration token's bot belongs to the workspace
   order 3  TC-WS-001      — workspace RecordGroup
   order 4  TC-WS-002      — workspace READ permissions
   order 5  TC-CONN-001    — connection test (positive + bad-token negative)
@@ -58,9 +59,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus  # noqa: E402
+from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus  # noqa: E402
 from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E402
 from app.models.entities import RecordType  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
@@ -133,6 +135,9 @@ pytestmark = [
 # helpers
 # =============================================================================
 
+# A stream that hits one Notion 429 waits out its ~30s Retry-After on top of a ~50s render.
+_STREAM_TIMEOUT_SECONDS = 240
+
 
 async def _stream_container(
     pipeshub_client: PipeshubClient,
@@ -143,7 +148,7 @@ async def _stream_container(
     """Stream a record's ``BlocksContainer`` and return it parsed."""
     record = await graph_provider.get_record_by_external_id(connector_id, external_id)
     assert record is not None, f"record {external_id} not synced — cannot stream"
-    response = pipeshub_client.stream_record(record.id)
+    response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
     assert response.headers.get("content-type", "").startswith("application/octet-stream"), (
         f"expected an octet-stream blocks body, got {response.headers.get('content-type')!r}"
     )
@@ -377,6 +382,24 @@ class TestNotionFullSync:
             )
         logger.info("TC-USER-001 passed: %d users", rel_count)
 
+    @pytest.mark.order(2)
+    async def test_tc_auth_001_no_authenticated_identity(
+        self,
+        notion_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-AUTH-001: the creator is linked to no Notion account.
+
+        Only an OAuth bot is owned by the person who authorised it. This suite connects with
+        an integration token, whose bot belongs to the workspace, so there is no account to
+        link the creator to.
+        """
+        assert NOTION_AUTH_TYPE == "API_TOKEN", "an OAuth connection names its owner; expect a link"
+        await assert_authenticated_identity_link(
+            graph_provider, notion_connector["connector_id"], None, None,
+        )
+        logger.info("TC-AUTH-001 passed: integration token, no link")
+
     @pytest.mark.order(3)
     async def test_tc_ws_001_workspace_record_group(
         self,
@@ -419,17 +442,28 @@ class TestNotionFullSync:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-WS-002: every synced user gets a READ permission edge to the workspace group."""
+        """TC-WS-002: the workspace group inherits the app and carries no per-user grant;
+        every synced user reaches it through their link to the app."""
         connector_id = notion_connector["connector_id"]
         expected_users = await notion_source_helper.person_users_with_email()
 
-        edges = await graph_provider.count_permission_edges_to_record_groups(
+        grants = await graph_provider.count_permission_edges_to_record_groups(
             connector_id, notion_seed.workspace_id
         )
-        assert edges == len(expected_users), (
-            f"workspace PERMISSION edges {edges} != synced users {len(expected_users)}"
+        assert grants == 0, f"the workspace inherits the app, but carries {grants} PERMISSION edge(s)"
+        workspace = await graph_provider.get_record_group_by_external_id(connector_id, notion_seed.workspace_id)
+        assert workspace is not None, "workspace RecordGroup missing"
+        inherits = await graph_provider.find_edges_between(
+            CollectionNames.RECORD_GROUPS.value, workspace.id,
+            CollectionNames.APPS.value, connector_id,
+            CollectionNames.INHERIT_PERMISSIONS.value,
         )
-        logger.info("TC-WS-002 passed: %d workspace permission edges", edges)
+        assert len(inherits) == 1, f"expected the workspace to inherit the app, found {len(inherits)} edge(s)"
+        app_users = await graph_provider.count_user_app_relation_edges(connector_id)
+        assert app_users >= len(expected_users), (
+            f"{app_users} users linked to the app; every synced user ({len(expected_users)}) should be"
+        )
+        logger.info("TC-WS-002 passed: workspace inherits the app, %d users linked", app_users)
 
     @pytest.mark.order(5)
     async def test_tc_conn_001_connection_test(
@@ -1137,7 +1171,7 @@ class TestNotionStreaming:
         pdf_block_id = notion_seed.file_block_ids["pdf"]
         record = await graph_provider.get_record_by_external_id(connector_id, pdf_block_id)
         assert record is not None, "pdf FileRecord not synced"
-        response = pipeshub_client.stream_record(record.id)
+        response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
         assert response.content == expected_bytes, (
             "streamed block attachment bytes differ from the uploaded sample file"
         )
@@ -1153,7 +1187,9 @@ class TestNotionStreaming:
             connector_id, notion_seed.comment_attachment_external_id
         )
         assert comment_record is not None, "comment attachment FileRecord not synced"
-        comment_response = pipeshub_client.stream_record(comment_record.id)
+        comment_response = pipeshub_client.stream_record(
+            comment_record.id, timeout=_STREAM_TIMEOUT_SECONDS
+        )
         assert comment_response.content == expected_bytes, (
             "streamed comment attachment bytes differ from the uploaded sample file"
         )

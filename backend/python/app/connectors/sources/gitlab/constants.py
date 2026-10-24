@@ -101,6 +101,12 @@ _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS = 2.0
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
+# A merge request's changed file that GitLab returns without a diff (too large
+# to show) has its contents inlined into the MR's blocks payload instead, held
+# in memory while the container is serialised, so cap what gets inlined. Same
+# cap as GitHub's ``PR_FILE_INLINE_CONTENT_MAX_BYTES``.
+MR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
+
 IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
 )

@@ -71,6 +71,7 @@ describe('MigrationService', () => {
       const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
       const documentOrgIdStub = sinon.stub(service, 'documentOrgIdMigration' as any).resolves()
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
+      const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
 
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
@@ -82,6 +83,7 @@ describe('MigrationService', () => {
       expect(adminStub.calledOnce).to.be.true
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(groupNameIndexStub.calledOnce).to.be.true
+      expect(delegationTtlStub.calledOnce).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
   })

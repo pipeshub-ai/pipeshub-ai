@@ -3,17 +3,13 @@
 import React from 'react';
 import dynamic from 'next/dynamic';
 import { Flex, Text } from '@radix-ui/themes';
+import { BrandMark } from '@/config';
 
 // Lightweight fallback rendered when the Lottie chunk hasn't loaded yet
 // or when it fails to load (e.g. navigation interrupts the download).
 function LogoFallback(props: { style?: React.CSSProperties }) {
-  return (
-    <img
-      src="/logo/pipes-hub.svg"
-      alt=""
-      style={{ width: 48, height: 48, ...props.style }}
-    />
-  );
+  const style = { width: 48, height: 48, ...props.style };
+  return <BrandMark size={48} style={style} fallback={<img src="/logo/pipes-hub.svg" alt="" style={style} />} />;
 }
 
 // @lottiefiles/dotlottie-react accesses `document` at module init — must be

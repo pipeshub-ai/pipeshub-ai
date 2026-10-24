@@ -1437,7 +1437,11 @@ class TestSyncRecordGroups:
         users = [_make_app_user(email="u1@e.com")]
 
         await connector._sync_record_groups(users)
-        assert connector.data_entities_processor.on_new_record_groups.call_count == 3
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        (groups,) = connector.data_entities_processor.on_new_record_groups.await_args.args
+        assert [g.external_group_id for g, _ in groups] == [
+            "mailbox:u1@e.com", "u1@e.com:INBOX", "u1@e.com:SENT", "u1@e.com:OTHERS",
+        ]
 
     @pytest.mark.asyncio
     async def test_empty_users_returns_early(self, connector):
@@ -1452,14 +1456,15 @@ class TestSyncRecordGroups:
 
     @pytest.mark.asyncio
     async def test_record_group_creation_error_continues(self, connector):
-        user = _make_app_user(email="u@e.com")
+        users = [_make_app_user(email="u1@e.com"), _make_app_user(email="u2@e.com")]
         connector.data_entities_processor.on_new_record_groups = AsyncMock(
-            side_effect=[Exception("record group error"), None, None]
+            side_effect=[Exception("record group error"), None]
         )
 
-        await connector._sync_record_groups([user])
-        # Should have attempted 3 calls (INBOX, SENT, OTHERS)
-        assert connector.data_entities_processor.on_new_record_groups.call_count == 3
+        await connector._sync_record_groups(users)
+        assert connector.data_entities_processor.on_new_record_groups.call_count == 2
+        (groups,) = connector.data_entities_processor.on_new_record_groups.await_args.args
+        assert groups[0][0].external_group_id == "mailbox:u2@e.com"
 
     @pytest.mark.asyncio
     async def test_user_processing_error_continues(self, connector):
@@ -1761,6 +1766,41 @@ class TestStreamAttachmentRecord:
             await connector._stream_attachment_record(
                 gmail_service, "msgXXX~1", record, "file.txt", "text/plain"
             )
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_a_nested_part_streams(self, connector) -> None:
+        """Sync records attachments at any depth (partId `0.1`), so download must find them there."""
+        record = _make_mock_record(
+            external_record_id="msg123~0.1",
+            parent_external_record_id="msg123",
+        )
+        parent_record = MagicMock()
+        parent_record.external_record_id = "msg123"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
+
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {
+                "parts": [
+                    {"partId": "0", "mimeType": "multipart/related", "parts": [
+                        {"partId": "0.0", "body": {"data": "aGk="}},
+                        {"partId": "0.1", "filename": "logo.png", "body": {"attachmentId": "nested-att"}},
+                    ]},
+                ],
+            }
+        }
+        gmail_service.users().messages().attachments().get().execute.return_value = {
+            "data": base64.urlsafe_b64encode(b"png").decode()
+        }
+
+        with patch("app.connectors.sources.google.gmail.team.connector.create_stream_record_response") as mock_stream:
+            await connector._stream_attachment_record(
+                gmail_service, "msg123~0.1", record, "logo.png", "image/png"
+            )
+        assert list(mock_stream.call_args.args[0]) == [b"png"]
+        assert gmail_service.users().messages().attachments().get.call_args.kwargs["id"] == "nested-att"
 
     @pytest.mark.asyncio
     async def test_part_not_found_in_message(self, connector):
@@ -2099,10 +2139,17 @@ class TestStreamRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock()
 
-        with patch.object(connector, "_stream_mail_record", new_callable=AsyncMock,
+        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
+             patch.object(connector, "_stream_mail_record", new_callable=AsyncMock,
                           return_value=MagicMock()):
+            mock_create.return_value = AsyncMock(client=MagicMock())
             await connector.stream_record(record, user_id="None")
+
+        connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
+        # Messages carry no grant; with no caller the mailbox owner is impersonated.
+        mock_create.assert_awaited_once_with("user@example.com")
 
     @pytest.mark.asyncio
     async def test_impersonation_fails_raises(self, connector):
@@ -2140,6 +2187,7 @@ class TestStreamRecord:
 
         original = connector.gmail_data_source
         connector.gmail_data_source = None
+        record.external_record_group_id = None
         try:
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, user_id=None)
@@ -3019,7 +3067,7 @@ class TestProcessGmailMessageEdgeCases:
         result = await connector._process_gmail_message(
             "sender@example.com", message, "thread-1", None
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
 
 # ===========================================================================
@@ -3121,16 +3169,16 @@ class TestExtractAttachmentInfosEdgeCases:
             '<a href="https://drive.google.com/file/d/DRIVE1/view?usp=drive_web">L2</a>'
         )
         message = _make_gmail_message(body_html=html)
-        infos = connector._extract_attachment_infos(message)
+        infos = connector._extract_attachment_infos(message, "u@e.com", google_user_id="g-1")
         drive_infos = [i for i in infos if i.get("isDriveFile")]
-        assert len(drive_infos) == 1
+        assert [i["stableAttachmentId"] for i in drive_infos] == ["gdrive:g-1:DRIVE1"]
 
     def test_drive_id_in_body_and_attachment_deduplicated(self, connector):
         html = '<a href="https://drive.google.com/file/d/drive-file-1/view?usp=drive_web">Link</a>'
         message = _make_gmail_message(has_drive_attachment=True, body_html=html)
-        infos = connector._extract_attachment_infos(message)
+        infos = connector._extract_attachment_infos(message, "u@e.com", google_user_id="g-1")
         drive_infos = [i for i in infos if i.get("isDriveFile")]
-        assert len(drive_infos) == 1
+        assert [i["stableAttachmentId"] for i in drive_infos] == ["gdrive:g-1:drive-file-1"]
 
     def test_invalid_body_data_graceful(self, connector):
         message = {

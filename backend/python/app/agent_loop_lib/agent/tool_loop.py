@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -9,20 +10,53 @@ from app.agent_loop_lib.core.finish_moves import finish_move
 from app.agent_loop_lib.core.messages import (
     MALFORMED_TOOL_CALL_ARGS_KEY,
     MALFORMED_TOOL_CALL_ERROR_KEY,
+    ImagePart,
+    TextPart,
 )
-from app.agent_loop_lib.core.scope import ToolScope
+from app.agent_loop_lib.core.scope import StateSlot, ToolScope
 from app.agent_loop_lib.core.types import Artifact, Confidence, Goal, Message, ToolCall, ToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
+from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
+
+logger = logging.getLogger(__name__)
 
 # Internal tools whose execution should not produce frontend-visible events.
 # The tool still runs and its result enters the conversation; only the
 # TOOL_CALL / TOOL_RESULT emissions are skipped.
 _NO_EMIT_TOOLS: frozenset[str] = frozenset({"retrieve_artifact_content"})
 
+# Upper bound on the tool output a TOOL_RESULT event carries. The transcript
+# (`TranscriptCollector`) and the frontend's live handler keep the same cap,
+# so what is shown live is what is shown after reload.
+RESULT_PREVIEW_CHARS = 2000
+
+
+def _result_preview(content: Any) -> str:
+    """Bounded, readable preview of a tool result for the UI.
+
+    Structured content is shown as JSON rather than Python's repr, and a
+    truncated preview says so, including the full length.
+    """
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list) and content and all(isinstance(p, (TextPart, ImagePart)) for p in content):
+        text = "\n".join(p.text if isinstance(p, TextPart) else "[image]" for p in content)
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(content)
+    if len(text) <= RESULT_PREVIEW_CHARS:
+        return text
+    marker = f"… [truncated: {len(text)} chars total]"
+    return text[: RESULT_PREVIEW_CHARS - len(marker)] + marker
+
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
+    from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
     from app.agent_loop_lib.core.scope import TurnScope
     from app.agent_loop_lib.core.tool_schema import ToolSchema
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -126,7 +160,7 @@ def _args_summary(agent, runtime: "AgentRuntime", call: ToolCall) -> str | None:
 
 def _result_summary(agent, runtime: "AgentRuntime", call: ToolCall, tr: ToolResult) -> str | None:
     """Same precedence and fail-safe contract as `_args_summary`. Must be
-    called with the FULL `tr` (before any `[:200]` truncation) — that's
+    called with the FULL `tr` (before the preview truncation in `_result_preview`) — that's
     the entire reason this lives in `tool_loop.py` rather than in an
     emitter, which only ever sees the already-truncated preview."""
     tool = _resolve_quietly(agent, call.name)
@@ -143,6 +177,32 @@ def _result_summary(agent, runtime: "AgentRuntime", call: ToolCall, tr: ToolResu
         return runtime.summarizer.summarize_result(call.name, call.arguments, tr).result_summary
     except Exception:
         return None
+
+
+def _result_view(agent, call: ToolCall, tr: ToolResult) -> dict[str, Any] | None:
+    """The tool's own view of the FULL result, if it has one. A failure only loses the view."""
+    tool = _resolve_quietly(agent, call.name)
+    if tool is None:
+        return None
+    try:
+        view = tool.result_view(call.arguments, tr)
+    except Exception:
+        return None
+    return view if isinstance(view, dict) else None
+
+
+class _PendingApprovalHolder:
+    """Shared by reference across a spawn tree (`inherit=True`): when any run in it leaves a call
+    waiting for a person, every run above it ends its turn too, instead of carrying on without
+    the answer."""
+
+    def __init__(self) -> None:
+        self.pending: PendingApproval | None = None
+
+
+PENDING_APPROVAL: StateSlot[_PendingApprovalHolder] = StateSlot(
+    key="tool_loop.pending_approval", default_factory=_PendingApprovalHolder, inherit=True,
+)
 
 
 @dataclass
@@ -190,7 +250,28 @@ def initial_visible_tools(spec: "AgentSpec", runtime: "AgentRuntime") -> set[str
 def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
     """Which tool schemas the model sees this turn — all of them, unless
     the registry opts into lazy toolsets, in which case it's essentials
-    plus whatever `agent.visible_tools` has grown to via fetch_tools."""
+    plus whatever `agent.visible_tools` has grown to via fetch_tools.
+    Never more than `MAX_TOOLS_PER_REQUEST`: past it the provider refuses
+    the whole request."""
+    registry = runtime.tool_registry
+    if registry is None:
+        return []
+    schemas = _schemas_for_turn(agent, spec, runtime)
+    if len(schemas) <= MAX_TOOLS_PER_REQUEST:
+        return schemas
+    # fetch_tools, search_tools and preloading keep within the limit; this catches the rest
+    # (an eager grant that large, tools seeded from history). Essentials stay.
+    essentials = initial_visible_tools(spec, runtime)
+    ordered = [s for s in schemas if s.name in essentials] + [s for s in schemas if s.name not in essentials]
+    kept = {s.name for s in ordered[:MAX_TOOLS_PER_REQUEST]}
+    logger.warning(
+        "tool_schemas_for_turn: %d tools is over the %d one request can carry; sending %d",
+        len(schemas), MAX_TOOLS_PER_REQUEST, len(kept),
+    )
+    return [s for s in schemas if s.name in kept]
+
+
+def _schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
     registry = runtime.tool_registry
     if registry is None:
         return []
@@ -284,7 +365,7 @@ async def execute_tool_call(
         tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True)
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
-                "tool": tr.name, "is_error": True, "content": content[:200], "tool_call_id": call.id,
+                "tool": tr.name, "is_error": True, "content": _result_preview(content), "tool_call_id": call.id,
                 "result_summary": _result_summary(agent, runtime, call, tr),
                 "status": ToolCallStatus.ERROR,
             })
@@ -307,7 +388,7 @@ async def execute_tool_call(
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
                 "tool": tr.name, "is_error": tr.is_error,
-                "content": str(tr.content)[:200], "tool_call_id": call.id,
+                "content": _result_preview(tr.content), "tool_call_id": call.id,
                 "result_summary": _result_summary(agent, runtime, call, tr),
                 "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
             })
@@ -352,9 +433,24 @@ async def execute_tool_call(
     async def _on_ask(asked_call: ToolCall, reason: str) -> bool:
         return await obs.handle_tool_approval(agent, asked_call, reason, goal, messages, turn_index)
 
+    pending_approval: PendingApproval | None = None
+
+    async def _on_pending(asked_call: ToolCall, pending: PendingApproval) -> None:
+        nonlocal pending_approval
+        pending_approval = pending
+        agent.scope.get(PENDING_APPROVAL).pending = pending
+        await agent.emit(EventType.TOOL_BLOCKED, {
+            "tool": asked_call.name, "reason": pending.message, "tool_call_id": asked_call.id,
+            "status": ToolCallStatus.AWAITING_APPROVAL, "approval": pending.details,
+        })
+        await obs.append_timeline(
+            agent, "tool_awaiting_approval", f"Waiting for approval: {asked_call.name}", "running_tool",
+            {"tool": asked_call.name, "args": asked_call.arguments},
+        )
+
     tr = await agent._executor.call_tool(
         call, session_id=agent.session_id, override_execute=override_execute,
-        on_denied=_on_denied, on_ask=_on_ask, scope=tool_scope,
+        on_denied=_on_denied, on_ask=_on_ask, on_pending=_on_pending, scope=tool_scope,
     )
 
     # --- Record budget tool call ---
@@ -363,16 +459,23 @@ async def execute_tool_call(
 
     if blocked_reason is not None:
         return ToolCallOutcome(result=tr)
+    if pending_approval is not None:
+        # Ends the turn like a terminal tool: the person's decision is the next turn.
+        if pending_approval.end_turn:
+            return ToolCallOutcome(result=tr, task_done=True, final_output=pending_approval.message)
+        return ToolCallOutcome(result=tr)
 
     if not _silent:
         result_event: dict[str, Any] = {
             "tool": tr.name, "is_error": tr.is_error,
-            "content": str(tr.content)[:200], "tool_call_id": call.id,
+            "content": _result_preview(tr.content), "tool_call_id": call.id,
             "result_summary": _result_summary(agent, runtime, call, tr),
             "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
         }
         if tr.artifact_meta is not None:
             result_event["artifact_id"] = tr.artifact_meta.artifact_id
+        if not tr.is_error and (view := _result_view(agent, call, tr)) is not None:
+            result_event["result_view"] = view
         await agent.emit(EventType.TOOL_RESULT, result_event)
 
     if tr.sources:

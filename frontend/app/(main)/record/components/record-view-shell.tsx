@@ -23,14 +23,17 @@ import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
   canShowReindexMenu,
   getReindexNodeFromHubItem,
+  isRecordReindexBlocked,
   requiresForceReindexConfirmation,
 } from '@/app/(main)/knowledge-base/utils/reindex-label';
 import { toast } from '@/lib/store/toast-store';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { DeleteConfirmationDialog } from '@/app/(main)/knowledge-base/components/dialogs/delete-confirmation-dialog';
+import { ReindexBlockedDialog } from '@/app/(main)/knowledge-base/components/dialogs/reindex-blocked-dialog';
 import { RecordMetadataPanel } from './record-metadata-panel';
 import { ZoomActionBar } from './zoom-action-bar';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
+import { canGoBackInApp } from '@/lib/electron';
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 3;
@@ -72,6 +75,9 @@ function recordTypeIcon(recordType: string): string {
 export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const { t } = useTranslation();
   const router = useRouter();
+  // Read after mount: the static export renders without `window`.
+  const [showBack, setShowBack] = useState(false);
+  useEffect(() => setShowBack(canGoBackInApp()), []);
   const { appearance } = useThemeAppearance();
   const previewHostRef = useRef<HTMLDivElement>(null);
 
@@ -92,6 +98,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isForceReindexOpen, setIsForceReindexOpen] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
+  const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const blobUrlRef = useRef<string | null>(null);
@@ -308,7 +315,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       nodeType: 'record',
       indexingStatus,
       hasChildren: false,
+      connector: recordDetails?.record?.connectorName,
     });
+    if (isRecordReindexBlocked(reindexNode)) {
+      setIsReindexBlockedOpen(true);
+      return;
+    }
     if (requiresForceReindexConfirmation(reindexNode)) {
       setIsForceReindexOpen(true);
     } else {
@@ -422,6 +434,11 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         }}
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+          {showBack && (
+            <IconButton variant="ghost" color="gray" size="2" onClick={() => router.back()} aria-label={t('common.back')}>
+              <MaterialIcon name="chevron_left" size={24} color="var(--slate-11)" />
+            </IconButton>
+          )}
           <FileIcon extension={resolvePreviewIconExtension(recordDetails, fileType)} filename={fileName} mimeType={fileType} size={18} fallbackIcon="description" />
           <Text
             size="2"
@@ -785,6 +802,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           </Flex>
         </AlertDialog.Content>
       </AlertDialog.Root>
+
+      <ReindexBlockedDialog
+        open={isReindexBlockedOpen}
+        onOpenChange={setIsReindexBlockedOpen}
+        connector={recordDetails?.record?.connectorName}
+      />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog

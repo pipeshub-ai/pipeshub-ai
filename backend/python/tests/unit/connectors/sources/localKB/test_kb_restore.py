@@ -84,8 +84,16 @@ def svc(service: KnowledgeBaseService, mock_processor: AsyncMock) -> KnowledgeBa
     gp.get_typed_records_batch = AsyncMock(side_effect=lambda ids: {i: MagicMock(id=i) for i in ids})
     gp.get_file_record_by_id = AsyncMock(side_effect=lambda rid: MagicMock(id=rid, record_name="old"))
     mock_processor.restore_trashed_records = AsyncMock(side_effect=lambda kb, batch, items, **kw: [i["id"] for i in items])
-    mock_processor.reindex_existing_records = AsyncMock(side_effect=lambda records: [r.id for r in records])
+    mock_processor.reindex_existing_records = AsyncMock(side_effect=lambda records, **kw: [r.id for r in records])
     return service
+
+
+def _reindexed(mock_processor: AsyncMock) -> dict[bool, list[str]]:
+    """Record ids per reindex call, keyed by whether it re-embeds from stored content."""
+    return {
+        c.kwargs.get("vector_db_only", False): [r.id for r in c.args[0]]
+        for c in mock_processor.reindex_existing_records.await_args_list
+    }
 
 
 def _batch(svc, record: dict, members: list[dict]) -> None:
@@ -135,7 +143,7 @@ class TestWhoMayRestore:
         assert result["code"] == 404
         svc.graph_provider.get_records_in_delete_batch.assert_not_called()
 
-    @pytest.mark.parametrize(("role", "allowed"), [("FILEORGANIZER", True), ("WRITER", True), ("READER", False)])
+    @pytest.mark.parametrize(("role", "allowed"), [("OWNER", True), ("WRITER", True), ("FILEORGANIZER", False), ("READER", False)])
     async def test_a_single_file_needs_the_single_file_delete_role(self, svc, mock_processor, role, allowed) -> None:
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
         _batch(svc, _doc("r1"), [_member(_doc("r1"))])
@@ -187,6 +195,21 @@ class TestWhatComesBack:
         (reindexed,) = mock_processor.reindex_existing_records.await_args.args
         assert [r.id for r in reindexed] == ["c1"]
         assert "reindexPending" not in result
+
+    async def test_an_indexed_file_is_re_embedded_from_its_stored_content(self, svc, mock_processor) -> None:
+        """Its vectors went with the delete; a plain reindex would find the content unchanged and write none."""
+        indexed = _doc("c1", virtualRecordId="vr-1")
+        never_indexed = _doc("c2", name="b.pdf", indexingStatus=ProgressStatus.FAILED.value, virtualRecordId="vr-2")
+        no_content = _doc("c3", name="c.pdf")
+        # Replaced before the trash dropped its reindex: the stored blocks are of the old upload.
+        replaced = _doc("c4", name="d.pdf", virtualRecordId="vr-4", hasIndexedCopy=True,
+                        externalRevisionId="2000", lastIndexTimestamp=1000)
+        _batch(svc, indexed, [_member(indexed), _member(never_indexed), _member(no_content), _member(replaced)])
+
+        result = await svc.restore_record("c1", "u1", ORG)
+
+        assert result["success"] is True and "reindexPending" not in result, result
+        assert _reindexed(mock_processor) == {True: ["c1"], False: ["c2", "c3", "c4"]}
 
     async def test_the_folder_it_was_in_must_be_restored_first(self, svc, mock_processor) -> None:
         child = _doc("c1", name="a.pdf")
@@ -257,6 +280,32 @@ class TestWhatComesBack:
         (reindexed,) = mock_processor.reindex_existing_records.await_args.args
         assert [r.id for r in reindexed] == ["r1"]
         mock_processor.restore_trashed_records.assert_not_called()
+
+    async def test_a_retry_queues_a_file_read_without_a_key(self, svc, mock_processor) -> None:
+        """Arango's get_document returns the generic id and no _key."""
+        doc = _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value, **{RESTORED_AT_FIELD: 1700})
+        doc["id"] = doc.pop("_key")
+        _batch(svc, doc, [])
+
+        result = await svc.restore_record("r1", "u1", ORG)
+
+        assert result["success"] is True, result
+        (reindexed,) = mock_processor.reindex_existing_records.await_args.args
+        assert [r.id for r in reindexed] == ["r1"]
+
+    @pytest.mark.parametrize("fields, reembeds", [
+        ({"virtualRecordId": "vr-1", "hasIndexedCopy": True}, True),
+        ({"virtualRecordId": "vr-1"}, False),
+        ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "externalRevisionId": "2000", "lastIndexTimestamp": 1000},
+         False),
+    ], ids=["was indexed", "never indexed", "replaced since"])
+    async def test_a_retry_re_embeds_a_file_that_was_indexed(self, svc, mock_processor, fields, reembeds) -> None:
+        _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
+                         **{RESTORED_AT_FIELD: 1700}, **fields), [])
+
+        await svc.restore_record("r1", "u1", ORG)
+
+        assert _reindexed(mock_processor) == {reembeds: ["r1"]}
 
     async def test_a_retry_whose_queueing_fails_again_reports_it_pending(self, svc, mock_processor) -> None:
         _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
@@ -384,3 +433,43 @@ class TestBulk:
             ("f1", True), ("c1", True), ("x1", False),
         ]
         assert (result["restoredCount"], result["failedCount"], result["success"]) == (2, 1, False)
+
+
+class TestConnectedAppLimit:
+    async def test_a_batch_holding_an_item_outside_the_limit_is_refused_whole(self, svc, mock_processor) -> None:
+        """The path names one item, but restore writes the whole batch, and the
+        refusal names nothing the app may not see."""
+        from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
+
+        inside, other = _doc("r1"), _doc("r2", name="b.pdf")
+        members = [_member(inside), _member(other)]
+        _batch(svc, inside, members)
+        outside = AsyncMock(return_value={"r2"})
+
+        for result in (
+            await svc.restore_record("r1", "u1", ORG, outside),
+            (await svc.restore_records(["r1"], "u1", ORG, outside))["results"][0],
+        ):
+            assert (result["code"], result["reason"]) == (403, CONNECTION_OUTSIDE_MESSAGE)
+            assert "r2" not in str(result) and "b.pdf" not in str(result)
+        outside.assert_awaited_with(KB, [], members)
+        mock_processor.restore_trashed_records.assert_not_called()
+
+    async def test_a_batch_inside_the_limit_comes_back(self, svc, mock_processor) -> None:
+        record = _doc("r1")
+        _batch(svc, record, [_member(record)])
+        result = await svc.restore_record("r1", "u1", ORG, AsyncMock(return_value=set()))
+        assert result["success"] is True
+        mock_processor.restore_trashed_records.assert_awaited_once()
+
+    async def test_a_file_that_is_back_already_is_refused_outside_the_limit(self, svc, mock_processor) -> None:
+        """An id that is not in the trash may still owe a re-index, which restore would queue."""
+        live = _doc("r1", deleted=False, **{RESTORED_AT_FIELD: 1, "indexingStatus": ProgressStatus.NOT_STARTED.value})
+        _batch(svc, live, [])
+        outside = AsyncMock(return_value={"r1"})
+
+        result = await svc.restore_record("r1", "u1", ORG, outside)
+
+        assert result["code"] == 403
+        outside.assert_awaited_with(KB, ["r1"], [])
+        mock_processor.reindex_existing_records.assert_not_called()

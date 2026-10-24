@@ -12,6 +12,28 @@ function isKnowledgeHubTableItem(item: KbTableItem): item is KnowledgeHubNode {
 }
 
 /**
+ * Whether the user may delete this row: a hub item by its own permission (a shared
+ * item can have a lower role than its folder), and a collection only as its OWNER.
+ */
+export function canDeleteKbTableItem(item: KbTableItem): boolean {
+  if (!isKnowledgeHubTableItem(item)) return true;
+  if (!(item.permission?.canDelete ?? false)) return false;
+  return !(item.nodeType === 'app' && item.permission?.role !== 'OWNER');
+}
+
+/**
+ * A folder is renamed and deleted within its collection, and any row is moved
+ * within one. A search at the Collections root has no collection open, so
+ * those actions would fail there.
+ */
+export function needsCollectionContext(item: KbTableItem, action: 'rename' | 'move' | 'delete'): boolean {
+  if (action === 'move') return true;
+  return isKnowledgeHubTableItem(item)
+    ? item.nodeType === 'folder' || item.nodeType === 'recordGroup'
+    : 'type' in item && item.type === 'folder';
+}
+
+/**
  * Matches legacy all-records DataGrid: do not render indexing status for internal hub records.
  */
 export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean {

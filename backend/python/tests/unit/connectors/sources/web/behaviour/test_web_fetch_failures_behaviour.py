@@ -3,18 +3,24 @@ number of times, permanent ones are not retried, and what is left over is shown
 to the user with a plain reason and a next step.
 """
 
+import asyncio
+import json
+
 import pytest
 from web_behaviour_fakes import (
     START_URL,
+    FakeCheckpointStore,
     FakeRecordsDb,
     FakeWeb,
     MakeConnector,
     Page,
     RecordingNotifications,
     VirtualClock,
+    html_page,
 )
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.sources.web.politeness import shared_fetch_slots, shared_host_gate
 
 PAGE = "http://site.test/page"
 
@@ -56,8 +62,8 @@ async def test_a_page_that_stays_down_is_retried_a_bounded_number_of_times(
 
 
 @pytest.mark.parametrize("status", [404, 410])
-async def test_a_missing_page_is_asked_for_once_and_shown_as_not_found(
-    status: int, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+async def test_a_missing_page_is_asked_for_once_and_reported_not_stored(
+    status: int, site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
 ) -> None:
     _home_linking_to_page(site)
     site.add(PAGE, Page(status=status, body=b"nope"))
@@ -66,9 +72,9 @@ async def test_a_missing_page_is_asked_for_once_and_shown_as_not_found(
 
     assert site.gets(PAGE) == 1
     assert PAGE not in site.browser_visits
-    failed = db.pages()[PAGE]
-    assert failed.indexing_status == ProgressStatus.FAILED.value
-    assert failed.reason is not None and failed.reason.startswith(f"The page wasn't found ({status} ")
+    assert PAGE not in db.pages()
+    (saved,) = checkpoints.sync_points.values()
+    assert json.loads(saved["lastRun"])["failed_by_status"] == {str(status): 1}
 
 
 async def test_a_page_behind_a_login_is_shown_as_refused(
@@ -187,3 +193,54 @@ async def test_a_cdn_error_code_is_reported_as_the_site_s_answer_not_as_unreacha
 
     reason = db.pages()[PAGE].reason or ""
     assert "(522" in reason and "couldn't reach" not in reason
+
+
+async def test_waiting_on_a_slowed_down_site_holds_none_of_the_shared_fetch_slots(
+    browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    """RS-06: one throttled site must not starve the other connectors of the process's fetch slots."""
+    _home_linking_to_page(browser)
+    connector = await make_connector()
+    site = shared_host_gate._site("site.test")
+    site.active = site.limit
+    waiting = asyncio.ensure_future(connector._fetch_page(PAGE, 1, None))
+    await asyncio.sleep(0.2)
+    assert not waiting.done() and shared_fetch_slots.active == 0
+    site.active = 0
+    await asyncio.wait_for(waiting, 5)
+    assert shared_fetch_slots.active == 0
+
+
+async def test_a_site_that_rate_limits_every_page_is_left_for_the_next_sync(
+    site: FakeWeb, make_connector: MakeConnector, clock: VirtualClock,
+) -> None:
+    """Found on a real docs site that answered 429 (Retry-After: 0) to every request from the crawler's address.
+
+    40 such pages took 604 GETs and an hour of back-off; a site of 1,000 would take a day of
+    requests the site has already refused. Once the site refuses page after page with no
+    success, the crawl should stop asking it and leave the rest for the next sync.
+    """
+    links = [f"http://site.test/p{i}.html" for i in range(40)]
+    site.html(START_URL, "Home", *links)
+    for url in links:
+        site.add(url, Page(status=429))
+
+    await (await make_connector()).run_sync()
+
+    assert sum(1 for method, _ in site.requests if method == "GET") <= 3 * len(links)
+    assert clock.offset < 15 * 60
+
+
+async def test_a_site_that_rate_limits_only_some_pages_is_crawled_to_the_end(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector, checkpoints: FakeCheckpointStore,
+) -> None:
+    links = [f"http://site.test/p{i}.html" for i in range(30)]
+    site.html(START_URL, "Home", *links)
+    for i, url in enumerate(links):
+        site.add(url, Page(status=429) if i % 3 == 0 else Page(body=html_page(f"p{i}")))
+
+    await (await make_connector()).run_sync()
+
+    (saved,) = checkpoints.sync_points.values()
+    assert json.loads(saved["lastRun"])["stop_reason"] is None
+    assert len([u for u in db.pages() if u in links]) >= 20

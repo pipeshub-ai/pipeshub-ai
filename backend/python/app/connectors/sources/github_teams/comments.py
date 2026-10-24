@@ -45,6 +45,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import ATTACHMENT_MAX_SIZE_BYTES, PR_FILE_INLINE_CONTENT_MAX_BYTES
@@ -272,6 +273,9 @@ class CommentsHelper:
         if not body_content:
             return ""
         cleaned_text, attachments = await self.clean_github_content(body_content)
+        # Every issue/PR body and comment passes here; images are still tokens,
+        # so the scan neither sees base64 nor breaks attachment URLs.
+        cleaned_text = redact_secrets(cleaned_text).text
         c = self.c
         for attach in attachments:
             slot = attach.get("slot")
@@ -580,6 +584,13 @@ class CommentsHelper:
         """Build conversation-comment BlockGroups, then one TEXT_SECTION BlockGroup
         per changed file with that file's review comments attached.
 
+        A file's group holds its diff, not the whole file (with "Index Code
+        Files" on, the default branch's copy is its own code-file record). Only a file
+        that changed but that GitHub returns without a diff (too large, or
+        binary) and that still exists has its text at the PR head inlined,
+        within ``PR_FILE_INLINE_CONTENT_MAX_BYTES``. A rename or copy names
+        its source path.
+
         Review comments are grouped by real GitHub review thread
         (``in_reply_to_id`` chain), matching ``BlockGroup.comments``'s documented
         "grouped by thread_id" contract. Grouping every comment on a path into
@@ -737,11 +748,20 @@ class CommentsHelper:
             if not filename:
                 continue
             status = getattr(file, "status", "")
-            patch = getattr(file, "patch", None) or "(no textual diff available — binary or too large)"
+            diff = getattr(file, "patch", None)
+            patch = redact_secrets(diff or "(no textual diff available — binary or too large)").text
             file_content: str | None = None
             oversized = False
             content_bytes: int | None = None
-            if status != "removed" and head_sha:
+            # The diff and review comments describe a change; the whole file
+            # at the PR head is fetched only when the file changed but GitHub
+            # gives no diff (too large to show, or binary: GitHub counts a
+            # binary file's lines as 0/0), since it is then the only view of it.
+            # A rename, copy or mode change with no line changes is not
+            # fetched: any text it has is the same file indexed once more.
+            line_changes = (getattr(file, "additions", 0) or 0) + (getattr(file, "deletions", 0) or 0)
+            changed = line_changes > 0 or status in ("added", "modified")
+            if not diff and changed and status != "removed" and head_sha:
                 content_res = await c.runtime.ds_call(
                     c.data_source.get_file_contents, owner, repo, filename, head_sha,
                 )
@@ -751,14 +771,25 @@ class CommentsHelper:
                     )
 
             data_parts = [f"[{status} file]"]
+            # Name the old path whenever GitHub gives one, so a search for it
+            # still finds the pull request that moved the file.
+            previous = getattr(file, "previous_filename", None)
+            if previous and status in ("renamed", "copied"):
+                data_parts.append(f"{status.capitalize()} from {previous}.")
             if oversized:
                 data_parts.append(
                     f"Full File Content: omitted ({content_bytes} bytes exceeds the "
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full File Content:\n{file_content}")
-            data_parts.append(f"Diff:\n{patch}")
+                data_parts.append(f"Full File Content:\n{redact_secrets(file_content).text}")
+            # No diff and nothing fetched: say only what the listing shows.
+            # GitHub counts a binary's lines as 0/0 even when its bytes
+            # changed, so "no changes" is never claimed for a rename or copy.
+            if not diff and not changed and status == "changed":
+                data_parts.append("File mode or type changed.")
+            elif diff or changed or status not in ("renamed", "copied"):
+                data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
             if sections:
                 data_parts.append("Review comments on this file:")
@@ -795,6 +826,10 @@ class CommentsHelper:
             return None, True, declared
         decoded = self._decode_content_file(content_file)
         if decoded is None:
+            return None, False, declared if isinstance(declared, int) else None
+        if "\x00" in decoded:
+            # Binary (git's own test: a NUL byte). Decoding it as UTF-8 would
+            # index a page of replacement characters.
             return None, False, declared if isinstance(declared, int) else None
         size = len(decoded.encode("utf-8"))
         if size > PR_FILE_INLINE_CONTENT_MAX_BYTES:
@@ -855,7 +890,7 @@ class CommentsHelper:
                 type=BlockType.TEXT.value,
                 sub_type=BlockSubType.COMMIT.value,
                 format=DataFormat.MARKDOWN,
-                data=message,
+                data=redact_secrets(message or "").text,
                 weburl=getattr(commit, "html_url", None),
                 source_id=getattr(commit, "sha", None),
                 source_creation_date=date,

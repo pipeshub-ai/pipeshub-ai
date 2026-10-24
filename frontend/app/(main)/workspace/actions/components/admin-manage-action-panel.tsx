@@ -36,13 +36,16 @@ import {
   stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
+import { ToolsetToolRulesDialog } from '@/config';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
+import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
 import {
   useWorkspaceDrawerNestedModalHost,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 /** Pick the OAuth app row for this instance when id is missing or stale. */
 function resolveLinkedOauthConfig(
@@ -105,6 +108,7 @@ export function AdminManageActionPanel({
 
   const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
+  const [toolRulesOpen, setToolRulesOpen] = useState(false);
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
   const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
 
@@ -154,10 +158,11 @@ export function AdminManageActionPanel({
     );
   }, [oauth, authType, authConfigSchema]);
 
+  const frontendPublicUrl = useFrontendPublicUrl();
   const redirectUri = useMemo(() => {
-    if (typeof window === 'undefined') return '';
-    return toolsetRedirectUri(window.location.origin, toolsetType);
-  }, [toolsetType]);
+    if (!frontendPublicUrl) return '';
+    return toolsetRedirectUri(frontendPublicUrl, toolsetType);
+  }, [frontendPublicUrl, toolsetType]);
 
   // Reset selected OAuth app when the panel switches to a different instance.
   useEffect(() => {
@@ -675,18 +680,16 @@ export function AdminManageActionPanel({
   const handleAuthenticate = useCallback(async () => {
     setError(null);
     await beginOAuth(
+      'oauth_admin_toolset',
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
-          typeof window !== 'undefined' ? window.location.origin : undefined
+          browserOAuthBaseUrl()
         );
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));
         }
-        return {
-          authorizationUrl: result.authorizationUrl,
-          windowName: 'oauth_admin_toolset',
-        };
+        return result.authorizationUrl;
       },
       {
         onTimeout: () => setError(t('agentBuilder.authTimeout')),
@@ -887,9 +890,17 @@ export function AdminManageActionPanel({
 
       {toolNames.length > 0 ? (
         <Flex direction="column" gap="2">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.actions.availableActions')} ({toolNames.length})
-          </Text>
+          <Flex align="center" justify="between" gap="3" wrap="wrap">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.availableActions')} ({toolNames.length})
+            </Text>
+            {instanceId ? (
+              <Button type="button" size="1" variant="soft" color="gray" onClick={() => setToolRulesOpen(true)}>
+                <MaterialIcon name="rule" size={16} color="var(--gray-11)" />
+                {t('workspace.actions.toolRules.open')}
+              </Button>
+            ) : null}
+          </Flex>
           <Flex gap="2" wrap="wrap">
             {toolNames.map((n) => (
               <Badge key={n} size="1" variant="soft" color="gray">
@@ -1000,6 +1011,17 @@ export function AdminManageActionPanel({
             </Flex>
           </AlertDialog.Content>
         </AlertDialog.Root>
+      ) : null}
+
+      {instanceId ? (
+        <ToolsetToolRulesDialog
+          open={toolRulesOpen}
+          onOpenChange={setToolRulesOpen}
+          instanceId={instanceId}
+          instanceName={instance.instanceName || instance.displayName || toolsetType}
+          toolsetType={toolsetType}
+          container={nestedModalHost}
+        />
       ) : null}
     </Flex>
   );

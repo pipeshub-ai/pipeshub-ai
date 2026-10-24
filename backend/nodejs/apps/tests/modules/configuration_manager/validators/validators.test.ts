@@ -328,10 +328,29 @@ describe('CM Validators', () => {
 
   describe('web search schemas', () => {
     it('webSearchProviderType should accept valid providers', () => {
-      for (const p of ['duckduckgo', 'serper', 'tavily', 'exa']) {
+      for (const p of ['duckduckgo', 'serper', 'tavily', 'exa', 'brave', 'searxng', 'firecrawl', 'crawl4ai']) {
         expect(webSearchProviderType.safeParse(p).success).to.be.true
       }
       expect(webSearchProviderType.safeParse('google').success).to.be.false
+    })
+
+    it('accepts only a plain http(s) server address as baseUrl', () => {
+      const withBase = (baseUrl: unknown) =>
+        addWebSearchProviderSchema.safeParse({ body: { provider: 'searxng', configuration: { baseUrl } } }).success
+      expect(withBase('http://searxng:8080')).to.be.true
+      expect(withBase('https://search.example.com/sub')).to.be.true
+      for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'ftp://x', 'http://user:pw@host', 'not a url', 7, 'https://a.example/' + 'x'.repeat(2048)]) {
+        expect(withBase(bad), String(bad).slice(0, 40)).to.be.false
+      }
+      expect(addWebSearchProviderSchema.safeParse({ body: { provider: 'serper', configuration: { apiKey: 'k' } } }).success).to.be.true
+    })
+
+    it('refuses a page-reading-only provider as the default', () => {
+      const asDefault = { provider: 'crawl4ai', configuration: { baseUrl: 'http://c:1' }, isDefault: true }
+      expect(addWebSearchProviderSchema.safeParse({ body: asDefault }).success).to.be.false
+      expect(updateWebSearchProviderSchema.safeParse({ params: { providerKey: 'pk' }, body: asDefault }).success).to.be.false
+      expect(addWebSearchProviderSchema.safeParse({ body: { ...asDefault, isDefault: false } }).success).to.be.true
+      expect(addWebSearchProviderSchema.safeParse({ body: { ...asDefault, provider: 'firecrawl' } }).success).to.be.true
     })
 
     it('addWebSearchProviderSchema should accept valid config', () => {

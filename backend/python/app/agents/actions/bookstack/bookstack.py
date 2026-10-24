@@ -12,9 +12,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.bookstack.bookstack import BookStackClient
 from app.sources.external.bookstack.bookstack import BookStackDataSource
@@ -72,7 +72,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("BookStack")\
     .in_group("Documentation")\
     .with_description("BookStack integration for documentation and knowledge management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             CommonFields.api_token("BookStack Token ID", "your-token-id", field_name="tokenId"),

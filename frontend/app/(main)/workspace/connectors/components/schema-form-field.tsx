@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useRef, useContext, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useContext, useMemo, useEffect, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
   WorkspaceRightPanelBodyPortalContext,
@@ -104,6 +104,7 @@ export function SchemaFormField({
   revealed = false,
 }: SchemaFormFieldProps) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+  const toggleIds = useId();
 
   if (!visible) return null;
 
@@ -111,6 +112,15 @@ export function SchemaFormField({
   const isOptional = 'required' in field && !field.required;
   const isRequired = !isOptional;
   const invalid = Boolean(error);
+  const labelId = `${toggleIds}-label`;
+  const helpId = field.description ? `${toggleIds}-help` : undefined;
+  const errorId = error ? `${toggleIds}-error` : undefined;
+  const toggleDescribedBy = [helpId, errorId].filter(Boolean).join(' ') || undefined;
+  const toggleError = error ? (
+    <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a11)' }}>
+      {error}
+    </Text>
+  ) : null;
 
   // Render the appropriate input based on field type
   const renderField = () => {
@@ -118,12 +128,15 @@ export function SchemaFormField({
       case 'CHECKBOX':
         return (
           <Flex direction="column" gap="1">
-            <CheckboxField field={field} value={value} onChange={onChange} disabled={disabled} />
-            {error ? (
-              <Text size="1" style={{ color: 'var(--red-a11)' }}>
-                {error}
-              </Text>
-            ) : null}
+            <CheckboxField
+              field={field}
+              value={value}
+              onChange={onChange}
+              disabled={disabled}
+              labelId={labelId}
+              describedBy={toggleDescribedBy}
+            />
+            {toggleError}
           </Flex>
         );
 
@@ -136,12 +149,10 @@ export function SchemaFormField({
               onChange={onChange}
               disabled={disabled}
               hasError={invalid}
+              labelId={labelId}
+              describedBy={toggleDescribedBy}
             />
-            {error ? (
-              <Text size="1" style={{ color: 'var(--red-a11)' }}>
-                {error}
-              </Text>
-            ) : null}
+            {toggleError}
           </Flex>
         );
 
@@ -166,6 +177,7 @@ export function SchemaFormField({
               label={field.displayName}
               required={isRequired}
               optional={isOptional}
+              description={field.description}
               error={error}
             >
               <TagsInput field={field} value={value} onChange={onChange} disabled={disabled} hasError={invalid} />
@@ -248,6 +260,7 @@ export function SchemaFormField({
             label={field.displayName}
             required={isRequired}
             optional={isOptional}
+            description={field.description}
             error={error}
           >
             {renderInput()}
@@ -263,7 +276,7 @@ export function SchemaFormField({
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}
       {field.description && (fieldType === 'CHECKBOX' || fieldType === 'BOOLEAN') && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
           {field.description}
         </Text>
       )}
@@ -448,6 +461,7 @@ function TextInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
 
   const htmlType =
     fieldType === 'EMAIL' ? 'email' :
@@ -463,6 +477,7 @@ function TextInput({
     <>
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
+          {...control}
           type={htmlType}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
@@ -491,11 +506,6 @@ function TextInput({
           }}
         />
       </StartAdornmentOverlay>
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
       {examples && examples.length > 0 ? <FieldExamples examples={examples} /> : null}
     </>
   );
@@ -531,6 +541,7 @@ function TagsInput({
   const { t } = useTranslation();
   const [draft, setDraft] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
 
   const { rawTags, tags } = useMemo(() => {
     const raw: string[] = Array.isArray(value)
@@ -566,6 +577,7 @@ function TagsInput({
   return (
     <>
       <input
+        {...control}
         type="text"
         value={draft}
         placeholder={placeholder}
@@ -624,11 +636,6 @@ function TagsInput({
           ))}
         </Flex>
       ) : null}
-      {field.description ? (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      ) : null}
     </>
   );
 }
@@ -658,6 +665,7 @@ function PasswordInput({
     setShowPassword(Boolean(revealed));
   }, [revealed]);
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
@@ -665,6 +673,7 @@ function PasswordInput({
     <>
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
+          {...control}
           type={showPassword ? 'text' : 'password'}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
@@ -707,11 +716,6 @@ function PasswordInput({
           />
         </IconButton>
       </StartAdornmentOverlay>
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
     </>
   );
 }
@@ -730,10 +734,12 @@ function TextareaInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
 
   return (
     <>
       <textarea
+        {...control}
         value={String(value ?? '')}
         placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
         disabled={disabled}
@@ -752,11 +758,6 @@ function TextareaInput({
           opacity: disabled ? 0.6 : 1,
         }}
       />
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
     </>
   );
 }
@@ -775,6 +776,7 @@ function JsonInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
 
   const stringVal =
     typeof value === 'string' ? value : JSON.stringify(value ?? '', null, 2);
@@ -782,6 +784,7 @@ function JsonInput({
   return (
     <>
       <textarea
+        {...control}
         value={stringVal}
         placeholder={'placeholder' in field ? (field.placeholder ?? '{}') : '{}'}
         disabled={disabled}
@@ -803,11 +806,6 @@ function JsonInput({
           opacity: disabled ? 0.6 : 1,
         }}
       />
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
     </>
   );
 }
@@ -828,22 +826,30 @@ function NumberInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
+  const unitId = useId();
 
-  const min = 'validation' in field ? field.validation?.minLength : undefined;
-  const max = 'validation' in field ? field.validation?.maxLength : undefined;
+  const min = 'validation' in field ? field.validation?.min : undefined;
+  const max = 'validation' in field ? field.validation?.max : undefined;
+  const unit = 'unit' in field ? field.unit : undefined;
+  const describedBy = [control['aria-describedby'], unit ? unitId : null].filter(Boolean).join(' ') || undefined;
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
   return (
-    <>
+    <Flex align="center" gap="2">
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
+          {...control}
+          aria-describedby={describedBy}
           type="number"
           value={value !== undefined && value !== null ? String(value) : ''}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
           disabled={disabled}
           min={min}
           max={max}
+          // Bounded numbers are whole numbers: the connector service refuses a fraction for them.
+          step={min != null || max != null ? 1 : undefined}
           onChange={(e) => {
             const num = e.target.value === '' ? '' : Number(e.target.value);
             onChange(field.name, num);
@@ -862,12 +868,12 @@ function NumberInput({
           }}
         />
       </StartAdornmentOverlay>
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
+      {unit ? (
+        <Text id={unitId} size="2" style={{ color: 'var(--gray-11)', flexShrink: 0 }}>
+          {unit}
         </Text>
-      )}
-    </>
+      ) : null}
+    </Flex>
   );
 }
 
@@ -898,6 +904,8 @@ function SelectInput({
   hasError?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+  const control = useFormFieldControl();
+  const optionLabels = 'optionLabels' in field ? field.optionLabels : undefined;
 
   const optionItems = useMemo(
     () =>
@@ -905,12 +913,12 @@ function SelectInput({
         ('options' in field && Array.isArray(field.options)
           ? field.options.map((opt: string | { id: string; label: string }) =>
               typeof opt === 'string'
-                ? { label: opt, value: opt }
+                ? { label: optionLabels?.[opt] ?? opt, value: opt }
                 : { label: opt.label, value: opt.id }
             )
           : [])
       ).filter((opt) => opt.value !== ''),
-    [options, field]
+    [options, field, optionLabels]
   );
 
   const hasYesNoOptions = useMemo(() => {
@@ -934,6 +942,7 @@ function SelectInput({
           disabled={disabled}
         >
           <Select.Trigger
+            {...control}
             data-invalid={hasError || undefined}
             color={hasError ? 'red' : undefined}
             style={{
@@ -956,11 +965,6 @@ function SelectInput({
           </Select.Content>
         </Select.Root>
       </StartAdornmentOverlay>
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
     </>
   );
 }
@@ -978,6 +982,7 @@ function FolderPickerInput({
 }) {
   const { t } = useTranslation();
   const [isFocused, setIsFocused] = useState(false);
+  const control = useFormFieldControl();
   const pathValue = String(value ?? '');
   const addToast = useToastStore((s) => s.addToast);
 
@@ -1003,6 +1008,7 @@ function FolderPickerInput({
     <>
       <Flex gap="2" align="center" wrap="wrap">
         <input
+          {...control}
           type="text"
           value={pathValue}
           placeholder={'placeholder' in field ? (field.placeholder ?? '/path/to/folder') : '/path/to/folder'}
@@ -1036,11 +1042,6 @@ function FolderPickerInput({
           </Button>
         )}
       </Flex>
-      {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          {field.description}
-        </Text>
-      )}
     </>
   );
 }
@@ -1050,11 +1051,15 @@ function CheckboxField({
   value,
   onChange,
   disabled,
+  labelId,
+  describedBy,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  labelId: string;
+  describedBy?: string;
 }) {
   return (
     <Flex align="center" gap="2" style={{ minHeight: 32 }}>
@@ -1062,8 +1067,10 @@ function CheckboxField({
         checked={Boolean(value)}
         onCheckedChange={(checked) => onChange(field.name, checked)}
         disabled={disabled}
+        aria-labelledby={labelId}
+        aria-describedby={describedBy}
       />
-      <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+      <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
         {field.displayName}
         {'required' in field && field.required && ' *'}
       </Text>
@@ -1077,12 +1084,16 @@ function BooleanField({
   onChange,
   disabled,
   hasError = false,
+  labelId,
+  describedBy,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   hasError?: boolean;
+  labelId: string;
+  describedBy?: string;
 }) {
   const { t } = useTranslation();
   const isIncludeSubfolders = field.name.toLowerCase() === 'include_subfolders';
@@ -1103,7 +1114,7 @@ function BooleanField({
   if (isIncludeSubfolders) {
     return (
       <Flex direction="column" gap="1">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
         </Text>
         <Select.Root
@@ -1111,7 +1122,11 @@ function BooleanField({
           onValueChange={(v) => onChange(field.name, v === 'yes')}
           disabled={disabled}
         >
-          <Select.Trigger style={{ width: '100%', height: 32 }} />
+          <Select.Trigger
+            aria-labelledby={labelId}
+            aria-describedby={describedBy}
+            style={{ width: '100%', height: 32 }}
+          />
           <Select.Content>
             <Select.Item value="yes">{t('common.yes')}</Select.Item>
             <Select.Item value="no">{t('common.no')}</Select.Item>
@@ -1122,9 +1137,9 @@ function BooleanField({
   }
 
   return (
-    <Flex align="center" justify="between" style={{ minHeight: 32 }}>
+    <Flex align="center" justify="between" gap="3" style={{ minHeight: 32 }}>
       <Flex direction="column" gap="1">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
           {'required' in field && field.required && ' *'}
         </Text>
@@ -1134,6 +1149,9 @@ function BooleanField({
         onCheckedChange={(checked) => onChange(field.name, checked)}
         disabled={disabled}
         color={hasError ? 'red' : undefined}
+        aria-labelledby={labelId}
+        aria-describedby={describedBy}
+        style={{ flexShrink: 0 }}
       />
     </Flex>
   );
@@ -1245,6 +1263,7 @@ function FileInput({
   error?: string;
   isOptional?: boolean;
 }) {
+  const { t } = useTranslation();
   const [localError, setLocalError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1274,6 +1293,27 @@ function FileInput({
   const handleClick = () => {
     if (!disabled) fileInputRef.current?.click();
   };
+
+  const ids = useId();
+  const labelId = `${ids}-label`;
+  const errorId = displayError ? `${ids}-error` : undefined;
+  const helpId = field.description ? `${ids}-help` : undefined;
+  // The hidden file input can't take focus, so the zone is the control keyboard and screen-reader users reach.
+  // Once a file is loaded, a key press replaces it, as the Replace link does: picking the same file again
+  // needs the input reset first.
+  const zoneProps = {
+    role: 'button',
+    tabIndex: disabled ? -1 : 0,
+    'aria-labelledby': labelId,
+    'aria-describedby': [helpId, errorId].filter(Boolean).join(' ') || undefined,
+    'aria-disabled': disabled || undefined,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (disabled || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      if (isLoaded) handleReplace();
+      else handleClick();
+    },
+  } as const;
 
   const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1307,8 +1347,8 @@ function FileInput({
     }
   };
 
-  const handleReplace = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleReplace = (e?: React.SyntheticEvent) => {
+    e?.stopPropagation();
     setFileName(null);
     setLocalError(null);
     onChange(field.name, '');
@@ -1320,12 +1360,12 @@ function FileInput({
     <Flex direction="column" gap="2">
       {/* Label row */}
       <Flex align="center" gap="1">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
         </Text>
         {isOptional && (
           <Text size="1" style={{ color: 'var(--gray-10)' }}>
-            (optional)
+            {t('form.optional')}
           </Text>
         )}
       </Flex>
@@ -1333,6 +1373,8 @@ function FileInput({
       <input
         ref={fileInputRef}
         type="file"
+        tabIndex={-1}
+        aria-labelledby={labelId}
         accept={acceptAttr}
         onChange={handleChange}
         disabled={disabled}
@@ -1353,6 +1395,7 @@ function FileInput({
             minHeight: 40,
           }}
           onClick={disabled ? undefined : handleClick}
+          {...zoneProps}
         >
           <Flex align="center" gap="2">
             <MaterialIcon name="check_circle" size={16} color="var(--green-a11)" />
@@ -1388,6 +1431,7 @@ function FileInput({
             transition: 'border-color 0.15s, background-color 0.15s',
           }}
           onClick={handleClick}
+          {...zoneProps}
         >
           <MaterialIcon
             name="upload_file"
@@ -1409,13 +1453,13 @@ function FileInput({
       )}
 
       {displayError && (
-        <Text size="1" style={{ color: 'var(--red-a10)' }}>
+        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a10)' }}>
           {displayError}
         </Text>
       )}
 
       {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
           {field.description}
         </Text>
       )}

@@ -55,6 +55,48 @@ def minimal_user_info():
 # build_initial_state
 # ===================================================================
 class TestBuildInitialState:
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "artifact_owner_user_id": "u-caller"}, "u-caller"),
+        ({"query": "q", "artifact_owner_user_id": None}, "user-1"),
+        ({"query": "q"}, "user-1"),
+    ], ids=["set", "none", "absent"])
+    def test_artifacts_belong_to_the_run_user_unless_an_owner_is_set(
+        self, mock_deps, minimal_user_info, chat_query, expected,
+    ) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["artifact_owner_user_id"] == expected
+        assert state["user_id"] == "user-1"
+
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "keywordSearchBudget": "short"}, "short"),
+        ({"query": "q", "keyword_search_budget": "full"}, "full"),
+        ({"query": "q"}, None),
+    ], ids=["camel-case", "snake-case", "absent"])
+    def test_keyword_search_budget_reaches_the_search_tools(
+        self, mock_deps, minimal_user_info, chat_query, expected,
+    ) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["keyword_search_budget"] == expected
+
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "deepResearch": True}, True),
+        ({"query": "q", "deepResearch": False}, False),
+        ({"query": "q"}, False),
+    ], ids=["on", "off", "absent"])
+    def test_deep_research_reaches_the_agent(self, mock_deps, minimal_user_info, chat_query, expected) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["deep_research"] is expected
+
+    def test_the_resolved_web_config_keeps_every_stored_provider(self, mock_deps, minimal_user_info) -> None:
+        """The agent route resolves the fallbacks and page readers; they must reach the tools."""
+        others = [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}, "junk"]
+        chat_query = {"query": "q", "webSearchConfig": {"provider": "serper", "configuration": {"apiKey": "k"}, "providers": others}}
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_config"] == {
+            "provider": "serper", "configuration": {"apiKey": "k"},
+            "providers": [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}],
+        }
+
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(
             chat_query=minimal_chat_query,

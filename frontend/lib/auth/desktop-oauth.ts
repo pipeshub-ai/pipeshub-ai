@@ -64,11 +64,49 @@ export function buildDesktopDeepLink(
   provider: DesktopOAuthProvider,
   params: Record<string, string | null | undefined>,
 ): string {
+  return buildDeepLink(`auth/${provider}/callback`, params);
+}
+
+/**
+ * Integrations whose OAuth the backend starts (connectors, toolsets, MCP servers). The
+ * backend prefixes their `state` with the same marker when the desktop app asked for the
+ * authorize URL (`app/utils/desktop_state.py`), so {@link isDesktopOAuthState} works
+ * on their callback pages too.
+ */
+export type DesktopIntegrationFamily = 'connector' | 'toolset' | 'mcp';
+
+/** Carries `code` and `state` to the app, which completes the callback with its own session. */
+export function buildIntegrationDeepLink(
+  family: DesktopIntegrationFamily,
+  params: Record<string, string | null | undefined>,
+): string {
+  return buildDeepLink(`integration/${family}/callback`, params);
+}
+
+function buildDeepLink(path: string, params: Record<string, string | null | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value) search.set(key, value);
   }
-  return `${DEEP_LINK_SCHEME}://auth/${provider}/callback?${search.toString()}`;
+  return `${DEEP_LINK_SCHEME}://${path}?${search.toString()}`;
+}
+
+/**
+ * On an integration callback page: the deep link that hands this result to the desktop
+ * app, or null when the flow was started from the web and should complete here.
+ */
+export function integrationHandoffLink(
+  family: DesktopIntegrationFamily,
+  search: URLSearchParams,
+): string | null {
+  const state = search.get('state');
+  if (!isDesktopOAuthState(state)) return null;
+  return buildIntegrationDeepLink(family, {
+    code: search.get('code'),
+    state,
+    error: search.get('error'),
+    error_description: search.get('error_description'),
+  });
 }
 
 function base64Url(bytes: Uint8Array): string {

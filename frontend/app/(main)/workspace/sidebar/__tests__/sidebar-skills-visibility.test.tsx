@@ -24,12 +24,14 @@ let flagsState: { flags: Record<string, boolean> | null } = { flags: null };
 vi.mock('@/lib/store/feature-flags-store', () => ({
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
-  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP === true,
+  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));
 
-vi.mock('react-i18next', () => ({
+// Spread the real module so exports the import graph needs (initReactI18next) stay defined.
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({
     t: (key: string) => {
       const parts = key.split('.');

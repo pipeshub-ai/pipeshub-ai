@@ -55,7 +55,7 @@ from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +404,7 @@ class GeminiTransport(LLMTransport):
     def _build_config(
         self, tools: list[ToolSchema] | None, system: str | None,
         system_blocks: list[str] | None, force_tool: str | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> Any:
         types = self._types
         if system_blocks and not system:
@@ -433,6 +434,10 @@ class GeminiTransport(LLMTransport):
                     function_calling_config=types.FunctionCallingConfig(
                         mode="ANY", allowed_function_names=[force_tool],
                     )
+                )
+            elif tool_choice == "none":
+                kwargs["tool_config"] = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode="NONE"),
                 )
         return types.GenerateContentConfig(**kwargs)
 
@@ -530,12 +535,14 @@ class GeminiTransport(LLMTransport):
         effort: str | None = None,
         system_blocks: list[str] | None = None,
         force_tool: str | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         try:
             response = await self._client.aio.models.generate_content(
                 model=model or self._model,
                 contents=self._format_contents(messages),
-                config=self._build_config(tools, system, system_blocks, force_tool),
+                config=self._build_config(tools, system, system_blocks, force_tool, tool_choice),
             )
         except Exception as exc:
             raise self._wrap_error(exc, "complete") from exc
@@ -620,6 +627,8 @@ class GeminiTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         resolved_model = model or self._model
         text_parts: list[str] = []
@@ -635,7 +644,7 @@ class GeminiTransport(LLMTransport):
             stream = await self._client.aio.models.generate_content_stream(
                 model=resolved_model,
                 contents=self._format_contents(messages),
-                config=self._build_config(tools, system, system_blocks),
+                config=self._build_config(tools, system, system_blocks, tool_choice=tool_choice),
             )
             async for chunk in stream:
                 last_chunk = chunk
