@@ -30699,6 +30699,9 @@ paths:
           the matches found so far and can grow from page to page; it is
           final once `hasNext` is false. `counts` is returned only when the
           whole result fits in the first page read, and is `null` otherwise.
+        - A `nextCursor` or `prevCursor` belongs to the limit it was read
+          under. A token with a different limit that sends it gets a `400`;
+          start that listing again without a cursor.
 
         **Access control**
 

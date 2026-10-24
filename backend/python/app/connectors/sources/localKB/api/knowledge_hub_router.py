@@ -33,6 +33,7 @@ from app.connectors.sources.localKB.handlers.kh_bounded import (
     BoundedCursor,
     BoundedRead,
     Position,
+    bound_key,
     decode_bounded_cursor,
     encode_bounded_cursor,
     is_bounded_cursor,
@@ -399,6 +400,9 @@ async def _handle_get_nodes(
                 bounded = decode_bounded_cursor(cursor)
             except ValueError:
                 raise _bad_cursor() from None
+            if bounded.bound != bound_key(connection_limit(request.state.user)):
+                # Its offset and position count rows of another limit's listing.
+                raise _bad_cursor()
             carried = bounded.params
             q, node_types, record_types = carried.get("q"), carried.get("node_types"), carried.get("record_types")
             origins, connector_ids = carried.get("origins"), carried.get("connector_ids")
@@ -671,6 +675,7 @@ async def _named_root(
     group, folder and file its limit names that the user can read, as one
     listing with exact totals."""
     include = query["include"] or []
+    bound = bound_key(connection_limit(request.state.user))
     named = await named_inside_connection(
         request, request.app.state.graph_provider, query["org_id"], query["user_id"],
     )
@@ -717,9 +722,10 @@ async def _named_root(
             startIndex=offset + 1 if page else 0,
             endIndex=end,
             currentPageItems=len(page),
-            nextCursor=encode_bounded_cursor("browse", end, params=params) if end < len(rows) else None,
+            nextCursor=encode_bounded_cursor("browse", end, params=params, bound=bound) if end < len(rows) else None,
             prevCursor=(
-                encode_bounded_cursor("browse", max(0, offset - limit), params=params) if offset > 0 else None
+                encode_bounded_cursor("browse", max(0, offset - limit), params=params, bound=bound)
+                if offset > 0 else None
             ),
             page=query["page"] if query["cursor"] is None else None,
             totalPages=(len(rows) + limit - 1) // limit if query["cursor"] is None else None,
@@ -791,7 +797,10 @@ async def _search_inside_connection(
             endIndex=seen + len(items),
             currentPageItems=len(items),
             nextCursor=(
-                encode_bounded_cursor("search", seen + len(items), following, params)
+                encode_bounded_cursor(
+                    "search", seen + len(items), following, params,
+                    bound=bound_key(connection_limit(request.state.user)),
+                )
                 if following is not None else None
             ),
             page=None if by_cursor else query["page"],
