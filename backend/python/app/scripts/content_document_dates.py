@@ -203,8 +203,13 @@ async def _plan(
         # Nothing is known of the content, so only a missing origin is written.
         write = plan_dates_write(doc, None, frozenset())
         return write if write is not None and write.action == "stamp" else None
-    blocks = BlocksContainer.model_validate(containers).blocks
-    dates = find_document_dates(extraction, blocks, uploaded_ms=latest_upload_ms(doc))
+    try:
+        blocks = BlocksContainer.model_validate(containers).blocks
+        dates = find_document_dates(extraction, blocks, uploaded_ms=latest_upload_ms(doc))
+    except Exception:
+        # Damaged stored content: skipped, so a resumed run does not stop on it again.
+        tally.unreadable += 1
+        return None
     return plan_dates_write(doc, dates, replace)
 
 

@@ -215,6 +215,18 @@ async def test_an_extraction_the_entities_stage_kept_dates_the_upload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_damaged_stored_record_is_skipped_and_the_run_goes_on() -> None:
+    graph = _Graph([_doc("a", sourceTimestampOrigin="upload"), _doc("b", sourceTimestampOrigin="upload")])
+    damaged = {**await _blob(*EMAIL), "block_containers": {"blocks": [{"index": "first"}], "block_groups": []}}
+    blobs = _Blobs({"v-a": damaged, "v-b": await _blob(*EMAIL)})
+
+    tally = await backfill_content_dates(graph, blobs, org_id="o1", apply=True, replace=UPLOAD_ONLY, out=io.StringIO())
+
+    assert (tally.unreadable, tally.date, tally.written) == (1, 1, 1)
+    assert graph.docs["b"]["sourceTimestampOrigin"] == "content"
+
+
+@pytest.mark.asyncio
 async def test_dating_needs_the_switch_on() -> None:
     graph, blobs = await _setup()
     with pytest.raises(ValueError, match="CONTENT_DOCUMENT_DATES"):
