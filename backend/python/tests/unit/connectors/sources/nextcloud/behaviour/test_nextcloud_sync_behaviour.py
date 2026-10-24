@@ -2288,6 +2288,71 @@ class TestChecklistAudit:
         assert {"Docs", "Reports", "q1.pdf", "notes.txt"} <= db.names(), "what was under it is kept"
         assert db.by_name("readme.txt").external_revision_id == server.nodes["readme.txt"].etag
 
+    # ---- a folder that moves or is deleted between its parent's listing and its own ----
+
+    @staticmethod
+    def edit_when_listed(server: FakeNextcloud, path: str, edit: Callable[[], object]) -> None:
+        """Make ``edit`` happen just before the walk lists ``path``, which then answers 404 as Nextcloud does."""
+        def edit_then_404() -> httpx.Response:
+            fault.end()
+            edit()
+            return httpx.Response(404, content=b"<d:error xmlns:d='DAV:'/>")
+
+        fault = server.outage("PROPFIND", lambda p: p.rstrip("/").endswith(f"/{server.user}/{path}"), edit_then_404)
+
+    async def test_a_folder_renamed_while_the_full_listing_runs_keeps_its_contents(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        inside = {db.by_name(n).id for n in ("Docs", "Reports", "q1.pdf", "notes.txt")}
+        self.edit_when_listed(server, "Docs", lambda: server.move("Docs", "Papers"))
+        due_for_full_listing(store)
+
+        assert await sync(connector)
+
+        assert {r.id for r in db.records.values()} >= inside, "a 404 at the old path is not a deletion"
+        assert db.deleted == []
+        assert db.path_of("q1.pdf") == "Papers/Reports/q1.pdf", "listed and saved where it now is"
+        assert await sync(connector)
+        assert {r.id for r in db.records.values()} >= inside
+        assert db.path_of("notes.txt") == "Papers/notes.txt"
+
+    async def test_a_folder_that_moved_while_listed_is_not_listed_twice(self, server, db, store) -> None:
+        server.add_folder("Photos/Album")
+        connector = await synced(server, db, store)
+        inside = {db.by_name(n).id for n in ("Docs", "Reports", "q1.pdf", "notes.txt")}
+        self.edit_when_listed(server, "Docs", lambda: server.move("Docs", "Photos/Album/Docs"))
+        due_for_full_listing(store)
+
+        assert await sync(connector)
+
+        assert {r.id for r in db.records.values()} >= inside and db.deleted == []
+        assert db.path_of("q1.pdf") == "Photos/Album/Docs/Reports/q1.pdf"
+        moved = [r for r in server.calls("PROPFIND") if unquote(r.url.path).rstrip("/").endswith("/Photos/Album/Docs")]
+        assert len(moved) == 1, "found again in the folder it moved to, it is not walked a second time"
+
+    async def test_a_folder_that_moved_while_listed_and_cannot_be_looked_up_is_kept(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notifications = listen_for_notifications(connector)
+        inside = {db.by_name(n).id for n in ("Docs", "Reports", "q1.pdf", "notes.txt")}
+        server.search_supported = False
+        self.edit_when_listed(server, "Docs", lambda: server.move("Docs", "Papers"))
+        due_for_full_listing(store)
+
+        assert await sync(connector)
+
+        assert {r.id for r in db.records.values()} >= inside and db.deleted == []
+        warned = [n for n in await notifications() if "could not be read" in n["title"]]
+        assert len(warned) == 1 and "/Docs" in warned[0]["message"]
+
+    async def test_a_folder_deleted_while_the_full_listing_runs_leaves_with_its_contents(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        self.edit_when_listed(server, "Docs", lambda: server.delete("Docs"))
+        due_for_full_listing(store)
+
+        assert await sync(connector)
+
+        assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names(), "confirmed gone by its ID"
+        assert {"cat.png", "readme.txt"} <= db.names()
+
     async def test_a_change_inside_an_unavailable_mount_is_held_not_saved_as_minus_one(self, server, db, store) -> None:
         server.add_file("Mount/inside.txt", b"v1")
         connector = await synced(server, db, store)

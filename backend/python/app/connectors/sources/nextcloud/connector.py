@@ -1316,15 +1316,18 @@ class NextcloudConnector(BaseConnector):
 
         One Depth 1 PROPFIND per folder, LISTING_CONCURRENCY at a time, so no answer holds more
         than one folder and there is no depth limit. A subfolder deleted while the walk runs is
-        left out, and so is one Nextcloud answers for with an error or file id -1 (storage that
-        is unavailable). Any other failure raises (FileNotFoundError when ``path`` itself is gone).
+        left out, one that moved is listed where it now is, and one Nextcloud answers for with an
+        error or file id -1 (storage that is unavailable) goes in the unread folders. Any other
+        failure raises (FileNotFoundError when ``path`` itself is gone).
         """
         top = await self._list_folder(user_id, path)
         if top is None:
             raise FileNotFoundError(f"/{path} is not in Nextcloud")
         entries = [top[0]]
         unread: dict[str, str] = {}
-        level = self._add_readable(top, entries, unread, user_id)
+        # A folder that moved while the walk runs can turn up again in a folder listed after the move.
+        seen = {str(top[0]["file_id"])} if top[0].get("file_id") else set()
+        level = self._add_readable(top, entries, unread, user_id, seen)
         while level:
             folders, level = level, []
             for start in range(0, len(folders), LISTING_CONCURRENCY):
@@ -1334,30 +1337,67 @@ class NextcloudConnector(BaseConnector):
                     if isinstance(children, str):
                         unread["/" + path_inside_user_home(folder.get("path", ""), user_id)] = children
                         continue
-                    level.extend(self._add_readable(children, entries, unread, user_id))
+                    if not children:
+                        entries.remove(folder)
+                        continue
+                    level.extend(self._add_readable(children, entries, unread, user_id, seen))
         return entries, unread
 
     @staticmethod
-    def _add_readable(listing: list[dict], entries: list[dict], unread: dict[str, str], user_id: str) -> list[dict]:
-        """Add the entries below a folder's own to ``entries``, and the unreadable ones to
-        ``unread``; returns the readable folders among them."""
+    def _add_readable(
+        listing: list[dict], entries: list[dict], unread: dict[str, str], user_id: str, seen: set[str]
+    ) -> list[dict]:
+        """Add the entries below a folder's own to ``entries`` (once per file id in ``seen``), and
+        the unreadable ones to ``unread``; returns the readable folders among those added."""
         folders = []
         for entry in listing[1:]:
             if is_unreadable(entry):
                 unread["/" + path_inside_user_home(entry.get("path", ""), user_id)] = "its storage is not available"
                 continue
+            file_id = str(entry.get("file_id") or "")
+            if file_id:
+                if file_id in seen:
+                    continue
+                seen.add(file_id)
             entries.append(entry)
             if entry.get("is_collection"):
                 folders.append(entry)
         return folders
 
     async def _list_subfolder(self, user_id: str, folder: dict) -> list[dict] | str:
-        """A subfolder's listing, [] when it is gone, or why Nextcloud would not list it."""
+        """A subfolder's listing (from where it now is, if it moved), [] when Nextcloud confirms
+        it gone, or why Nextcloud would not list it."""
         try:
-            return await self._list_folder(user_id, path_inside_user_home(folder.get("path", ""), user_id)) or []
+            listing = await self._list_folder(user_id, path_inside_user_home(folder.get("path", ""), user_id))
+            if listing is None:
+                listing = await self._list_moved_folder(user_id, folder)
+            return listing
         except NextcloudSyncError as e:
             self.logger.warning(f"⚠️ Could not list {folder.get('path')}: {e}")
             return str(e)
+
+    async def _list_moved_folder(self, user_id: str, folder: dict) -> list[dict]:
+        """The listing of a folder whose listed path now 404s, taken where it now is; [] once a
+        lookup by ID confirms it gone. Raises when neither can be told.
+
+        A 404 alone can't tell a rename from a deletion, and read as a deletion it would remove
+        everything stored below a folder renamed while the drive was listed. The folder's own
+        entry is updated in place, so it is saved where it now is.
+        """
+        path = path_inside_user_home(folder.get("path", ""), user_id)
+        file_id = str(folder.get("file_id") or "")
+        found, href = await self._find_in_nextcloud_by_id(file_id) if file_id else (None, "")
+        if found is False:
+            return []
+        if not found:
+            raise NextcloudSyncError(
+                f"/{path} moved or was deleted while the drive was listed, and it could not be looked up by ID"
+            )
+        listing = await self._list_folder(user_id, path_inside_user_home(href, user_id))
+        if listing is None or str(listing[0].get("file_id") or "") != file_id:
+            raise NextcloudSyncError(f"/{path} moved again while the drive was listed")
+        folder.update(listing[0])
+        return listing
 
     async def _stored_records_below(
         self, folders: list[str], record_group_id: str, stored: dict[str, Record]
