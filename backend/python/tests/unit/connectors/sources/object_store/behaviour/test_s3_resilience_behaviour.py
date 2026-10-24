@@ -5,7 +5,9 @@ does when it throttles (503 SlowDown), so they check botocore's own retry loop w
 the budget the connector hands it, not a mock of it.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +18,7 @@ from object_store_behaviour_fakes import (
     FakeConfigService,
     FakeObjectStore,
     FakeRecordsDb,
+    FakeS3DataSource,
     Response,
     make_connector,
 )
@@ -162,3 +165,61 @@ class TestBucketOptions:
 
         assert [o.id for o in first.options] == ["a-1", "a-2"] and first.has_more and first.cursor is None
         assert [o.id for o in second.options] == ["a-3"] and not second.has_more
+
+
+_paced_now: ContextVar[bool] = ContextVar("paced_now", default=False)
+
+
+class RecordingPolicy(ResiliencePolicy):
+    """Marks the calls made under ``guard()``; a context variable keeps concurrent buckets apart."""
+
+    @asynccontextmanager
+    async def guard(self) -> AsyncIterator[None]:
+        token = _paced_now.set(True)
+        try:
+            yield
+        finally:
+            _paced_now.reset(token)
+
+
+SOURCE_CALLS = ("list_buckets", "get_bucket_location", "list_objects_v2", "head_object")
+
+
+class TestEveryRequestIsPaced:
+    @staticmethod
+    def recording(source: FakeS3DataSource) -> list[tuple[str, bool]]:
+        calls: list[tuple[str, bool]] = []
+        for name in SOURCE_CALLS:
+            method = getattr(source, name)
+
+            def wrap(method: Callable[..., Awaitable[Response]], name: str) -> Callable[..., Awaitable[Response]]:
+                async def call(*args: object, **kwargs: object) -> Response:
+                    calls.append((name, _paced_now.get()))
+                    return await method(*args, **kwargs)
+                return call
+
+            setattr(source, name, wrap(method, name))
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_sync_access_check_bucket_options_and_reindex_go_through_the_rate_limit(
+        self, kind: str, store: FakeObjectStore, db: FakeRecordsDb,
+    ) -> None:
+        connector = make_connector(kind, store, db, FakeCheckpointStore(), FakeConfigService())
+        connector.bucket_name = None
+        connector._resilience = RecordingPolicy(rate_limit=50, max_retries=3)
+        connector._resilience_loaded = True
+        db.reindex_existing_records = AsyncMock()
+        store.put("a.txt")
+        calls = self.recording(connector.data_source)
+
+        await connector.run_sync()
+        assert await connector.test_connection_and_access()
+        await connector.get_filter_options("buckets", limit=2)
+        connector.bucket_regions.clear()
+        await connector.reindex_records(list(db.records.values()))
+
+        # MinIO has no bucket regions to look up.
+        assert {name for name, _ in calls} >= {"list_buckets", "list_objects_v2", "head_object"}
+        assert [name for name, paced in calls if not paced] == []

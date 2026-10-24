@@ -702,7 +702,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         buckets: list[dict] = []
         token = None
         while True:
-            response = await self.data_source.list_buckets(MaxBuckets=1000, ContinuationToken=token)
+            async with self._paced():
+                response = await self.data_source.list_buckets(MaxBuckets=1000, ContinuationToken=token)
             if not response.success:
                 return response
             # An account without buckets answers {"Buckets": []}; no "Buckets" key is a broken answer.
@@ -758,7 +759,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             return self.region or "us-east-1"
 
         try:
-            response = await self.data_source.get_bucket_location(Bucket=bucket_name)
+            async with self._paced():
+                response = await self.data_source.get_bucket_location(Bucket=bucket_name)
             if response.success and response.data:
                 location = response.data.get("LocationConstraint")
                 region = "us-east-1" if location is None or location == "" else location
@@ -1500,7 +1502,8 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def _bucket_access_problem(self, bucket_name: str, prefix: str = "") -> str | None:
         """Why the key cannot list or read objects under ``prefix`` in the bucket, or None."""
-        listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
+        async with self._paced():
+            listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
         if not listing.success:
             hint = (
                 f" The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."
@@ -1510,7 +1513,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         contents = (listing.data or {}).get("Contents") or []
         if not contents:
             return None
-        head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
+        async with self._paced():
+            head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
         if not head.success:
             hint = (
                 f" The key needs s3:GetObject on arn:aws:s3:::{bucket_name}/*."
@@ -1641,9 +1645,10 @@ class S3CompatibleBaseConnector(BaseConnector):
         try:
             if not self.data_source:
                 return failure(f"{self.connector_name.value} connector is not initialized")
-            response = await self.data_source.list_buckets(
-                MaxBuckets=limit, ContinuationToken=cursor or None, Prefix=search or None
-            )
+            async with self._paced():
+                response = await self.data_source.list_buckets(
+                    MaxBuckets=limit, ContinuationToken=cursor or None, Prefix=search or None
+                )
             if not response.success:
                 return failure(f"Failed to list buckets: {response.error}")
             data = response.data
@@ -1750,10 +1755,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
 
-            response = await self.data_source.head_object(
-                Bucket=bucket_name,
-                Key=normalized_key
-            )
+            async with self._paced():
+                response = await self.data_source.head_object(Bucket=bucket_name, Key=normalized_key)
 
             if not response.success:
                 status = getattr(response, "status_code", None)

@@ -1546,24 +1546,33 @@ class TestFailedObjectCheckpoint:
         connector.batch_size = 100
         pages = iter([
             _resp(True, {
-                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("a.pdf", "b.pdf", "c.pdf"), _JAN)],
+                "Contents": [{"Key": "a.pdf", "LastModified": _JAN[0]}],
                 "IsTruncated": True,
                 "NextContinuationToken": "t1",
             }),
-            _resp(True, {"Contents": [], "IsTruncated": False}),
+            _resp(True, {
+                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("b.pdf", "c.pdf"), _JAN[1:])],
+                "IsTruncated": False,
+            }),
         ])
 
         async def listing(**kwargs):
             return next(pages)
 
         connector.data_source.list_objects_v2 = listing
-        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=RuntimeError("db"))
+        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=[None, RuntimeError("db")])
 
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
-        saved = connector.record_sync_point.saved.get("FILE/bucket/b1", {})
-        assert saved.get("continuation_token") is None
+        tokens = [
+            c.args[1]["continuation_token"]
+            for c in connector.record_sync_point.update_sync_point.await_args_list
+            if "continuation_token" in c.args[1]
+        ]
+        assert tokens == ["t1", None]
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["continuation_token"] is None
         assert "last_sync_time" not in saved
 
     @pytest.mark.asyncio
