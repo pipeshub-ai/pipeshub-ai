@@ -210,7 +210,9 @@ class OAuthProvider:
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = ClientSession()
+            # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
+            # aiohttp refuses any header over 8190 bytes by default.
+            self._session = ClientSession(max_field_size=32 * 1024)
         return self._session
 
     async def close(self) -> None:

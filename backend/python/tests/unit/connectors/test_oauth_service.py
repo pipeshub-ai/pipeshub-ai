@@ -457,6 +457,22 @@ class TestOAuthProviderSession:
         assert not session2.closed
         await session2.close()
 
+    async def test_session_reads_a_header_longer_than_aiohttps_default(self, oauth_provider) -> None:
+        """GitHub's token endpoint sends a ~9 KB Content-Security-Policy header."""
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        async def token(_request: web.Request) -> web.Response:
+            return web.json_response({"access_token": "t"}, headers={"Content-Security-Policy": "a" * 9243})
+
+        app = web.Application()
+        app.router.add_post("/token", token)
+        async with TestServer(app) as server:
+            session = await oauth_provider.session
+            async with session.post(server.make_url("/token")) as response:
+                assert (await response.json())["access_token"] == "t"
+            await session.close()
+
 
 # ---------------------------------------------------------------------------
 # OAuthProvider.close()
