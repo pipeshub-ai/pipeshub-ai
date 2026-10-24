@@ -6215,12 +6215,14 @@ class TestSyncObjectsByTypeExtended:
         conn._transform_to_webpage_record = AsyncMock(return_value=_make_webpage_record(record_type=RecordType.DATASOURCE))
         conn.data_entities_processor.on_new_records = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="parent fail"):
-            await conn._sync_objects_by_type("data_source")
-        conn.logger.error.assert_called()
+        # Skipped for this run, not fatal: the checkpoint holds at it so the next sync reads it again.
+        await conn._sync_objects_by_type("data_source")
         conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn._transform_to_webpage_record.assert_not_awaited()
-        conn.pages_sync_point.update_sync_point.assert_not_awaited()
+        conn.pages_sync_point.update_sync_point.assert_awaited_once()
+        assert conn.pages_sync_point.update_sync_point.await_args.args[1] == {
+            "last_sync_time": "2025-06-15T00:00:00.000Z"}
+        assert "ds-1" in conn._failed_pages and conn._sync_incomplete is True
 
     @pytest.mark.asyncio
     async def test_data_source_gone_database_parent_is_skipped(self):

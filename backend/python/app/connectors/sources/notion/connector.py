@@ -5,6 +5,8 @@ Authentication: OAuth 2.0
 """
 
 import base64
+import bisect
+import hashlib
 import mimetypes
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -168,6 +170,33 @@ _OAUTH_REQUIRED_SCOPES = (
 )
 
 
+def _edit_part(revision: str | None) -> str | None:
+    """A revision without the comment digest or row marker: the part last_edited_time sets."""
+    return revision.split("|", 1)[0] if revision else revision
+
+
+def _with_comment_digest(
+    revision: str | None, comments_by_block: dict[str, list[tuple[dict[str, Any], str]]]
+) -> str | None:
+    """``revision`` with a digest of the page's comments (ids and edit times) appended."""
+    stamps = sorted(
+        f"{comment.get('id')}@{comment.get('last_edited_time')}"
+        for items in comments_by_block.values() for comment, _ in items
+    )
+    if not revision or not stamps:
+        return revision
+    digest = hashlib.sha256("\n".join(stamps).encode()).hexdigest()[:16]
+    return f"{revision}|comments:{digest}"
+
+
+def _user_email(user: object) -> str:
+    """A Notion user object's email, or "" when it shows none."""
+    if not isinstance(user, dict):
+        return ""
+    email = (user.get("person") or {}).get("email")
+    return email.strip() if isinstance(email, str) else ""
+
+
 class _RecordGone:
     """Sentinel: the source object is definitively unreachable (404).
 
@@ -320,6 +349,11 @@ class NotionConnector(BaseConnector):
     _PLACEHOLDER_SWEEP_CONCURRENCY = 3
     # Runaway backstop only — `visited` already guarantees termination.
     _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
+    # Pages whose comments are re-read per sync, in rotation (see _recheck_page_comments).
+    # shortcut: a fixed slice, so a large workspace cycles slowly; upgrade to comment webhooks.
+    _COMMENT_RECHECK_PAGES_PER_SYNC = 15
+    # Pages whose sync-time comments are kept for the stream that indexes them.
+    _SYNC_COMMENTS_CACHE_MAX = 20000
 
     def __init__(
         self,
@@ -371,6 +405,15 @@ class NotionConnector(BaseConnector):
         # full_sync_coverage() and the end-of-sync warning; reset at the start of each sync.
         self._sync_incomplete: bool = False
         self._failed_pages: set[str] = set()
+        # Data sources whose rows changed (their table record is re-indexed after the walks), and
+        # the ones the data source walk saved anew this sync, which need no second save.
+        self._touched_data_sources: set[str] = set()
+        self._fresh_data_sources: set[str] = set()
+        # Pages whose blocks and comments this sync already read: the comment recheck skips them.
+        self._walked_pages: set[str] = set()
+        # page id -> (revision, comments_by_block) the sync read; the stream indexing that
+        # revision uses them instead of one comments call per block again.
+        self._sync_comments: dict[str, tuple[str | None, dict[str, list[tuple[dict[str, Any], str]]]]] = {}
 
     def _oauth_config_type(self) -> str:
         """Key this connector's shared OAuth apps are stored under.
@@ -427,6 +470,11 @@ class NotionConnector(BaseConnector):
 
         try:
             payload = await client.introspect_access_token(client.access_token)
+            # An expired access token reads as inactive: refresh it once before asking for a
+            # re-authorization, as a 401 would.
+            if payload.get("active") is False and await self._refresh_after_unauthorized():
+                await self._get_fresh_datasource()
+                payload = await client.introspect_access_token(client.access_token)
         except Exception as e:
             self.logger.warning("Notion OAuth introspect failed: %s", e)
             raise ConnectorInitError(
@@ -478,6 +526,8 @@ class NotionConnector(BaseConnector):
             pages = await datasource.search(request_body={
                 "filter": {"property": "object", "value": "page"}, "page_size": 1,
             })
+            if getattr(pages, "status_code", None) == _FORBIDDEN_STATUS:
+                missing.append("Read content")
             results = (pages.data.json() or {}).get("results", []) if pages and pages.success and pages.data else []
             if results and isinstance(results[0], dict) and results[0].get("id"):
                 comments = await datasource.retrieve_comments(block_id=results[0]["id"], page_size=1)
@@ -680,6 +730,12 @@ class NotionConnector(BaseConnector):
             self._sync_incomplete = True
             self.logger.error(f"Reconciliation with Notion failed: {e}", exc_info=True)
 
+        try:
+            await self._refresh_touched_data_sources()
+        except Exception as e:
+            self._sync_incomplete = True
+            self.logger.error(f"Re-saving data sources whose rows changed failed: {e}", exc_info=True)
+
         # Reconcile parent stubs the passes above left behind.
         try:
             await self._sweep_placeholder_records()
@@ -795,6 +851,9 @@ class NotionConnector(BaseConnector):
                 if batch:
                     await self.data_entities_processor.on_new_records(batch)
 
+            if object_type == "page":
+                await self._recheck_page_comments(live, stored_ids)
+
             # No guard for an empty listing: each candidate is confirmed by id, so a search that
             # came back empty by mistake only costs the confirming calls (they answer 200: kept).
             candidates = [r for r in stored if r.external_record_id not in live]
@@ -817,8 +876,71 @@ class NotionConnector(BaseConnector):
                     "Removing %d Notion %s record(s) the integration can no longer read",
                     len(doomed), object_type,
                 )
+                self._touched_data_sources.update(
+                    r.parent_external_record_id for r in doomed
+                    if getattr(r, "parent_record_type", None) == RecordType.DATASOURCE
+                    and getattr(r, "parent_external_record_id", None)
+                )
                 if not await self._delete_records(doomed):
                     self._sync_incomplete = True
+
+    async def _recheck_page_comments(self, live: dict[str, dict[str, Any]], stored_ids: set) -> None:
+        """Re-read the comments of a rotating slice of stored pages.
+
+        Notion does not move a page's last_edited_time for a comment, so the watermark walk never
+        sees one added or deleted. Each sync re-walks the next pages by id after where the last
+        one stopped; the comment digest in the revision leaves an unchanged page as it is, and a
+        changed one is indexed again with its comment attachments added or pruned.
+        """
+        ids = sorted(obj_id for obj_id in live if obj_id in stored_ids and obj_id not in self._walked_pages)
+        if not ids:
+            return
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "notion_comment_recheck", "global")
+        after = ((await self.pages_sync_point.read_sync_point(key)) or {}).get("after") or ""
+        start = bisect.bisect_right(ids, after)
+        slice_ids = (ids[start:] + ids[:start])[: self._COMMENT_RECHECK_PAGES_PER_SYNC]
+        batch: list[tuple[Record, list[Permission]]] = []
+        for obj_id in slice_ids:
+            records = await self._records_for_search_object(live[obj_id], "page", recheck_comments=True)
+            if records:
+                batch.extend(records)
+            elif records == []:
+                self._sync_incomplete = True
+        if batch:
+            await self.data_entities_processor.on_new_records(batch)
+        await self.pages_sync_point.update_sync_point(key, {"after": slice_ids[-1]})
+
+    async def _refresh_touched_data_sources(self) -> None:
+        """Save the data sources whose rows changed this sync under a new revision.
+
+        Their table record renders every row, but Notion does not move a data source's
+        last_edited_time for a row edit, so it would never be indexed again. One that cannot be
+        read now stays touched for the next sync.
+        """
+        touched = self._touched_data_sources - self._fresh_data_sources
+        self._touched_data_sources = set()
+        batch: list[tuple[Record, list[Permission]]] = []
+        for ds_id in sorted(touched):
+            if await self.data_entities_processor.get_record_by_external_id(self.connector_id, ds_id) is None:
+                continue
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_data_source_by_id(ds_id)
+            obj = response.data.json() if response and response.success and response.data else None
+            if not isinstance(obj, dict):
+                if not self._is_definitive_not_found(response):
+                    self._sync_incomplete = True
+                    self._touched_data_sources.add(ds_id)
+                continue
+            if obj.get("archived") or obj.get("in_trash"):
+                continue
+            records = await self._records_for_search_object(obj, "data_source", rows_changed=True)
+            if records:
+                batch.extend(records)
+            elif records == []:
+                self._sync_incomplete = True
+                self._touched_data_sources.add(ds_id)
+        if batch:
+            await self.data_entities_processor.on_new_records(batch)
 
     async def _delete_records(self, records: list[Record]) -> bool:
         """Delete pages or data sources with their file records; True if every delete succeeded.
@@ -1507,7 +1629,8 @@ class NotionConnector(BaseConnector):
                 # page, and a failed comment fetch fails the stream instead of indexing the page
                 # without its comments for good.
                 await self._attach_stream_comments(
-                    blocks_container, record.external_record_id, parent_page_url, parser
+                    blocks_container, record.external_record_id, parent_page_url, parser,
+                    revision=record.external_revision_id,
                 )
 
                 # Resolve child reference block IDs (creates minimal records for unsynced children)
@@ -1547,6 +1670,7 @@ class NotionConnector(BaseConnector):
         page_id: str,
         page_url: str | None,
         parser: NotionBlockParser,
+        revision: str | None = None,
     ) -> None:
         block_ids = list(dict.fromkeys(
             b.source_id for b in blocks_container.blocks
@@ -1554,8 +1678,14 @@ class NotionConnector(BaseConnector):
             if b.source_id and b.sub_type != BlockSubType.CHILD_RECORD and b.source_id != page_id
         ))
         comments_by_block: dict[str, list[tuple[dict[str, Any], str]]] = defaultdict(list)
-        for comment, block_id in await self._fetch_comments_for_blocks(page_id, block_ids):
-            comments_by_block[block_id].append((comment, block_id))
+        cached = self._sync_comments.pop(page_id, None)
+        if cached is not None and revision and cached[0] == revision:
+            # The sync read these comments for this very revision: no comments call per block again.
+            wanted = set(block_ids) | {page_id}
+            comments_by_block.update({bid: items for bid, items in cached[1].items() if bid in wanted})
+        else:
+            for comment, block_id in await self._fetch_comments_for_blocks(page_id, block_ids):
+                comments_by_block[block_id].append((comment, block_id))
         if comments_by_block:
             await self._attach_comments_to_blocks(
                 blocks_container.blocks, blocks_container.block_groups, dict(comments_by_block),
@@ -1700,7 +1830,7 @@ class NotionConnector(BaseConnector):
             database_parent_id=database_parent_id,
             database_parent_record_type=database_parent_record_type,
         )
-        if not updated or updated.external_revision_id == record.external_revision_id:
+        if not updated or _edit_part(updated.external_revision_id) == _edit_part(record.external_revision_id):
             return None
 
         updated.id = record.id
@@ -1804,10 +1934,8 @@ class NotionConnector(BaseConnector):
         Process:
         1. Call list_users to get all users (paginated)
         2. Filter for "person" type users only (skip "bot" type)
-        3. For each person user, call retrieve_user to get their email
+        3. Call retrieve_user only for a person listed without an email
         4. Transform and save to database
-
-        Note: list_users doesn't return email, need to fetch each user individually
         """
         try:
             self.logger.info("🔄 Starting user synchronization...")
@@ -1821,6 +1949,7 @@ class NotionConnector(BaseConnector):
             workspace_emails: List[str] = []
             persons_seen = 0
             persons_without_email = 0
+            members_without_email: list[str] = []
 
             # Paginate through all users
             while True:
@@ -1898,41 +2027,47 @@ class NotionConnector(BaseConnector):
                 if not person_user_ids:
                     self.logger.debug("Notion users page has no person users; advancing cursor")
                 else:
-                    # Fetch full user details in parallel to get emails
-                    user_detail_tasks = [datasource.retrieve_user(user_id) for user_id in person_user_ids]
+                    # The listed user object carries the email already; only a person listed
+                    # without one is read again by id, rather than every member on every sync.
+                    details: dict[str, Any] = {
+                        user["id"]: user for user in users_data
+                        if user.get("type") == "person" and user.get("id")
+                    }
+                    to_retrieve = [
+                        user_id for user_id in person_user_ids
+                        if not _user_email(details.get(user_id))
+                    ]
                     user_detail_responses = await gather_with_concurrency(
-                        _COMMENT_FETCH_CONCURRENCY, *user_detail_tasks, return_exceptions=True
+                        _COMMENT_FETCH_CONCURRENCY,
+                        *[datasource.retrieve_user(user_id) for user_id in to_retrieve],
+                        return_exceptions=True,
                     )
-
-                    # Process fetched user details
-                    app_users = []
-                    for i, result in enumerate(user_detail_responses):
-                        user_id = person_user_ids[i]
-
+                    for user_id, result in zip(to_retrieve, user_detail_responses):
                         if isinstance(result, Exception):
                             self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
-                            total_skipped += 1
-                            user_details_complete = False
-                            continue
-
-                        if not result or not result.success:
+                        elif not result or not result.success:
                             self.logger.warning(
                                 f"Failed to retrieve user details for {user_id}: "
                                 f"{result.error if result else 'No response'}"
                             )
-                            total_skipped += 1
-                            user_details_complete = False
+                        else:
+                            details[user_id] = result.data.json() if result.data else {}
                             continue
+                        details.pop(user_id, None)
+                        total_skipped += 1
+                        user_details_complete = False
 
-                        user_detail = result.data.json() if result.data else {}
+                    app_users = []
+                    for user_id in person_user_ids:
+                        if user_id not in details:
+                            continue
+                        user_detail = details[user_id]
                         persons_seen += 1
-                        if isinstance(user_detail, dict) and not (
-                            (user_detail.get("person") or {}).get("email") or ""
-                        ).strip():
-                            # A hidden email is not an absence: the user may still be a member,
-                            # so this read cannot say who left.
+                        if isinstance(user_detail, dict) and not _user_email(user_detail):
+                            # A hidden email is not an absence: this member may still be one, so
+                            # only their own access is left as it is.
                             persons_without_email += 1
-                            user_details_complete = False
+                            members_without_email.append(user_id)
                         app_user = self._transform_to_app_user(user_detail)
                         if app_user:
                             app_users.append(app_user)
@@ -1969,7 +2104,7 @@ class NotionConnector(BaseConnector):
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
-                await self._remove_departed_workspace_users(workspace_emails)
+                await self._remove_departed_workspace_users(workspace_emails, members_without_email)
             else:
                 self._sync_incomplete = True
 
@@ -1979,19 +2114,23 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _remove_departed_workspace_users(self, keep_emails: list[str]) -> None:
+    async def _remove_departed_workspace_users(
+        self, keep_emails: list[str], keep_user_ids: list[str] | None = None
+    ) -> None:
         """Drop workspace membership for people Notion no longer returns.
 
         Search reaches a workspace through the user-app edge. Leaving a leaver's
-        edge in place keeps that workspace visible to them.
+        edge in place keeps that workspace visible to them. ``keep_user_ids``: members
+        Notion listed without an email, whose stored membership is kept as it is.
         """
         keep = {email.lower() for email in keep_emails if email}
+        kept_ids = set(keep_user_ids or ())
         removed = 0
         async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
             existing = await tx_store.get_app_users(self.data_entities_processor.org_id, self.connector_id)
             for user in existing:
                 email = (user.email or "").lower()
-                if not email or email in keep:
+                if not email or email in keep or user.source_user_id in kept_ids:
                     continue
                 await tx_store.delete_edge(
                     user.id,
@@ -2068,6 +2207,9 @@ class NotionConnector(BaseConnector):
         try:
             type_display = object_type.capitalize()
             self.logger.info(f"🔄 Starting {type_display} synchronization...")
+            if object_type == "data_source":
+                self._fresh_data_sources = set()
+                self._walked_pages = set()
 
             # Get sync point key for this object type
             sync_point_key = generate_record_sync_point_key(
@@ -2278,15 +2420,21 @@ class NotionConnector(BaseConnector):
             raise
 
     async def _records_for_search_object(
-        self, obj_data: dict[str, Any], object_type: str
+        self,
+        obj_data: dict[str, Any],
+        object_type: str,
+        *,
+        recheck_comments: bool = False,
+        rows_changed: bool = False,
     ) -> list[tuple[Record, list[Permission]]] | None:
         """The records one search result becomes: the page or data source, then (pages) its
         attachment and comment-attachment files.
 
-        None: nothing to sync (its database is gone). ``[]``: it failed this run (transform,
-        attachments or comments) and is not saved, so its stored revision stays old and the next
-        sync reads it again. Raises ``_DatabaseUnavailable`` when a parent cannot be resolved
-        right now: saving without it would clear its PARENT_CHILD edge.
+        None: nothing to sync (its database is gone). ``[]``: it failed this run (transform, its
+        database, attachments or comments) and is not saved, so its stored revision stays old and
+        the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
+        revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
+        source whose rows changed gets a new revision, so its table is indexed again.
         """
         obj_id = obj_data.get("id")
         database_parent_id = None
@@ -2306,11 +2454,17 @@ class NotionConnector(BaseConnector):
                     )
                     return None
                 except Exception as e:
-                    self.logger.error(
-                        f"Error fetching database parent for data source {obj_id}: {e}. "
-                        f"Aborting sync to avoid clearing parent or advancing checkpoint."
+                    if self._is_unauthorized(e):
+                        raise
+                    # Saving without the parent would clear its PARENT_CHILD edge: skip it this
+                    # run (the checkpoint holds at it) and carry on with the rest.
+                    self.logger.warning(
+                        "Not saving data source %s this run: its database %s could not be read: %s",
+                        obj_id, database_id, e,
                     )
-                    raise
+                    if obj_id:
+                        self._failed_pages.add(obj_id)
+                    return []
 
         try:
             record = await self._transform_to_webpage_record(
@@ -2320,11 +2474,9 @@ class NotionConnector(BaseConnector):
                 database_parent_record_type=database_parent_record_type,
             )
         except _DatabaseUnavailable as e:
-            if object_type != "page":
-                raise
-            # The page's parent could not be read right now: retry the page next sync rather
-            # than save it without its parent.
-            self.logger.warning("Not saving page %s this run: %s", obj_id, e)
+            # The parent could not be read right now: retry next sync rather than save it
+            # without its parent.
+            self.logger.warning("Not saving %s %s this run: %s", object_type, obj_id, e)
             record = None
         if not record:
             if obj_id:
@@ -2337,15 +2489,34 @@ class NotionConnector(BaseConnector):
         if not indexing_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         out: list[tuple[Record, list[Permission]]] = [(record, [])]
-        if object_type != "page" or not obj_id:
+        if not obj_id:
             return out
 
         existing = await self.data_entities_processor.get_record_by_external_id(self.connector_id, obj_id)
-        if (
-            existing is not None
-            and not getattr(existing, "is_placeholder", False)
-            and existing.external_revision_id == record.external_revision_id
-        ):
+        known = existing is not None and not getattr(existing, "is_placeholder", False)
+        same_edit = known and _edit_part(existing.external_revision_id) == _edit_part(record.external_revision_id)
+        if same_edit:
+            # Keeps the comment digest or row marker that last_edited_time alone does not show.
+            record.external_revision_id = existing.external_revision_id
+
+        if object_type != "page":
+            if rows_changed and record.external_revision_id:
+                record.external_revision_id = (
+                    f"{_edit_part(record.external_revision_id)}|rows:{get_epoch_timestamp_in_ms()}"
+                )
+            elif not same_edit:
+                self._fresh_data_sources.add(obj_id)
+            return out
+
+        if not same_edit:
+            # A row is part of its data source's table record: that is indexed again too.
+            parent = obj_data.get("parent") or {}
+            if parent.get("type") == "data_source_id" and parent.get("data_source_id"):
+                self._touched_data_sources.add(parent["data_source_id"])
+            old_parent = getattr(existing, "parent_external_record_id", None) if known else None
+            if old_parent and getattr(existing, "parent_record_type", None) == RecordType.DATASOURCE:
+                self._touched_data_sources.add(old_parent)
+        elif not recheck_comments:
             # Unchanged since the last sync (the watermark overlap re-reads it): its attachments
             # and comments were read then, so skip the block walk.
             return out
@@ -2371,6 +2542,18 @@ class NotionConnector(BaseConnector):
             )
             self._failed_pages.add(obj_id)
             return []
+
+        # Comments do not move last_edited_time, so their state is part of the revision: a
+        # rechecked page whose comments changed is indexed again, an unchanged one is not.
+        record.external_revision_id = _with_comment_digest(
+            _edit_part(record.external_revision_id), comments_by_block
+        )
+        self._walked_pages.add(obj_id)
+        self._sync_comments.pop(obj_id, None)
+        # Full: keep the oldest, which indexing streams first; the rest read their comments again.
+        # shortcut: a page never streamed (indexing off) holds its slot; clear per sync if that bites.
+        if len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
+            self._sync_comments[obj_id] = (record.external_revision_id, comments_by_block)
 
         files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
         for file_record in files:

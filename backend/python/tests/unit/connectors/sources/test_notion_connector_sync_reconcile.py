@@ -148,7 +148,7 @@ async def test_users_all_without_email_fails_closed_without_removing_anyone():
 
 
 @pytest.mark.asyncio
-async def test_users_some_without_email_do_not_remove_departed():
+async def test_users_some_without_email_keep_only_their_own_access():
     conn = _connector_with(_users_datasource([
         {"id": "u1", "type": "person", "name": "A", "person": {"email": "a@example.com"}},
         {"id": "u2", "type": "person", "name": "B", "person": {}}]))
@@ -156,8 +156,8 @@ async def test_users_some_without_email_do_not_remove_departed():
     conn._add_users_to_workspace_permissions = AsyncMock()
     conn._remove_departed_workspace_users = AsyncMock()
     await conn._sync_users()
-    conn._remove_departed_workspace_users.assert_not_awaited()
-    assert conn._sync_incomplete is True
+    conn._remove_departed_workspace_users.assert_awaited_once_with(["a@example.com"], ["u2"])
+    assert conn._sync_incomplete is False
 
 
 # ---- search walk: watermark and checkpoint ------------------------------------------------------------
