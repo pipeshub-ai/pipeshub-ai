@@ -104,7 +104,7 @@
     "dotenv": "^17.4.2",
     "electron": "^42.11.3",
     "electron-builder": "^26.15.3",
-    "eslint": "^9.39.4",
+    "eslint": "^10.13.0",
     "eslint-config-next": "^16.2.2",
     "jsdom": "^26.1.0",
     "monocart-reporter": "^2.12.4",
