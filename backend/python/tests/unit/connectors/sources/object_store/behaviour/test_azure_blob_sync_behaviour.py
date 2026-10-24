@@ -663,6 +663,24 @@ class TestFailureReports:
         assert "credentials for 1 file(s)" in sent["message"]
         assert "other file(s)" not in sent["message"]
         assert path("a.pdf") not in db.paths()
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_an_old_copy_whose_lookup_fails_is_a_failed_file(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        connector.notify.reset_mock()
+
+        db.get_record_by_external_revision_id = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["title"].endswith("Some files failed to sync")
+        assert sent["message"].startswith("1 file(s) could not be synced")
+        assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.asyncio
     async def test_a_refused_container_list_is_an_auth_error(self, connector, config) -> None:

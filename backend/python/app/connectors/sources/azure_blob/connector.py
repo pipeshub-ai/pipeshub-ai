@@ -1204,16 +1204,18 @@ class AzureBlobConnector(BaseConnector):
                 if record:
                     await self._save([(record, permissions)])
                     continue
-                if blob_name.lstrip("/"):
-                    # The processor returns no record for a real name only on an error.
-                    self._failed_blob_count += 1
-                if holder is not None:
-                    listed.add(holder.external_record_id or "")
+                # The processor returns no record for a real name only on an error.
+                failed = bool(blob_name.lstrip("/"))
             except Exception as e:
                 self.logger.error(f"Error giving {blob_name} the record of its content: {e}", exc_info=True)
-                if holder is not None:
-                    # Keep the record rather than delete content that is still listed.
-                    listed.add(holder.external_record_id or "")
+                failed = True
+            if failed:
+                self._failed_blob_count += 1
+                # Else a full sync would unlink what this one could not read, the record kept below included.
+                self._sync_incomplete = True
+            if holder is not None:
+                # Keep the record rather than delete content that is still listed.
+                listed.add(holder.external_record_id or "")
 
     async def _sync_container_prefix(
         self, container_name: str, prefix: str, scope: FolderScope, recorded: Container[str], unrecorded: list[dict],
