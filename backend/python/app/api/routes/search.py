@@ -220,19 +220,44 @@ def _queries_for_search(
     return queries
 
 
-def _apply_result_limit(results: dict[str, Any], limit: int) -> dict[str, Any]:
+def _typed_text_pattern(typed: str) -> re.Pattern[str] | None:
+    words = typed.split()
+    if not words:
+        return None
+    return re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.IGNORECASE)
+
+
+def _apply_result_limit(results: dict[str, Any], limit: int, typed: str = "") -> dict[str, Any]:
     """Cut ``searchResults`` to ``limit`` passages, best first, and drop what they no longer cite.
 
     Retrieval over several queries, and the expansion of a matched section into
     its passages, can return more than ``limit``; ranking is left as it is.
+    A passage holding ``typed`` word for word is kept before one that does not.
     """
     hits = results.get("searchResults")
     if not isinstance(hits, list) or len(hits) <= limit:
         return results
     # Children of an expanded section share its score; a matched passage goes
     # before its own context, so the cut never keeps a neighbour over the match.
-    hits = sorted(hits, key=lambda h: (-((h or {}).get("score") or 0), (h or {}).get("distanceFromMatch") or 0))
-    kept, dropped = hits[:limit], hits[limit:]
+    def ranked(h: dict | None) -> tuple:
+        return (-((h or {}).get("score") or 0), (h or {}).get("distanceFromMatch") or 0)
+
+    hits = sorted(hits, key=ranked)
+    pattern = _typed_text_pattern(typed)
+    if pattern is not None:
+        # Hybrid scores are RRF ranks within each rewritten query, so passages
+        # that rank well for every rewrite outscore the one keyword hit for a
+        # code or name the person typed, and the cut dropped exactly that file.
+        def holds_typed(h: dict | None) -> bool:
+            content = (h or {}).get("content")
+            return isinstance(content, str) and pattern.search(content) is not None
+
+        chosen = sorted(hits, key=lambda h: not holds_typed(h))[:limit]
+        chosen_ids = {id(h) for h in chosen}
+        kept = [h for h in hits if id(h) in chosen_ids]
+        dropped = [h for h in hits if id(h) not in chosen_ids]
+    else:
+        kept, dropped = hits[:limit], hits[limit:]
 
     def record_id(hit: dict | None) -> object:
         return ((hit or {}).get("metadata") or {}).get("recordId")
@@ -453,7 +478,7 @@ async def search(
             results = await _with_search_without_dates(searched, run_search, time_range, logger)
             if span is None:
                 # A timeline's ``limit`` is per period, so only a ranked search is cut.
-                results = _apply_result_limit(results, limit)
+                results = _apply_result_limit(results, limit, body.query)
             await hide_record_parents_outside_connection(
                 request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
             )

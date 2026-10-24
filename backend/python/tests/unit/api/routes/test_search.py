@@ -723,6 +723,40 @@ class TestSearchHonoursLimit:
         out = await self._run(SearchQuery(query="q", limit=10), response)
         assert len(out["searchResults"]) == 4 and "omittedPassages" not in out
 
+    @pytest.mark.asyncio
+    async def test_a_passage_with_the_typed_code_survives_the_cut(self) -> None:
+        # Hybrid scores are ranks within each query, so generic passages that
+        # rank well for every rewrite outscore the one keyword match for a code.
+        hits = [
+            {"content": f"A test note with a search identifier, part {i}.", "score": 0.83,
+             "metadata": {"recordId": "note"}}
+            for i in range(12)
+        ] + [
+            {"content": "Final Customer is at 1 Last Rd, code “gravelpont9014.”", "score": 0.59,
+             "metadata": {"recordId": "csv"}},
+        ]
+        response = {
+            "searchResults": hits,
+            "records": [{"_key": "note"}, {"_key": "csv"}],
+            "virtual_to_record_map": {"vn": {"_key": "note"}, "vc": {"_key": "csv"}},
+            "status_code": 200,
+        }
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=10), response)
+        kept = [h["metadata"]["recordId"] for h in out["searchResults"]]
+        assert len(kept) == 10 and "csv" in kept
+        assert kept[-1] == "csv", "the kept passages are still listed best score first"
+        assert {r["_key"] for r in out["records"]} == {"note", "csv"}
+        assert out["omittedPassages"] == {"note": 3}
+
+    @pytest.mark.asyncio
+    async def test_the_typed_text_must_match_whole_words(self) -> None:
+        hits = [
+            {"content": f"generic {i}", "score": 0.9, "metadata": {"recordId": "a"}} for i in range(3)
+        ] + [{"content": "gravelpont90145 is another code", "score": 0.1, "metadata": {"recordId": "b"}}]
+        response = {"searchResults": hits, "records": [{"_key": "a"}, {"_key": "b"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=3), response)
+        assert {h["metadata"]["recordId"] for h in out["searchResults"]} == {"a"}
+
 
 class TestSearchSurvivesQueryTransformationFailure:
     """A failed rewrite or expansion falls back to the query the user typed."""
