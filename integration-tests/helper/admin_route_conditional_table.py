@@ -669,5 +669,6 @@ def whose(target: str) -> str:
 _extensions = suite_extensions.modules("admin_route_conditional_table")
 CONDITIONAL_ROUTES = suite_extensions.add_rows(
     CONDITIONAL_ROUTES, "CONDITIONAL_ROUTES", _extensions, key=lambda route: route.handler)
-WORLD_GROUPS = suite_extensions.add_items(WORLD_GROUPS, "WORLD_GROUPS", _extensions)
+WORLD_GROUPS = suite_extensions.add_groups(
+    WORLD_GROUPS, "WORLD_GROUPS", _extensions, reserved=FRESH_KEYS | DERIVED_KEYS)
 WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)

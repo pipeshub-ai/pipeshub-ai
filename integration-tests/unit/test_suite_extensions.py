@@ -60,6 +60,38 @@ def test_an_extension_cannot_replace_a_row_or_an_item(tmp_path: Path) -> None:
         suite_extensions.add_items({"a": "strict"}, "ITEMS", found)
 
 
+def test_an_extension_module_can_import_its_siblings(tmp_path: Path) -> None:
+    _extension(tmp_path, "extra", {
+        "common.py": "ROWS = (3,)\n",
+        "sibling_table.py": "from .common import ROWS\n",
+    })
+    found = suite_extensions.modules("sibling_table", tmp_path)
+    assert suite_extensions.add_rows((1, 2), "ROWS", found, key=int) == (1, 2, 3)
+
+
+@pytest.mark.parametrize(("groups", "clash"), [
+    ({"more": ("org", "extra_key")}, "org"),
+    ({"more": ("extra_key",), "again": ("extra_key",)}, "extra_key"),
+    ({"more": ("made_fresh",)}, "made_fresh"),
+], ids=["key-of-a-base-group", "key-of-another-new-group", "reserved-key"])
+def test_an_extension_group_cannot_claim_a_key_held_elsewhere(
+    tmp_path: Path, groups: dict[str, tuple[str, ...]], clash: str,
+) -> None:
+    _extension(tmp_path, "extra", {"world.py": f"GROUPS = {groups!r}\n"})
+    found = suite_extensions.modules("world", tmp_path)
+    with pytest.raises(ValueError, match=repr(clash)):
+        suite_extensions.add_groups(
+            {"identity": ("org",)}, "GROUPS", found, reserved=frozenset({"made_fresh"}))
+
+
+def test_an_extension_group_with_new_keys_is_added(tmp_path: Path) -> None:
+    _extension(tmp_path, "extra", {"world_ok.py": 'GROUPS = {"more": ("extra_key",)}\n'})
+    found = suite_extensions.modules("world_ok", tmp_path)
+    assert suite_extensions.add_groups({"identity": ("org",)}, "GROUPS", found) == {
+        "identity": ("org",), "more": ("extra_key",),
+    }
+
+
 _BASE_EDGE = """
     name: sample_edge
     fields:

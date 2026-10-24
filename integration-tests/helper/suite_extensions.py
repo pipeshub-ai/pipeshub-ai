@@ -47,7 +47,15 @@ def modules(name: str, root: Path = ROOT) -> list[ModuleType]:
         path = directory / f"{name}.py"
         if not path.is_file():
             continue
-        module_name = f"{DIR_NAME}.{directory.parent.name}.{name}"
+        package_name = f"{DIR_NAME}.{directory.parent.name}"
+        module_name = f"{package_name}.{name}"
+        package = sys.modules.get(package_name)
+        # The directory's package, so a relative import in a module of it
+        # (``from .common import ROWS``) finds its siblings.
+        if package is None or getattr(package, "__path__", None) != [str(directory)]:
+            package = ModuleType(package_name)
+            package.__path__ = [str(directory)]
+            sys.modules[package_name] = package
         module = sys.modules.get(module_name)
         if module is None or getattr(module, "__file__", None) != str(path):
             spec = importlib.util.spec_from_file_location(module_name, path)
@@ -87,4 +95,25 @@ def add_items(
             if item_key in merged:
                 raise ValueError(f"{module.__file__} adds {name}[{item_key!r}], which is already there")
             merged[item_key] = value
+    return merged
+
+
+def add_groups(
+    base: Mapping[str, Iterable[str]], name: str, extensions: Iterable[ModuleType],
+    reserved: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """``add_items`` for groups of keys: a key may belong to one group only, and
+    to none when it is in ``reserved``. A lookup by key goes to the first group
+    holding it, so a second holder would never be asked for it."""
+    merged = add_items(base, name, extensions)
+    owner = {key: group for group, keys in base.items() for key in keys}
+    for group, keys in merged.items():
+        if group in base:
+            continue
+        for key in keys:
+            if key in reserved:
+                raise ValueError(f"{name}[{group!r}] holds {key!r}, which is reserved")
+            if key in owner:
+                raise ValueError(f"{name}[{group!r}] holds {key!r}, which {name}[{owner[key]!r}] holds already")
+            owner[key] = group
     return merged
