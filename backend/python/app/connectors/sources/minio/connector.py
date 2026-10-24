@@ -6,16 +6,18 @@ object storage server, so this connector shares most functionality with the S3Co
 through the S3CompatibleBaseConnector base class.
 """
 
+from contextlib import suppress
 from logging import Logger
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.connectors.core.constants import CONNECTOR_MINIO_INFO, IconPaths
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.constants import CONNECTOR_MINIO_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -45,11 +47,19 @@ from app.connectors.sources.s3.base_connector import (
     S3CompatibleDataSourceEntitiesProcessor,
     parse_parent_external_id,
 )
-from app.sources.client.minio.minio import MinIOClient
+from app.sources.client.minio.minio import (
+    MinIOClient,
+    check_endpoint_address,
+    resolve_endpoint_url,
+)
 from app.sources.external.minio.minio import MinIODataSource
 
 # Entities processor for MinIO
 MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
+
+# MinIO's documented layout (`minio server --console-address :9001`).
+MINIO_DEFAULT_API_PORT = 9000
+MINIO_DEFAULT_CONSOLE_PORT = 9001
 
 
 @ConnectorBuilder("MinIO")\
@@ -64,8 +74,20 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="endpointUrl",
                 display_name="Endpoint URL",
                 placeholder="http://localhost:9000 or https://minio.example.com",
-                description="The MinIO server endpoint URL (e.g., http://localhost:9000)",
+                description="The address of the MinIO S3 API (e.g., http://localhost:9000)",
                 field_type="TEXT",
+                max_length=2000,
+                is_secret=False
+            ),
+            AuthField(
+                name="consoleUrl",
+                display_name="Console URL",
+                placeholder="http://localhost:9001 or https://console.minio.example.com",
+                description="The address of the MinIO Console, used for links to files. "
+                "Leave empty when the endpoint is on port 9000 and the Console on port 9001 of the same host.",
+                field_type="TEXT",
+                required=False,
+                min_length=0,
                 max_length=2000,
                 is_secret=False
             ),
@@ -91,7 +113,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="useSsl",
                 display_name="Use SSL/TLS",
                 placeholder="",
-                description="Enable SSL/TLS for secure connections (recommended for production)",
+                description="Connect over HTTPS when the endpoint URL has no http:// or https:// (recommended for production)",
                 field_type="BOOLEAN",
                 max_length=0,
                 is_secret=False,
@@ -160,17 +182,29 @@ class MinIOConnector(S3CompatibleBaseConnector):
     """
 
     @staticmethod
-    def _parse_console_url(endpoint_url: str) -> str:
-        """Parse endpoint URL to extract the console base URL.
+    def _parse_console_url(endpoint_url: str, console_url: str | None = None, *, use_ssl: bool = True) -> str:
+        """The MinIO Console's base URL, which file links open.
 
-        Args:
-            endpoint_url: The MinIO endpoint URL (e.g., http://localhost:9000)
+        The Console is a separate server: the S3 API port reads ``/browser/...`` as a bucket
+        named "browser" and answers 403. Without a configured Console URL, MinIO's default
+        layout is assumed: API on 9000, Console on 9001 of the same host.
 
-        Returns:
-            The base console URL (e.g., http://localhost:9000)
+        Raises:
+            ValueError: the configured Console URL cannot be linked to. It lands in every
+                citation, so it is held to the endpoint's rules rather than replaced by a guess.
         """
+        if console_url and console_url.strip():
+            return resolve_endpoint_url(console_url, use_ssl=use_ssl, field="Console URL")
         parsed = urlparse(endpoint_url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        netloc = parsed.netloc
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port == MINIO_DEFAULT_API_PORT and parsed.hostname:
+            host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+            netloc = f"{host}:{MINIO_DEFAULT_CONSOLE_PORT}"
+        return f"{parsed.scheme}://{netloc}"
 
     def __init__(
         self,
@@ -182,8 +216,13 @@ class MinIOConnector(S3CompatibleBaseConnector):
         scope: str,
         created_by: str,
         endpoint_url: str = "http://localhost:9000",
+        console_url: str | None = None,
     ) -> None:
-        base_console_url = self._parse_console_url(endpoint_url)
+        try:
+            base_console_url = self._parse_console_url(endpoint_url, console_url)
+        except ValueError:
+            # init() refuses it with the reason; links need a placeholder until then.
+            base_console_url = self._parse_console_url(endpoint_url)
 
         super().__init__(
             app=MinIOApp(connector_id),
@@ -213,20 +252,27 @@ class MinIOConnector(S3CompatibleBaseConnector):
         auth_config = config.get("auth", {})
         access_key = auth_config.get("accessKey")
         secret_key = auth_config.get("secretKey")
-        endpoint_url = auth_config.get("endpointUrl")
         self.bucket_name = auth_config.get("bucket")
 
         if not access_key or not secret_key:
             self.logger.error("MinIO access key or secret key not found in configuration.")
             return False
 
-        if not endpoint_url:
+        if not auth_config.get("endpointUrl"):
             self.logger.error("MinIO endpoint URL not found in configuration.")
             return False
 
-        # Update endpoint URL and console URL from config
+        use_ssl = auth_config.get("useSsl", True)
+        try:
+            endpoint_url = resolve_endpoint_url(auth_config["endpointUrl"], use_ssl=use_ssl)
+            await check_endpoint_address(endpoint_url)
+            base_console_url = self._parse_console_url(endpoint_url, auth_config.get("consoleUrl"), use_ssl=use_ssl)
+        except ValueError as e:
+            self.logger.error(f"MinIO connection settings refused: {e}")
+            raise ConnectorInitError(f"{self.display_name}: {e}") from e
+
         self.endpoint_url = endpoint_url
-        self.base_console_url = self._parse_console_url(endpoint_url)
+        self.base_console_url = base_console_url
         # Keep data_entities_processor in sync with updated console URL
         self.data_entities_processor.base_console_url = self.base_console_url
 
@@ -264,8 +310,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         MinIO console uses a different URL format than AWS S3 console.
         Format: {endpoint}/browser/{bucket}/{path}
         """
-        # MinIO console browser URL format
-        return f"{self.base_console_url}/browser/{bucket_name}/{normalized_key}"
+        return f"{self.base_console_url}/browser/{quote(bucket_name, safe='')}/{quote(normalized_key, safe='')}"
 
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
         """Generate the web URL for a MinIO parent folder/directory.
@@ -275,9 +320,9 @@ class MinIOConnector(S3CompatibleBaseConnector):
         """
         bucket_name, path = parse_parent_external_id(parent_external_id)
         if path:
-            return f"{self.base_console_url}/browser/{bucket_name}/{path}"
+            return f"{self.base_console_url}/browser/{quote(bucket_name, safe='')}/{quote(path, safe='')}"
         else:
-            return f"{self.base_console_url}/browser/{bucket_name}"
+            return f"{self.base_console_url}/browser/{quote(bucket_name, safe='')}"
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket.
@@ -323,11 +368,20 @@ class MinIOConnector(S3CompatibleBaseConnector):
             f"/services/connectors/{connector_id}/config"
         )
         endpoint_url = "http://localhost:9000"
+        console_url = None
         if config:
             auth_config = config.get("auth", {})
-            endpoint_url = auth_config.get("endpointUrl", endpoint_url)
+            console_url = auth_config.get("consoleUrl")
+            # init() refuses a bad one with the reason; the processor only needs a placeholder until then.
+            with suppress(ValueError):
+                endpoint_url = resolve_endpoint_url(
+                    auth_config.get("endpointUrl", endpoint_url), use_ssl=auth_config.get("useSsl", True)
+                )
 
-        base_console_url = cls._parse_console_url(endpoint_url)
+        try:
+            base_console_url = cls._parse_console_url(endpoint_url, console_url)
+        except ValueError:
+            base_console_url = cls._parse_console_url(endpoint_url)
 
         data_entities_processor = S3CompatibleDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service,
@@ -344,6 +398,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
             scope,
             created_by,
             endpoint_url=endpoint_url,
+            console_url=console_url,
         )
 
         # Update processor with connector-specific URL generator
