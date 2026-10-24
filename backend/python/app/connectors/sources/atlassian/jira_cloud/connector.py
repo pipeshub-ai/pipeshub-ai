@@ -232,7 +232,8 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment",
-    "issuelinks", "comment", "security",
+    "security",
+    "issuelinks", "comment",
     # When the issue was resolved, and when it is due: shown with its status.
     "resolutiondate", "duedate",
 ]
