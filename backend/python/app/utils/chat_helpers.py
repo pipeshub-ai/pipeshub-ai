@@ -936,6 +936,15 @@ def graph_record_dates(base_doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _put_graph_dates(record: dict[str, Any], base_doc: dict[str, Any], *, copy_of_another: bool) -> None:
+    """Sets ``record``'s dates from its graph document. A stored copy that belongs
+    to another record keeps none of its own, even where the graph has none."""
+    if copy_of_another:
+        for name in _GRAPH_DATE_FIELDS.values():
+            record.pop(name, None)
+    record.update(graph_record_dates(base_doc))
+
+
 def _record_date_args(record_dict: dict[str, Any]) -> dict[str, Any]:
     args: dict[str, Any] = {
         "source_created_at": record_dict.get("source_created_at") or None,
@@ -1267,10 +1276,7 @@ def _merge_graph_into_blob_record(
             merged[record_key_name] = val
         elif copy_of_another:
             merged.pop(record_key_name, None)
-    if copy_of_another:
-        for record_key_name in _GRAPH_DATE_FIELDS.values():
-            merged.pop(record_key_name, None)
-    merged.update(graph_record_dates(base_doc))
+    _put_graph_dates(merged, base_doc, copy_of_another=copy_of_another)
     # A link the graph hides stays hidden, whatever the blob copy says; another
     # record's copy does not hide this one's.
     stored_hides = not copy_of_another and merged.get("hide_weburl")
@@ -2821,6 +2827,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         record_id, CollectionNames.RECORDS.value
                     )
                     if graph_rec and isinstance(graph_rec, dict):
+                        copy_of_another = rec.get("id") not in (None, record_id)
                         rec["id"] = record_id
                         rec["org_id"] = graph_rec.get("orgId")
                         rec["record_name"] = graph_rec.get("recordName")
@@ -2835,7 +2842,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
                         rec["source_created_at"] = graph_rec.get("sourceCreatedAtTimestamp")
                         rec["source_updated_at"] = graph_rec.get("sourceLastModifiedTimestamp")
-                        rec.update(graph_record_dates(graph_rec))
+                        _put_graph_dates(rec, graph_rec, copy_of_another=copy_of_another)
 
                 except Exception as graph_e:
                     logger.debug("FK enrichment: could not fetch graph metadata for record_id=%s: %s", record_id, graph_e)
@@ -3924,6 +3931,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
             if graphDb_record:
                 record_type = graphDb_record.get("recordType")
                 record_key = graphDb_record.get("id") or graphDb_record.get("_key")
+                copy_of_another = bool(record_key) and record.get("id") not in (None, record_key)
 
                 record["id"] = record_key
                 record["org_id"] = org_id
@@ -3940,7 +3948,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
-                record.update(graph_record_dates(graphDb_record))
+                _put_graph_dates(record, graphDb_record, copy_of_another=copy_of_another)
                 if graphDb_record.get("location"):
                     record["location"] = graphDb_record["location"]
                 graph_external_id = graphDb_record.get("externalRecordId")

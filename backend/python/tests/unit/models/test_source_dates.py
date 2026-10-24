@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import jsonschema
 import pytest
 
@@ -14,7 +17,7 @@ from app.models.source_dates import (
     upload_origin,
 )
 from app.schema.arango.documents import record_schema
-from app.utils.chat_helpers import create_record_instance_from_dict
+from app.utils.chat_helpers import create_record_instance_from_dict, get_record
 from app.utils.not_indexed import record_metadata_lines
 
 UPLOADED = 1792090099000  # 2026-10-15 18:48:19 UTC
@@ -165,6 +168,30 @@ class TestRecordHeader:
         lines = _date_lines(record.to_llm_context())
         assert lines[0].startswith("File Last Modified: 2025-03-03")
         assert lines[1].startswith("Uploaded At: 2026-10-15")
+
+    @pytest.mark.asyncio
+    async def test_a_stored_copy_of_another_record_lends_it_no_dates(self) -> None:
+        # Content is stored once for every record sharing it; this copy is another
+        # record's, uploaded with its file time, and this record's graph document
+        # was stored before origins were kept.
+        copy = {
+            "id": "rec-other", "virtual_record_id": "vr-1", "org_id": "org-1", "record_name": "other.txt",
+            "record_type": "FILE", "version": 1, "origin": "UPLOAD", "connector_name": "KB",
+            "connector_id": "kb-1", "mime_type": "text/plain", "source_created_at": FILE_MTIME,
+            "source_updated_at": FILE_MTIME, "source_timestamp_origin": "file",
+            "created_at": UPLOADED - 9 * DAY_MS, "semantic_metadata": {},
+            "block_containers": {"blocks": [], "block_groups": []},
+        }
+        store = SimpleNamespace(get_record_from_storage=AsyncMock(return_value=copy))
+        results: dict = {}
+
+        graph_doc = _kb_doc(virtualRecordId="vr-1", mimeType="text/plain")
+
+        await get_record("vr-1", results, store, "org-1", {"vr-1": graph_doc})
+
+        assert _date_lines(results["vr-1"]["context_metadata"]) == [
+            "Uploaded At: 2026-10-15 18:48:19 UTC (Thu, Oct 15, 2026, 6:48 PM UTC) (upload time, not a document date)",
+        ]
 
     def test_the_raw_record_fallback_names_the_upload_time(self) -> None:
         lines = record_metadata_lines(_kb_doc())
