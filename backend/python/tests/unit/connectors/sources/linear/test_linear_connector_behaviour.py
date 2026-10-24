@@ -671,6 +671,31 @@ class TestIssueToRecords:
         assert len(records) == 1
         datasource.execute_operation.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_an_issue_listed_again_unchanged_is_not_counted_as_refreshed(self) -> None:
+        connector = _make_connector()
+        updated = connector._parse_linear_datetime(_issue()["updatedAt"])
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_ticket(source_updated_at=updated))
+
+        records = await connector._issue_to_records(_issue(), "team-1")
+
+        # Stored again at the same version, so it is not re-indexed: a comment
+        # written since must still reach it through the comment-activity pass.
+        assert records[0][0].version == 1
+        assert "issue-1" not in connector._refreshed_issue_ids
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_changed_is_counted_as_refreshed(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_ticket(source_updated_at=1))
+
+        records = await connector._issue_to_records(_issue(), "team-1")
+
+        assert records[0][0].version == 2
+        assert "issue-1" in connector._refreshed_issue_ids
+
 
 # ---------------------------------------------------------------------------
 # Comment activity
@@ -767,6 +792,33 @@ class TestCommentActivity:
         reindexed = [c.args[0].id for c in processor.on_record_content_update.await_args_list]
         assert reindexed == ["fresh-issue-known", "fresh-proj-known"]
         assert connector.issues_sync_point.store["comment_activity"]["last_sync_time"] == NOW
+
+    @pytest.mark.asyncio
+    async def test_a_comment_on_an_issue_the_listing_returned_unchanged_is_reindexed(self) -> None:
+        # The nightly case: the issue listing's overlap window returns the issue
+        # again, unchanged, in the same run as a new comment on it.
+        connector = _make_connector()
+        connector.issues_sync_point.store["comment_activity"] = {"last_sync_time": NOW - 3_600_000}
+        processor = connector.data_entities_processor
+        updated = connector._parse_linear_datetime(_issue()["updatedAt"])
+        stored = _ticket(source_updated_at=updated)
+        processor.get_record_by_external_id = AsyncMock(return_value=stored)
+        await connector._issue_to_records(_issue(), "team-1")
+
+        datasource = _use_datasource(connector, MagicMock())
+
+        async def execute_operation(operation, variables) -> GraphQLResponse:
+            if operation == "commentActivity":
+                return _ok({"comments": _page([{"id": "c1", "issue": {"id": "issue-1"}}])})
+            return _ok({"projectUpdates": _page([])})
+
+        datasource.execute_operation = AsyncMock(side_effect=execute_operation)
+        datasource.issues = AsyncMock(return_value=_ok({"issues": _page([_issue()])}))
+
+        await connector._sync_comment_activity({"team-1"})
+
+        reindexed = [c.args[0].external_record_id for c in processor.on_record_content_update.await_args_list]
+        assert reindexed == ["issue-1"]
 
     @pytest.mark.asyncio
     async def test_failed_activity_listing_keeps_the_checkpoint(self) -> None:

@@ -218,6 +218,21 @@ def link_destination(raw: str) -> str:
     return raw.split(None, 1)[0] if raw else raw
 
 
+def reads_current_content(record: Record, existing: Record | None) -> bool:
+    """Whether storing *record* gets it indexed from the source as it is now.
+
+    A record that is new, restored, a placeholder or at a new version is published
+    for indexing. One stored again at its old version is not: an unchanged, indexed
+    record is left alone, so a comment written since its last indexing would wait.
+    """
+    return (
+        existing is None
+        or getattr(existing, "is_deleted", False) is True
+        or getattr(existing, "is_placeholder", False) is True
+        or record.version != existing.version
+    )
+
+
 @ConnectorBuilder("Linear")\
     .in_group(AppGroups.LINEAR.value)\
     .with_description("Sync issues, comments, and projects from Linear")\
@@ -1777,7 +1792,11 @@ class LinearConnector(BaseConnector):
 
         # Records inherit permissions from RecordGroup (team), so pass empty list
         records.append((ticket_record, []))
-        self._refreshed_issue_ids.add(issue_id)
+        # Only an issue this run re-indexes counts as refreshed: a listing in the
+        # overlap window returns it unchanged, and skipping it in the comment pass
+        # then loses the comment, whose activity checkpoint moves past it.
+        if reads_current_content(ticket_record, existing_record):
+            self._refreshed_issue_ids.add(issue_id)
         if arrived is not None and (existing_record is None or getattr(existing_record, "is_deleted", False) is True):
             arrived[issue_id] = ticket_record.id
 
@@ -2352,6 +2371,10 @@ class LinearConnector(BaseConnector):
         )
         project_record.shared_with_me_record_group_ids = [
             t for t in project_record.shared_with_me_record_group_ids if t in scope]
+        # As for issues: a project stored again unchanged is not re-indexed, so the
+        # comment and children-stamp passes must still be able to refresh it.
+        if reads_current_content(project_record, existing_record):
+            self._refreshed_project_ids.add(project_id)
 
         # Process related records (links, documents) using project_record.id as parent
         batch_records = await self._prepare_project_related_records(
@@ -2413,7 +2436,6 @@ class LinearConnector(BaseConnector):
             child_record.shared_with_me_record_group_ids = list(project_record.shared_with_me_record_group_ids)
             child_record.shared_groups_complete = project_record.shared_groups_complete
 
-        self._refreshed_project_ids.add(project_id)
         # The project first: a child written before it finds no parent in its team.
         return [(project_record, []), *batch_records]
 
