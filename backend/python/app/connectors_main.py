@@ -1008,6 +1008,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
 
+    # Before syncs resume: earlier Nextcloud syncs linked whoever had the Nextcloud profile email to the app.
+    try:
+        from app.migrations.nextcloud_user_app_edges_migration import (
+            run_nextcloud_user_app_edges_migration,
+        )
+
+        await run_nextcloud_user_app_edges_migration(graph_provider, app_container.config_service(), logger)
+    except Exception as e:
+        logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
+
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
         from app.migrations.web_browser_identity_migration import (

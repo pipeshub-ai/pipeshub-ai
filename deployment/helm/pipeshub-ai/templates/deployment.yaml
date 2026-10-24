@@ -205,6 +205,8 @@ spec:
               value: {{ .Values.config.allowedOrigins | quote }}
             - name: PIPESHUB_BLOCK_PRIVATE_ADDRESSES
               value: {{ .Values.config.blockPrivateAddresses | default "" | quote }}
+            - name: PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP
+              value: {{ .Values.config.nextcloudAllowInsecureHttp | default "" | quote }}
             - name: SAML_SP_ENTITY_ID
               value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
             

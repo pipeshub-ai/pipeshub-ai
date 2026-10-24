@@ -470,6 +470,9 @@ config:
   # and cloud metadata addresses are refused either way; OLLAMA_API_URL stays allowed.
   # Model traffic sent through HTTP(S)_PROXY is not address-checked: filter it on the proxy.
   blockPrivateAddresses: ""
+  # "true" lets the Nextcloud connector use an http:// server URL; its app password is sent with
+  # every request, so leave empty (https only) unless the network is trusted.
+  nextcloudAllowInsecureHttp: ""
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill

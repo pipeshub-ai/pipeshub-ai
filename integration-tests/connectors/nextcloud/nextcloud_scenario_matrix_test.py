@@ -169,12 +169,7 @@ class TestNextcloudScenarioMatrix(ConnectorScenarioMatrix):
     SCHEDULED_SYNC = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (
-            "the connector writes only the owner's permission: it never reads Nextcloud "
-            "shares (_get_file_shares in sources/nextcloud/connector.py has no caller), and "
-            "it is registered for personal scope, so a share cannot reach a second PipesHub user"
-        ),
-        Action.SET_INDEXING.value: (
-            "the connector declares no indexing filters (no enable_manual_sync), so indexing "
-            "cannot be switched to manual"
+            "the connector is personal: only its creator reaches the app, and it never reads "
+            "Nextcloud share permissions, so a share cannot reach a second PipesHub user"
         ),
     }
