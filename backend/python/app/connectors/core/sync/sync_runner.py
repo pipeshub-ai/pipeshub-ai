@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
-from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
+from app.connectors.core.base.connector.connector_service import (
+    ConnectorSyncSkippedError,
+    connector_sync_lock,
+)
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
@@ -96,6 +99,12 @@ async def write_app_status(
     return True
 
 
+async def _run_sync_alone(connector: "BaseConnector", connector_id: str) -> None:
+    """run_sync, after any user-link pass on this connector has finished (see link_new_users)."""
+    async with connector_sync_lock(connector_id):
+        await connector.run_sync()
+
+
 async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> None:
     """Run the sync, cutting it short if the lease is lost or a stop arrives.
 
@@ -104,7 +113,7 @@ async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> No
     call in a worker thread will take as long as that call takes, exactly as
     task.cancel() does today.
     """
-    sync = asyncio.ensure_future(connector.run_sync())
+    sync = asyncio.ensure_future(_run_sync_alone(connector, lease.connector_id))
     abort = asyncio.ensure_future(lease.wait_aborted())
     try:
         await asyncio.wait({sync, abort}, return_when=asyncio.FIRST_COMPLETED)
@@ -742,7 +751,7 @@ async def run_sync_task(
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
         if lease is None:
-            await connector.run_sync()
+            await _run_sync_alone(connector, connector_id)
         else:
             await _run_until_aborted(connector, lease)
         finished = True
