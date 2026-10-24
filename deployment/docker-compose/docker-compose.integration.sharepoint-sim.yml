@@ -16,7 +16,7 @@
 # without the alias the names resolve to Microsoft again.
 services:
   sharepoint-sim:
-    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    image: ${SHAREPOINT_SIM_IMAGE:-pipeshub/connectors-simulator:it}
     restart: always
     command: ["sharepoint"]
     environment:
