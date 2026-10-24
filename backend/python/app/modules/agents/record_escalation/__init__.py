@@ -10,6 +10,11 @@ from app.modules.agents.record_escalation.models import (
     FetchPlan,
     FetchVerdict,
 )
+from app.modules.agents.record_escalation.occurrence_count import (
+    count_occurrences,
+    is_occurrence_count_query,
+    parse_occurrence_phrase,
+)
 from app.modules.agents.record_escalation.policy import (
     build_candidates,
     needs_whole_document,
@@ -26,7 +31,10 @@ __all__ = [
     "FetchVerdict",
     "analyze_coverage",
     "build_candidates",
+    "count_occurrences",
+    "is_occurrence_count_query",
     "needs_whole_document",
+    "parse_occurrence_phrase",
     "policy_text",
     "render_candidate_table",
     "render_coverage_note",
