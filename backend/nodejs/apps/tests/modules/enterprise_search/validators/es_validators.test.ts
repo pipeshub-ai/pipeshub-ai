@@ -2636,6 +2636,25 @@ describe('enterprise_search/validators/es_validators', () => {
       }
     })
 
+    it('should accept serviceAccountId string or null on create', () => {
+      const result1 = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], serviceAccountId: 'sa-user-123' },
+      })
+      expect(result1.success).to.be.true
+
+      const result2 = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], serviceAccountId: null },
+      })
+      expect(result2.success).to.be.true
+    })
+
+    it('should reject empty serviceAccountId string on create', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], serviceAccountId: '   ' },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('keeps allTools on an agent update too', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'agent-1' },
@@ -2910,6 +2929,28 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { sendUserContext: false },
       })
       expect(result.success).to.be.true
+    })
+
+    it('should accept serviceAccountId string or null on update', () => {
+      const result1 = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { serviceAccountId: 'sa-user-123' },
+      })
+      expect(result1.success).to.be.true
+
+      const result2 = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { serviceAccountId: null },
+      })
+      expect(result2.success).to.be.true
+    })
+
+    it('should reject empty serviceAccountId string on update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { serviceAccountId: '   ' },
+      })
+      expect(result.success).to.be.false
     })
   })
 

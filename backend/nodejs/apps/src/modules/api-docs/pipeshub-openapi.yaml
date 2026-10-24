@@ -13021,6 +13021,13 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountId:
+          type: string
+          nullable: true
+          description: |
+            User ID of the dedicated service account bound to this agent. When set,
+            knowledge search and retrieval run with this service account's permissions.
+            Null for unmigrated service-account agents and non-service agents.
         access_type:
           type: string
           description: How the user can access this agent.
@@ -13111,6 +13118,10 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountId:
+          type: string
+          nullable: true
+          description: User ID of the dedicated service account bound to this agent, if present.
         models:
           type: array
           description: |
@@ -13542,6 +13553,13 @@ components:
           type: boolean
           default: false
           description: Create the agent as a service-account agent
+        serviceAccountId:
+          type: string
+          nullable: true
+          description: |
+            User ID or graph key of the active service account in the caller's organization
+            to bind to this agent. Allowed only when `isServiceAccount: true`. Pass null or
+            omit when creating a non-service agent or an unmigrated service agent.
         toolsets:
           type: array
           maxItems: 100
@@ -13779,6 +13797,10 @@ components:
           type: boolean
         isServiceAccount:
           type: boolean
+        serviceAccountId:
+          type: string
+          nullable: true
+          description: User ID of the dedicated service account bound to this agent, if present.
         createdBy:
           type: string
         updatedBy:
@@ -13890,6 +13912,12 @@ components:
           type: boolean
           default: false
           description: Mark agent as a service account
+        serviceAccountId:
+          type: string
+          nullable: true
+          description: |
+            User ID or graph key of the active service account in the caller's organization
+            to bind to this agent. Allowed only for service-account agents.
         toolsets:
           type: array
           maxItems: 100
