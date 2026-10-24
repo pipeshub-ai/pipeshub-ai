@@ -63,6 +63,18 @@ def _validate_authorship_value(field: str, value: str) -> str:
     )
 
 
+def _matched_by_something_else(user: dict[str, Any], email: str) -> bool:
+    """Whether a Jira user search for ``email`` could have found this user by name, or found someone else.
+
+    The search also matches display names, which users set themselves, by word prefix.
+    """
+    query = email.lower()
+    shown = (user.get("emailAddress") or "").lower()
+    if shown and shown != query:
+        return True
+    return any(word.startswith(query) for word in str(user.get("displayName") or "").lower().split())
+
+
 class ConfluenceDataSource:
     def __init__(self, client: ConfluenceClient) -> None:
         """Default init for the connector-specific data source."""
@@ -8820,7 +8832,7 @@ class ConfluenceDataSource:
         
         if len(exact_matches) == 1:
             user = exact_matches[0]
-        elif len(results) == 1:
+        elif len(results) == 1 and not _matched_by_something_else(results[0], normalized_email):
             user = results[0]
         else:
             # Multiple results with no exact email match — ambiguous, skip
