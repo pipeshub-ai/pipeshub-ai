@@ -880,55 +880,6 @@ class TestDeletedIssuesFoundByComparingIds:
 
         assert set(tickets(site_db)) == {"1", "3"}
 
-    async def test_an_issue_the_date_filter_now_leaves_out_is_removed(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
-        stub_site(api)
-        listing.add("ENG", None, {"issues": [
-            created_on(1, "2024-06-01T09:00:00.000+0000"),
-            created_on(2, "2024-06-01T09:00:00.000+0000"),
-            created_on(3, "2024-05-01T09:00:00.000+0000"),
-            created_on(4, "2024-05-14T20:00:00.000+0000"),
-        ]})
-        listing.id_pages[None] = {"issues": ids(1, 2, 3, 4), "isLast": True}
-        connector, config_service = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        listing.add("ENG", None, {"issues": []})
-        cutoff = int(datetime.fromisoformat("2024-05-15T00:00:00+00:00").timestamp() * 1000)
-        config_service.config["filters"] = {
-            "sync": {"values": {"created": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}},
-        }
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-        gone(api, 2)
-        for num, created in ((3, "2024-05-01T09:00:00.000+0000"), (4, "2024-05-14T20:00:00.000+0000")):
-            api.on("GET", f"{JIRA}/issue/{num}", {"id": str(num), "key": f"ENG-{num}", "fields": {
-                "project": {"id": "10000", "key": "ENG"}, "created": created, "updated": created,
-            }})
-
-        await connector.run_sync()
-
-        assert set(tickets(site_db)) == {"1", "4"}, (
-            "3 is two weeks before the new cutoff; 4 is only hours before it, too close to remove"
-        )
-        assert "created" in listing.bodies[-1]["jql"], "the issue search applies the narrowed filter"
-        assert "created" in listing.id_bodies[-1]["jql"], "so does the id listing"
-
-    async def test_a_paid_plan_site_reads_the_audit_log_and_compares_ids_as_well(
-        self, api, keyed_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
-        api.on("GET", AUDIT, ENG_2_DELETED)
-        gone(api, "ENG-2", 3)
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-
-        await connector.run_sync()
-
-        assert set(tickets(keyed_db)) == {"1"}, "ENG-2 is in the audit log; ENG-3 is not, and the comparison finds it"
-        assert len(listing.id_bodies) == 2, "one listing per sync"
-        assert connector._notification_service.sent == []
-
     async def test_a_paid_plan_site_acts_on_the_audit_log_in_the_first_sync_after_a_full_resync(
         self, api, keyed_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
@@ -943,29 +894,6 @@ class TestDeletedIssuesFoundByComparingIds:
 
         assert set(tickets(keyed_db)) == {"1", "3"}
         assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
-
-    async def test_an_issue_jira_lists_that_was_never_stored_is_synced_by_id(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, site_db, checkpoints, listing)
-        listing.id_pages[None] = {"issues": ids(1, 2, 3, 4), "isLast": True}
-        by_id: list[str] = []
-
-        def search(request: httpx.Request) -> httpx.Response:
-            jql = json.loads(request.content)["jql"]
-            if "id in (" not in jql:
-                return listing(request)
-            by_id.append(jql)
-            return json_response({"issues": [issue(4, "2024-04-01T10:00:00.000+0000")]})
-
-        api.on("POST", SEARCH, search)
-
-        await connector.run_sync()
-
-        assert "4" in tickets(site_db), "older than the cursor, so the issue crawl never returns it"
-        assert by_id == ['project = "ENG" AND id in (4) ORDER BY id ASC']
-
 
 def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
     row: dict[str, Any] = {"accountId": account_id, "accountType": "atlassian", "active": True, "displayName": account_id}
@@ -1974,35 +1902,6 @@ def now_in_project(api: AtlassianApiStub, ref: int, project_id: str, key: str) -
 
 
 class TestIssuesThatMovedOutOfTheSyncedProjects:
-    async def test_an_issue_moved_to_a_project_outside_the_sync_is_removed(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, site_db, checkpoints, listing)
-        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
-        now_in_project(api, 2, "20000", "OPS-7")
-
-        await connector.run_sync()
-
-        assert set(tickets(site_db)) == {"1", "3"}, "nothing would ever update it again under its old project"
-        assert "attachment_900" not in site_db.records, "its attachment goes with it"
-        assert issue_reads(api, 1) == issue_reads(api, 3) == 0, "listed issues are not checked"
-
-    async def test_an_issue_moved_to_another_synced_project_is_left_for_that_project(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, site_db, checkpoints, listing)
-        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
-        now_in_project(api, 2, "20000", "OPS-7")
-        eng, _ = project("ENG", "10000")
-
-        await connector._handle_issue_deletions(None, [eng], covered_project_ids={"10000", "20000"})
-        await connector._handle_issue_deletions(None, [eng], covered_project_ids={"10000", "20000"})
-
-        assert set(tickets(site_db)) == {"1", "2", "3"}
-        assert issue_reads(api, 2) == 2, "kept, so it is looked at again on the next sync"
-
     async def test_an_issue_the_search_does_not_list_yet_is_kept(
         self, api, site_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
@@ -2014,47 +1913,6 @@ class TestIssuesThatMovedOutOfTheSyncedProjects:
         await connector.run_sync()
 
         assert set(tickets(site_db)) == {"1", "2", "3"}
-
-    async def test_a_listing_that_did_not_change_is_not_compared_again(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, site_db, checkpoints, listing)
-        scans: list[tuple] = []
-        read = site_db.get_records_in_record_group
-
-        async def counted(*args: object, **kwargs: object) -> list[Any]:
-            scans.append(args)
-            return await read(*args, **kwargs)
-
-        site_db.get_records_in_record_group = counted
-
-        await connector.run_sync()
-
-        assert len(listing.id_bodies) == 2, "the ids are still listed on every sync"
-        assert scans == [], "the stored issues are not read when the listing is the one already compared"
-
-        listing.id_pages[None] = {"issues": ids(1, 2), "isLast": True}
-        gone(api, 3)
-        await connector.run_sync()
-
-        assert scans, "a changed listing is compared"
-        assert set(tickets(site_db)) == {"1", "2"}
-
-    async def test_nothing_is_removed_when_jira_no_longer_recognises_the_account(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, site_db, checkpoints, listing)
-        api.on("GET", f"{JIRA}/myself", json_response({"message": "Client must be authenticated"}, status=401))
-        listing.id_pages[None] = {"issues": [], "isLast": True}
-        gone(api, 1, 2, 3)
-        eng, _ = project("ENG", "10000")
-
-        await connector._handle_issue_deletions(None, [eng], covered_project_ids={"10000"})
-
-        assert set(tickets(site_db)) == {"1", "2", "3"}, "an anonymous visitor sees no issue at all"
-        assert len(listing.id_bodies) == 1, "only the first sync listed the ids"
 
     async def test_an_issue_that_moved_is_not_served_under_its_old_project(
         self, api, site_db, checkpoints, listing, fresh_notification_memory
@@ -2311,32 +2169,16 @@ def browse_by_product_access(api: AtlassianApiStub, parameter: str | None) -> No
     ]))
 
 
-def reporter_and_assignee_browse(api: AtlassianApiStub) -> None:
-    api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "reporter"}},
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "assignee"}},
-    ]})
-
-
-def reported(updated: str, reporter: str, assignee: str) -> dict[str, Any]:
-    ticket = issue(1, updated)
-    ticket["fields"]["reporter"] = {"accountId": reporter}
-    ticket["fields"]["assignee"] = {"accountId": assignee}
-    return ticket
-
-
 class TestWhoMayBrowse:
-    async def test_any_logged_in_user_means_the_product_access_groups_not_the_whole_org(
-        self, api, site_db, checkpoints, search
-    ) -> None:
+    async def test_any_logged_in_user_is_an_org_grant(self, api, site_db, checkpoints, search) -> None:
+        # Org access reaches only the org's users that hold this Jira connector's app.
         stub_site(api)
         browse_by_product_access(api, None)
         connector, _ = await ready_connector(site_db, checkpoints)
 
         await connector.run_sync()
 
-        assert acl(site_db) == [("EntityType.GROUP", "grp-sd"), ("EntityType.GROUP", "grp-sw")]
+        assert acl(site_db) == [("EntityType.ORG", "all_licensed_users")]
 
     async def test_unreadable_application_roles_keep_the_access_of_a_project_granted_through_one(
         self, api, site_db, checkpoints, search
@@ -2365,82 +2207,6 @@ class TestWhoMayBrowse:
         await connector.run_sync()
 
         assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
-
-    async def test_a_reporter_or_assignee_grant_gives_each_issue_its_own_reporter_and_assignee(
-        self, api, site_db, checkpoints, listing
-    ) -> None:
-        stub_site(api)
-        two_users(api)
-        reporter_and_assignee_browse(api)
-        listing.add("ENG", None, {"issues": [reported("2024-05-01T10:00:00.000+0000", "acc-ana", "acc-bo")]})
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-        connector, _ = await ready_connector(site_db, checkpoints)
-
-        await connector.run_sync()
-
-        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")], "not a project-wide grant"
-        assert sorted(p.email for p in site_db.record_permissions["1"]) == ["ana@acme.com", "bo@acme.com"]
-
-    async def test_an_issue_handed_to_someone_else_has_its_grants_replaced(self, api, site_db, checkpoints, listing) -> None:
-        stub_site(api)
-        two_users(api)
-        reporter_and_assignee_browse(api)
-        listing.add("ENG", None, [
-            {"issues": [reported("2024-05-01T10:00:00.000+0000", "acc-ana", "acc-bo")]},
-            {"issues": [reported("2024-05-02T10:00:00.000+0000", "acc-ana", "acc-ana")]},
-        ])
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-
-        await connector.run_sync()
-
-        ((record, permissions),) = site_db.permission_updates
-        assert record.external_record_id == "1"
-        assert [p.email for p in permissions] == ["ana@acme.com"], "Bo is no longer the assignee"
-
-    async def test_a_new_issue_still_gets_its_reporter_and_assignee_when_the_scheme_cannot_be_read(
-        self, api, site_db, checkpoints, listing
-    ) -> None:
-        stub_site(api)
-        two_users(api)
-        reporter_and_assignee_browse(api)
-        listing.add("ENG", None, [
-            {"issues": [reported("2024-05-01T10:00:00.000+0000", "acc-ana", "acc-ana")]},
-            {"issues": [{**reported("2024-05-02T10:00:00.000+0000", "acc-ana", "acc-bo"), "id": "2", "key": "ENG-2"}]},
-        ])
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-
-        api.on("GET", f"{JIRA}/permissionscheme/1/permission", json_response({"errorMessages": ["boom"]}, status=500))
-        listing.id_pages[None] = {"issues": ids(1, 2), "isLast": True}
-        await connector.run_sync()
-
-        assert sorted(p.email for p in site_db.record_permissions["2"]) == ["ana@acme.com", "bo@acme.com"]
-
-
-class TestUserLookupByEmail:
-    """Bo hides his email in Jira, so only the lookup by his PipesHub email links his account."""
-
-    @pytest.mark.parametrize(("answer", "members"), [
-        pytest.param([person("acc-bob", "bob@acme.com"), person("acc-bo", None)], ["ana@acme.com", "bo@acme.com"], id="the-only-hidden-match"),
-        pytest.param([person("acc-x", None), person("acc-bo", "bo@acme.com")], ["ana@acme.com", "bo@acme.com"], id="an-exact-match"),
-        pytest.param([person("acc-bo", None), person("acc-x", None)], ["ana@acme.com"], id="two-hidden-matches"),
-    ])
-    async def test_only_an_exact_or_unique_match_is_linked(self, api, site_db, checkpoints, search, answer, members) -> None:
-        stub_site(api)
-        site_db.active_users.append(type("U", (), {"email": "bo@acme.com"})())
-        api.on("GET", f"{JIRA}/users/search", lambda r: json_response(
-            [person("acc-ana", "ana@acme.com"), person("acc-bo", None)] if AtlassianApiStub.query(r).get("startAt") == "0" else []
-        ))
-        api.on("GET", f"{JIRA}/group/member", {"values": [{"accountId": "acc-ana"}, {"accountId": "acc-bo"}], "isLast": True})
-        api.on("GET", f"{JIRA}/user/search", lambda r: json_response(answer if AtlassianApiStub.query(r).get("query") == "bo@acme.com" else []))
-        connector, _ = await ready_connector(site_db, checkpoints)
-
-        await connector.run_sync()
-
-        assert sorted(saved_members(site_db, "grp-dev")) == members
 
 
 class TestAccountTimezone:
@@ -2481,7 +2247,6 @@ class TestProjectsThatLeftTheSync:
     @pytest.mark.parametrize(("answer", "selected"), [
         pytest.param(json_response({"errorMessages": ["No project could be found"]}, status=404), None, id="gone"),
         pytest.param({"id": "10000", "key": "ENG", "archived": True}, None, id="archived"),
-        pytest.param({"id": "10000", "key": "ENG"}, ["OPS"], id="no-longer-selected"),
     ])
     async def test_a_project_the_sync_no_longer_covers_is_removed_with_its_issues(
         self, api, site_db, checkpoints, search, fresh_notification_memory, answer, selected
@@ -2503,6 +2268,25 @@ class TestProjectsThatLeftTheSync:
 
         assert "1" not in tickets(site_db) and "10000" not in site_db.record_groups
         assert any(t.endswith("removed projects it no longer syncs") for t in titles(connector))
+
+    async def test_a_project_the_filter_leaves_out_is_kept_and_only_unlinked_by_the_full_sync(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        config_service.config["filters"] = {"sync": {"values": {
+            "project_keys": {"operator": "in", "type": "list", "value": ["OPS"]},
+        }}}
+        checkpoints.sync_points.clear()
+        await run_full_sync(connector, site_db)
+
+        assert "1" in tickets(site_db) and "10000" in site_db.record_groups, "kept for when it is selected again"
+        assert "ENG_10002" in site_db.app_roles, "its roles are kept with it"
+        assert "10000" in site_db.unlinked_record_groups, "the full sync unlinks it, so it is not shown"
 
     async def test_a_selected_key_that_was_renamed_is_followed_to_the_new_key(
         self, api, site_db, checkpoints, search, fresh_notification_memory

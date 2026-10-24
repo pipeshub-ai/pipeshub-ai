@@ -1,7 +1,6 @@
 """Jira Cloud Connector Implementation"""
 import asyncio
 import base64
-import hashlib
 import json
 import random
 import re
@@ -169,9 +168,6 @@ AUDIT_FREE_PLAN_NOTICE_SYNC_KEY: str = "issues_audit_free_plan_notice"
 ISSUE_ID_LISTING_FIELDS: list[str] = ["id"]
 ISSUE_ID_LISTING_PAGE_SIZE: int = 5000
 RECORD_SCAN_PAGE_SIZE: int = 1000
-# The id listing that was last compared in full is remembered per project, so the stored
-# issues are read again only when an issue was created, deleted or moved.
-ISSUE_ID_LISTING_SYNC_KEY_PREFIX: str = "project_issue_ids_"
 # What was last reported about selected project keys (renamed / not found), so the admin is
 # notified once, and again only when it changes.
 SELECTED_PROJECTS_REPORT_SYNC_KEY: str = "selected_projects_report"
@@ -195,10 +191,6 @@ HOLDER_TYPE_USER: str = "user"
 HOLDER_TYPE_ANYONE: str = "anyone"
 HOLDER_TYPE_PROJECT_ROLE: str = "projectRole"
 HOLDER_TYPE_PROJECT_LEAD: str = "projectLead"
-# Granted per issue, to whoever is that issue's reporter or current assignee.
-HOLDER_TYPE_REPORTER: str = "reporter"
-HOLDER_TYPE_ASSIGNEE: str = "assignee"
-HOLDER_TYPES_ISSUE_USER: tuple[str, ...] = (HOLDER_TYPE_REPORTER, HOLDER_TYPE_ASSIGNEE)
 # JSM portal customers — external users PipesHub does not sync.
 HOLDER_TYPE_SD_PORTAL_CUSTOMER: str = "sd.customer.portal.only"
 # Members come from a per-issue custom field value, so there is no static ACL to resolve.
@@ -207,7 +199,8 @@ HOLDER_TYPES_CUSTOM_FIELD: tuple[str, ...] = ("groupCustomField", "userCustomFie
 # App-only project role: its members are Atlassian apps, not people, so it grants nobody.
 ATLASSIAN_ADDONS_PROJECT_ROLE: str = "atlassian-addons-project-access"
 
-# Synthetic ORG-scope external id for a grant not tied to a concrete group or user.
+# Synthetic ORG-scope external ids for grants not tied to a concrete group or user.
+ORG_SCOPE_ALL_LICENSED_USERS: str = "all_licensed_users"
 ORG_SCOPE_ANYONE_AUTHENTICATED: str = "anyone_authenticated"
 
 # actor.type values in a project role's actor list
@@ -245,10 +238,6 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 # late would otherwise have an `updated` older than a cursor that already moved past it.
 # Unchanged issues read again are skipped without a write.
 INCREMENTAL_OVERLAP_MS: int = 10 * 60 * 1000
-# A date filter removes an already synced issue only when the issue is outside it by more
-# than this. Jira reads JQL dates in the account's timezone and to the minute, so an issue
-# near the edge must not be removed by one check and brought back by the next.
-FILTER_REMOVAL_MARGIN_MS: int = 24 * 60 * 60 * 1000
 # When the account's timezone is unknown, a JQL date written in UTC is read by Jira in that
 # unknown zone. Lower bounds are moved this far back (UTC-12 is the furthest west) and upper
 # bounds this far forward (UTC+14 the furthest east), so nothing is cut off.
@@ -499,16 +488,10 @@ class JiraConnector(BaseConnector):
         self._stored_app_users: list[AppUser] = []
         self._deactivated_account_ids: set[str] = set()
         self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
-        # The Jira users this sync resolved, for issues synced outside the main crawl.
-        self._sync_users: list[AppUser] = []
         # Selected project key -> the key Jira gives that project now, as of the last listing.
         self._renamed_project_keys: dict[str, str] = {}
         # Selected keys Jira gave no definite answer for; any of them may name a renamed project.
         self._unresolved_selected_keys: set[str] = set()
-        # Project key -> the per-issue Browse holders its scheme has ("reporter", "assignee").
-        self._issue_scoped_browse: dict[str, set[str]] = {}
-        # Internal ids of updated issues whose own permissions must be rewritten after saving.
-        self._permission_refresh_ids: set[str] = set()
         # Keys of the projects this sync covers; None outside run_sync (a reindex keeps what is stored).
         self._synced_project_keys: set[str] | None = None
         # True when the bulk user list was refused on its first page: the account cannot
@@ -880,7 +863,6 @@ class JiraConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users(active_pipeshub_users=users)
-            self._sync_users = jira_users
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -944,7 +926,6 @@ class JiraConnector(BaseConnector):
             await self._handle_issue_deletions(
                 last_sync_time,
                 [group for group, _ in projects if group.short_name not in failed_issue_projects],
-                covered_project_ids={group.external_group_id for group, _ in projects if group.external_group_id},
             )
 
             # Projects this sync no longer covers, and roles left under a project key it no
@@ -1484,17 +1465,12 @@ class JiraConnector(BaseConnector):
     # ============================================================================
 
     async def _handle_issue_deletions(
-        self,
-        global_last_sync_time: int | None,
-        projects: list[RecordGroup] | None = None,
-        covered_project_ids: set[str] | None = None,
+        self, global_last_sync_time: Optional[int], projects: list[RecordGroup] | None = None,
     ) -> None:
-        """Detect and handle issue deletions via the audit log, then compare ids.
+        """Detect and handle issue deletions via the audit log.
 
-        ``projects`` (those whose issues synced this run) are compared with Jira by issue
-        id: the audit log does not record an issue that moved to another project, and it is
-        refused altogether when every product is on a Free plan. ``covered_project_ids`` are
-        all the projects this sync reads; an issue that moved outside them is removed.
+        When Jira refuses the audit log for good (every product on a Free plan),
+        ``projects`` (those whose issues synced this run) are compared with Jira instead.
         """
         audit_sync_key = "issues_audit_deletions"
         self._audit_log_unavailable = False
@@ -1523,17 +1499,8 @@ class JiraConnector(BaseConnector):
                     audit_sync_key,
                     {"last_sync_time": checkpoint_ms}
                 )
-        if not projects or not (self._audit_log_unavailable or covered_project_ids is not None):
-            return
-        # An expired or revoked token is answered as an anonymous visitor, to whom every
-        # issue looks gone, so nothing is removed unless Jira first confirms the account.
-        if covered_project_ids is not None and not await self._signed_in_to_jira():
-            self.logger.warning(
-                "Jira did not confirm this connector's account, so no issue is removed in this sync. "
-                "If this keeps happening, reconnect the connector."
-            )
-            return
-        await self._remove_issues_gone_from_jira(projects, covered_project_ids)
+        if self._audit_log_unavailable and projects:
+            await self._remove_issues_gone_from_jira(projects)
 
     async def _stored_projects(self) -> list[tuple[str, str]]:
         """(Jira id, key) of each project this connector holds; none when the read fails, as the stores answer."""
@@ -1556,11 +1523,12 @@ class JiraConnector(BaseConnector):
         """Remove each stored project this sync no longer covers, with its issues and files.
 
         A project drops out of the listing when it is archived, trashed or deleted in Jira,
-        when the connector's account loses access to it, or when the project filter stops
-        selecting it. Nothing else would ever touch its records, so they would stay
-        searchable with the access they had on the last sync. Each such project is looked
-        up in Jira by id first, and only a definite answer removes it; an empty listing (an
-        account that sees no project at all) removes nothing.
+        or when the connector's account loses access to it. Nothing else would ever touch its
+        records, so they would stay searchable with the access they had on the last sync. Each
+        such project is looked up in Jira by id first, and only a definite answer removes it; an
+        empty listing (an account that sees no project at all) removes nothing. A project the
+        project filter leaves out is not removed: the full sync a filter change runs unlinks it,
+        and its records stay for when it is selected again.
         """
         if not listed_project_ids:
             return
@@ -1571,7 +1539,7 @@ class JiraConnector(BaseConnector):
             return
         removed: list[str] = []
         for project_id, project_key in stored:
-            if project_id in listed_project_ids:
+            if project_id in listed_project_ids or not self._project_still_selected({"key": project_key}):
                 continue
             try:
                 if await self._project_left_the_sync(project_id, project_key) and await self._delete_project(
@@ -1592,15 +1560,14 @@ class JiraConnector(BaseConnector):
             title=self._notification_title("removed projects it no longer syncs"),
             message=(
                 f"Removed from PipesHub: {preview}. A project is removed when it is deleted, archived "
-                "or trashed in Jira, hidden from the connector's Jira account, or no longer selected "
-                "in the project filter. It is synced again in full if it comes back."
+                "or trashed in Jira, or hidden from the connector's Jira account. It is synced again "
+                "in full if it comes back."
             ),
         )
 
     async def _project_left_the_sync(self, project_id: str, project_key: str) -> bool:
         """Ask Jira about a stored project the listing did not return. Only a definite answer is yes:
-        gone (404/410, which is also what an account that lost access gets), archived, trashed,
-        or live but no longer selected by the project filter."""
+        gone (404/410, which is also what an account that lost access gets), archived or trashed."""
         response = await self._call_with_retry(
             lambda ds: ds.get_project(projectIdOrKey=project_id), ctx=f"checking project {project_key}",
         )
@@ -1616,9 +1583,7 @@ class JiraConnector(BaseConnector):
         project = self._safe_json_parse(response, f"project {project_key}")
         if not isinstance(project, dict):
             return False
-        if project.get("archived") or project.get("deleted"):
-            return True
-        return not self._project_still_selected(project)
+        return bool(project.get("archived") or project.get("deleted"))
 
     def _project_still_selected(self, project: dict[str, Any]) -> bool:
         """Whether the project filter, as loaded for this sync, admits this live project."""
@@ -1637,7 +1602,6 @@ class JiraConnector(BaseConnector):
         """Delete a project's records (placeholders included) and the project; True when it is gone."""
         # Cleared first, so a project that comes back is read in full.
         await self.issues_sync_point.delete_sync_point(f"project_{project_key}")
-        await self.issues_sync_point.delete_sync_point(f"{ISSUE_ID_LISTING_SYNC_KEY_PREFIX}{project_id}")
         record_ids: list[str] = []
         after_key: str | None = None
         while True:
@@ -1676,7 +1640,7 @@ class JiraConnector(BaseConnector):
 
         A role is stored as ``<project key>_<role id>`` (and ``<project key>_projectLead``),
         so a project whose key changed, or that left the sync, leaves its roles behind under
-        the old key.
+        the old key. Roles of a project the project filter leaves out are kept, as the project is.
         """
         if not project_keys:
             return
@@ -1690,6 +1654,7 @@ class JiraConnector(BaseConnector):
                 str(role["externalRoleId"]) for role in roles or []
                 if isinstance(role, dict) and "_" in str(role.get("externalRoleId") or "")
                 and str(role["externalRoleId"]).rsplit("_", 1)[0] not in project_keys
+                and self._project_still_selected({"key": str(role["externalRoleId"]).rsplit("_", 1)[0]})
             )
             for external_role_id in stale:
                 await self.data_entities_processor.on_app_role_deleted(external_role_id, self.connector_id)
@@ -1697,20 +1662,6 @@ class JiraConnector(BaseConnector):
                 self.logger.info("🧹 Removed %d project role(s) of projects this sync does not cover", len(stale))
         except Exception as e:
             self.logger.warning("Could not remove roles of projects that left the sync: %s", e)
-
-    async def _signed_in_to_jira(self) -> bool:
-        """Whether Jira still recognises the account (``GET /myself`` answers 401 to an anonymous visitor)."""
-        try:
-            response = await self._call_with_retry(
-                lambda ds: ds.get_current_user(), ctx="checking the Jira account"
-            )
-        except Exception as e:
-            self.logger.warning("Could not ask Jira which account this connector uses: %s", e)
-            return False
-        if response.status != HttpStatusCode.OK.value:
-            return False
-        profile = self._safe_json_parse(response, "GET /myself")
-        return isinstance(profile, dict) and bool(profile.get("accountId"))
 
     def _audit_time(self, epoch_ms: int) -> str:
         return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -1894,46 +1845,22 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.warning("Could not record that the Free-plan notice was sent: %s", e)
 
-    async def _remove_issues_gone_from_jira(
-        self, projects: list[RecordGroup], covered_project_ids: set[str] | None = None,
-    ) -> None:
-        """Bring each project's stored issues in line with Jira, by comparing issue ids.
+    async def _remove_issues_gone_from_jira(self, projects: list[RecordGroup]) -> None:
+        """Remove stored issues Jira no longer has, by comparing each project's issue ids.
 
-        A project is compared once per call and only after its listing was read to the
-        end. An issue missing from it is removed when Jira answers a definitive 404/410
-        for it (deleted, or moved where the account cannot see it), through the same path
-        as an audit-log deletion.
-
-        With ``covered_project_ids`` (every project this sync reads) the listing is of the
-        issues the sync filters admit, and the comparison goes both ways:
-
-        * a stored issue that is not listed is also removed when Jira says it now sits in a
-          project outside them (no later sync would update it, so it would stay readable
-          through its old project and serve its new content), or when the date filters
-          leave it out by more than ``FILTER_REMOVAL_MARGIN_MS``. One now in a covered
-          project is left to that project's sync;
-        * a listed issue that is not stored is synced by id, whatever its ``updated``: one
-          the search index returned late, one imported with old dates, one a crawl skipped
-          or failed to save. The crawl's cursor never goes back for them.
-
-        The stored issues are read only when the listing differs from the one last
-        compared in full, so a project where nothing was created, deleted or moved costs
-        one listing call.
+        Used only when the audit log is refused for good. A project is compared once
+        per call and only after its listing was read to the end, and every issue
+        missing from it must still get a definitive 404/410 from Jira before it is
+        removed, through the same path as an audit-log deletion. The listing ignores
+        the date filters, so an issue they leave out but Jira still has is untouched.
         """
         compared: set[str] = set()
-        removed = added = 0
+        removed = 0
         for project in projects:
             project_id = project.external_group_id
             if not project_id or project_id in compared:
                 continue
             compared.add(project_id)
-            scope = self._issue_scope_conditions(project.short_name) if covered_project_ids is not None else None
-            listed = await self._list_project_issue_ids(project.short_name, scope)
-            if listed is None:
-                continue
-            fingerprint = self._issue_ids_fingerprint(listed)
-            if await self._issue_ids_already_compared(project_id, fingerprint):
-                continue
             try:
                 stored = await self._stored_issues(project_id)
             except Exception as e:
@@ -1941,72 +1868,23 @@ class JiraConnector(BaseConnector):
                     "Could not read the stored issues of project %s; nothing removed: %s", project.short_name, e
                 )
                 continue
-            unlisted = sum(1 for record in stored if record.external_record_id not in listed)
-            went = await self._remove_unlisted_issues(
-                project.short_name, stored, listed,
-                project_id=project_id, covered_project_ids=covered_project_ids,
-            )
-            removed += went
-            settled = went == unlisted
-            if covered_project_ids is not None:
-                stored_ids = {record.external_record_id for record in stored}
-                missing = sorted(listed - stored_ids, key=lambda issue_id: (len(issue_id), issue_id))
-                if missing:
-                    self.logger.info(
-                        "Syncing %d issue(s) of project %s that Jira has and PipesHub does not",
-                        len(missing), project.short_name,
-                    )
-                for start in range(0, len(missing), ISSUE_PAGE_SIZE):
-                    synced = await self._sync_issues_by_id(project, missing[start:start + ISSUE_PAGE_SIZE])
-                    added += synced
-                    settled = settled and synced == len(missing[start:start + ISSUE_PAGE_SIZE])
-            if settled:
-                # Stored and listed issues agree; one that was kept (still in Jira, waiting
-                # for its new project's sync, or not saved) is looked at again next time.
-                await self._remember_compared_issue_ids(project_id, fingerprint)
+            if not stored:
+                continue
+            listed = await self._list_project_issue_ids(project.short_name)
+            if listed is None:
+                continue
+            removed += await self._remove_unlisted_issues(project.short_name, stored, listed)
         if removed:
-            self.logger.info("🗑️ Removed %d issue(s) no longer in their project, found by comparing ids", removed)
-        if added:
-            self.logger.info("Synced %d issue(s) the issue crawl had missed, found by comparing ids", added)
+            self.logger.info("🗑️ Removed %d issue(s) Jira no longer has, found by comparing ids", removed)
 
-    @staticmethod
-    def _issue_ids_fingerprint(issue_ids: set[str]) -> str:
-        digest = hashlib.sha256("\n".join(sorted(issue_ids)).encode()).hexdigest()
-        return f"{len(issue_ids)}:{digest}"
-
-    async def _issue_ids_already_compared(self, project_id: str, fingerprint: str) -> bool:
-        try:
-            saved = await self.issues_sync_point.read_sync_point(f"{ISSUE_ID_LISTING_SYNC_KEY_PREFIX}{project_id}")
-        except Exception as e:
-            self.logger.debug("Could not read the last compared issue listing of project %s: %s", project_id, e)
-            return False
-        return bool(saved) and saved.get("fingerprint") == fingerprint
-
-    async def _remember_compared_issue_ids(self, project_id: str, fingerprint: str) -> None:
-        try:
-            await self.issues_sync_point.update_sync_point(
-                f"{ISSUE_ID_LISTING_SYNC_KEY_PREFIX}{project_id}", {"fingerprint": fingerprint}
-            )
-        except Exception as e:
-            # Not remembered: the project is simply compared again on the next sync.
-            self.logger.debug("Could not save the compared issue listing of project %s: %s", project_id, e)
-
-    async def _remove_unlisted_issues(
-        self,
-        project_key: str,
-        stored: list[Record],
-        listed: set[str],
-        *,
-        project_id: str | None = None,
-        covered_project_ids: set[str] | None = None,
-    ) -> int:
-        """Remove each stored issue missing from ``listed`` that Jira confirms has left; returns how many went."""
+    async def _remove_unlisted_issues(self, project_key: str, stored: list[Record], listed: set[str]) -> int:
+        """Remove each stored issue missing from ``listed`` that Jira confirms is gone; returns how many went."""
         removed = 0
         for record in stored:
             if record.external_record_id in listed:
                 continue
             try:
-                if await self._issue_left_the_sync(record.external_record_id, project_id, covered_project_ids):
+                if await self._issue_gone_from_jira(record.external_record_id):
                     await self._delete_issue_record(record, record.external_record_id)
                     removed += 1
             except Exception as e:
@@ -2015,113 +1893,6 @@ class JiraConnector(BaseConnector):
                     record.external_record_id, project_key, e,
                 )
         return removed
-
-    async def _issue_left_the_sync(
-        self, issue_ref: str, project_id: str | None, covered_project_ids: set[str] | None,
-    ) -> bool:
-        """Whether a stored issue missing from its project's listing should be removed.
-
-        True when Jira says it is gone (404/410), or when it now sits in a project
-        outside ``covered_project_ids``. False while it is still in its own project (the
-        search index can lag), in another covered project, or when Jira does not say
-        where it is. Raises on any other answer.
-        """
-        if covered_project_ids is None:
-            return await self._issue_gone_from_jira(issue_ref)
-        response = await self._get_issue_with_retry(issue_ref, fields=["project", "updated", "created"])
-        if response.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
-            return True
-        if response.status != HttpStatusCode.OK.value:
-            raise Exception(
-                f"Whether {issue_ref} left its project is unconfirmed: get_issue returned "
-                f"{response.status} — retrying next sync"
-            )
-        issue = self._safe_json_parse(response, f"issue {issue_ref}")
-        current_project_id = self._issue_project_id(issue)
-        if current_project_id and current_project_id == project_id and self._issue_left_out_by_filters(
-            (issue or {}).get("fields") or {}
-        ):
-            self.logger.info("Issue %s is outside the connector's date filters now; removing it", issue_ref)
-            return True
-        if not current_project_id or current_project_id == project_id or current_project_id in covered_project_ids:
-            self.logger.debug(
-                "Issue %s is still in Jira (project %s); left for its project's sync", issue_ref, current_project_id or "?"
-            )
-            return False
-        self.logger.info(
-            "Issue %s moved to project %s, which this connector does not sync; removing it", issue_ref, current_project_id
-        )
-        return True
-
-    @staticmethod
-    def _issue_user_permissions(holder_types: set[str], issue_data: dict[str, Any]) -> list[Permission]:
-        """READ for the issue's reporter and/or assignee, where their email is known."""
-        emails: list[str] = []
-        if HOLDER_TYPE_REPORTER in holder_types and issue_data.get("reporter_email"):
-            emails.append(issue_data["reporter_email"])
-        if HOLDER_TYPE_ASSIGNEE in holder_types and issue_data.get("assignee_email"):
-            emails.append(issue_data["assignee_email"])
-        return [
-            Permission(entity_type=EntityType.USER, email=email, type=PermissionType.READ)
-            for email in dict.fromkeys(emails)
-        ]
-
-    def _issue_left_out_by_filters(self, fields: dict[str, Any]) -> bool:
-        """Whether the modified/created sync filters clearly exclude an issue (see
-        ``FILTER_REMOVAL_MARGIN_MS``)."""
-        if not self.sync_filters:
-            return False
-        for key, field_name in ((SyncFilterKey.MODIFIED, "updated"), (SyncFilterKey.CREATED, "created")):
-            date_filter = self.sync_filters.get(key)
-            if not date_filter:
-                continue
-            after, before = date_filter.get_value(default=(None, None))
-            value = self._parse_jira_timestamp(fields.get(field_name)) if fields.get(field_name) else 0
-            if not value:
-                continue
-            if (after and value < after - FILTER_REMOVAL_MARGIN_MS) or (
-                before and value > before + FILTER_REMOVAL_MARGIN_MS
-            ):
-                return True
-        return False
-
-    async def _sync_issues_by_id(self, project: RecordGroup, issue_ids: list[str]) -> int:
-        """Sync these issues of a project whatever their ``updated``; returns how many were read."""
-        jql = f'project = "{project.short_name}" AND id in ({", ".join(issue_ids)}) ORDER BY id ASC'
-        token: str | None = None
-        stats = {"new_count": 0, "updated_count": 0}
-        read = 0
-        while True:
-            response = await self._search_issues_with_retry(
-                project_key=project.short_name, jql=jql, next_page_token=token,
-                max_results=ISSUE_PAGE_SIZE, fields=ISSUE_SEARCH_FIELDS, expand=ISSUE_SEARCH_EXPAND,
-            )
-            page = (
-                self._safe_json_parse(response, f"issues by id for {project.short_name}")
-                if response.status == HttpStatusCode.OK.value else None
-            )
-            issues = page.get("issues") if isinstance(page, dict) else None
-            if not isinstance(issues, list):
-                self.logger.warning(
-                    "Could not read %d issue(s) of project %s by id (HTTP %s); trying again next sync",
-                    len(issue_ids), project.short_name, response.status,
-                )
-                return read
-            records, delete_ids = await self._build_issue_records(
-                issues, project.external_group_id, self._sync_users, is_new_project=True,
-            )
-            if delete_ids:
-                await self.data_entities_processor.on_records_deleted_cascade(
-                    delete_ids, self.connector_id, cascade_children=False,
-                )
-            if records:
-                await self._process_new_records(records, project.short_name, stats)
-            saved = {r.external_record_id for r, _, _ in records}
-            read += len(saved & set(issue_ids))
-            next_token = page.get("nextPageToken")
-            if not next_token or next_token == token or not issues:
-                return read
-            token = next_token
 
     @staticmethod
     def _issue_project_id(issue: Any) -> str:  # noqa: ANN401 - a parsed Jira issue, or anything else Jira sent
@@ -2146,15 +1917,14 @@ class JiraConnector(BaseConnector):
                 return stored
             after_key = page[-1].id
 
-    async def _list_project_issue_ids(self, project_key: str, conditions: list[str] | None = None) -> set[str] | None:
-        """Ids of every issue in the project the account can see (that ``conditions`` admit,
-        when given); None unless read to the end.
+    async def _list_project_issue_ids(self, project_key: str) -> set[str] | None:
+        """Ids of every issue in the project the account can see; None unless read to the end.
 
         Only a page without a next token (or marked last) ends the listing. A failed
         page, a malformed one, a repeated token, or a page that brings no new ids
         (Jira has been seen to hand back the first page again and again) is a failed read.
         """
-        jql = " AND ".join(conditions or [f'project = "{project_key}"']) + " ORDER BY id ASC"
+        jql = f'project = "{project_key}" ORDER BY id ASC'
         ids: set[str] = set()
         token: str | None = None
         used_tokens: set[str] = set()
@@ -2531,23 +2301,14 @@ class JiraConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    # The search is a prefix match that also returns deactivated and app accounts,
-                    # and display-name matches. A hit showing this exact email is this person; among
-                    # hits that hide their email there must be exactly one, or the match is a guess.
-                    hits = [
+                    # The search is a prefix match that also returns deactivated and app accounts.
+                    user = next((
                         u for u in results
-                        if isinstance(u, dict) and u.get("accountId")
-                        and u.get("accountType", "atlassian") == "atlassian" and u.get("active", True)
-                    ]
-                    exact = [u for u in hits if (u.get("emailAddress") or "").lower() == email.lower()]
-                    hidden = [u for u in hits if not u.get("emailAddress")]
-                    candidates = exact or hidden
-                    user = candidates[0] if len(candidates) == 1 else None
-                    if len(candidates) > 1:
-                        self.logger.warning(
-                            "Jira returned %s accounts for %s, none showing that email; "
-                            "not linking any of them", len(candidates), email,
-                        )
+                        if isinstance(u, dict)
+                        and u.get("accountType", "atlassian") == "atlassian"
+                        and u.get("active", True)
+                        and (u.get("emailAddress") or email).lower() == email.lower()
+                    ), None)
                     if not user:
                         return None
                     account_id = user.get("accountId")
@@ -2825,7 +2586,6 @@ class JiraConnector(BaseConnector):
         read and legitimately grants BROWSE to no one.
         """
         permissions: list[Permission] = []
-        self._issue_scoped_browse.pop(project_key, None)
 
         try:
             # Step 1: Get the permission scheme assigned to this project (transport + 429 retry)
@@ -2936,11 +2696,6 @@ class JiraConnector(BaseConnector):
         holder_param = holder.get("parameter")
         holder_value = holder.get("value")
 
-        if holder_type in HOLDER_TYPES_ISSUE_USER:
-            # Who that is differs per issue, so it is granted on each issue (_issue_user_permissions).
-            self._issue_scoped_browse.setdefault(project_key, set()).add(holder_type)
-            return grant_permissions
-
         # Dedup identical holders across grants
         holder_key = f"{holder_type}:{holder_value or holder_param}"
         if holder_key in seen_holders:
@@ -2969,21 +2724,13 @@ class JiraConnector(BaseConnector):
                                 external_id=group_id,
                                 type=PermissionType.READ
                             ))
-            elif not role_key and app_roles_mapping:
-                # Bare applicationRole (no parameter) = "any logged in user": anyone with product
-                # access, i.e. the members of every application role's groups. Not the whole
-                # PipesHub org, which also holds people with no Jira access at all.
-                for groups in app_roles_mapping.values():
-                    for group_info in groups:
-                        group_id = group_info.get("groupId")
-                        group_key = f"group:{group_id}"
-                        if group_id and group_key not in seen_holders:
-                            seen_holders.add(group_key)
-                            grant_permissions.append(Permission(
-                                entity_type=EntityType.GROUP,
-                                external_id=group_id,
-                                type=PermissionType.READ
-                            ))
+            elif not role_key:
+                # Bare applicationRole (no parameter) = "any licensed user"
+                grant_permissions.append(Permission(
+                    entity_type=EntityType.ORG,
+                    external_id=ORG_SCOPE_ALL_LICENSED_USERS,
+                    type=PermissionType.READ
+                ))
             elif self._app_roles_forbidden and self._authenticated_jira_email:
                 # API returned 403 — can't resolve role to groups; grant only the
                 # authenticated Jira account instead of over-granting to ORG
@@ -3964,14 +3711,9 @@ class JiraConnector(BaseConnector):
                 web_url=project.get("url"),
             )
 
-            scoped_before = self._issue_scoped_browse.get(project_key)
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_account_id
             )
-            if project_permissions is None and scoped_before:
-                # shortcut: only remembered within this process; a restart followed by a failed read
-                # leaves new issues without their reporter/assignee grant until they are next updated.
-                self._issue_scoped_browse[project_key] = scoped_before
 
             # None (a transient scheme failure) is passed on, not saved as an empty ACL: saving
             # replaces the stored ACL, which would hide the project from everyone until a later
@@ -4446,14 +4188,6 @@ class JiraConnector(BaseConnector):
             for record in changed_records:
                 await self.data_entities_processor.on_record_content_update(record)
 
-            # A content update leaves a record's own permissions as they were. Rewrite them
-            # for issues whose reporter or assignee holds Browse (who that is can change).
-            for record, record_permissions, content_changed in batch if self._permission_refresh_ids else ():
-                if record.id in self._permission_refresh_ids:
-                    self._permission_refresh_ids.discard(record.id)
-                    if content_changed and record.version != 0:
-                        await self.data_entities_processor.on_updated_record_permissions(record, record_permissions)
-
             stats["new_count"] += new_count
             stats["updated_count"] += len(changed_records)
 
@@ -4755,14 +4489,11 @@ class JiraConnector(BaseConnector):
         created_at = issue_data["created_at"]
         updated_at = issue_data["updated_at"]
 
+        # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
+        permissions = []
+
         # Get fields for attachments (needed by _fetch_issue_attachments)
         fields = issue.get("fields", {})
-
-        # The issue inherits its project's access; a scheme that grants Browse to the
-        # reporter or the current assignee adds that person on the issue itself.
-        permissions = self._issue_user_permissions(
-            self._issue_scoped_browse.get((fields.get("project") or {}).get("key") or "") or set(), issue_data,
-        )
 
         # Collect attachments removed at source (via changelog) for deletion
         delete_ids.extend(
@@ -4860,10 +4591,6 @@ class JiraConnector(BaseConnector):
             self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
 
         records.append((issue_record, permissions, is_issue_changed))
-        if existing_record is not None and not is_placeholder and self._issue_scoped_browse.get(
-            (fields.get("project") or {}).get("key") or ""
-        ):
-            self._permission_refresh_ids.add(issue_record.id)
         rendered_fields = issue.get("renderedFields") if isinstance(issue.get("renderedFields"), dict) else None
 
         # A file attached in a restricted comment is readable by fewer people than the issue,
@@ -6691,9 +6418,8 @@ class JiraConnector(BaseConnector):
             # related_external_records, so omitting this on reindex wipes the ticket's links.
             issue_record.related_external_records = self._related_records(issue)
 
-            permissions = self._issue_user_permissions(
-                self._issue_scoped_browse.get((fields.get("project") or {}).get("key") or "") or set(), issue_data,
-            )
+            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
+            permissions = []
 
             return (issue_record, permissions)
 

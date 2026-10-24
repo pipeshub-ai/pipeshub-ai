@@ -15,10 +15,9 @@ it made; the primary project is only ever read.
   TC-JIRA-REG-003  an image shown inline in the description is not a separate file record
   TC-JIRA-REG-004  an issue deleted in Jira is removed by the next incremental sync
   TC-JIRA-REG-005  an attachment removed further back than the changelog page is removed
-  TC-JIRA-REG-006  an issue moved out of the selected projects is removed       (move target)
+  TC-JIRA-REG-006  an issue moved out of the selected projects is not served    (move target)
   TC-JIRA-REG-007  a parent in an unselected project is not stored with its title (move target)
-  TC-JIRA-REG-008  a project taken out of the filter is removed with its records
-  TC-JIRA-REG-009  narrowing the created-date filter removes what falls outside it
+  TC-JIRA-REG-008  a project taken out of the filter is kept, but unlinked
   TC-JIRA-REG-010  a selected project keeps syncing after its key changes        (rename key)
   TC-JIRA-REG-011  a base URL that is not an Atlassian site is refused before any request
   TC-JIRA-REG-012  a second full sync of unchanged Jira changes nothing
@@ -70,7 +69,6 @@ from helper.second_user import SecondUser, second_user  # noqa: E402, F401 - fix
 from pipeshub_client import PipeshubClient, PipeshubClientError  # type: ignore[import-not-found]  # noqa: E402
 
 from connectors.jira.constants import (  # noqa: E402
-    JIRA_FILTER_DATE_CUT_MS,
     JIRA_IT_RUN_ID,
     artifact_summary,
     connector_base_url,
@@ -100,7 +98,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-_DAY_MS = 24 * 60 * 60 * 1000  # the connector's FILTER_REMOVAL_MARGIN_MS
 MOVE_TARGET_KEY = os.getenv("JIRA_IT_MOVE_TARGET_PROJECT_KEY", "").strip()
 RENAME_KEY = os.getenv("JIRA_IT_RENAME_PROJECT_KEY", "").strip()
 TRASH_KEY = os.getenv("JIRA_IT_TRASH_PROJECT_KEY", "").strip()
@@ -455,11 +452,11 @@ class TestJiraRemovals:
             await _cleanup(jira_datasource, made, "TC-JIRA-REG-005")
 
     @pytest.mark.skipif(not MOVE_TARGET_KEY, reason="JIRA_IT_MOVE_TARGET_PROJECT_KEY is not set")
-    async def test_tc_jira_reg_006_an_issue_moved_out_of_the_selection_is_removed(
+    async def test_tc_jira_reg_006_an_issue_moved_out_of_the_selection_is_not_served(
         self, reg_scope: dict[str, Any], jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-REG-006: the record does not stay under its old project serving the text it
+        """TC-JIRA-REG-006: the record under its old project does not serve the text the issue
         has in the project it moved to."""
         _require_deletable(reg_scope, MOVE_TARGET_KEY)
         raw, made, secret = JiraRaw(), [], _marker("MOVED")
@@ -478,9 +475,13 @@ class TestJiraRemovals:
                     context="TC-JIRA-REG-006 edit after move",
                 )
 
-                async def gone() -> bool:
-                    return not await _record_present(graph_provider, cid, issue_id)
-                await _sync_until(pipeshub_client, graph_provider, cid, gone, f"TC-JIRA-REG-006 {new_key} removed")
+                record = await graph_provider.get_record_by_external_id(cid, issue_id)
+                try:
+                    served = pipeshub_client.stream_record(record.id).text
+                except requests.HTTPError as e:  # refused (404): the issue is no longer in this project
+                    served = ""
+                    assert e.response is not None and e.response.status_code == 404, f"stream of {new_key}: {e}"
+                assert secret not in served, "the moved issue's new text is served from its old project"
         finally:
             await _cleanup(jira_datasource, made, "TC-JIRA-REG-006")
 
@@ -520,53 +521,36 @@ class TestJiraRemovals:
         finally:
             await _cleanup(jira_datasource, made, "TC-JIRA-REG-007")
 
-    async def test_tc_jira_reg_008_a_project_taken_out_of_the_filter_is_removed(
+    async def test_tc_jira_reg_008_a_project_taken_out_of_the_filter_is_kept_but_unlinked(
         self, reg_scope: dict[str, Any], pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-REG-008: read-only; the dropped project's records and group leave the graph."""
+        """TC-JIRA-REG-008: read-only; the dropped project and its issues stay stored, but the
+        narrowing full sync unlinks them, so nothing shows them."""
         if len(reg_scope["keys"]) < 2:
             pytest.skip("needs two IT projects")
         keep, drop = reg_scope["keys"][1], reg_scope["keys"][0]
         async with _connector(pipeshub_client, graph_provider, "deselect", [keep, drop]) as cid:
             names = set(await graph_provider.fetch_record_group_names(cid, "PROJECT"))
             assert len(names) >= 2, names
-            before = await _external_ids(graph_provider, cid, "TICKET")
+            groups = {
+                str(_doc(r, "externalRecordId", "external_record_id")): str(_doc(r, "externalGroupId", "external_record_group_id"))
+                for r in await graph_provider.fetch_records_by_type(cid, "TICKET")
+                if not _doc(r, "isPlaceholder", "is_placeholder")
+            }
             pipeshub_client.update_connector_filters_sync_safe(cid, filters=_sync_filters(project_keys=_pk("in", [keep])))
             await wait_for_sync_completion(pipeshub_client, graph_provider, cid, timeout=600)
 
             async def narrowed() -> bool:
-                return len(await graph_provider.fetch_record_group_names(cid, "PROJECT")) == 1
-            await _poll(narrowed, "the dropped project removed", timeout=300)
-            after = await _external_ids(graph_provider, cid, "TICKET")
-            assert after < before, "no issue left the graph with its project"
-
-    async def test_tc_jira_reg_009_a_narrowed_date_filter_removes_what_falls_outside(
-        self, reg_scope: dict[str, Any], jira_datasource: JiraDataSource,
-        pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
-    ) -> None:
-        """TC-JIRA-REG-009: read-only on the primary project, split at ``JIRA_FILTER_DATE_CUT_MS``.
-
-        The connector removes only what the new filter leaves out by more than a day (a
-        margin for time zones), so only issues created a day before the cut must go."""
-        primary = reg_scope["primary_key"]
-        async with _connector(pipeshub_client, graph_provider, "dates", [primary]) as cid:
-            before = await _external_ids(graph_provider, cid, "TICKET")
-            created_after = {"operator": "is_after", "type": "datetime", "value": {"start": JIRA_FILTER_DATE_CUT_MS, "end": None}}
-            pipeshub_client.update_connector_filters_sync_safe(
-                cid, filters=_sync_filters(project_keys=_pk("in", [primary]), created=created_after))
-            await wait_for_sync_completion(pipeshub_client, graph_provider, cid, timeout=600)
-            resp = await jira_api_call_with_retry(
-                jira_datasource.search_and_reconsile_issues_using_jql_post,
-                jql=f'project = "{primary}" AND created < {JIRA_FILTER_DATE_CUT_MS - _DAY_MS}', maxResults=50, fields=["created"],
-                context="TC-JIRA-REG-009 issues before the cut",
+                return await graph_provider.count_app_record_group_edges(cid) == 1
+            await _poll(narrowed, "only the kept project linked to the connector", timeout=300)
+            assert set(await graph_provider.fetch_record_group_names(cid, "PROJECT")) == names, "a project was deleted"
+            assert set(groups) <= await _external_ids(graph_provider, cid, "TICKET"), "an issue was deleted"
+            unlinked = {
+                g for i, g in groups.items() if not await graph_provider.record_belongs_to_external_group(cid, i, g)
+            }
+            assert len(unlinked) == 1 and len(set(groups.values())) == 2, (
+                f"only the dropped project's issues should lose their project link: {unlinked}"
             )
-            older = {str(i["id"]) for i in (resp.json() or {}).get("issues", [])}
-            if not older & before:
-                pytest.skip("no synced issue was created more than a day before the cut")
-
-            async def removed() -> bool:
-                return not (older & await _external_ids(graph_provider, cid, "TICKET"))
-            await _poll(removed, "issues created before the cut removed", timeout=300)
 
 
 # =============================================================================

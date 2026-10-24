@@ -288,22 +288,6 @@ class TestDeletedIssues:
 
         assert tickets(db) == {"1", "3", "5"}
 
-    async def test_an_issue_a_narrowed_date_filter_leaves_out_is_removed(self, site, db, checkpoints) -> None:
-        site.issues["1"]["fields"]["created"] = "2024-06-01T09:00:00.000+0000"
-        site.issues["2"]["fields"]["created"] = "2024-06-01T09:00:00.000+0000"
-        connector, config_service = await synced(db, checkpoints)
-        config_service.config["filters"] = {
-            "sync": {"values": {"created": {"operator": "is_after", "type": "datetime", "value": {"start": 1_715_731_200_000}}}},
-        }
-        del site.issues["2"]
-
-        await connector.run_sync()
-
-        assert tickets(db) == {"1"}, "issues 3 and 5 were created two weeks before the new cutoff"
-        assert site.issue_reads(3) == 1, "Jira is asked once, to confirm it is in its project and outside the filter"
-        assert all("created" in b["jql"] for b in site.search_bodies[-2:]), "the issue search applies the narrowed filter"
-        assert all("created" in b["jql"] for b in site.id_bodies[-2:]), "so does the id listing"
-
     async def test_a_project_whose_issue_sync_failed_is_not_compared_in_that_sync(self, site, db, checkpoints) -> None:
         connector, _ = await synced(db, checkpoints)
         del site.issues["2"]

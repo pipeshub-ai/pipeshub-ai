@@ -442,9 +442,22 @@ class JiraCloudPersonalConnector(JiraConnector):
                 "Could not check for projects that left this account's view; retrying next sync: %s", e
             )
         await self._remove_issues_gone_from_jira(
-            [project for project in projects if project.short_name not in failed_project_keys],
-            covered_project_ids={project.external_group_id for project in projects if project.external_group_id},
+            [project for project in projects if project.short_name not in failed_project_keys]
         )
+
+    async def _signed_in_to_jira(self) -> bool:
+        """Whether Jira still recognises the account (``GET /myself`` answers 401 to an anonymous visitor)."""
+        try:
+            response = await self._call_with_retry(
+                lambda ds: ds.get_current_user(), ctx="checking the Jira account"
+            )
+        except Exception as e:
+            self.logger.warning("Could not ask Jira which account this connector uses: %s", e)
+            return False
+        if response.status != HttpStatusCode.OK.value:
+            return False
+        profile = self._safe_json_parse(response, "GET /myself")
+        return isinstance(profile, dict) and bool(profile.get("accountId"))
 
     async def _remove_projects_out_of_view(
         self,
