@@ -817,15 +817,20 @@ class TestRecordsTheResultDoesNotShow:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("targeted", [False, True])
-    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch, targeted: bool) -> None:
+    @pytest.mark.parametrize("outside_dates", ["", "\n\nMatches written outside the dates: " + "x" * 80])
+    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(
+        self, monkeypatch, targeted: bool, outside_dates: str,
+    ) -> None:
         """Each record the fit drops adds a row, so the passes can end over the
         size: the lowest-ranked rows go, and only the ids still shown are
-        remembered."""
+        remembered. The matches outside the dates close the result and count
+        toward its size too."""
         monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
         monkeypatch.setenv("TARGETED_RETRIEVAL", str(targeted).lower())
 
         vrids = ["vr1", "vr2", "vr3", "vr4", "vr5", "vr6"]
-        with self._first_record_only():
+        with self._first_record_only(), \
+                patch(f"{self._SEARCH}.outside_dates_for_model", return_value=outside_dates):
             full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
             row = len("\n- Record ID: r-vr6 | Doc vr6")
             budget = len(full) - 2 * row - 5
@@ -837,6 +842,7 @@ class TestRecordsTheResultDoesNotShow:
                 result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
 
         assert "- Record ID: r-vr6 | Doc vr6" in full
+        assert result.endswith(outside_dates)
         assert len(result) <= budget
         assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in result
         for dropped in ("r-vr4", "r-vr5", "r-vr6"):

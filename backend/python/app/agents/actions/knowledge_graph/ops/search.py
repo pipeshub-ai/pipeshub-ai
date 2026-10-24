@@ -1300,12 +1300,11 @@ async def _execute_search(
             if knowledge.ranked:
                 # Each record a pass drops adds a row to the unshown list, so the
                 # list gives way before the generic cap cuts the result.
-                result_frame = _unshown_within(
-                    result_frame,
-                    (selection.chars or 0) + result_frame.chars - result_max_chars,
-                    selection.record_id_shortener,
-                )
-                if (selection.chars or 0) + result_frame.chars > result_max_chars:
+                over = (selection.chars or 0) + result_frame.chars + len(outside_dates_text) - result_max_chars
+                trimmed = _unshown_within(result_frame, over, selection.record_id_shortener)
+                freed = result_frame.chars - trimmed.chars
+                result_frame = trimmed
+                if over > freed:
                     logger_instance.warning(
                         "knowledgegraph__search: result still over %d chars after %d fits; "
                         "the tool-result cap will cut it",
