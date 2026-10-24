@@ -132,13 +132,18 @@ def build_tiny_web_ref_url(ref: str) -> str:
     return f"https://{ref}.xyz"
 
 
-# A citation ref as a tool writes it for the model: the tiny web URL, or a bare
-# ``refN`` that is not part of a word, a path, an assignment or a longer id.
-# A ref running into "…" was cut by a preview cap ("ref12" kept as "ref1"), so
-# it is matched as `cut` and never taken for the ref it now reads as.
+# A citation ref as a tool writes it for the model: the tiny web URL (with or
+# without its scheme), or a bare ``refN`` that is not part of a word, a path, an
+# assignment or a longer id. Only a whole token matches: nothing host- or
+# path-like may follow (``https://ref1.xyz.evil``, ``…/path``, ``ref1.xyz``), or
+# the rewrite would splice a URL into the middle of something else. Sentence
+# punctuation may follow. A ref running into "…" was cut by a preview cap
+# ("ref12" kept as "ref1"), so it is matched as `cut` and never taken for the
+# ref it now reads as.
 _REQUEST_REF_RE = re.compile(
-    r'https?://(?P<web>ref\d+)(?:\.xyz/?|(?P<webcut>(?:\.x?y?)?…))'
-    r'|(?<![\w/.=-])(?P<bare>ref\d+)(?:(?P<cut>…)|(?![\w/-]))'
+    r'(?:https?://|(?<![\w/.=-]))(?P<web>ref\d+)'
+    r'(?:\.xyz(?:/(?![\w-]))?(?![\w/-]|\.[\w-])|(?P<webcut>(?:\.x?y?)?…))'
+    r'|(?<![\w/.=-])(?P<bare>ref\d+)(?:(?P<cut>…)|(?![\w/-]|\.[\w-]))'
 )
 
 # What a ref becomes when no mapping says what it stood for. Neither a ref nor

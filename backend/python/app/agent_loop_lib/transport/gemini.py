@@ -180,6 +180,10 @@ class GeminiTransport(LLMTransport):
         # transport instance outlives the turn (the registry caches it), which
         # is the scope this needs.
         self._thought_signatures: dict[str, bytes] = {}
+        # Ids Gemini itself put on a function_call. Sent back on the call and its response, they
+        # pair parallel results with their calls when one function was called several times;
+        # an id made up here (`_new_call_id`) is never sent.
+        self._provider_call_ids: set[str] = set()
         # http_options carries the timeout in milliseconds; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn must fail at the same point.
         http_options = (
@@ -192,6 +196,17 @@ class GeminiTransport(LLMTransport):
         self.total_llm_calls: int = 0
         self.total_cache_read_tokens: int = 0
         self.total_cache_write_tokens: int = 0
+
+    def _call_id(self, call: Any) -> str:
+        """`call`'s id: Gemini's own when it sent one, remembered so replay echoes it."""
+        provided = getattr(call, "id", None)
+        if provided:
+            self._provider_call_ids.add(provided)
+            return provided
+        return self._new_call_id()
+
+    def _id_kwargs(self, call_id: str | None) -> dict[str, str]:
+        return {"id": call_id} if call_id and call_id in self._provider_call_ids else {}
 
     @staticmethod
     def _new_call_id() -> str:
@@ -313,6 +328,7 @@ class GeminiTransport(LLMTransport):
                     parts=[*images, types.Part(function_response=types.FunctionResponse(
                         name=name,
                         response={"result": payload},
+                        **self._id_kwargs(msg.tool_call_id),
                     ))],
                 ))
                 continue
@@ -331,7 +347,7 @@ class GeminiTransport(LLMTransport):
                     signature = self._thought_signatures.get(tc.id or "")
                     if signature or turn_signed:
                         part = types.Part(function_call=types.FunctionCall(
-                            name=tc.name, args=tc.arguments or {},
+                            name=tc.name, args=tc.arguments or {}, **self._id_kwargs(tc.id),
                         ))
                         if signature:
                             part.thought_signature = signature
@@ -572,7 +588,7 @@ class GeminiTransport(LLMTransport):
         for idx, part in enumerate(self._candidate_parts(response)):
             call = getattr(part, "function_call", None)
             if call is not None:
-                call_id = getattr(call, "id", None) or self._new_call_id()
+                call_id = self._call_id(call)
                 signature = getattr(part, "thought_signature", None)
                 if signature:
                     self._thought_signatures[call_id] = signature
@@ -668,7 +684,7 @@ class GeminiTransport(LLMTransport):
                     call = getattr(part, "function_call", None)
                     if call is not None:
                         index = len(calls)
-                        call_id = getattr(call, "id", None) or self._new_call_id()
+                        call_id = self._call_id(call)
                         name = getattr(call, "name", "") or ""
                         args = json.dumps(dict(getattr(call, "args", None) or {}))
                         calls.append((call_id, name, args))

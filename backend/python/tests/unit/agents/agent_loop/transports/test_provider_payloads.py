@@ -403,6 +403,40 @@ class TestParallelToolResults:
         assert any(p.inline_data is not None for p in chart_turn.parts)
         assert not [p.text for c in contents for p in c.parts if p.text and p.text.startswith("[previous tool")]
 
+    def test_gemini_pairs_repeated_calls_to_one_function_by_their_ids(self) -> None:
+        """One function called for several inputs: only Gemini's own ids tell the results apart."""
+        transport = GeminiTransport(api_key="x")
+        cities = {"g-paris": "Paris", "g-london": "London", "g-tokyo": "Tokyo"}
+        for call_id in cities:
+            transport._call_id(SimpleNamespace(id=call_id))
+        transport._thought_signatures["g-paris"] = b"signature"
+        messages = [
+            UserMessage(content="Weather in Paris, London and Tokyo?"),
+            AssistantMessage(content=None, tool_calls=[
+                ToolCall(id=call_id, name="get_weather", arguments={"city": city}) for call_id, city in cities.items()
+            ]),
+            *[ToolMessage(content=f"{city}: {20 + i}C", tool_call_id=call_id)
+              for i, (call_id, city) in enumerate(cities.items())],
+        ]
+
+        contents = transport._format_contents(messages)
+
+        calls = [p.function_call for c in contents for p in c.parts if p.function_call]
+        responses = [p.function_response for c in contents for p in c.parts if p.function_response]
+        assert [(c.id, c.args["city"]) for c in calls] == list(cities.items())
+        assert [(r.id, r.response["result"]) for r in responses] == [
+            ("g-paris", "Paris: 20C"), ("g-london", "London: 21C"), ("g-tokyo", "Tokyo: 22C"),
+        ]
+
+    def test_gemini_never_sends_an_id_it_did_not_issue(self) -> None:
+        transport = GeminiTransport(api_key="x")
+        transport._thought_signatures["call_a"] = b"signature"
+
+        contents = transport._format_contents(_parallel_turn())
+
+        parts = [p.function_call or p.function_response for c in contents for p in c.parts]
+        assert all(getattr(p, "id", None) is None for p in parts if p is not None)
+
     def test_gemini_still_flattens_a_turn_with_no_signature(self) -> None:
         contents = GeminiTransport(api_key="x")._format_contents(_parallel_turn())
 

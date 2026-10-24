@@ -8,6 +8,7 @@ import re
 from app.utils.citations import rewrite_request_refs
 
 _REF_TOKEN = re.compile(r"ref\d+")
+_MAP = {"ref1": "https://app/record/ONE/preview", "ref12": "https://app/record/TWELVE/preview"}
 
 
 class TestRewriteRequestRefs:
@@ -44,3 +45,17 @@ class TestRewriteRequestRefs:
         assert "wrong.example" not in out
         assert _REF_TOKEN.search(out) is None
         assert (expanded, unresolved) == (0, 2)
+
+    def test_only_a_whole_tiny_url_is_rewritten(self) -> None:
+        """A tiny URL followed by more host or path is a different URL; rewriting its prefix
+        would splice a record URL into it."""
+        for text in ("see https://ref1.xyz.evil now", "https://ref1.xyz/path", "ref1.xyz.evil"):
+            assert rewrite_request_refs(text, _MAP) == (text, 0, 0)
+
+    def test_a_ref_without_its_scheme_is_rewritten_whole(self) -> None:
+        assert rewrite_request_refs("source: ref1.xyz", _MAP) == (f"source: {_MAP['ref1']}", 1, 0)
+
+    def test_sentence_punctuation_may_follow_a_ref(self) -> None:
+        text, expanded, _ = rewrite_request_refs("cite https://ref1.xyz. Or ref12, or (ref1).", _MAP)
+        assert text == f"cite {_MAP['ref1']}. Or {_MAP['ref12']}, or ({_MAP['ref1']})."
+        assert expanded == 3
