@@ -1172,8 +1172,8 @@ class LinearGraphQLOperations:
 
         "attachmentIds": {
             "query": """
-                query attachmentIds($first: Int, $after: String, $filter: AttachmentFilter) {
-                    attachments(first: $first, after: $after, filter: $filter) {
+                query attachmentIds($first: Int, $after: String, $filter: AttachmentFilter, $includeArchived: Boolean) {
+                    attachments(first: $first, after: $after, filter: $filter, includeArchived: $includeArchived) {
                         nodes {
                             id
                         }
@@ -1190,10 +1190,11 @@ class LinearGraphQLOperations:
 
         "documentIds": {
             "query": """
-                query documentIds($first: Int, $after: String, $filter: DocumentFilter) {
-                    documents(first: $first, after: $after, filter: $filter) {
+                query documentIds($first: Int, $after: String, $filter: DocumentFilter, $includeArchived: Boolean) {
+                    documents(first: $first, after: $after, filter: $filter, includeArchived: $includeArchived) {
                         nodes {
                             id
+                            trashed
                         }
                         pageInfo {
                             hasNextPage

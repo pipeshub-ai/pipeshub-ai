@@ -11,6 +11,7 @@ from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatu
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
 from app.connectors.sources.linear.api_gateway import (
     LinearAuthError,
+    LinearPaginationError,
     LinearRateLimited,
     LinearTransientError,
 )
@@ -308,7 +309,7 @@ class TestFilterOptionsAndUsers:
         assert len(users) == 1
 
     @pytest.mark.asyncio
-    async def test_fetch_users_stops_when_no_end_cursor(self):
+    async def test_fetch_users_fails_when_more_pages_have_no_cursor(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
@@ -317,9 +318,9 @@ class TestFilterOptionsAndUsers:
             has_next=True,
             end_cursor=None,
         ))
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            users = await conn._fetch_users()
-        assert len(users) == 1
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), \
+                pytest.raises(RuntimeError, match="Failed to fetch users"):
+            await conn._fetch_users()
 
 
 class TestIssueBatchCommentFiles:
@@ -746,7 +747,8 @@ class TestFetchUsersEdgeCases:
 
 class TestIssueBatchPaginationAndErrors:
     @pytest.mark.asyncio
-    async def test_fetch_issues_batch_stops_when_next_page_has_no_cursor(self):
+    async def test_fetch_issues_batch_fails_when_more_pages_have_no_cursor(self):
+        """A page that says more follow but gives no cursor is an incomplete listing, not the end."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.indexing_filters = None
@@ -762,10 +764,11 @@ class TestIssueBatchPaginationAndErrors:
             conn, "_extract_files_from_markdown", new=AsyncMock(return_value=([], [])),
         ):
             batches = []
-            async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
+            with pytest.raises(LinearPaginationError):
+                async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
+                    batches.append(batch)
 
-        assert len(batches) == 1
+        assert batches == []
 
     @pytest.mark.asyncio
     async def test_fetch_issues_batch_continues_after_single_issue_error(self):
@@ -1130,7 +1133,8 @@ class TestSyncAttachmentsEdgeCases:
         conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sync_attachments_stops_when_next_page_has_no_cursor(self):
+    async def test_sync_attachments_fails_when_more_pages_have_no_cursor(self):
+        """The pass stops without moving its checkpoint, and the full sync counts as incomplete."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn._now = MagicMock(return_value=1705400000000)
@@ -1156,9 +1160,10 @@ class TestSyncAttachmentsEdgeCases:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
-        conn.data_entities_processor.on_new_records.assert_awaited_once()
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
         mock_ds.attachments.assert_awaited_once()
-        assert conn.attachments_sync_point.store["attachments"]["last_sync_time"] == 1705400000000
+        assert not conn.attachments_sync_point.store.get("attachments", {}).get("last_sync_time")
+        assert conn.full_sync_coverage().complete is False
 
 
 class TestFetchTeamsExtended:
@@ -2021,7 +2026,8 @@ class TestFetchBatchEdgeCases:
         assert users == []
 
     @pytest.mark.asyncio
-    async def test_fetch_teams_stops_when_next_page_has_no_cursor(self):
+    async def test_fetch_teams_fails_when_more_pages_have_no_cursor(self):
+        """Teams missing from a partial list would be unlinked after a full sync: fail instead."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.organization_url_key = "org"
@@ -2032,10 +2038,9 @@ class TestFetchBatchEdgeCases:
             end_cursor=None,
         ))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            _, record_groups = await conn._fetch_teams()
-
-        assert len(record_groups) == 1
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), \
+                pytest.raises(RuntimeError, match="Failed to fetch teams"):
+            await conn._fetch_teams()
 
     @pytest.mark.asyncio
     async def test_fetch_issues_empty_list_breaks(self):
@@ -2163,7 +2168,7 @@ class TestDeletionSyncExtended:
         assert conn.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
-    async def test_deleted_issues_marks_trashed_and_paginates(self):
+    async def test_deleted_issues_marks_trashed(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn._now = MagicMock(return_value=1704070000000)
@@ -2175,9 +2180,7 @@ class TestDeletionSyncExtended:
             archivedAt="2024-06-15T10:00:00.000Z",
         )
         mock_ds = MagicMock()
-        mock_ds.trashed_issues = AsyncMock(side_effect=[
-            _issues_resp([trashed], has_next=True, end_cursor=None),
-        ])
+        mock_ds.trashed_issues = AsyncMock(side_effect=[_issues_resp([trashed], has_next=False)])
         # The issue is stored with an attachment and a sub-issue.
         stored = _ticket_record(id="node-trashed", external_record_id="iss-trashed")
         attachment = MagicMock(id="node-attachment", external_record_id="att-1", record_type=RecordType.LINK)
@@ -2191,7 +2194,6 @@ class TestDeletionSyncExtended:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_deleted_issues([(rg, perms)])
 
-        # "More pages" without a cursor cannot be followed: the listing ends there.
         mock_ds.trashed_issues.assert_awaited_once()
         processor.on_records_deleted_cascade.assert_awaited_once_with(
             ["node-attachment", "node-trashed"], "linear-gap", cascade_children=False, include_trashed_roots=True)
@@ -3180,7 +3182,7 @@ class TestCoverageBoostFinal:
         conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sync_projects_stops_without_end_cursor(self) -> None:
+    async def test_sync_projects_files_a_project_under_its_team(self) -> None:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn._now = MagicMock(return_value=1704070000000)
@@ -3197,9 +3199,7 @@ class TestCoverageBoostFinal:
             "teams": {"nodes": [{"id": "team-1", "private": False}]},
         }
         mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(return_value=_projects_resp(
-            [project_summary], has_next=True, end_cursor=None,
-        ))
+        mock_ds.projects = AsyncMock(return_value=_projects_resp([project_summary], has_next=False))
         mock_ds.project = AsyncMock(return_value=MagicMock(success=True, data={"project": project_summary}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(

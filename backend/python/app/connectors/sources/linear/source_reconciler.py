@@ -206,7 +206,8 @@ class SourceReconciler:
         project is read, and are skipped here by looking at the parent's type."""
         if not stored:
             return 0
-        live = {n["id"] for n in await self._ids("attachmentIds", "attachments", {}) if n.get("id")}
+        # An archived issue's attachments are archived with it, and are left out unless asked for
+        live = {n["id"] for n in await self._ids("attachmentIds", "attachments", {"includeArchived": True}) if n.get("id")}
         removed = 0
         parent_types: dict[str, RecordType | None] = {}
         for record in stored:
@@ -225,7 +226,11 @@ class SourceReconciler:
     async def _reconcile_documents(self, stored: list[Record]) -> int:
         if not stored:
             return 0
-        live = {n["id"] for n in await self._ids("documentIds", "documents", {}) if n.get("id")}
+        # A deleted document is trashed (archived); an archived issue's documents are archived too
+        live = {
+            n["id"] for n in await self._ids("documentIds", "documents", {"includeArchived": True})
+            if n.get("id") and not n.get("trashed")
+        }
         removed = 0
         for record in stored:
             if record.external_record_id not in live:

@@ -47,6 +47,11 @@ class LinearNotFound(LinearApiError):
     """The entity does not exist, or this account may not see it."""
 
 
+class LinearPaginationError(LinearApiError):
+    """Linear said more pages follow but gave no cursor to reach them: the listing is
+    incomplete and must not be taken for the whole list."""
+
+
 class LinearTransientError(LinearApiError):
     """A server error, a timeout or a dropped connection that outlived the retries."""
 
@@ -149,8 +154,11 @@ class LinearGateway:
             connection = connection or {}
             nodes = connection.get("nodes") or []
             info = connection.get("pageInfo") or {}
-            cursor = info.get("endCursor")
-            has_next = bool(info.get("hasNextPage")) and bool(cursor)
+            has_next = bool(info.get("hasNextPage"))
+            end_cursor = info.get("endCursor")
+            if has_next and (not end_cursor or end_cursor == cursor):
+                raise LinearPaginationError(f"{operation}: Linear reported more pages without a new cursor")
+            cursor = end_cursor
             yield nodes, cursor, has_next
             if not has_next:
                 return

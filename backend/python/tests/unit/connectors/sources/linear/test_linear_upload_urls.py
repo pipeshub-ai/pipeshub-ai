@@ -45,3 +45,39 @@ async def test_data_source_refuses_to_send_the_token_elsewhere() -> None:
     with pytest.raises(ValueError):
         await source.get_file_size("https://evil.example/uploads.linear.app/x")
     source._linear_client.get_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target, followed", [
+    ("https://evil.example/x.pdf", False),
+    ("https://uploads.linear.app/org/moved/x.pdf", True),
+])
+async def test_a_redirect_is_followed_only_to_the_upload_host(monkeypatch, target, followed) -> None:
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    from app.sources.external.linear import linear as module
+
+    asked: list[str] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        if request.url.path == "/org/a/x.pdf":
+            return httpx.Response(302, headers={"location": target})
+        return httpx.Response(200, content=b"pdf")
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient",
+                        lambda **options: client(transport=httpx.MockTransport(answer), **options))
+    source = module.LinearDataSource(MagicMock())
+    source._linear_client.get_client.return_value.get_auth_header.return_value = "lin_api_test"
+
+    if followed:
+        assert b"".join([c async for c in source.download_file("https://uploads.linear.app/org/a/x.pdf")]) == b"pdf"
+        assert asked == ["https://uploads.linear.app/org/a/x.pdf", target]
+    else:
+        with pytest.raises(ValueError):
+            async for _ in source.download_file("https://uploads.linear.app/org/a/x.pdf"):
+                pass
+        assert asked == ["https://uploads.linear.app/org/a/x.pdf"], "the redirect to another host was followed"

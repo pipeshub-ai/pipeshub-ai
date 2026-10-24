@@ -333,7 +333,8 @@ class TestReconcileAttachmentsAndDocuments:
 
         assert counts == {"issues": 0, "attachments": 1, "documents": 0}
         assert _removed(env) == ["att-gone"]
-        assert env.linear.asked("attachmentIds") == [{"first": 250}]
+        # An archived issue's attachments are archived with it: they are asked for too
+        assert env.linear.asked("attachmentIds") == [{"first": 250, "includeArchived": True}]
 
     @pytest.mark.asyncio
     async def test_project_links_are_not_attachments(self) -> None:
@@ -367,17 +368,22 @@ class TestReconcileAttachmentsAndDocuments:
         kept = _record("node-kept", "doc-kept", RecordType.WEBPAGE)
         gone = _record("node-gone", "doc-gone", RecordType.WEBPAGE)
 
+        trashed = _record("node-trashed", "doc-trashed", RecordType.WEBPAGE)
+
         def respond(operation, variables) -> GraphQLResponse:
             if operation == "documentIds":
-                return _page("documents", [{"id": "doc-kept"}, {"id": None}])
+                # Deleting a document in Linear trashes it; archived ones are listed too
+                return _page("documents", [{"id": "doc-kept", "trashed": False}, {"id": None},
+                                           {"id": "doc-trashed", "trashed": True}])
             return _nothing_to_list(operation, variables)
 
-        env = _make(respond, stored={RecordType.WEBPAGE: [kept, gone]})
+        env = _make(respond, stored={RecordType.WEBPAGE: [kept, gone, trashed]})
 
         counts = await env.reconciler.run({"team-1"})
 
-        assert counts == {"issues": 0, "attachments": 0, "documents": 1}
-        assert _removed(env) == ["doc-gone"]
+        assert counts == {"issues": 0, "attachments": 0, "documents": 2}
+        assert _removed(env) == ["doc-gone", "doc-trashed"]
+        assert env.linear.asked("documentIds") == [{"first": 250, "includeArchived": True}]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("operation,record_type", [

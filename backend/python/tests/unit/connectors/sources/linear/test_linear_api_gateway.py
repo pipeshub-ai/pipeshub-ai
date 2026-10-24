@@ -13,6 +13,7 @@ from app.connectors.sources.linear.api_gateway import (
     LinearForbidden,
     LinearGateway,
     LinearNotFound,
+    LinearPaginationError,
     LinearRateLimited,
     LinearTransientError,
     classify,
@@ -405,14 +406,16 @@ class TestPages:
         datasource.execute_operation.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_more_pages_without_a_cursor_cannot_be_followed(self) -> None:
+    @pytest.mark.parametrize("end_cursor", [None, "", "start"])
+    async def test_more_pages_without_a_new_cursor_is_an_incomplete_listing(self, end_cursor) -> None:
+        """Taken for the end, it would let the reconciler remove what the rest of the list holds."""
         gateway, datasource, _, _ = _make_gateway()
         datasource.execute_operation = AsyncMock(
-            return_value=_ok({"issues": _page([{"id": "a"}], True, None)}))
+            return_value=_ok({"issues": _page([{"id": "a"}], True, end_cursor)}))
 
-        pages = await _collect(gateway.pages("issueIds", ["issues"]))
+        with pytest.raises(LinearPaginationError):
+            await _collect(gateway.pages("issueIds", ["issues"], after="start"))
 
-        assert pages == [([{"id": "a"}], None, False)]
         datasource.execute_operation.assert_awaited_once()
 
     @pytest.mark.asyncio

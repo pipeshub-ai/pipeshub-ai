@@ -17,6 +17,11 @@ def _require_upload_url(file_url: str) -> None:
         raise ValueError("Not a Linear upload URL")
 
 
+async def _upload_host_only(request: httpx.Request) -> None:
+    """Every request of a download, each redirect included, goes to Linear's upload host."""
+    _require_upload_url(str(request.url))
+
+
 class LinearDataSource:
     """
     Complete Linear GraphQL API client wrapper
@@ -2151,7 +2156,7 @@ class LinearDataSource:
             if auth_header:
                 headers["Authorization"] = auth_header
 
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, event_hooks={"request": [_upload_host_only]}) as client:
                 async with client.stream("GET", file_url, headers=headers) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes():
@@ -2184,7 +2189,7 @@ class LinearDataSource:
             if auth_header:
                 headers["Authorization"] = auth_header
 
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, event_hooks={"request": [_upload_host_only]}) as client:
                 response = await client.head(file_url, headers=headers)
                 response.raise_for_status()
 

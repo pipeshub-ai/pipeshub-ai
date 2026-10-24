@@ -36,6 +36,29 @@ def _make_remover(children=None, records=None) -> tuple:
     return RecordRemover(processor, CONNECTOR_ID, logger), processor, logger
 
 
+class TestFailedDelete:
+    """The processor reports an ordinary delete failure in its result, without raising."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_is_not_a_removal(self) -> None:
+        issue = _record("node-issue", "issue-1")
+        remover, processor, _ = _make_remover(records={"issue-1": issue})
+        processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "graph down"})
+
+        with pytest.raises(RuntimeError, match="graph down"):
+            await remover.remove("issue-1")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_delete_stops_the_removal(self) -> None:
+        remover, processor, _ = _make_remover()
+        processor.get_records_in_record_group = AsyncMock(return_value=[_record("node-1", "issue-1")])
+        processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "locked"})
+
+        with pytest.raises(RuntimeError, match="locked"):
+            await remover.remove_group("team-1")
+        processor.on_record_group_deleted.assert_not_awaited()
+
+
 class TestRemove:
     @pytest.mark.asyncio
     async def test_unknown_record_removes_nothing(self) -> None:

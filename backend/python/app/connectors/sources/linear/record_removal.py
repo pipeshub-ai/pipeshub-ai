@@ -42,10 +42,14 @@ class RecordRemover:
         ids.append(record.id)
         if survivors:
             await self._processor.on_records_detached_from_parent([s.id for s in survivors])
-        await self._processor.on_records_deleted_cascade(
-            list(dict.fromkeys(ids)), self._connector_id, cascade_children=False,
-            include_trashed_roots=True,
-        )
+        await self._delete(list(dict.fromkeys(ids)), include_trashed_roots=True)
+
+    async def _delete(self, ids: list[str], **options: bool) -> None:
+        """The processor reports an ordinary failure in its result instead of raising."""
+        result = await self._processor.on_records_deleted_cascade(
+            ids, self._connector_id, cascade_children=False, **options)
+        if isinstance(result, dict) and result.get("success") is False:
+            raise RuntimeError(f"Could not remove {len(ids)} Linear record(s): {result.get('reason')}")
 
     async def _split_children(self, record: Record) -> tuple[list[Record], list[Record]]:
         if not record.external_record_id:
@@ -76,7 +80,7 @@ class RecordRemover:
             if ids == previous:
                 # The delete is not taking effect: stop instead of spinning.
                 raise RuntimeError(f"Records of Linear team {external_group_id} could not be removed")
-            await self._processor.on_records_deleted_cascade(ids, self._connector_id, cascade_children=False)
+            await self._delete(ids)
             removed += len(ids)
             previous = ids
             if len(ids) < GROUP_PAGE:
