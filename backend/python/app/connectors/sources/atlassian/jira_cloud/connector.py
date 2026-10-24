@@ -2121,9 +2121,10 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             groups_members_map = await self._sync_user_groups(jira_users)
-            projects, raw_projects = await self._fetch_filtered_projects(jira_users)
+            # Only keys and leads are needed: skip the permission scheme read of every project.
+            raw_projects = await self._list_projects_with_filter(*self._project_keys_filter())
             if groups_members_map is not None:
-                await self._sync_project_roles([proj.short_name for proj, _ in projects], jira_users, groups_members_map)
+                await self._sync_project_roles([p["key"] for p in raw_projects if p.get("key")], jira_users, groups_members_map)
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
     async def _fetch_users(
@@ -3826,6 +3827,11 @@ class JiraConnector(BaseConnector):
         jira_users: list["AppUser"],
     ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
         """Resolve the project-keys sync filter, then fetch matching projects."""
+        allowed_keys, project_keys_operator = self._project_keys_filter()
+        return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+
+    def _project_keys_filter(self) -> tuple[Optional[list[str]], Optional[FilterOperatorType]]:
+        """The project-keys sync filter's keys and operator (None, None without one)."""
         allowed_keys = None
         project_keys_operator = None
         if self.sync_filters:
@@ -3843,7 +3849,7 @@ class JiraConnector(BaseConnector):
                     self.logger.info(f"🔍 Project keys filter: {action} projects: {allowed_keys}")
                 else:
                     self.logger.info("🔍 Project keys filter is empty, will fetch all projects")
-        return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+        return allowed_keys, project_keys_operator
 
     async def _fetch_projects(
         self,

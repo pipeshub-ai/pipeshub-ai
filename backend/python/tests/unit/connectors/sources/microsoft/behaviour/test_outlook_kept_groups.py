@@ -23,6 +23,7 @@ async def test_a_failed_member_read_notes_the_group_as_kept(connector, api, db) 
     await connector.run_sync()
 
     assert db.kept_user_groups == [GROUP]
+    assert not connector.full_sync_coverage().complete  # a full sync must not unlink what it could not read
 
 
 async def test_a_failed_member_read_still_syncs_the_group_mailbox_and_its_posts(connector, api, db) -> None:  # noqa: F811

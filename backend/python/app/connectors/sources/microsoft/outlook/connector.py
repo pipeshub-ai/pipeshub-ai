@@ -844,6 +844,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                         members = await self._get_group_members(group_id)
                     except Exception as e:
                         self.logger.error(f"Keeping stored members of group {group_id}: {e}")
+                        self._full_sync_incomplete = True
+                        self._skipped["groups"] += 1
                         await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
                         members = None
 

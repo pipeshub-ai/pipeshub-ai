@@ -1,6 +1,9 @@
 """A Gmail group whose members cannot be read is recorded as kept; a group of groups is not empty."""
 
+import pytest
 from test_gmail_team_sync_behaviour import ALICE, BOB, Harness, ws  # noqa: F401
+
+from app.connectors.sources.google.common.gmail_sync_health import GmailSyncIncomplete
 
 
 async def test_a_failed_member_read_notes_the_group_as_kept(ws: Harness, backoff_sleeps: list[float]) -> None:  # noqa: F811
@@ -9,7 +12,8 @@ async def test_a_failed_member_read_notes_the_group_as_kept(ws: Harness, backoff
     ws.records.kept_user_groups.clear()
     ws.http.fail("GET", "/admin/directory/v1/groups/team@example.com/members", 500, "backendError")
 
-    await ws.sync()
+    with pytest.raises(GmailSyncIncomplete):  # the run reports the group it could not read
+        await ws.sync()
 
     assert ws.records.kept_user_groups == ["team@example.com"]
 

@@ -32,9 +32,12 @@ async def test_steps_run_in_order() -> None:
     assert calls == ["a", "b"]
 
 
-@pytest.mark.parametrize("cls", [ConfluenceConnector, ConfluenceDataCenterConnector])
-def test_confluence_links_with_its_user_and_group_steps(cls: type) -> None:
-    assert cls.user_link_steps == ("_sync_users", "_sync_user_groups")
+def test_confluence_data_center_links_with_its_user_and_group_steps() -> None:
+    assert ConfluenceDataCenterConnector.user_link_steps == ("_sync_users", "_sync_user_groups")
+
+
+def test_confluence_cloud_withdraws_inactive_users_as_its_last_link_step() -> None:
+    assert ConfluenceConnector.user_link_steps == ("_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users")
 
 
 def _jira(cls: type) -> MagicMock:
@@ -64,6 +67,8 @@ def _jira(cls: type) -> MagicMock:
 
     c._keep_licensed_users = licensed
     c._sync_user_groups = AsyncMock(return_value={"g": ["u"]})
+    c._project_keys_filter = lambda: (None, None)
+    c._list_projects_with_filter = AsyncMock(return_value=[{"key": "P"}])
     c._fetch_filtered_projects = AsyncMock(return_value=([(MagicMock(short_name="P"), None)], [{"key": "P"}]))
     c._sync_project_roles = AsyncMock()
     c._sync_project_lead_roles = AsyncMock()
@@ -79,6 +84,7 @@ async def test_jira_cloud_pass_writes_users_groups_roles_and_keeps_the_sync_stat
     c._sync_user_groups.assert_awaited_once_with(["u"])
     c._sync_project_roles.assert_awaited_once_with(["P"], ["u"], {"g": ["u"]})
     c._sync_project_lead_roles.assert_awaited_once_with([{"key": "P"}], ["u"])
+    c._fetch_filtered_projects.assert_not_awaited()  # no permission scheme reads in a link pass
     assert (c._kept_unread_access, c._user_read_unfinished, c._app_roles_unread) == (True, True, True)
     assert c._kept_after_refusal == [("projects", "")]
     assert c._projects_naming_unread_roles == {"P"}

@@ -1547,6 +1547,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 f"Error processing group {group.get('id', 'unknown')}: {e}",
                                 exc_info=True
                             )
+                            self._sync_health.record(group.get("email") or group.get("id", "unknown"), e, "group")
                             # Unknown is not empty: keep the stored members of this group.
                             if group.get("email"):
                                 await self.data_entities_processor.note_kept_user_group(

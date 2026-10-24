@@ -126,7 +126,8 @@ async def test_a_failed_member_read_keeps_the_stored_group_and_the_rest_sync(ws:
     ws.http.fail("GET", "/admin/directory/v1/groups/team@example.com/members", 500, "backendError")
     ws.directory.groups["other@example.com"]["members"] = [ALICE, BOB]
 
-    await ws.sync()
+    with pytest.raises(GmailSyncIncomplete):  # reported, while the rest still syncs
+        await ws.sync()
 
     assert len(backoff_sleeps) == 3
     assert {m.email for m in ws.records.user_groups["team@example.com"][1]} == {ALICE, BOB}
