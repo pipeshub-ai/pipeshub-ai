@@ -225,6 +225,19 @@ class TestApply:
         assert graph.writes == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("unloaded", [BlocksContainer(blocks=[], block_groups=[]), None], ids=["default", "none"])
+    async def test_a_record_read_without_its_blocks_keeps_its_content_dates(self, unloaded: BlocksContainer | None) -> None:
+        # As a persist retry or a stage's save built it: the graph document and the
+        # stored extraction, but not the blocks.
+        extraction = await _extraction(_record(_content_doc(), EMAIL_BLOCKS))
+        graph, record = _Graph(_content_doc()), _record(_content_doc(), [])
+        record.block_containers = unloaded  # type: ignore[assignment]
+
+        assert await apply_content_dates(graph, record, extraction) == "unread"
+        assert (graph.reads, graph.writes) == (0, [])
+        assert graph.docs["rec-1"]["sourceTimestampOrigin"] == "content"
+
+    @pytest.mark.asyncio
     async def test_a_new_version_written_meanwhile_is_not_overwritten(self) -> None:
         graph, record = _Graph(_doc()), _record(_doc(), EMAIL_BLOCKS)
         extraction = await _extraction(record)

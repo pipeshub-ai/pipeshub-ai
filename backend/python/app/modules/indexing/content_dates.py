@@ -124,6 +124,12 @@ def plan_revert(doc: Mapping[str, Any]) -> DatesWrite | None:
     )
 
 
+def content_dates_apply(record: Record) -> bool:
+    """Whether ``record`` takes the dates its content states: the switch is on
+    and it is a knowledge-base upload."""
+    return bool(content_dates_replace()) and is_kb_upload(record.connector_name, record.origin)
+
+
 def _contradicted(current: RecordDates, dates: DocumentDates) -> bool:
     """A file last modified before the day its content says it was written."""
     if current.origin is not SourceTimestampOrigin.FILE or not current.modified_ms:
@@ -139,20 +145,23 @@ async def apply_content_dates(
     """Write the dates ``record``'s content states once its extraction is done.
 
     Returns ``off`` (switched off, or not an upload), ``unread`` (extraction did
-    not run, so nothing is known), ``gone``, ``unchanged``, ``superseded`` (a new
-    version landed meanwhile) or the write's action. Updates ``record`` to match.
+    not run, or ``record`` came without its blocks, so nothing is known),
+    ``gone``, ``unchanged``, ``superseded`` (a new version landed meanwhile) or
+    the write's action. Updates ``record`` to match.
     """
-    replace = content_dates_replace()
-    if not replace or not is_kb_upload(record.connector_name, record.origin):
+    if not content_dates_apply(record):
         return "off"
     if extraction.status in ("FAILED", "SKIPPED"):
+        return "unread"
+    # Blocks that were never loaded are not a document that states no date.
+    blocks = getattr(record.block_containers, "blocks", None)
+    if not blocks:
         return "unread"
     doc = await graph_provider.get_document(record.id, _RECORDS)
     if not doc:
         return "gone"
-    blocks = getattr(record.block_containers, "blocks", None) or []
     dates = find_document_dates(extraction, blocks, uploaded_ms=latest_upload_ms(doc))
-    write = plan_dates_write(doc, dates, replace)
+    write = plan_dates_write(doc, dates, content_dates_replace())
     if write is None:
         return "unchanged"
     if not await graph_provider.update_node_fields_if_match(record.id, _RECORDS, write.updates, write.expected):
