@@ -1561,7 +1561,10 @@ def sweep_orphan_views(mount_root: str) -> None:
     except OSError:
         return
     for org in orgs:
-        _sweep_stale_views(os.path.join(mount_root, org, "PipesHub", _VIEWS_DIR_NAME))
+        try:
+            _sweep_stale_views(os.path.join(mount_root, org, "PipesHub", _VIEWS_DIR_NAME))
+        except OSError:  # a stray file or an unreadable org must not stop the others
+            logger.warning("[storage_pattern_match] could not sweep views of %s", org, exc_info=True)
 
 
 def _views_root(connector_dir: str) -> str:

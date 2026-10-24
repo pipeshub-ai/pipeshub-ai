@@ -2480,3 +2480,23 @@ class TestHardening:
                 break
             await asyncio.sleep(0.05)
         assert not os.path.exists(seen["view"])
+
+
+def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
+    from app.agents.actions.storage_search.storage_search import _VIEWS_DIR_NAME, sweep_orphan_views
+
+    (tmp_path / "a-file").write_text("x")  # not an org directory
+    for org in ("org-1", "org-2"):
+        (tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old").mkdir(parents=True)
+        os.utime(tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old", (1, 1))
+    real = os.scandir
+
+    def flaky(path):
+        if "org-1" in str(path):
+            raise PermissionError(path)
+        return real(path)
+
+    with patch("os.scandir", flaky):
+        sweep_orphan_views(str(tmp_path))
+
+    assert not (tmp_path / "org-2" / "PipesHub" / _VIEWS_DIR_NAME / "old").exists()
