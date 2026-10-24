@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from app.utils.image_admission import (
     ImageCandidate,
     ImageOrigin,
     admission_from_state,
+    content_hash,
 )
 from app.utils.image_policy import permissive_policy, resolve_image_policy
 
@@ -733,3 +735,36 @@ class TestRecordImageUris:
         from app.utils.chat_helpers import record_image_uris
 
         assert record_image_uris({}) == []
+
+
+class TestContentHash:
+    """`content_hash` is the identity an image keeps across sources.
+
+    The duplicate rules and the normalization cache sit on this value, so the
+    contract is pinned here: the URI string (MIME prefix included) is what is
+    hashed, the result is 16 lowercase hex characters, and a lone surrogate
+    is dropped by `errors="ignore"` instead of raising.
+    """
+
+    def test_pins_the_sha256_vector_for_abc(self) -> None:
+        assert content_hash("abc") == "ba7816bf8f01cfea"
+
+    def test_pins_the_sha256_vector_for_the_empty_string(self) -> None:
+        assert content_hash("") == "e3b0c44298fc1c14"
+
+    def test_a_lone_surrogate_is_dropped_not_fatal(self) -> None:
+        """A lone surrogate cannot encode as UTF-8. `errors="ignore"` drops
+        it, so the URI with the surrogate hashes as its clean form."""
+        assert content_hash("\ud800abc") == content_hash("abc")
+
+    def test_the_mime_prefix_is_part_of_the_identity(self) -> None:
+        png = content_hash("data:image/png;base64,QQ==")
+        jpeg = content_hash("data:image/jpeg;base64,QQ==")
+        assert png != jpeg
+        assert re.fullmatch(r"[0-9a-f]{16}", png) is not None
+        assert re.fullmatch(r"[0-9a-f]{16}", jpeg) is not None
+
+    def test_the_same_string_hashes_the_same_way_twice(self) -> None:
+        assert content_hash("data:image/png;base64,QQ==") == content_hash(
+            "data:image/png;base64,QQ=="
+        )
