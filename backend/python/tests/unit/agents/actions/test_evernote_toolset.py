@@ -116,7 +116,7 @@ async def test_create_note_builds_a_note_and_wraps_plain_text_as_enml(evernote, 
     assert isinstance(note, Note)
     assert (note.title, note.notebookGuid, note.tagGuids) == ("T", "nb1", ["t1"])
     assert note.content.startswith('<?xml version="1.0" encoding="UTF-8"?>')
-    assert "<en-note>a &lt; b &amp; c</en-note>" in note.content
+    assert "<en-note><div>a &lt; b &amp; c</div></en-note>" in note.content
 
 
 async def test_create_note_keeps_enml_as_given(evernote, stores) -> None:
@@ -125,6 +125,31 @@ async def test_create_note_keeps_enml_as_given(evernote, stores) -> None:
     enml = '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd"><en-note><b>x</b></en-note>'
     await evernote.create_note(title="T", content=enml)
     assert note_store.createNote.call_args.args[1].content == enml
+
+
+async def test_create_note_keeps_the_line_breaks_of_plain_text(evernote, stores) -> None:
+    note_store, _ = stores
+    note_store.createNote.return_value = Note(guid="n1")
+    await evernote.create_note(title="T", content="a < b\n\nsecond")
+    content = note_store.createNote.call_args.args[1].content
+    assert "<en-note><div>a &lt; b</div><div><br/></div><div>second</div></en-note>" in content
+
+
+async def test_create_note_escapes_plain_text_that_mentions_the_en_note_tag(evernote, stores) -> None:
+    note_store, _ = stores
+    note_store.createNote.return_value = Note(guid="n1")
+    await evernote.create_note(title="T", content="use <en-note> as the root")
+    content = note_store.createNote.call_args.args[1].content
+    assert "<en-note><div>use &lt;en-note&gt; as the root</div></en-note>" in content
+
+
+async def test_create_note_adds_the_header_to_a_bare_en_note(evernote, stores) -> None:
+    note_store, _ = stores
+    note_store.createNote.return_value = Note(guid="n1")
+    await evernote.create_note(title="T", content="<en-note><b>x</b></en-note>")
+    content = note_store.createNote.call_args.args[1].content
+    assert content.startswith('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE en-note')
+    assert content.endswith("<en-note><b>x</b></en-note>")
 
 
 async def test_update_note_without_a_title_keeps_the_existing_title(evernote, stores) -> None:
@@ -136,7 +161,7 @@ async def test_update_note_without_a_title_keeps_the_existing_title(evernote, st
     token, note = note_store.updateNote.call_args.args
     assert token == TOKEN
     assert (note.guid, note.title) == ("n1", "Existing")
-    assert "<en-note>new body</en-note>" in note.content
+    assert "<en-note><div>new body</div></en-note>" in note.content
 
 
 async def test_update_note_with_a_title_does_not_read_the_note(evernote, stores) -> None:

@@ -31,10 +31,16 @@ _ENML_HEADER = (
 
 
 def _enml(content: str) -> str:
-    """Note content as ENML: ENML is kept as given, plain text is escaped and wrapped."""
-    if "<en-note" in content:
+    """Note content as ENML: a full document is kept, a bare <en-note> gets the
+    header, and plain text is escaped and wrapped one line per <div>."""
+    stripped = content.lstrip()
+    if stripped.startswith(("<?xml", "<!DOCTYPE")):
         return content
-    return f"{_ENML_HEADER}<en-note>{escape(content, quote=False)}</en-note>"
+    if stripped.startswith("<en-note"):
+        return f"{_ENML_HEADER}{stripped}"
+    # ENML is XHTML, so a raw newline collapses; Evernote marks a blank line as <div><br/></div>.
+    body = "".join(f"<div>{escape(line, quote=False) or '<br/>'}</div>" for line in content.splitlines())
+    return f"{_ENML_HEADER}<en-note>{body}</en-note>"
 
 
 def _json_default(value: object) -> object:
