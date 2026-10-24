@@ -74,6 +74,28 @@ async def test_exact_match_runs_it_for_any_query() -> None:
     assert await _grep_ran(_PLAIN, exact_match=True)
 
 
+_LONG_SPAN = {"created_after": "2026-01-01", "created_before": "2026-06-30"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("gated")
+async def test_a_long_span_still_runs_as_a_timeline_without_exact_match() -> None:
+    timeline = AsyncMock(return_value="timeline")
+    with patch("app.agents.actions.knowledge_graph.ops.timeline.automatic_timeline_search", timeline):
+        assert not await _grep_ran(_PLAIN, **_LONG_SPAN)
+    timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("gated")
+async def test_exact_match_over_a_long_span_runs_the_ranked_search() -> None:
+    """The timeline search has no exact-text pass, so it would drop the one asked for."""
+    timeline = AsyncMock(return_value="timeline")
+    with patch("app.agents.actions.knowledge_graph.ops.timeline.automatic_timeline_search", timeline):
+        assert await _grep_ran(_PLAIN, exact_match=True, **_LONG_SPAN)
+    timeline.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("gated")
 async def test_exact_match_does_not_widen_an_entity_scoped_search() -> None:

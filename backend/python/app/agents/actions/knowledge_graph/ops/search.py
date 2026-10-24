@@ -504,14 +504,15 @@ async def execute_search(
     ``exact_match`` runs the exact-text pass whatever the query looks like
     (``exact_text_search_wanted``).
 
-    Without a scope, dates over a span longer than a month run the timeline
-    tool's search instead (``ops/timeline.automatic_timeline_search``).
+    Without a scope or ``exact_match``, dates over a span longer than a month
+    run the timeline tool's search instead
+    (``ops/timeline.automatic_timeline_search``), which has no exact-text pass.
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
     (``ops/outside_dates``).
     """
-    if scope_virtual_record_ids is None:
+    if scope_virtual_record_ids is None and not exact_match:
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
         )
