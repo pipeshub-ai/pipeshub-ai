@@ -4180,7 +4180,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE r.orgId = $org_id
         RETURN vid, r.id AS id, r.connectorId AS connectorId,
                r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
-               r.recordName AS recordName, r.webUrl AS webUrl,
+               r.recordName AS recordName, r.webUrl AS webUrl, r.contentRev AS contentRev,
                coalesce(r.isDeleted, false) AS isDeleted
         """
         results = await self.client.execute_query(
@@ -15733,6 +15733,80 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             },
         )
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
+
+    @override
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        found: list[tuple[str, str]] = []
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $ids AS vrid
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev IS NOT NULL
+                WITH vrid, state.rev AS rev, max(coalesce(state.updatedAtMs, 0)) AS newest
+                WHERE newest < $before
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
+                RETURN vrid, rev ORDER BY vrid, rev
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH], "before": updated_before_ms},
+            )
+            found.extend((str(row["vrid"]), str(row["rev"])) for row in rows)
+        return found
+
+    @override
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        pairs = sorted({(v, r) for v, r in revisions if v and r})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        deleted = 0
+        for start in range(0, len(pairs), _STAGE_STATE_VRID_BATCH):
+            # The rule is evaluated again here: a record may have moved back onto the
+            # revision, or its stage claimed again, since it was read.
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $pairs AS pair
+                WITH pair[0] AS vrid, pair[1] AS rev
+                WHERE NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                }}
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev = rev
+                WITH vrid, rev, collect(state) AS states, max(coalesce(state.updatedAtMs, 0)) AS newest
+                WHERE newest < $before
+                UNWIND states AS state
+                DETACH DELETE state
+                RETURN count(*) AS deleted
+                """,
+                {"pairs": [list(p) for p in pairs[start:start + _STAGE_STATE_VRID_BATCH]], "before": updated_before_ms},
+            )
+            deleted += int(rows[0]["deleted"]) if rows else 0
+        return deleted
+
+    @override
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId,
+                   m.currentRev AS currentRev, m.previousRev AS previousRev
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        return [dict(row) for row in rows]
 
     @override
     async def get_record_content_revs(
