@@ -6,12 +6,19 @@ Each scenario changes the simulated site the way a Confluence user would (restri
 groups, attachments, the trash, moves, comments) and checks what the next sync made of it in
 PipesHub: the graph, the vectors, the streamed page and the notifications.
 
-The module works in two spaces of its own, created before the connector and deleted at the
-end, so the pack's spaces and the other suites never see these changes. Every object a
-scenario changes is seeded before the first sync and used by that scenario only, so the
-scenarios do not depend on each other's order. A scenario that changes something outside its
-own objects (a restriction with a site group, a fault rule) puts it back in ``finally``.
-Every sync that is meant to be clean also checks that it sent no notification.
+An incremental sync re-reads every page modified in the 24 hours before its checkpoint, so a
+change to a new page is found whatever else the connector does. The changes that the
+connector must find some other way (restrictions, attachments, moves: none of them gives the
+page a new version) are therefore made on the pack space's own pages and folders, which are
+months old, and put back in ``finally``: restrictions removed, attachments the test added
+deleted, moved pages moved back. Only pages and folders without any restriction, on them or
+above them, are picked, so removing every restriction restores them exactly. One scenario
+(3b) edits a pack page; that page keeps a new version with the same body.
+
+What age does not matter for (the trash, comments, streaming) uses a space the module creates
+and deletes; a second such space is the target of the move to another space. Each scenario
+uses objects no other scenario touches, so they do not depend on each other's order. Every
+sync also checks the notifications it sent (none for a clean sync), when the test ends.
 """
 
 from __future__ import annotations
@@ -54,6 +61,8 @@ class World:
     team_group: str
     spaces: dict[str, dict[str, Any]]
     ids: dict[str, str] = field(default_factory=dict)
+    # Where each picked pack page sits, to move it back.
+    pack_parents: dict[str, str] = field(default_factory=dict)
     # Notification mismatches of the running test, checked when it ends so a wrong notice does
     # not hide what the scenario's own checks find.
     notice_problems: list[str] = field(default_factory=list)
@@ -75,7 +84,7 @@ class World:
 
 
 def _seed(space_a: dict[str, Any], tag: str) -> dict[str, str]:
-    """Every object the scenarios change, made before the first sync. Titles are unique per run."""
+    """The new content the scenarios change, made before the first sync. Titles are unique per run."""
     a = str(space_a["id"])
     ids: dict[str, str] = {}
 
@@ -83,29 +92,12 @@ def _seed(space_a: dict[str, Any], tag: str) -> dict[str, str]:
         ids[key] = sim.create_page(a, f"PipesHub IT sim {key} {tag}", text or f"{key} page of run {tag}", parent)
         return ids[key]
 
-    def folder(key: str) -> str:
-        ids[key] = sim.create_folder(a, f"PipesHub IT sim {key} {tag}")
-        return ids[key]
-
-    page("restrict_child", parent=page("restrict_page"))
-    page("in_restrict_folder", parent=folder("restrict_folder"))
-    page("group_page")
-    ids["att_limit"] = sim.upload(page("att_limit_page"), f"limit-{tag}.txt", b"stays until a full sync", "text/plain")
-    ids["att_edit"] = sim.upload(page("att_edit_page"), f"edit-{tag}.txt", b"goes with the page edit", "text/plain")
-    page("in_trash_folder", parent=folder("trash_folder"))
+    ids["trash_folder"] = sim.create_folder(a, f"PipesHub IT sim trash_folder {tag}")
+    page("in_trash_folder", parent=ids["trash_folder"])
     ids["att_trash"] = sim.upload(page("trash_page"), f"trash-{tag}.txt", b"goes to the trash with its page",
                                   "text/plain")
-    page("space_move_child", parent=page("space_move_page"))
     page("footer_page")
     page("inline_page", text=f"Quarterly figures of run {tag} are settled here in plain words.")
-    page("add_att_page")
-    ids["att_versioned"] = sim.upload(page("version_att_page"), f"versioned-{tag}.txt", b"version one",
-                                      "text/plain")
-    page("move_target")
-    page("moved_page")
-    folder("audit_folder")
-    page("audit_page")
-    page("unreadable_page")
 
     # A page whose comments are in place before its first sync: two levels of footer replies and
     # an inline thread, for streaming.
@@ -120,17 +112,86 @@ def _seed(space_a: dict[str, Any], tag: str) -> dict[str, str]:
     return ids
 
 
+# Pages other suites name: the homepage and the first page under it (conftest's hierarchy page).
+_PACK_PAGES_IN_USE = 2
+
+
+def _has_restriction(content_id: str) -> bool:
+    return any(r["restrictions"]["user"]["size"] or r["restrictions"]["group"]["size"]
+               for r in sim.ok("GET", f"/wiki/rest/api/content/{content_id}/restriction")["results"])
+
+
+def _pick_pack(space_id: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Old pack pages and folders without any restriction, on them or above them, one per role;
+    and where each picked page sits, to move it back to."""
+    pages: list[dict[str, Any]] = []
+    path = f"/wiki/api/v2/spaces/{space_id}/pages?limit=250"
+    while path:
+        body = sim.ok("GET", path)
+        pages += body["results"]
+        path = (body.get("_links") or {}).get("next")
+    pages.sort(key=lambda p: int(p["id"]))
+    parent = {str(p["id"]): str(p.get("parentId") or "") for p in pages}
+    folders = sorted(str(f["id"]) for f in sim.ok(
+        "GET", f"/wiki/rest/api/content/search?cql=space.id%3D{space_id}%20and%20type%3Dfolder&limit=50")["results"])
+    restricted = {i for i in [*parent, *folders] if _has_restriction(i)}
+
+    def free(i: str) -> bool:
+        for _ in range(50):
+            if not i:
+                return True
+            if i in restricted:
+                return False
+            i = parent.get(i, "")
+        return False
+
+    kids: dict[str, list[str]] = {}
+    for i, p in parent.items():
+        kids.setdefault(p, []).append(i)
+    candidates = [str(p["id"]) for p in pages[_PACK_PAGES_IN_USE:] if free(str(p["id"]))]
+    used: set[str] = set()
+
+    def take(*, with_kids: bool = False, under_page: bool = False) -> str:
+        for i in candidates:
+            family = {i, *kids.get(i, []), parent[i]}
+            if i in used or used & family or bool(kids.get(i)) != with_kids or (
+                    under_page and parent[i] not in parent):
+                continue
+            used.update(family)
+            return i
+        raise AssertionError("the pack space has too few unrestricted pages for these scenarios")
+
+    ids: dict[str, str] = {}
+    ids["restrict_page"] = take(with_kids=True)
+    ids["restrict_child"] = kids[ids["restrict_page"]][0]
+    ids["space_move_page"] = take(with_kids=True, under_page=True)
+    ids["space_move_child"] = kids[ids["space_move_page"]][0]
+    for key in ("group_page", "audit_page", "unreadable_page", "add_att_page", "version_att_page",
+                "att_limit_page", "att_edit_page", "move_target"):
+        ids[key] = take()
+    ids["moved_page"] = take(under_page=True)
+    free_folders = [f for f in folders if f not in restricted and kids.get(f)]
+    assert len(free_folders) >= 2, f"the pack space needs two unrestricted folders with pages, has {free_folders}"
+    ids["restrict_folder"], ids["audit_folder"] = free_folders[:2]
+    ids["in_restrict_folder"] = kids[ids["restrict_folder"]][0]
+    return ids, {k: parent[v] for k, v in ids.items() if v in parent}
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def world(pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol) -> AsyncGenerator[World, None]:
     sim.require_simulator()
     tag = uuid.uuid4().hex[:6].upper()
     keys = {"a": f"ITA{tag}", "b": f"ITB{tag}"}
+    pack_key = os.environ["CONFLUENCE_TEST_SPACE_KEY"].strip()
     spaces: dict[str, dict[str, Any]] = {}
     connector_id = None
     try:
+        spaces["pack"] = sim.ok("GET", f"/wiki/api/v2/spaces?keys={pack_key}")["results"][0]
         for which, key in keys.items():
             spaces[which] = sim.create_space(key, f"PipesHub IT sim {which} {tag}")
         ids = _seed(spaces["a"], tag)
+        pack_ids, pack_parents = _pick_pack(str(spaces["pack"]["id"]))
+        ids.update(pack_ids)
         me = sim.current_account_id()
         team_group = next(g["id"] for g in sim.ok("GET", "/wiki/rest/api/group?limit=200")["results"]
                           if g["name"].startswith("team-"))
@@ -143,14 +204,15 @@ async def world(pipeshub_client: PipeshubClient, graph_provider: GraphProviderPr
                          "email": os.getenv("CONFLUENCE_TEST_EMAIL"),
                          "apiToken": os.getenv("CONFLUENCE_TEST_API_TOKEN")},
                 "filters": {"sync": {"values": {"space_keys": {
-                    "operator": "in", "type": "list", "value": list(keys.values())}}}},
+                    "operator": "in", "type": "list", "value": [pack_key, *keys.values()]}}}},
             },
         )
         connector_id = instance.connector_id
         assert connector_id, "Connector must have a valid ID"
         inbox = sim.Inbox(pipeshub_client.base_url, name, email=os.getenv("PIPESHUB_TEST_USER_EMAIL"),
                           password=os.getenv("PIPESHUB_TEST_USER_PASSWORD"))
-        w = World(pipeshub_client, graph_provider, connector_id, name, inbox, me, team_group, spaces, ids)
+        w = World(pipeshub_client, graph_provider, connector_id, name, inbox, me, team_group, spaces, ids,
+                  pack_parents)
 
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=sim.SYNC_TIMEOUT_SEC)
@@ -298,58 +360,90 @@ async def test_group_restriction_synced_then_group_deleted(world: World) -> None
         sim.delete_group(group_id)
 
 
-# ---- 3, 10, 12: attachments ------------------------------------------------------------------------------
+# ---- 3, 10: attachments of pack pages ----------------------------------------------------------------------
 
-async def test_attachment_deleted_without_page_edit_stays_until_full_sync(world: World) -> None:
-    """3: known limit. Confluence's search does not list deleted attachments, so one deleted from an
-    unchanged page stays until its page changes or a full sync runs; the full sync removes it."""
-    w, att = world, world.ids["att_limit"]
-    sim.delete_attachment(att)
-    await w.sync("attachment deleted, page unchanged")
-    assert await w.attachment(att) is not None, (
-        "the deleted attachment is gone after an incremental sync: the documented limit no longer holds, "
-        "update this test")
-    await w.sync("full sync after the attachment was deleted", full=True)
-    assert await w.attachment(att) is None, "a full sync should remove the deleted attachment"
-    assert await w.record("att_limit_page") is not None
-
-
-async def test_attachment_removed_when_its_page_is_edited(world: World) -> None:
-    """3b: the deleted attachment goes once its page has a new version."""
-    w, att = world, world.ids["att_edit"]
-    sim.delete_attachment(att)
-    sim.edit_page(w.ids["att_edit_page"])
-    await w.sync("attachment deleted, page edited")
-    assert await w.attachment(att) is None, "the deleted attachment is still stored after its page changed"
-    assert await w.record("att_edit_page") is not None
+async def _add_attachment(w: World, key: str, label: str) -> str:
+    """A file of this run on a pack page, synced; the page gets no new version from it."""
+    page_id = w.ids[key]
+    version = sim.page_version(page_id)
+    att = sim.upload(page_id, f"it-{label}-{uuid.uuid4().hex[:6]}.txt", f"{label} version one".encode(), "text/plain")
+    assert sim.page_version(page_id) == version, "the simulator gave the page a new version; the scenario is void"
+    await w.sync(f"{label}: attachment added")
+    return att
 
 
 async def test_attachment_added_to_unchanged_page(world: World) -> None:
     """10a: an upload adds no page version; the attachment search still brings it in."""
     w, page_id = world, world.ids["add_att_page"]
-    version = sim.page_version(page_id)
-    att = sim.upload(page_id, f"added-{uuid.uuid4().hex[:6]}.txt", b"added later", "text/plain")
-    assert sim.page_version(page_id) == version, "the simulator gave the page a new version; the scenario is void"
-    await w.sync("attachment added to an unchanged page")
-    rec = await w.attachment(att)
-    assert rec is not None, "the new attachment of an unchanged page was not synced"
-    assert rec.parent_external_record_id == page_id, f"attachment parent {rec.parent_external_record_id!r}"
+    att = None
+    try:
+        att = await _add_attachment(w, "add_att_page", "added")
+        rec = await w.attachment(att)
+        assert rec is not None, "the new attachment of an unchanged page was not synced"
+        assert rec.parent_external_record_id == page_id, f"attachment parent {rec.parent_external_record_id!r}"
+    finally:
+        if att:
+            sim.delete_attachment(att)
 
 
 async def test_attachment_new_version_on_unchanged_page(world: World) -> None:
     """10b: a new version of a stored attachment is synced though its page did not change."""
-    w, page_id, att = world, world.ids["version_att_page"], world.ids["att_versioned"]
-    before = await w.attachment(att)
-    assert before is not None
-    version = sim.page_version(page_id)
-    name = next(a["title"] for a in sim.attachments(page_id) if a["id"] == att)
-    sim.upload(page_id, name, b"version two, a little longer", "text/plain", new_version=True)
-    assert sim.page_version(page_id) == version
-    await w.sync("attachment re-uploaded on an unchanged page")
-    after = await w.attachment(att)
-    assert after is not None
-    assert (after.external_revision_id, after.version) != (before.external_revision_id, before.version), (
-        f"attachment unchanged in the graph: revision {after.external_revision_id!r}, version {after.version}")
+    w, page_id = world, world.ids["version_att_page"]
+    att = None
+    try:
+        att = await _add_attachment(w, "version_att_page", "versioned")
+        before = await w.attachment(att)
+        assert before is not None, "the attachment was not synced in the first place"
+        version = sim.page_version(page_id)
+        name = next(a["title"] for a in sim.attachments(page_id) if a["id"] == att)
+        sim.upload(page_id, name, b"versioned version two, a little longer", "text/plain", new_version=True)
+        assert sim.page_version(page_id) == version
+        await w.sync("attachment re-uploaded on an unchanged page")
+        after = await w.attachment(att)
+        assert after is not None
+        assert (after.external_revision_id, after.version) != (before.external_revision_id, before.version), (
+            f"attachment unchanged in the graph: revision {after.external_revision_id!r}, version {after.version}")
+    finally:
+        if att:
+            sim.delete_attachment(att)
+
+
+async def test_attachment_deleted_without_page_edit_stays_until_full_sync(world: World) -> None:
+    """3: known limit. Confluence's search does not list deleted attachments, so one deleted from an
+    unchanged page stays until its page changes or a full sync runs; the full sync removes it."""
+    w = world
+    att = None
+    try:
+        att = await _add_attachment(w, "att_limit_page", "limit")
+        assert await w.attachment(att) is not None, "the attachment was not synced in the first place"
+        sim.delete_attachment(att)
+        await w.sync("attachment deleted, page unchanged")
+        assert await w.attachment(att) is not None, (
+            "the deleted attachment is gone after an incremental sync: the documented limit no longer holds, "
+            "update this test")
+        await w.sync("full sync after the attachment was deleted", full=True)
+        assert await w.attachment(att) is None, "a full sync should remove the deleted attachment"
+        assert await w.record("att_limit_page") is not None
+    finally:
+        if att:
+            sim.delete_attachment(att)
+
+
+async def test_attachment_removed_when_its_page_is_edited(world: World) -> None:
+    """3b: the deleted attachment goes once its page has a new version (the page keeps that version)."""
+    w = world
+    att = None
+    try:
+        att = await _add_attachment(w, "att_edit_page", "edited")
+        assert await w.attachment(att) is not None, "the attachment was not synced in the first place"
+        sim.delete_attachment(att)
+        sim.edit_page(w.ids["att_edit_page"])
+        await w.sync("attachment deleted, page edited")
+        assert await w.attachment(att) is None, "the deleted attachment is still stored after its page changed"
+        assert await w.record("att_edit_page") is not None
+    finally:
+        if att:
+            sim.delete_attachment(att)
 
 
 # ---- 4, 5, 11: trash, restore, moves ---------------------------------------------------------------------
@@ -382,28 +476,34 @@ async def test_page_trashed_then_restored(world: World) -> None:
 
 
 async def test_page_moved_to_another_space(world: World) -> None:
-    """5c: a page moved to another synced space follows, with its child, under the new space's homepage."""
-    w = world
+    """5c: a pack page moved to another synced space follows, with its child, under the new space's homepage."""
+    w, page_id = world, world.ids["space_move_page"]
     space_b = w.spaces["b"]
-    sim.move_page(w.ids["space_move_page"], str(space_b["homepageId"]))
-    await w.sync("page moved to the other space")
-    rec, child = await w.record("space_move_page"), await w.record("space_move_child")
-    assert rec is not None and child is not None
-    assert rec.external_record_group_id == str(space_b["id"]), f"page still in space {rec.external_record_group_id}"
-    assert rec.parent_external_record_id == str(space_b["homepageId"]), f"parent {rec.parent_external_record_id!r}"
-    assert child.external_record_group_id == str(space_b["id"]), "the child page stayed in the old space"
+    try:
+        sim.move_page(page_id, str(space_b["homepageId"]))
+        await w.sync("page moved to the other space")
+        rec, child = await w.record("space_move_page"), await w.record("space_move_child")
+        assert rec is not None and child is not None
+        assert rec.external_record_group_id == str(space_b["id"]), f"page still in space {rec.external_record_group_id}"
+        assert rec.parent_external_record_id == str(space_b["homepageId"]), f"parent {rec.parent_external_record_id!r}"
+        assert child.external_record_group_id == str(space_b["id"]), "the child page stayed in the old space"
+    finally:
+        sim.move_page(page_id, w.pack_parents["space_move_page"])
 
 
 async def test_page_moved_without_version_change(world: World) -> None:
     """11: the v1 move adds no page version; the record still gets its new parent."""
     w, page_id, target = world, world.ids["moved_page"], world.ids["move_target"]
-    version = sim.page_version(page_id)
-    sim.move_page(page_id, target)
-    assert sim.page_version(page_id) == version, "the simulator gave the page a new version; the scenario is void"
-    await w.sync("page moved under another page")
-    rec = await w.record("moved_page")
-    assert rec is not None and rec.parent_external_record_id == target, (
-        f"parent {getattr(rec, 'parent_external_record_id', None)!r}, expected {target}")
+    try:
+        version = sim.page_version(page_id)
+        sim.move_page(page_id, target)
+        assert sim.page_version(page_id) == version, "the simulator gave the page a new version; the scenario is void"
+        await w.sync("page moved under another page")
+        rec = await w.record("moved_page")
+        assert rec is not None and rec.parent_external_record_id == target, (
+            f"parent {getattr(rec, 'parent_external_record_id', None)!r}, expected {target}")
+    finally:
+        sim.move_page(page_id, w.pack_parents["moved_page"])
 
 
 # ---- 6, 7, 8b: comments ----------------------------------------------------------------------------------
