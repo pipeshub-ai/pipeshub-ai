@@ -22,6 +22,7 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createStorageRouter POST /updateAppConfig',
   'createConnectorRouter POST /updateAppConfig',
   'createUserRouter POST /updateAppConfig',
+  'createUserAccountRouter POST /updateAppConfig',
 
   // Multipart uploads: the file processor checks the file, and no field of the
   // body reaches a query.
