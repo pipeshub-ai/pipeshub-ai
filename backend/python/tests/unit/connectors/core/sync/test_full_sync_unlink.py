@@ -155,23 +155,27 @@ async def test_an_incremental_sync_unlinks_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_one_more_a_day(
+async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_one_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_OWED_AT", {})
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
 
-    async def full_sync() -> AsyncMock:
+    async def full_sync(complete: bool = False) -> AsyncMock:
         gp = _graph_provider()
-        connector = _connector(None, FullSyncCoverage(complete=False))
+        connector = _connector(None, FullSyncCoverage(complete=complete))
         connector.run_sync = _writes_one_record(connector)
         await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
-        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        if not complete:
+            gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
         return gp
 
     assert _owed(await full_sync())
-    # The owed one skips part again the same day: no more owed, or a quota would loop it.
+    # The retry skips part again: no more owed, or a quota would loop it.
     assert not _owed(await full_sync())
-    sync_runner._INCOMPLETE_FULL_SYNC_OWED_AT["c1"] -= sync_runner._INCOMPLETE_FULL_SYNC_RETRY_SECONDS
+    # A later full sync that skips part owes a retry again.
+    assert _owed(await full_sync())
+    # So does one after a retry that read everything.
+    assert not _owed(await full_sync(complete=True))
     assert _owed(await full_sync())
 
 

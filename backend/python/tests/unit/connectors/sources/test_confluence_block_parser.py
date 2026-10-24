@@ -3366,9 +3366,9 @@ class TestParserEdgeCases:
         assert inner.parent_index == outer.index
         assert [(r.start, r.end) for r in outer.children.block_group_ranges] == [(inner.index, inner.index)]
         assert outer.parent_index == 0
-        assert any(r.start <= outer.index <= r.end for r in groups[0].children.block_group_ranges)
-        # The items are reached through the list only, not also straight from the panel.
-        assert groups[0].children.block_ranges == []
+        # The panel reaches the items as its own blocks, once: not also through the list group.
+        assert [(r.start, r.end) for r in groups[0].children.block_ranges] == [(0, 2)]
+        assert not any(r.start <= outer.index <= r.end for r in groups[0].children.block_group_ranges)
 
     async def test_macro_in_list_item_is_kept(self):
         parser = _parser()

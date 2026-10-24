@@ -2764,21 +2764,10 @@ class ConfluenceBlockParser:
             while len(open_lists) > keep:
                 _, style, parent_index, items, nested = open_lists.pop()
                 group_index = self._create_list_group(blocks, block_groups, items, style, nested)
+                # A top-level list is not added to its parent's groups: the parent (panel, expand,
+                # comment) already lists the items as its own blocks, and both would repeat them.
                 if open_lists:
                     open_lists[-1][4].append(group_index)
-                elif parent_index is not None and 0 <= parent_index < group_index:
-                    parent = block_groups[parent_index]
-                    if parent.children is None:
-                        parent.children = BlockGroupChildren()
-                    # The items now hang under the list group: the parent keeps only its other blocks.
-                    kept = [
-                        idx
-                        for r in parent.children.block_ranges
-                        for idx in range(r.start, r.end + 1)
-                        if blocks[idx].parent_index == parent_index
-                    ]
-                    parent.children.block_ranges = BlockGroupChildren.from_indices(block_indices=kept).block_ranges
-                    parent.children.add_block_group_index(group_index)
 
         for i, block in enumerate(blocks):
             if not block.list_metadata or self._list_item_lives_in_table(block, block_groups):
