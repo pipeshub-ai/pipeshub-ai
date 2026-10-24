@@ -613,8 +613,8 @@ class TestJiraSiteAndProjectIdentity:
                 pipeshub_client.toggle_sync(connector_id, enable=True)
             except PipeshubClientError as e:
                 refused = str(e)
-            if refused is not None:
-                assert "must be your Atlassian site" in refused, f"refused for another reason: {refused}"
+            assert refused is not None, f"turning sync on was accepted for {base_url}"
+            assert "must be your Atlassian site" in refused, f"refused for another reason: {refused}"
             pipeshub_client.wait(20)
             assert await graph_provider.count_records(connector_id) == 0, "the connector synced from that URL"
         finally:
