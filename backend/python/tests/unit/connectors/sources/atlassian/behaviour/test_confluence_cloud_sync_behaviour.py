@@ -1390,13 +1390,13 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         def searches_for_11() -> int:
-            return sum(1 for q in search.queries if re.search(r"(?:^| AND )id in \([^)]*11", q.get("cql", "")))
+            return sum(1 for q in search.queries if re.search(r"(?:^| AND )id in \([^)]*\b11\b", q.get("cql", "")))
 
         search.queries.clear()
         await connector._sync_spaces_content([ENG])
         assert searches_for_11() == 0
 
-        key = next(k for k in checkpoints.sync_points if "unstored" in k)
+        key = next(k for k in checkpoints.sync_points if "unstored" in k and "CONFLUENCE_PAGE" in k)
         checkpoints.sync_points[key]["at"] -= 2 * 24 * 3600
         await connector._sync_spaces_content([ENG])
         assert searches_for_11() == 1
