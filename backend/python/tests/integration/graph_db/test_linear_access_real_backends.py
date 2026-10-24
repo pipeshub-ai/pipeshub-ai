@@ -30,6 +30,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.sync_runner import (
     _begin_full_sync_run,
     _unlink_what_full_sync_missed,
@@ -110,17 +111,20 @@ class _Env:
         await connector.run_sync()
         self.ws.tick(5 * 60_000)  # syncs run minutes apart; the connector re-reads a short overlap
 
-    async def full_sync(self) -> None:
+    async def full_sync(self, *, complete: bool = True) -> None:
         """A full sync as the platform runs one, which every filter change asks for: the
         checkpoints are forgotten, the connector syncs, then the platform unlinks every
-        node that sync did not write."""
+        node that sync did not write. ``complete`` False: the sync skipped part of the
+        source, so nothing is unlinked and another full sync is owed."""
         connector = await self._connector()
         await self.graph.delete_sync_points_by_connector_id(connector_id=self.connector_id)
         processor, seen = _begin_full_sync_run(connector, self.connector_id)
         assert seen is not None
         try:
             await self.sync()
-            assert await _unlink_what_full_sync_missed(connector, self.connector_id, self.graph, logger, seen)
+            assert await _unlink_what_full_sync_missed(
+                connector, self.connector_id, self.graph, logger, seen,
+            ) is complete
         finally:
             processor.end_full_sync_run(self.connector_id, seen)
 
@@ -268,6 +272,8 @@ async def _remove(graph: IGraphDBProvider, org_id: str, connector_id: str, user_
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Env]:
+    # A full sync owed by one that skipped part of the source is remembered per process.
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             graph = await (connect_neo4j(logger, monkeypatch) if request.param == "neo4j"
@@ -507,7 +513,7 @@ async def test_a_full_sync_that_fails_partway_takes_no_access_away(env: _Env) ->
     await env.assert_matches_linear()
 
     ws.failing["issues"] = lambda variables: bool(variables.get("after"))  # every later page, every retry
-    await env.full_sync()
+    await env.full_sync(complete=False)
     del ws.failing["issues"]
 
     await env.assert_matches_linear()
