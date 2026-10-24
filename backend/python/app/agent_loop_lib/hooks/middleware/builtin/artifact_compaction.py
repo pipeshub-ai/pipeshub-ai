@@ -24,6 +24,7 @@ import json
 import logging
 
 from app.agent_loop_lib.context.compaction_memo import reapply_replacements
+from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -71,6 +72,7 @@ def _compact(msg: ToolMessage) -> ToolMessage:
 def shape_artifact_compaction(
     trigger_ratio: float = 0.5,
     keep_last_n_turns: int = 1,
+    protected_tools: frozenset[str] = frozenset(),
 ):
     """PRE_MODEL middleware that compacts artifact-annotated tool messages.
 
@@ -91,6 +93,9 @@ def shape_artifact_compaction(
     trigger_ratio:
         Old-turn artifacts are only compacted when context exceeds
         ``budget.trigger_tokens(trigger_ratio)``.
+    protected_tools:
+        Results of these tools are never replaced by a reference: they carry
+        what the answer cites (``context/protection.py``).
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
@@ -104,7 +109,8 @@ def shape_artifact_compaction(
             return
 
         memo = ctx.compaction_memo
-        messages, reused = reapply_replacements(memo, LAYER, ctx.messages)
+        protected = protected_indices(ctx.messages, protected_tools=protected_tools)
+        messages, reused = reapply_replacements(memo, LAYER, ctx.messages, keep=protected)
         total = count_tokens(messages)
         prev_cutoff = ctx.turn_index - keep_last_n_turns
 
@@ -112,7 +118,10 @@ def shape_artifact_compaction(
         curr_with_schema: list[int] = []
         curr_without_schema: list[int] = []
         for i, msg in enumerate(messages):
-            if not isinstance(msg, ToolMessage) or msg.artifact_meta is None or msg.compacted_by == LAYER:
+            if (
+                not isinstance(msg, ToolMessage) or msg.artifact_meta is None
+                or msg.compacted_by == LAYER or i in protected
+            ):
                 continue
             if msg.artifact_meta.turn_index < prev_cutoff:
                 prev_indices.append(i)

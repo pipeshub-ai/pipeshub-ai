@@ -145,3 +145,25 @@ async def test_child_keeps_its_own_compaction_memo() -> None:
     parent_memo, child_memo = by_run.values()
     assert parent_memo is not None and child_memo is not None
     assert parent_memo is not child_memo
+
+
+def test_a_long_request_is_capped_in_the_childs_goal() -> None:
+    from app.agent_loop_lib.tools.builtin.coordination.parent_results import with_user_request
+
+    request = "Summarise the attached contract.\n\n" + "clause text " * 5_000
+    child = with_user_request(Goal(description="List the termination clauses."), request)
+
+    assert child.description.startswith("## The user's request")
+    assert "Summarise the attached contract." in child.description
+    assert "is not shown here" in child.description
+    assert len(child.description) < 4_500
+    assert child.description.endswith("List the termination clauses.")
+
+
+def test_a_goal_that_already_carries_the_request_is_not_wrapped_again() -> None:
+    from app.agent_loop_lib.tools.builtin.coordination.parent_results import with_user_request
+
+    request = "Summarise the attached contract.\n\n" + "clause text " * 5_000
+    once = with_user_request(Goal(description="List the termination clauses."), request)
+
+    assert with_user_request(once, request) == once

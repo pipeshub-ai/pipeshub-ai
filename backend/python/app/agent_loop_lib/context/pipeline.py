@@ -133,6 +133,7 @@ def build_context_pipeline(profile: ContextProfile) -> list[Middleware[ModelCall
         layers.append(shape_artifact_compaction(
             trigger_ratio=profile.artifact_trigger_ratio,
             keep_last_n_turns=profile.artifact_keep_last_n_turns,
+            protected_tools=protected,
         ))
     if "tool_result_clearing" in on:
         layers.append(shape_tool_result_clearing(
@@ -149,6 +150,7 @@ def build_context_pipeline(profile: ContextProfile) -> list[Middleware[ModelCall
     if profile.offload_threshold_tokens is not None:
         layers.append(shape_offload(
             threshold_tokens=profile.offload_threshold_tokens, preview_lines=profile.offload_preview_lines,
+            protected_tools=protected,
         ))
     if "deterministic_compact" in on:
         layers.append(shape_deterministic_compact(

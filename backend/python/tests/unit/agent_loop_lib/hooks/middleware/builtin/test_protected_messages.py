@@ -15,9 +15,13 @@ from app.agent_loop_lib.core.messages import (
     TextPart,
     ToolCall,
     ToolMessage,
+    ToolMessageMeta,
     UserMessage,
 )
 from app.agent_loop_lib.core.tokens import count_tokens
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
+    shape_artifact_compaction,
+)
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import shape_auto_compact
 from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
     shape_deterministic_compact,
@@ -25,6 +29,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
 from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
     shape_loop_compaction,
 )
+from app.agent_loop_lib.hooks.middleware.builtin.offload import shape_offload
 from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
     shape_sliding_window,
 )
@@ -178,3 +183,37 @@ async def test_protected_tool_results_are_sent_verbatim(layer) -> None:
     sent = [m.content for m in ctx.messages if isinstance(m, ToolMessage)]
     assert all(content in sent for content in fetched)
     assert count_tokens(ctx.messages) < count_tokens(messages), f"{layer} must act on the unprotected results"
+
+
+ARTIFACT_LAYERS = {
+    "L2 artifact_compaction": lambda: shape_artifact_compaction(
+        trigger_ratio=0.0, keep_last_n_turns=0, protected_tools=frozenset({FETCH}),
+    ),
+    "offload": lambda: shape_offload(threshold_tokens=100, protected_tools=frozenset({FETCH})),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layer", ARTIFACT_LAYERS)
+async def test_protected_artifact_results_are_sent_verbatim(layer) -> None:
+    """A protected result registered as an artifact, or large enough to offload, is still sent
+    whole; its unprotected neighbours are replaced."""
+    messages = [
+        msg.model_copy(update={"artifact_meta": ToolMessageMeta(artifact_id=f"a-{msg.tool_call_id}")})
+        if isinstance(msg, ToolMessage) else msg
+        for msg in _fetch_chat_with_a_search()
+    ]
+    ctx = ModelCallContext(
+        messages=list(messages), budget=ContextBudget(max_tokens=3_000, model="test"), turn_index=10,
+    )
+
+    async def _next() -> None:
+        return None
+
+    await ARTIFACT_LAYERS[layer]()(ctx, _next)
+
+    fetched = [m.content for m in messages if isinstance(m, ToolMessage) and m.tool_call_id in {"c0", "c2", "c4"}]
+    sent = [m.content for m in ctx.messages if isinstance(m, ToolMessage)]
+    replaced = [m.tool_call_id for m in ctx.messages if isinstance(m, ToolMessage) and m.compacted_by]
+    assert all(content in sent for content in fetched)
+    assert replaced == ["c1", "c3", "c5"], f"{layer} must replace exactly the unprotected results"
