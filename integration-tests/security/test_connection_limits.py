@@ -512,6 +512,20 @@ class TestKnowledgeBaseRoutes:
         assert not {corpus["kb_in"], corpus["kb_out"], corpus["other_folder"]} & set(ids), ids
         assert listed.json()["pagination"]["totalItems"] == len(ids)
 
+    @pytest.mark.parametrize("token", ["folder_pat", "file_pat"])
+    def test_a_narrow_limits_filter_menu_names_no_partly_shared_collection(
+        self, base_url, corpus, request, token,
+    ) -> None:
+        pat = request.getfixturevalue(token)
+        for params in ({"limit": 50}, {"limit": 50, "q": corpus["tag"]}):
+            listed = requests.get(f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes", headers=_bearer(pat),
+                                  params={**params, "include": "availableFilters"}, timeout=60)
+            assert listed.status_code == 200, listed.text[:300]
+            available = (listed.json().get("filters") or {}).get("available") or {}
+            offered = {option["id"] for option in available.get("connectors") or []}
+            assert not {corpus["kb_in"], corpus["kb_out"]} & offered, offered
+            assert f"pp7-in-{corpus['tag']}" not in str(available)
+
     def test_a_folder_limited_search_pages_over_what_it_shares(self, base_url, folder_pat, corpus) -> None:
         """Every name in the corpus carries the tag; the limit shares only the folder and its file."""
         url = f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes"

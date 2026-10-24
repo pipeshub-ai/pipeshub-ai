@@ -639,12 +639,24 @@ async def _root_inside_connection(
     if mode == "search" and not cursor and query["page"] > _MAX_BOUNDED_SEARCH_PAGE:
         raise _page_walk_refused(_MAX_BOUNDED_SEARCH_PAGE)
     if mode == "search":
-        return await _search_inside_connection(
+        response = await _search_inside_connection(
             request, service, query, whole | partial, seen=seen, position=position, by_cursor=bool(cursor),
             params=params,
         )
-    offset = seen if cursor else (query["page"] - 1) * query["limit"]
-    return await _named_root(request, service, query, whole | partial, offset=offset, params=params)
+    else:
+        offset = seen if cursor else (query["page"] - 1) * query["limit"]
+        response = await _named_root(request, service, query, whole | partial, offset=offset, params=params)
+    return _offer_whole_apps_only(response, whole)
+
+
+def _offer_whole_apps_only(response: KnowledgeHubNodesResponse, whole: frozenset) -> KnowledgeHubNodesResponse:
+    """The listing is read over every app the limit touches, but an app it
+    covers only in part is not named, here as nowhere else: its filter option
+    carries the app's or collection's own name."""
+    available = response.filters.available if response.filters else None
+    if available is not None:
+        available.connectors = [option for option in available.connectors if option.id in whole]
+    return response
 
 
 def _admits(item: NodeItem, query: dict[str, Any]) -> bool:
@@ -700,8 +712,8 @@ async def _named_root(
         request, request.app.state.graph_provider, query["org_id"], query["user_id"],
     )
     named_apps = {node.id for node in named if node.node_type == "app"}
-    # Read over every app the limit touches, so the filter options name them all;
-    # an app reached only through some of its folders is not itself listed.
+    # Read over every app the limit touches; an app reached only through some
+    # of its folders is neither listed nor offered as a filter option.
     listing = await service.get_nodes(
         **{**query, "page": 1, "limit": _APP_BATCH, "cursor": None, "flattened": False,
            "include": [i for i in include if i != "counts"] or None},

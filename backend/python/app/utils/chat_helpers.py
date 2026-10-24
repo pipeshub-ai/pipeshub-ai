@@ -46,6 +46,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
@@ -648,7 +649,7 @@ async def build_multimodal_user_content(
 
     for vrid, att in fetch_tasks:  # noqa: B007
         try:
-            record = await blob_store.get_record_from_storage(vrid, org_id)
+            record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
             if not record:
                 continue
             block_containers = record.get("block_containers", {})
@@ -1413,8 +1414,8 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
-                blob_record = await blob_store.get_record_from_storage(
-                    vrid, org_id, lookup_result=lookup_result
+                blob_record = await record_artifact_reader(blob_store).read_record(
+                    vrid, org_id, lookup=lookup_result
                 )
             except Exception as e:
                 logger.debug(
@@ -1718,14 +1719,14 @@ async def _resolve_target_metadata(
     if out_of_context_ids:
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
-        # get_record_from_storage, plus its own type-specific get_document.
+        # read_record, plus its own type-specific get_document.
         blob_lookups: dict[str, dict[str, Any]] = {}
         vrids_to_resolve = [
             id_to_vrid[rid] for rid in out_of_context_ids if rid in id_to_vrid
         ]
         if blob_store and org_id and vrids_to_resolve:
             try:
-                resolved_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                resolved_lookups = await record_artifact_reader(blob_store).lookup_many(
                     vrids_to_resolve
                 )
                 # Anything but a mapping means the pre-resolve did not happen;
@@ -2758,7 +2759,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         else:
             try:
                 # Blob returns snake_case keys (Pydantic model_dump)
-                rec = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
+                rec = await record_artifact_reader(blob_store).read_record(vrid, org_id)
                 if not rec:
                     logger.warning("FK enrichment: could not fetch blob for vrid %s", vrid)
                     virtual_record_id_to_result[vrid] = None
@@ -3047,7 +3048,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     batched_lookups: dict[str, Any] = {}
     if records_to_fetch:
         try:
-            batched_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+            batched_lookups = await record_artifact_reader(blob_store).lookup_many(
                 list(records_to_fetch)
             )
         except Exception as e:
@@ -3865,7 +3866,7 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa
 
 async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
     try:
-        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id, lookup_result=lookup_result)
+        record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id, lookup=lookup_result)
         if record:
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:

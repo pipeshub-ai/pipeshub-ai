@@ -7620,6 +7620,12 @@ components:
                     $ref: '#/components/schemas/FilterOption'
                 connectors:
                   type: array
+                  description: |
+                    The apps and collections to filter by, each with its own name. For a
+                    connected app with a limit, only those the limit covers whole: an app
+                    or collection it covers only in part (some of its spaces, folders or
+                    files) is not offered. The other option lists are fixed and name no
+                    source.
                   items:
                     $ref: '#/components/schemas/FilterOption'
                 indexingStatus:
@@ -40367,7 +40373,9 @@ paths:
 
         **Scope:** everything the caller can read, across both connectors and
         Knowledge Base collections. No connector-level filter is applied — the
-        listing is bounded by per-node permissions alone.
+        listing is bounded by per-node permissions, and for a connected app
+        with a limit by that limit too: no row, breadcrumb or related node
+        outside it is returned.
 
         **A connected app with a limit:** with no `nodeId`, the root depends
         on what the limit names.

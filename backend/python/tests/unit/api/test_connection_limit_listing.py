@@ -538,6 +538,32 @@ class TestTheParentOfARow:
         assert {item.parent.id for item in result.items if item.parent} == {FOLDER}
 
 
+class TestTheFilterMenu:
+    """``filters.available.connectors`` names an app or collection by its own
+    name, so a limited connection is offered only those its limit covers whole."""
+
+    @staticmethod
+    async def _offered(limit: dict | None, q: str | None) -> list[str]:
+        result = await _nodes(_graph(), limit, q=q, include="availableFilters")
+        return [option.id for option in result.filters.available.connectors]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_folder_limit_is_offered_no_partly_shared_collection(self, q) -> None:
+        assert await self._offered(FOLDER_LIMIT, q) == []
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_mixed_limit_is_offered_only_its_whole_collection(self, q) -> None:
+        assert await self._offered(MIXED_LIMIT, q) == ["kb-other"]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_whole_app_limit_is_offered_its_apps(self, q) -> None:
+        assert await self._offered(APP_LIMIT, q) == ["kb-big"]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_an_unlimited_token_is_offered_every_source(self, q) -> None:
+        assert await self._offered(None, q) == ["kb-big", "kb-other"]
+
+
 class TestTheBoundedCursor:
     def test_it_round_trips(self) -> None:
         params = {"q": "budget", "sort_by": "name", "only_containers": False, "flattened": None}
