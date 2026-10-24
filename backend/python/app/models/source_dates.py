@@ -130,6 +130,9 @@ class RecordDates:
     created_ms: int | None
     modified_ms: int | None
     uploaded_ms: int | None = None
+    # No stored origin and no upload time to tell the source times by: they are
+    # the upload's, but whether the upload's time or the file's is unknown.
+    upload_time_unknown: bool = False
 
     @classmethod
     def resolve(
@@ -146,8 +149,13 @@ class RecordDates:
         if not is_kb_upload(connector_name, origin):
             return cls(None, created, modified)
         uploaded = epoch_ms(uploaded_ms)
-        kind = parse_origin(stored_origin) or _inferred_origin(created, modified, uploaded)
-        return cls(kind, created, modified, uploaded)
+        stored = parse_origin(stored_origin)
+        if stored is not None:
+            return cls(stored, created, modified, uploaded)
+        return cls(
+            _inferred_origin(created, modified, uploaded), created, modified, uploaded,
+            upload_time_unknown=uploaded is None,
+        )
 
     @classmethod
     def from_graph(cls, doc: Mapping[str, Any]) -> RecordDates:
@@ -163,9 +171,14 @@ class RecordDates:
 
     @property
     def upload_time(self) -> int | None:
-        if self.origin is SourceTimestampOrigin.UPLOAD:
-            return self.uploaded_ms or self.created_ms
-        return self.uploaded_ms
+        """When the version shown was uploaded, as near as the record says."""
+        if self.origin is not SourceTimestampOrigin.UPLOAD:
+            return self.uploaded_ms
+        if self.upload_time_unknown:
+            return None
+        # A new version sent without a file time keeps its own upload time there.
+        later = self.modified_ms if self.modified_ms and self.modified_ms != self.created_ms else None
+        return later or self.uploaded_ms or self.created_ms
 
     def header_lines(self, full: Callable[[int | None], str]) -> list[str]:
         """The date lines of a record header; ``full`` renders a timestamp."""

@@ -101,7 +101,7 @@ class TestRecordDates:
             sourceLastModifiedTimestamp=UPLOADED + 30 * DAY_MS,
             updatedAtTimestamp=UPLOADED + 31 * DAY_MS,
         )
-        assert RecordDates.from_graph(reuploaded).listing_date() == ("uploaded", UPLOADED)
+        assert RecordDates.from_graph(reuploaded).listing_date() == ("uploaded", UPLOADED + 30 * DAY_MS)
 
     def test_a_later_versions_time_older_than_the_first_upload_is_the_files(self) -> None:
         older = _kb_doc(sourceCreatedAtTimestamp=FILE_MTIME, sourceLastModifiedTimestamp=FILE_MTIME + DAY_MS)
@@ -133,7 +133,15 @@ class TestRecordHeader:
     def test_a_re_upload_stored_before_the_origin_was_kept_shows_no_file_time(self) -> None:
         record = _kb_record(source_created_at=FILE_MTIME, source_updated_at=UPLOADED + 30 * DAY_MS)
         lines = _date_lines(record.to_llm_context())
-        assert lines == ["Uploaded At: 2026-10-15 18:48:19 UTC (Thu, Oct 15, 2026, 6:48 PM UTC) (upload time, not a document date)"]
+        assert len(lines) == 1 and lines[0].startswith("Uploaded At: 2026-11-14")
+
+    def test_a_new_version_sent_without_a_file_time_shows_its_own_upload_time(self) -> None:
+        reuploaded = UPLOADED + 90 * DAY_MS
+        record = _kb_record(source_updated_at=reuploaded, source_timestamp_origin="upload")
+        lines = _date_lines(record.to_llm_context())
+        assert len(lines) == 1 and lines[0].startswith("Uploaded At: 2027-01-13")
+        doc = _kb_doc(sourceLastModifiedTimestamp=reuploaded, sourceTimestampOrigin="upload")
+        assert RecordDates.from_graph(doc).listing_date() == ("uploaded", reuploaded)
 
     def test_a_connectors_record_keeps_created_and_updated(self) -> None:
         record = _kb_record(origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE)
@@ -141,10 +149,12 @@ class TestRecordHeader:
         assert [line.split(":")[0] for line in lines] == ["Created At", "Last Updated At"]
 
     def test_a_record_built_without_its_upload_time_is_not_given_the_build_time(self) -> None:
+        # Nothing says whether its source time is the upload's or the file's.
         record = _kb_record(source_created_at=FILE_MTIME, source_updated_at=FILE_MTIME, created_at=None)
-        lines = _date_lines(record.to_llm_context())
-        assert lines == [line for line in lines if not line.startswith(("Created At", "Last Updated At"))]
-        assert lines[0].startswith("Uploaded At: 2025-03-03")
+        assert _date_lines(record.to_llm_context()) == []
+        assert RecordDates.from_graph(_kb_doc(createdAtTimestamp=None)).listing_date() is None
+        stored = _kb_record(created_at=None, source_timestamp_origin="upload")
+        assert _date_lines(stored.to_llm_context())[0].startswith("Uploaded At: 2026-10-15")
 
     def test_search_results_carry_the_graphs_upload_time_and_origin(self) -> None:
         record = create_record_instance_from_dict({
