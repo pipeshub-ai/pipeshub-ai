@@ -93,7 +93,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.http.address_guard import guarded_async_client
+from app.sources.client.http.address_guard import AddressNotAllowedError, guarded_async_client
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
     SalesforceConfig,
@@ -1218,7 +1218,7 @@ class SalesforceConnector(BaseConnector):
                     )
                 async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                     yield chunk
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, AddressNotAllowedError) as e:
             self.logger.error(f"Error streaming Salesforce file {record.id}: {e}")
             raise to_stream_error(e, connector=self.display_name) from e
         finally:

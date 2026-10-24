@@ -146,6 +146,15 @@ class TestAiohttpSessions:
             await provider.close()
 
 
+class TestRefusalReachesTheUser:
+    def test_a_refused_address_streams_as_a_409_with_its_reason(self) -> None:
+        from app.connectors.core.base.error.stream_errors import to_stream_error
+
+        error = to_stream_error(AddressNotAllowedError("The address 127.0.0.1 isn't allowed: x."), connector="Jira")
+        assert error.status_code == 409
+        assert "127.0.0.1 isn't allowed" in error.detail
+
+
 class TestSdkClients:
     async def test_minio_refuses_this_server(self, listener: tuple[str, list[str]]) -> None:
         from app.sources.client.minio.minio import MinIORESTClientViaAccessKey

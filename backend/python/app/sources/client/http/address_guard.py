@@ -187,7 +187,7 @@ class AddressGuardAdapter(HTTPAdapter):
         return super().send(request, *args, **kwargs)
 
     def build_connection_pool_key_attributes(
-        self, request: PreparedRequest, verify: bool | str, cert: tuple[str, str] | str | None = None,
+        self, request: PreparedRequest, verify: bool | str, cert: tuple[str, str] | str | None = None,  # noqa: FBT001 - requests' signature
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         host_params, pool_kwargs = super().build_connection_pool_key_attributes(request, verify, cert)
         pin = self._pin(request.url or "")
