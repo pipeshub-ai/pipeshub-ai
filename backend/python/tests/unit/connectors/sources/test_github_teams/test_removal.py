@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -194,6 +194,13 @@ class TestIssueReconciler:
         assert await subject.reconcile(make_repo(), "1001-work-items", AsyncMock(return_value=True)) is None
         remover.remove_records.assert_not_awaited()
 
+    async def test_a_sweep_whose_cursor_does_not_move_stops(self) -> None:
+        subject, remover, _ = _reconciler({
+            "graphql": [_numbers_page([1], more=True), _numbers_page([], more=True), _numbers_page([2])]},
+            [_record("r2", "1001/issues/2")])
+        assert await subject.reconcile(make_repo(), "1001-work-items", AsyncMock(return_value=True)) is None
+        remover.remove_records.assert_not_awaited()
+
     async def test_issues_the_listing_missed_are_read_again(self) -> None:
         """Changed after the stored copy, or never stored: both are fetched and stored."""
         stored = [_record("r1", "1001/issues/1", updated_ms=1_000_000), _record("r2", "1001/issues/2", updated_ms=2_000_000)]
@@ -327,14 +334,22 @@ async def test_issues_turned_off_hide_every_issue_without_failing_the_sync() -> 
     """GitHub answers 410 for the listing of a repository with issues turned off."""
     c = make_mock_connector()
     c.issue_reconciler.remove_all = AsyncMock()
-    c.record_sync_point.delete_sync_point = AsyncMock()
+    c.record_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1})
+    c.record_sync_point.update_sync_point = AsyncMock()
+    c.comments.settle_stored_attachments = AsyncMock()
     repo = make_repo()
     repo.has_issues = False
     sync = IssuesSync(c)
     assert await sync.fetch_issues_batched(repo) is True
     c.issue_reconciler.remove_all.assert_awaited_once_with(repo, f"{repo.id}-work-items")
-    c.record_sync_point.delete_sync_point.assert_awaited_once()
+    # The watermark goes, so turning issues on reads them all; the PR group is settled once.
+    c.record_sync_point.update_sync_point.assert_awaited_once_with(ANY, {"issue_total": 0})
+    c.comments.settle_stored_attachments.assert_awaited_once_with(f"{repo.id}-pull-requests")
     c.runtime.ds_call.assert_not_called()
+
+    c.record_sync_point.read_sync_point.return_value = {"issue_total": 0}
+    assert await sync.fetch_issues_batched(repo) is True
+    c.comments.settle_stored_attachments.assert_awaited_once()
 
 
 def test_pull_request_watermark_is_inclusive() -> None:
@@ -376,6 +391,17 @@ class TestScopeResolution:
         await sync.sync_all_repos()
         c.repo_scope.remove_out_of_scope.assert_awaited_once_with(set(), sync._still_in_scope)
         c.repo_scope.remove_empty_orgs.assert_awaited_once_with(set())
+
+    async def test_a_failed_removal_still_syncs_the_repositories_in_scope(self) -> None:
+        c = make_mock_connector()
+        sync = ProjectsSync(c)
+        sync.resolve_repo_scope = AsyncMock(return_value=([make_repo()], True))
+        sync._sync_repo = AsyncMock(return_value=True)
+        c.repo_scope.remove_out_of_scope = AsyncMock(side_effect=RuntimeError("cascade delete failed"))
+        await sync.sync_all_repos()
+        sync._sync_repo.assert_awaited_once()
+        assert any("cascade delete failed" in f for f in sync.failures)
+        c.repo_scope.remove_empty_orgs.assert_not_awaited()
 
     async def test_old_org_groups_go_only_after_every_repository_synced(self) -> None:
         """A repository transferred to another org still sits under its old org group

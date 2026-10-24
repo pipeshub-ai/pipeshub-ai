@@ -296,6 +296,27 @@ class TestPersonalConnectorLifecycle:
         with pytest.raises(RuntimeError, match="did not complete"):
             await GithubConnector.run_sync(c)
 
+    async def test_run_sync_without_a_repository_filter_syncs_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filters that could not be read come back empty; the token reaches more
+        repositories than the ones selected, and the connector group would see them all."""
+        from app.connectors.core.registry.filters import FilterCollection
+        from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+
+        c = make_mock_connector()
+        c.creator_email = "me@example.com"
+        c.repos.timestamps.cancel = AsyncMock()
+        c.projects.sync_all_repos = AsyncMock()
+        c._require_scope_filter = lambda: GitHubTeamsConnector._require_scope_filter(c)
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=(FilterCollection(), {})),
+        )
+
+        with pytest.raises(RuntimeError, match="name no repository"):
+            await GithubConnector.run_sync(c)
+        c.projects.sync_all_repos.assert_not_awaited()
+
     async def test_run_incremental_sync_delegates(self) -> None:
         c = make_mock_connector()
         c.run_sync = AsyncMock()

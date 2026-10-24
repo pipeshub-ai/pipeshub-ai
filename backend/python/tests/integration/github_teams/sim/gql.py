@@ -109,10 +109,10 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
         live = sorted((i for i in repo.issues.values() if not i.deleted and i.transferred_to is None),
                       key=lambda i: i.number)
         start = [i for i in live if after is None or i.number > int(after.split(":")[1])]
-        page = start[: first or 100]
+        page = [] if ws.issue_numbers_lag else start[: first or 100]
         return {"totalCount": len(live),
                 "nodes": [{"number": i.number, "title": i.title, "updatedAt": iso(i.updated_at)} for i in page],
-                "pageInfo": {"hasNextPage": len(start) > len(page),
+                "pageInfo": {"hasNextPage": bool(page) and len(start) > len(page),
                              "endCursor": f"n:{page[-1].number}" if page else after}}
 
     def pulls(**_: Any) -> dict[str, Any]:  # noqa: ANN401

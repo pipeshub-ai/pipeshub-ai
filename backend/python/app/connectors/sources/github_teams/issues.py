@@ -214,9 +214,12 @@ class IssuesSync:
 
         if getattr(repo, "has_issues", True) is False:
             # GitHub answers 410 for the listing and hides every issue. Mirror that, and
-            # forget the checkpoint so turning issues back on reads them all again.
+            # drop the watermark so turning issues back on reads them all again. The
+            # total (0, as GitHub shows) marks the pull requests' files as settled.
             await c.issue_reconciler.remove_all(repo, group_id)
-            await c.record_sync_point.delete_sync_point(self._checkpoint_key(group_id))
+            if (await self._read_checkpoint(group_id)).get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+                await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
+            await self._write_checkpoint(group_id, {GitHubLiterals.ISSUE_TOTAL.value: 0})
             return True
 
         # Only the issues watermark: PRs page their own listing against their

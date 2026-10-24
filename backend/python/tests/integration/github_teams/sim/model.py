@@ -291,6 +291,7 @@ class World:
         self.gaps: list[str] = []
         self.bytes_read: dict[str, int] = {}  # url -> body bytes the client actually read
         self.sync_token: Token | None = None
+        self.issue_numbers_lag = False  # GraphQL lists no issue numbers yet (search index lag)
         # (resource, token value) -> [window reset epoch, used]
         self.rate: dict[tuple[str, str], list[int]] = {}
         self.rate_limits = {"core": 5000, "graphql": 5000, "search": 30}

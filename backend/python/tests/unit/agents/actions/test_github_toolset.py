@@ -32,7 +32,11 @@ from app.agents.actions.github.github import (
     _github_repo_label,
     _github_review_label,
 )
-from app.sources.client.github.github import GitHubClient, GitHubClientViaToken
+from app.sources.client.github.github import (
+    GitHubClient,
+    GitHubClientViaToken,
+    GitHubResponse,
+)
 
 API = "https://api.github.com"
 TOKEN = "ghp_fake-token-must-never-leak"
@@ -920,3 +924,11 @@ class TestActivityLabels:
         assert _github_owner_label({}) == "?"
         assert _github_file_change_label({"filename": "a.py", "status": "added"}) == "a.py (added)"
         assert _github_file_change_label({}) == "? (?)"
+
+
+class TestCutListings:
+    def test_a_cut_listing_says_so(self, github) -> None:
+        body = ok(github._handle_response(GitHubResponse(success=True, data=[{"id": 1}], truncated=True), "Listed"))
+        assert body["truncated"] is True and "GitHub has more" in body["message"]
+        body = ok(github._handle_response(GitHubResponse(success=True, data=[{"id": 1}]), "Listed"))
+        assert "truncated" not in body and body["message"] == "Listed"

@@ -86,6 +86,8 @@ class GitHubResponse(BaseModel):
     # it asked us to wait on a rate limit, so tools can explain a failure plainly.
     api_message: str | None = None
     retry_after_seconds: int | None = None
+    # A listing cut at the SDK's item cap; more items exist on GitHub.
+    truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

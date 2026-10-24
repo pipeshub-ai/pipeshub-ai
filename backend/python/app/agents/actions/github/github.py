@@ -3,7 +3,7 @@ import json
 import logging
 from collections.abc import Callable
 from http import HTTPStatus
-from typing import List, Literal, Optional, Tuple, TypeVar
+from typing import Any, List, Literal, Optional, Tuple, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -553,8 +553,13 @@ class GitHub:
                     serialisable = raw
                 else:
                     serialisable = data
+            payload: dict[str, Any] = {"message": success_message, "data": serialisable}
+            if response.truncated:
+                # Say so, rather than let a cut list read as complete.
+                payload["truncated"] = True
+                payload["message"] += f" (only the first {len(serialisable)} are shown; GitHub has more)"
             try:
-                return True, json.dumps({"message": success_message, "data": serialisable})
+                return True, json.dumps(payload)
             except (TypeError, ValueError):
                 # Fallback if data or any item is not JSON-serializable
                 return True, json.dumps({

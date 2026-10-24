@@ -219,4 +219,8 @@ class TestAgentToolsetReads:
         sdk = MagicMock(spec=Github)
         pr = sdk.get_repo.return_value.get_pull.return_value
         pr.get_reviews.return_value = iter(range(_MAX_NESTED_ITEMS + 50))
-        assert len(GitHubDataSource(sdk).get_pull_reviews("acme", "web", 7).data) == _MAX_NESTED_ITEMS
+        res = GitHubDataSource(sdk).get_pull_reviews("acme", "web", 7)
+        assert len(res.data) == _MAX_NESTED_ITEMS and res.truncated is True
+        pr.get_reviews.return_value = iter(range(_MAX_NESTED_ITEMS))
+        res = GitHubDataSource(sdk).get_pull_reviews("acme", "web", 7)
+        assert len(res.data) == _MAX_NESTED_ITEMS and res.truncated is False

@@ -13,8 +13,7 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
-from tests.integration.github_teams.helpers import fail_from_nth, on
-from tests.integration.github_teams.sim.model import Fault
+from tests.integration.github_teams.helpers import fail_from_nth
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 BOTH_TRASH_MODES = True
@@ -185,8 +184,9 @@ async def test_issue_listing_answering_empty_removes_nothing(world, org) -> None
     for n in range(3):
         gh.add_issue(repo, f"I{n}")
     await world.sync()
-    gh.faults.append(Fault(on("api.github.com/graphql", method="POST"), kind="status", status=200, times=None))
-    await world.sync(expect_error=True)
+    gh.issue_numbers_lag = True
+    await _forget_issue_total(world, repo)  # so the number sweep runs
+    await world.sync()
     assert len(await world.names("TICKET")) == 3
 
 

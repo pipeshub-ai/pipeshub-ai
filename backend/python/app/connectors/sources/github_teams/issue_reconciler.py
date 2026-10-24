@@ -171,6 +171,10 @@ class IssueReconciler:
                 return None
             if not page.get("hasNextPage"):
                 return numbers
+            if not page.get("endCursor") or page.get("endCursor") == cursor:
+                # A walk that does not move would spend the whole GraphQL budget.
+                self._logger.warning("The issue listing of %s/%s did not advance; not checking removals", owner, name)
+                return None
             cursor = page.get("endCursor")
 
     async def _stored_tickets(self, repo_id: int, external_group_id: str) -> dict[int, Record]:

@@ -301,6 +301,7 @@ class GithubConnector(GitHubTeamsConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "github", self.connector_id, self.logger
             )
+            self._require_scope_filter()
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.

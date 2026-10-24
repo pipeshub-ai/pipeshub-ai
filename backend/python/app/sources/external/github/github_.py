@@ -46,6 +46,7 @@ from app.sources.client.github.github import GitHubResponse, github_retry_after_
 
 if TYPE_CHECKING:
     import datetime
+    from collections.abc import Iterable
 
 # GitHub caps both REST and Search page sizes at 100. Requesting the maximum
 # cuts round trips for the many call sites that materialise a whole PaginatedList.
@@ -60,6 +61,12 @@ _REPO_SEGMENT = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 # reviews, changed files). shortcut: the cut is silent; return a truncated flag if
 # answers on very long threads turn out wrong.
 _MAX_NESTED_ITEMS = 300
+
+
+def _capped[T](items: Iterable[T]) -> tuple[list[T], bool]:
+    """The first ``_MAX_NESTED_ITEMS`` items, and whether more exist."""
+    out = list(itertools.islice(items, _MAX_NESTED_ITEMS + 1))
+    return out[:_MAX_NESTED_ITEMS], len(out) > _MAX_NESTED_ITEMS
 
 
 class GitHubDataSource:
@@ -522,10 +529,10 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             issue = r.get_issue(number)
             if since is None:
-                comments=list(itertools.islice(issue.get_comments(), _MAX_NESTED_ITEMS))
+                comments, truncated = _capped(issue.get_comments())
             else:
-                comments = list(issue.get_comments(since=since))
-            return GitHubResponse(success=True, data=comments)
+                comments, truncated = list(issue.get_comments(since=since)), False
+            return GitHubResponse(success=True, data=comments, truncated=truncated)
         except Exception as e:
             return self._err(e)
 
@@ -654,11 +661,11 @@ class GitHubDataSource:
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            files = list(itertools.islice(pr.get_files(), _MAX_NESTED_ITEMS))
+            files, truncated = _capped(pr.get_files())
 
             # Fast path: return as-is if full content fetching disabled
             if not fetch_full_content:
-                return GitHubResponse(success=True, data=files)
+                return GitHubResponse(success=True, data=files, truncated=truncated)
 
             # Process each file with safety checks
             enhanced_files = []
@@ -768,7 +775,7 @@ class GitHubDataSource:
                     f"{truncated_count} truncated (exceeded max_diff_lines)"
                 )
 
-            return GitHubResponse(success=True, data=enhanced_files)
+            return GitHubResponse(success=True, data=enhanced_files, truncated=truncated)
 
         except Exception as e:
             return self._err(e)
@@ -913,8 +920,8 @@ class GitHubDataSource:
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            reviews = list(itertools.islice(pr.get_reviews(), _MAX_NESTED_ITEMS))
-            return GitHubResponse(success=True, data=reviews)
+            reviews, truncated = _capped(pr.get_reviews())
+            return GitHubResponse(success=True, data=reviews, truncated=truncated)
         except Exception as e:
             return self._err(e)
 
@@ -940,8 +947,8 @@ class GitHubDataSource:
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            comments = list(itertools.islice(pr.get_review_comments(), _MAX_NESTED_ITEMS))
-            return GitHubResponse(success=True, data=comments)
+            comments, truncated = _capped(pr.get_review_comments())
+            return GitHubResponse(success=True, data=comments, truncated=truncated)
         except Exception as e:
             return self._err(e)
 

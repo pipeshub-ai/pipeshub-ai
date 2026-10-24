@@ -406,7 +406,7 @@ class GitHubTeamsConnector(BaseConnector):
             if f is not None and not f.is_empty():
                 return
         raise RuntimeError(
-            "GitHub Teams sync filters name no repository (or could not be read); "
+            "GitHub sync filters name no repository (or could not be read); "
             "not syncing every repository the token can see."
         )
 

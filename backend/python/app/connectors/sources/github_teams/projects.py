@@ -100,7 +100,14 @@ class ProjectsSync:
         repos, complete = await self.resolve_repo_scope()
         orgs_removable = complete
         if complete:
-            orgs_removable = await c.repo_scope.remove_out_of_scope({int(r.id) for r in repos}, self._still_in_scope)
+            try:
+                orgs_removable = await c.repo_scope.remove_out_of_scope(
+                    {int(r.id) for r in repos}, self._still_in_scope)
+            except Exception as e:
+                # A removal that failed must not keep every in-scope repository from syncing.
+                orgs_removable = False
+                self.failures.append(f"removing repositories that left the scope: {e}")
+                self.logger.error("Could not remove repositories that left the scope: %s", e, exc_info=True)
         else:
             # Without a complete answer, a missing repository may only be unreachable
             # for now: nothing is removed.

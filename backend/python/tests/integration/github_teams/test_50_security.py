@@ -69,13 +69,10 @@ async def test_attachment_over_the_limit_is_refused_without_reading_it_all(world
     await world.sync()
     key = next(k for k, d in (await world.by_type("FILE")).items() if d.get("recordName") == "huge.zip")
     record = await world.typed(key)
-    try:
+    with pytest.raises(Exception, match="413|limit"):
         response = await world.connector.stream_record(record)
         async for _ in response.body_iterator:
             pass
-        raise AssertionError("an over-limit attachment streamed")
-    except Exception as e:
-        assert "413" in repr(e) or "size limit" in str(e) or "limit" in str(e), repr(e)
     read = sum(n for url, n in gh.bytes_read.items() if "private-user-images" in url)
     assert read <= 26 * 1024 * 1024
 

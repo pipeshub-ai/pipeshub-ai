@@ -299,6 +299,21 @@ async def test_comment_attachment_stays_readable_after_a_full_sync(world, org) -
     assert diff.clean(), diff
 
 
+async def test_pull_request_comment_attachment_survives_a_full_sync_with_issues_off(world, org) -> None:
+    """With issues turned off, the issue sweep stops early. The files linked from pull
+    request comments must still be kept by a full sync."""
+    gh, repo = world.gh, org["repo"]
+    url = gh.upload(repo, "notes.txt", b"review notes")
+    pr = gh.add_pull(repo, "Feature")
+    gh.comment(pr, f"Notes: [notes.txt]({url})", org["alice"])
+    repo.has_issues = False
+    await world.sync()
+    assert any(k.startswith(url) for k in await world.by_type("FILE"))
+    await world.sync(full=True)
+    diff = await world.diff()
+    assert diff.clean(), diff
+
+
 async def test_upgrade_removes_url_keyed_attachments_without_waiting_for_the_issue(world, org) -> None:
     """Older versions keyed an attachment by its URL alone. The first sync of this
     version removes those records even for an issue that never changes again, so the
