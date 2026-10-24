@@ -51,6 +51,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (  # noqa:
 from app.models.entities import RecordType  # noqa: E402
 from app.models.permission import EntityType, PermissionType  # noqa: E402
 from connectors.outlook import constants as C  # noqa: E402
+from connectors.outlook.constants import OUTLOOK_CONNECTOR_TYPE  # noqa: E402
 from connectors.outlook.conftest import (  # noqa: E402
     OutlookWorld,
     baseline_sync_values,
@@ -674,7 +675,7 @@ class TestConnectionCheck:
         bad_id = None
         try:
             instance = ctx.client.create_connector(
-                connector_type=C.OUTLOOK_CONNECTOR_TYPE,
+                connector_type=OUTLOOK_CONNECTOR_TYPE,
                 instance_name=ctx.world.name("bad-secret"),
                 scope=C.OUTLOOK_SCOPE,
                 auth_type=C.OUTLOOK_AUTH_TYPE,

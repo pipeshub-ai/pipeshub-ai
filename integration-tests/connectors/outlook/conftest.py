@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest_asyncio
 from connectors.outlook import constants as C
+from connectors.outlook.constants import OUTLOOK_CONNECTOR_TYPE
 from connectors.outlook.outlook_source_helper import (
     OutlookSourceError,
     OutlookSourceHelper,
@@ -583,7 +584,7 @@ async def outlook_connector(
         "filters": sync_filters(**baseline_sync_values(outlook_world)),
     }
     instance = pipeshub_client.create_connector(
-        connector_type=C.OUTLOOK_CONNECTOR_TYPE,
+        connector_type=OUTLOOK_CONNECTOR_TYPE,
         instance_name=connector_name,
         scope=C.OUTLOOK_SCOPE,
         config=config,
