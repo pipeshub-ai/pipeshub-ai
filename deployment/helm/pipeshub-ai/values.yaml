@@ -336,7 +336,9 @@ config:
   # (GREP_RANK_FUSION, RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT,
   # ANSWER_COMPOSITION_RULES, MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to
   # "true" or "false" through extraEnv. KEYWORD_SEARCH_QUERIES is opt-in only:
-  # the mode does not turn it on.
+  # the mode does not turn it on. So is CONTENT_DOCUMENT_DATES ("true" or
+  # "all" through extraEnv): knowledge-base uploads take the dates their
+  # content states instead of upload times (see backend/env.template).
   # It also turns on named-entity extraction while indexing, and the entity
   # tools that read it (search_entities, find_records_by_entity,
   # find_records_by_value), whatever the Labs flag

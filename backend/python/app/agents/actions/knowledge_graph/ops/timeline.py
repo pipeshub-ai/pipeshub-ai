@@ -51,7 +51,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
@@ -88,6 +88,12 @@ from app.agents.actions.knowledge_graph.ops.search import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.agents.actions.util.tool_summaries import bullet_list
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    is_kb_upload,
+    upload_times_undated,
+)
 from app.modules.agents.qna.chat_state import (
     remember_record_ids,
     remember_shown_results,
@@ -141,6 +147,14 @@ AUTO_TIMELINE_MIN_DAYS = _WEEKLY_SPAN_DAYS
 DEFAULT_LOOKBACK_DAYS = 365
 _DAY_MS = 24 * 60 * 60 * 1000
 _AUTO_NOTE = f"This date range covers more than {AUTO_TIMELINE_MIN_DAYS} days, so it was searched period by period."
+_UPLOADS_NOTE = (
+    " A knowledge-base upload is placed by what its upload gave it (its file's last-modified "
+    "time, or else its upload time), not by a date it states."
+)
+_CONTENT_DATED_UPLOADS_NOTE = (
+    " A knowledge-base upload is placed by a date its content states, or else by its file's "
+    "last-modified time; one dated only by its upload time has no source date."
+)
 
 
 def timeline_summaries_enabled() -> bool:
@@ -271,10 +285,17 @@ def record_date_ms(record: Any, date_field: str) -> int | None:  # noqa: ANN401
     """The source timestamp a timeline places ``record`` by, in epoch ms."""
     if not isinstance(record, dict):
         return None
+    if record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD) == "upload" and upload_times_undated():
+        return None
     value = record.get(_DATE_FIELDS[date_field][4])
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return int(value)
+
+
+def _is_upload(record: object) -> bool:
+    doc = cast("dict[str, Any]", record) if isinstance(record, dict) else None
+    return doc is not None and is_kb_upload(doc.get("connectorName"), doc.get("origin"))
 
 
 def span_of(records: dict[str, Any], date_field: str) -> tuple[int, int] | None:
@@ -466,14 +487,18 @@ async def _collect(
     search returned (or raised).
     """
     after_key, before_key = _DATE_FIELDS[date_field][2:4]
+    # A record with no date of its own belongs to no period, and the span search
+    # without a start reads the dates it finds to place the span. With a start,
+    # the whole-span search still finds such a record and lists it apart.
+    dated = {DATED_ONLY_TIME_RANGE_KEY: 1}
 
     def period_searches(periods: list[Period]) -> list[Any]:
-        return [search({after_key: p.start_ms, before_key: p.end_ms}, period_limit) for p in periods]
+        return [search({after_key: p.start_ms, before_key: p.end_ms, **dated}, period_limit) for p in periods]
 
     if start_ms is None:
         whole: Any
         try:
-            whole = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
+            whole = await search({before_key: end_ms, **dated} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
         except Exception as exc:
             # Like a failed search in the gather below: the periods still run.
             whole = exc
@@ -962,11 +987,14 @@ async def _render_timeline(
     undated_note = (
         " Matches whose record has no source date come last." if dated < len(hits) else ""
     )
+    uploads_note = "" if not any(_is_upload(record) for h in hits for record in h.records.values()) else (
+        _CONTENT_DATED_UPLOADS_NOTE if upload_times_undated() else _UPLOADS_NOTE
+    )
     header = (
         f'Timeline for "{query}": {dated} period{"s" if dated != 1 else ""} from '
         f"{_day(collected.start_ms)} to {_day(collected.end_ms)}, oldest first. Records are placed by "
-        f"the date they were {placed_by} at their source.{undated_note} Each period shows its "
-        "best-matching blocks: a sample, not every record.\n"
+        f"the date they were {placed_by} at their source.{uploads_note}{undated_note} Each period "
+        "shows its best-matching blocks: a sample, not every record.\n"
         f"{notes}"
     )
     footer = _footer(date_field)

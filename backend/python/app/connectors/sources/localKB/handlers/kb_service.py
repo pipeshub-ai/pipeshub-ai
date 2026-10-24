@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
@@ -38,6 +38,13 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
+from app.models.source_dates import (
+    UPLOAD_SOURCE_CREATED_FIELD,
+    SourceTimestampOrigin,
+    epoch_ms,
+    parse_origin,
+    upload_origin,
+)
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -1369,7 +1376,7 @@ class KnowledgeBaseService:
         user_id: str,
         record_id: str,
         updates: Dict,
-        file_metadata: Optional[Dict] = None,
+        file_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict]:
         """
         Update a record directly in KB root (not in any folder).
@@ -1445,7 +1452,15 @@ class KnowledgeBaseService:
             if file_metadata is not None:
                 # Content changed (new blob uploaded): bump revision so the record is
                 # re-persisted, force reindex, and emit updateRecord (Qdrant refresh).
+                if parse_origin(record.source_timestamp_origin) is SourceTimestampOrigin.CONTENT:
+                    # The old content's date goes with it; indexing dates the new one.
+                    stored = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+                    record.source_created_at = stored.get(UPLOAD_SOURCE_CREATED_FIELD) or record.created_at
                 record.source_updated_at = file_metadata.get("lastModified", timestamp)
+                # Node stamps receivedAt off the clock its missing-lastModified fallback
+                # reads, before the storage upload; ``timestamp`` comes after that upload.
+                received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
+                record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
                 await processor.on_record_content_update(record)
             else:
@@ -3000,6 +3015,7 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
+        frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"

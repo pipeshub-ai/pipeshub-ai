@@ -84,6 +84,11 @@ from app.models.entities import (
     substitute_user_email,
 )
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.schema.arango.documents import (
     agent_schema,
@@ -20586,6 +20591,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
         "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
+        "connectorName", "origin", "createdAtTimestamp", "sourceCreatedAtTimestamp",
+        SOURCE_TIMESTAMP_ORIGIN_FIELD,
     )
 
     async def _get_taxonomy_entities_for_record_via_edge(
@@ -20744,9 +20751,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         return scope, scan_subquery
 
-    _ENTITY_CANDIDATE_SORT = (
-        "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
-    )
+    @property
+    def _entity_candidate_sort(self) -> str:
+        newest = "NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f'(r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload" ? 0 : {newest})'
+        return f"SORT {newest} DESC, key ASC"
 
     def _entity_candidate_records_aql(
         self, entity_type: str, *, filter_record_types: bool
@@ -20778,7 +20788,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        {self._ENTITY_CANDIDATE_SORT}
+                        {self._entity_candidate_sort}
                         LIMIT @offset, @limit
                         RETURN {self._entity_candidate_record_projection("r")}
                 )
@@ -20817,7 +20827,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        {self._ENTITY_CANDIDATE_SORT}
+                        {self._entity_candidate_sort}
                         LIMIT @offset, @window
                         RETURN r
                 )
@@ -23738,6 +23748,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         time_filter_lines: list[str] = []
         if time_range:
+            dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
+            # An upload dated only by its upload was written at or before that
+            # time: an after-bound still rules it out, a before-bound cannot.
+            undated = (
+                f' OR record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload"'
+                if upload_times_undated() and not dated_only
+                else ""
+            )
+
+            def before(condition: str) -> str:
+                return f"FILTER ({condition}){undated}" if undated else f"FILTER {condition}"
+
             c_after = time_range.get("source_created_after_ms")
             c_before = time_range.get("source_created_before_ms")
             u_after = time_range.get("source_updated_after_ms")
@@ -23750,7 +23772,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars["sourceCreatedAfterMs"] = c_after
             if c_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs"
+                    before("record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs")
                 )
                 bind_vars["sourceCreatedBeforeMs"] = c_before
             if u_after is not None:
@@ -23760,9 +23782,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars["sourceUpdatedAfterMs"] = u_after
             if u_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                    before(
+                        "record.sourceLastModifiedTimestamp != null"
+                        " AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                    )
                 )
                 bind_vars["sourceUpdatedBeforeMs"] = u_before
+            if dated_only:
+                time_filter_lines.append(f'FILTER record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} != "upload"')
 
         if not time_filter_lines:
             return metadata_filter_clause

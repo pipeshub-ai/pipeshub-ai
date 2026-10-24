@@ -5717,6 +5717,37 @@ components:
                 User id of whoever uploaded the file to the knowledge base.
                 Absent for connector records and for files uploaded before the
                 field existed.
+            sourceTimestampOrigin:
+              type: string
+              description: |
+                Knowledge-base uploads only: what set sourceCreatedAtTimestamp
+                and sourceLastModifiedTimestamp. `upload`: the upload time (the
+                file came without a last-modified time); `file`: the file's
+                last-modified time sent with the upload; `content`: dates the
+                document states in its header (CONTENT_DOCUMENT_DATES), stored at
+                midnight UTC of each stated day. Absent for connector records,
+                whose timestamps are the source system's, and for files uploaded
+                before the field existed.
+            uploadSourceCreatedAtTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                With sourceTimestampOrigin `content`: the
+                sourceCreatedAtTimestamp the upload had set, kept so it can be
+                restored.
+            uploadSourceLastModifiedTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                With sourceTimestampOrigin `content`: the
+                sourceLastModifiedTimestamp the upload had set.
+            uploadSourceTimestampOrigin:
+              type: string
+              description: |
+                With sourceTimestampOrigin `content`: what had set the upload's
+                values (`upload` or `file`).
             connectorId:
               type: string
             connectorName:

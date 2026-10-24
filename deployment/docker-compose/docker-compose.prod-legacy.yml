@@ -185,6 +185,9 @@ services:
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
       - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}

@@ -104,6 +104,11 @@ from app.models.permission import (
     RETIRED_ROLES,
     read_role,
 )
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.modules.code_graph.build_state import (
     SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
 )
@@ -7535,19 +7540,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if not time_range:
             return ""
+        dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
+        # An upload dated only by its upload was written at or before that
+        # time: an after-bound still rules it out, a before-bound cannot.
+        undated = (
+            f" OR coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') = 'upload'"
+            if upload_times_undated() and not dated_only
+            else ""
+        )
+
+        def before(condition: str) -> str:
+            return f"AND ({condition}{undated})" if undated else f"AND {condition}"
+
         conditions: list[str] = []
         if "source_created_after_ms" in time_range:
             parameters["sourceCreatedAfterMs"] = time_range["source_created_after_ms"]
             conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs")
         if "source_created_before_ms" in time_range:
             parameters["sourceCreatedBeforeMs"] = time_range["source_created_before_ms"]
-            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs"))
         if "source_updated_after_ms" in time_range:
             parameters["sourceUpdatedAfterMs"] = time_range["source_updated_after_ms"]
             conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs")
         if "source_updated_before_ms" in time_range:
             parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
-            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"))
+        if dated_only:
+            conditions.append(f"AND coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') <> 'upload'")
         return "\n".join(conditions)
 
     @staticmethod
@@ -21499,7 +21518,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
-        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp, "
+        ".connectorName, .origin, .createdAtTimestamp, .sourceCreatedAtTimestamp, "
+        f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}}}"
     )
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
@@ -21524,9 +21545,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND {cypher_searchable_record("rec", "completed")}
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
-    _ENTITY_CANDIDATE_ORDER = (
-        "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC"
-    )
+
+    @property
+    def _entity_candidate_order(self) -> str:
+        newest = "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f"CASE WHEN rec.{SOURCE_TIMESTAMP_ORIGIN_FIELD} = 'upload' THEN 0 ELSE {newest} END"
+        return f"{newest} DESC, rec.id ASC"
 
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
@@ -21558,7 +21583,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $limit
                 RETURN collect({projection}) AS rows
               }}
@@ -21633,7 +21658,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $window
                 RETURN collect(rec) AS win
               }}
