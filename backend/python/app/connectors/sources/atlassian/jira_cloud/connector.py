@@ -23,7 +23,6 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    AccessRule,
     AppGroups,
     Connectors,
     ProgressStatus,
@@ -81,6 +80,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
+    apply_issue_access_settled,
     classify_scheme_response,
     collect_paged_values,
     custom_field_ids_from_members,
@@ -6151,7 +6151,7 @@ class JiraConnector(BaseConnector):
             # related_external_records, so omitting this on reindex wipes the ticket's links.
             issue_record.related_external_records = self._related_records(issue)
 
-            permissions, skipped_holders = apply_issue_access(
+            permissions, skipped_holders, settled = apply_issue_access_settled(
                 issue_record,
                 fields,
                 is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
@@ -6162,14 +6162,11 @@ class JiraConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            # A null level opens the issue to the project whatever the scheme state, so only a
-            # leveled issue waits for a settled read.
-            if (security.defer_checkpoint and fields.get("security")) or skipped_holders or (
-                issue_record.access_rule == AccessRule.RESTRICTED and not permissions
-            ):
-                # Not every holder resolved (application roles are read by the sync), or the
-                # level could not be read: writing would replace the stored audience with a
-                # partial one. The stored record stays as it is for the sync to rebuild.
+            if not settled or skipped_holders:
+                # The level could not be read in full (a null level always can), or a holder
+                # did not resolve (application roles are read by the sync): writing would
+                # replace the stored audience with a partial one. A level read in full that
+                # grants nobody is settled and is written. The stored record stays as it is.
                 self.logger.info(
                     f"Issue {issue_id}: its security level cannot be applied outside a sync; "
                     "leaving the stored record for the next sync"

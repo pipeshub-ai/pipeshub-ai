@@ -117,7 +117,9 @@ def _holder_fingerprint(
     account = user.get("accountId") or user.get("key") or user.get("name") or ""
     email = str(user.get("emailAddress") or "").lower()
     role_key = holder.get("parameter") or holder.get("value")
-    digest = f"{holder.get('type')}:{role_key}:{account}:{email}"
+    # A deactivated user is not granted, so deactivation must change the digest too.
+    active = "inactive" if user.get("active") is False else ""
+    digest = f"{holder.get('type')}:{role_key}:{account}:{email}:{active}"
     if holder.get("type") == HOLDER_APPLICATION_ROLE:
         groups = application_role_groups(role_key, app_roles_mapping)
         digest += ":" + "+".join(sorted(str(_group_ref(g)) for g in groups))
@@ -504,7 +506,7 @@ def level_grants(
     return grants, False, skipped
 
 
-def apply_issue_access(
+def apply_issue_access_settled(
     record: Record,
     fields: dict[str, Any] | None,
     *,
@@ -515,8 +517,11 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
-) -> tuple[list[Permission], list[str]]:
-    """Set the issue's access rule and return the grants to write.
+) -> tuple[list[Permission], list[str], bool]:
+    """Set the issue's access rule and return the grants to write, the holder types
+    skipped, and whether the result is settled. Settled means the level (or its
+    absence) was read in full; a closed issue whose level could not be read is not,
+    though both write no grants.
 
     A child issue (a sub-task, or a story under an epic) in the same project
     inherits its hierarchy parent. It is visible to a user who can open both the
@@ -531,24 +536,24 @@ def apply_issue_access(
         record.inherit_permissions = True
         record.rewrite_permissions = True
         record.inherit_permissions_from_group = False
-        return [], []
+        return [], [], True
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 
-    def close() -> tuple[list[Permission], list[str]]:
+    def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
-        return [], []
+        return [], [], False
 
-    def project_open() -> tuple[list[Permission], list[str]]:
+    def project_open() -> tuple[list[Permission], list[str], bool]:
         record.access_rule = AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], []
+        return [], [], True
 
     if present and security is None:
         # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
@@ -587,6 +592,28 @@ def apply_issue_access(
         return close()
     record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    return grants, skipped, True
+
+
+def apply_issue_access(
+    record: Record,
+    fields: dict[str, Any] | None,
+    *,
+    is_subtask: bool,
+    project_key: str,
+    context: IssueSecurityContext,
+    user_by_account_id: dict[str, Any] | None = None,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    reporter_email: str | None = None,
+    assignee_email: str | None = None,
+) -> tuple[list[Permission], list[str]]:
+    """``apply_issue_access_settled`` without the settled flag: the grants to write
+    and the holder types skipped."""
+    grants, skipped, _settled = apply_issue_access_settled(
+        record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
+        user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=reporter_email, assignee_email=assignee_email,
+    )
     return grants, skipped
 
 

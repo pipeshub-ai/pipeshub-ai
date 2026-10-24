@@ -6,6 +6,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     SchemeKnowledge,
     apply_attachment_access,
     apply_issue_access,
+    apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
     resolve_scheme_knowledge,
@@ -413,3 +414,24 @@ class TestApplicationRoleHolders:
         after = ctx.level_fingerprints({**self.MAPPING, "jira-servicedesk": []})
         assert before["20"] != after["20"]
 
+
+
+class TestSettledResult:
+    def test_a_closed_issue_is_not_settled_but_an_empty_level_read_in_full_is(self) -> None:
+        unread = _present(readable=False)
+        assert apply_issue_access_settled(
+            _record(), {"security": {"id": "20"}}, is_subtask=False, project_key="PROJ", context=unread,
+        ) == ([], [], False)
+        assert apply_issue_access_settled(
+            _record(), {"security": {"id": "20"}}, is_subtask=False, project_key="PROJ", context=_present(),
+        ) == ([], [], True)
+        assert apply_issue_access_settled(
+            _record(), {"security": None}, is_subtask=False, project_key="PROJ", context=unread,
+        )[2] is True
+
+    def test_deactivating_a_holder_changes_the_level_digest(self) -> None:
+        """The deactivated user loses the grant, so the level's issues must be re-read."""
+        holder = {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "active": True}}
+        before = _present(members={"20": [holder]}).level_fingerprints()
+        after = _present(members={"20": [{**holder, "user": {**holder["user"], "active": False}}]}).level_fingerprints()
+        assert before["20"] != after["20"]

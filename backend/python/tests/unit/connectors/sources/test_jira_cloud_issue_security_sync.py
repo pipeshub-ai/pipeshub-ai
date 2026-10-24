@@ -494,6 +494,29 @@ class TestReindexAppliesTheLevel:
         assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("holder", [
+        None,  # the level has no member row
+        {"type": "user", "parameter": "acc-x", "user": {"accountId": "acc-x", "active": False}},
+        {"type": "projectRole", "parameter": "1", "projectRole": {"name": "atlassian-addons-project-access"}},
+    ])
+    async def test_a_level_read_in_full_that_grants_nobody_is_written(self, holder: dict | None) -> None:
+        """A settled empty audience replaces the stored one; leaving it would keep the old audience."""
+        values = [{"issueSecurityLevelId": "10102", "holder": holder}] if holder else []
+        other = [{"issueSecurityLevelId": "10199", "holder": {"type": "group", "value": "g-other"}}]
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, {"isLast": True, "values": values + other})])
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
+        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.RESTRICTED, [], True)
+
+    @pytest.mark.asyncio
+    async def test_a_forbidden_scheme_or_an_unreadable_field_leaves_the_stored_record_alone(self) -> None:
+        c = _reindex_connector(self.LEVELED, [_resp(403, {})])
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
+        members = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": {
+            "type": "userCustomField", "parameter": "customfield_99"}}]}
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
+
+    @pytest.mark.asyncio
     async def test_a_cleared_level_is_applied_by_the_reindex_even_on_a_transient_read(self) -> None:
         """`security: null` is a positive "no level": the stored level grants are replaced by none."""
         cleared = _issue(None, updated="2025-01-01T00:00:00.000+0000")
