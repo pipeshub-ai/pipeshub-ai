@@ -70,7 +70,10 @@ export function IndexActionButton({
         transition: 'background-color 150ms ease',
       }}
     >
-      <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
+      {/* MaterialIcon renders its name as text, which would otherwise join the button's name. */}
+      <span aria-hidden style={{ display: 'inline-flex' }}>
+        <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
+      </span>
       {label}
     </button>
   );

@@ -27,7 +27,7 @@ export interface AiEnrichmentSectionProps {
   onRetryFailedEntities?: () => void;
   isRetryClassificationBusy?: boolean;
   isRetryEntitiesBusy?: boolean;
-  /** Another reindex or sync is running. */
+  /** Another reindex or retry is in flight, or a sync is being started. */
   retryDisabled?: boolean;
 }
 
@@ -76,7 +76,7 @@ export function AiEnrichmentSection({
           alignItems: 'center',
           gap: 'var(--space-2)',
           width: '100%',
-          minHeight: 36,
+          minHeight: 44,
           padding: '0 var(--space-1)',
           border: 'none',
           borderRadius: 'var(--radius-2)',
