@@ -499,45 +499,58 @@ async def _enrich_user_info_for_service_account_agent_chat(
 ) -> dict[str, Any]:
     """
     Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
-    permission checks must use the agent creator's real userId — the same identity whose
-    knowledge access configured the agent — not the service principal.
+    permission checks must use the dedicated service account's real identity (agent.get("serviceAccountId")),
+    falling back to the agent creator's real userId (agent.get("createdBy")) for unmigrated agents.
     """
-    creator_key = agent.get("createdBy")
-    if not creator_key:
+    is_sa_bound = bool(agent.get("serviceAccountId"))
+    target_key = agent.get("serviceAccountId") or agent.get("createdBy")
+    if not target_key:
         raise HTTPException(
             status_code=500,
             detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
         )
-    creator_doc = await graph_provider.get_document(
-        str(creator_key), CollectionNames.USERS.value
+    user_doc = await graph_provider.get_document(
+        str(target_key), CollectionNames.USERS.value
     )
-    if not creator_doc:
-        raise HTTPException(
-            status_code=500,
-            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+    if not user_doc and is_sa_bound:
+        try:
+            user_doc = await graph_provider.get_user_by_user_id(str(target_key))
+        except Exception:
+            user_doc = None
+
+    if not user_doc:
+        detail = (
+            "Service account user not found; cannot resolve knowledge permissions."
+            if is_sa_bound
+            else "Agent creator user not found; cannot resolve knowledge permissions."
         )
-    creator_user_id = creator_doc.get("userId")
-    if not creator_user_id:
+        raise HTTPException(status_code=500, detail=detail)
+
+    target_user_id = user_doc.get("userId")
+    if not target_user_id:
         logger.error(
-            "Service account agent creator %s has no userId field",
-            creator_key,
+            "Service account agent identity %s has no userId field",
+            target_key,
         )
-        raise HTTPException(
-            status_code=500,
-            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+        detail = (
+            "Service account is missing userId; cannot resolve knowledge permissions."
+            if is_sa_bound
+            else "Agent creator is missing userId; cannot resolve knowledge permissions."
         )
-    creator_org = str(creator_doc.get("orgId") or "").strip()
+        raise HTTPException(status_code=500, detail=detail)
+
+    target_org = str(user_doc.get("orgId") or "").strip()
     caller_org = str(caller_org_id or "").strip()
     # This branch skips check_agent_permission; empty/mismatched org must not
-    # let a caller run retrieval as another tenant's creator.
-    if not creator_org or not caller_org or creator_org != caller_org:
-        raise AgentNotFoundError(str(agent.get("_key") or creator_key))
+    # let a caller run retrieval as another tenant's user.
+    if not target_org or not caller_org or target_org != caller_org:
+        raise AgentNotFoundError(str(agent.get("_key") or target_key))
     synthetic = {
-        "userId": str(creator_user_id),
-        "orgId": creator_org,
-        "email": (creator_doc.get("email") or "").strip(),
+        "userId": str(target_user_id),
+        "orgId": target_org,
+        "email": (user_doc.get("email") or "").strip(),
     }
-    return await _enrich_user_info(synthetic, creator_doc)
+    return await _enrich_user_info(synthetic, user_doc)
 
 
 async def _assert_agent_belongs_to_caller_org(
@@ -546,16 +559,31 @@ async def _assert_agent_belongs_to_caller_org(
     caller_org_id: str,
     agent_id: str,
 ) -> None:
-    """404 unless the agent's creator org matches the caller. Used before any
-    exists-vs-type distinction so other orgs cannot probe agent keys.
-
-    TODO: persist orgId on the agent instance and backfill existing docs.
-    Creator org is the only proxy today; a deleted or moved creator makes
-    the agent unreachable to its own org, and each SA chat pays a USERS lookup.
+    """404 unless the agent's creator org or service account org matches the caller.
+    Used before any exists-vs-type distinction so other orgs cannot probe agent keys.
     """
-    creator_key = agent.get("createdBy")
     caller_org = str(caller_org_id or "").strip()
-    if not creator_key or not caller_org:
+    if not caller_org:
+        raise AgentNotFoundError(agent_id)
+
+    # Check serviceAccountId if present
+    sa_key = agent.get("serviceAccountId")
+    if sa_key:
+        sa_doc = await graph_provider.get_document(
+            str(sa_key), CollectionNames.USERS.value
+        )
+        if not sa_doc:
+            try:
+                sa_doc = await graph_provider.get_user_by_user_id(str(sa_key))
+            except Exception:
+                sa_doc = None
+        sa_org = str((sa_doc or {}).get("orgId") or "").strip()
+        if sa_org and sa_org == caller_org:
+            return
+
+    # Fall back to createdBy check
+    creator_key = agent.get("createdBy")
+    if not creator_key:
         raise AgentNotFoundError(agent_id)
     creator_doc = await graph_provider.get_document(
         str(creator_key), CollectionNames.USERS.value
@@ -563,6 +591,46 @@ async def _assert_agent_belongs_to_caller_org(
     creator_org = str((creator_doc or {}).get("orgId") or "").strip()
     if not creator_org or creator_org != caller_org:
         raise AgentNotFoundError(agent_id)
+
+
+async def _validate_service_account_binding(
+    service_account_id: str,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    logger: Logger,
+) -> str:
+    """Validate that service_account_id points to an active service account in caller's org.
+
+    Returns the canonical _key of the service account user node in the graph database.
+    """
+    sa_id_str = str(service_account_id).strip()
+    if not sa_id_str:
+        raise InvalidRequestError("serviceAccountId cannot be empty.")
+
+    sa_doc = await graph_provider.get_document(sa_id_str, CollectionNames.USERS.value)
+    if not sa_doc:
+        try:
+            sa_doc = await graph_provider.get_user_by_user_id(sa_id_str)
+        except Exception:
+            sa_doc = None
+
+    if not sa_doc:
+        raise InvalidRequestError(f"Service account '{sa_id_str}' not found.")
+
+    if sa_doc.get("isActive") is False or sa_doc.get("isDeleted") is True:
+        raise InvalidRequestError("The specified service account is inactive or deleted.")
+
+    sa_org = str(sa_doc.get("orgId") or "").strip()
+    caller_org = str(caller_org_id or "").strip()
+    if not sa_org or sa_org != caller_org:
+        raise InvalidRequestError("The specified service account does not belong to your organization.")
+
+    email = str(sa_doc.get("email") or "").strip().lower()
+    is_service = sa_doc.get("kind") == "service" or email.endswith("@service.pipeshub.internal")
+    if not is_service:
+        raise InvalidRequestError("The specified account is not a service account.")
+
+    return str(sa_doc.get("_key") or sa_doc.get("id") or sa_id_str)
 
 
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
@@ -2526,6 +2594,18 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
+        service_account_id = None
+        if "serviceAccountId" in body:
+            raw_sa_id = body.get("serviceAccountId")
+            if raw_sa_id is not None and str(raw_sa_id).strip():
+                if not is_service_account:
+                    raise InvalidRequestError(
+                        "serviceAccountId is only allowed for service account agents."
+                    )
+                service_account_id = await _validate_service_account_binding(
+                    str(raw_sa_id).strip(), services["graph_provider"], org_key, logger
+                )
+
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
         else:
@@ -2554,6 +2634,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "serviceAccountId": service_account_id,
             "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
@@ -3021,6 +3102,19 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             if creator_doc and creator_doc.get("userId"):
                 agent["createdBy"] = creator_doc["userId"]
 
+        sa_key = agent.get("serviceAccountId")
+        if sa_key:
+            sa_doc = await services["graph_provider"].get_document(
+                str(sa_key), CollectionNames.USERS.value
+            )
+            if not sa_doc:
+                try:
+                    sa_doc = await services["graph_provider"].get_user_by_user_id(str(sa_key))
+                except Exception:
+                    sa_doc = None
+            if sa_doc and sa_doc.get("userId"):
+                agent["serviceAccountId"] = sa_doc["userId"]
+
         return JSONResponse(
             status_code=200,
             content={
@@ -3216,6 +3310,21 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        if "serviceAccountId" in body:
+            raw_sa_id = body.get("serviceAccountId")
+            if raw_sa_id is not None and str(raw_sa_id).strip():
+                if not final_service_account:
+                    raise InvalidRequestError(
+                        "serviceAccountId is only allowed for service account agents."
+                    )
+                canonical_sa_id = await _validate_service_account_binding(
+                    str(raw_sa_id).strip(), services["graph_provider"], org_key, logger
+                )
+                body["serviceAccountId"] = canonical_sa_id
+            else:
+                body["serviceAccountId"] = None
+
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )

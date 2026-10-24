@@ -578,6 +578,270 @@ class TestEnrichUserInfoForServiceAccountChat:
                 {"createdBy": "ck1"}, gp, MagicMock(), "o1"
             )
 
+    @pytest.mark.asyncio
+    async def test_uses_service_account_id_when_present(self) -> None:
+        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "userId": "sa-mongo-1",
+                "orgId": "o1",
+                "email": "bot@service.pipeshub.internal",
+                "kind": "service",
+            }
+        )
+        with patch(
+            "app.api.routes.agent._enrich_user_info",
+            new_callable=AsyncMock,
+            return_value={"userId": "sa-mongo-1", "email": "bot@service.pipeshub.internal"},
+        ):
+            result = await _enrich_user_info_for_service_account_agent_chat(
+                {"serviceAccountId": "sa-mongo-1", "createdBy": "creator-1"},
+                gp,
+                MagicMock(),
+                "o1",
+            )
+        assert result["userId"] == "sa-mongo-1"
+        gp.get_document.assert_awaited_with("sa-mongo-1", "users")
+
+    @pytest.mark.asyncio
+    async def test_service_account_doc_not_found(self) -> None:
+        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_user_by_user_id = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"serviceAccountId": "sa-1", "createdBy": "creator-1"},
+                gp,
+                MagicMock(),
+                "o1",
+            )
+        assert exc_info.value.status_code == 500
+        assert "service account" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_service_account_doc_no_user_id(self) -> None:
+        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"orgId": "o1", "email": "sa@service.pipeshub.internal"}
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"serviceAccountId": "sa-1", "createdBy": "creator-1"},
+                gp,
+                MagicMock(),
+                "o1",
+            )
+        assert exc_info.value.status_code == 500
+        assert "userId" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_rejects_caller_from_another_org_with_service_account_id(self) -> None:
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _enrich_user_info_for_service_account_agent_chat,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "userId": "sa-1",
+                "orgId": "org-a",
+                "email": "sa@service.pipeshub.internal",
+            }
+        )
+        with pytest.raises(AgentNotFoundError):
+            await _enrich_user_info_for_service_account_agent_chat(
+                {"serviceAccountId": "sa-1", "_key": "agent-1"},
+                gp,
+                MagicMock(),
+                "org-b",
+            )
+
+
+class TestValidateServiceAccountBinding:
+    @pytest.mark.asyncio
+    async def test_rejects_empty_id(self) -> None:
+        from app.api.routes.agent import (
+            InvalidRequestError,
+            _validate_service_account_binding,
+        )
+
+        with pytest.raises(InvalidRequestError) as exc_info:
+            await _validate_service_account_binding("", AsyncMock(), "org-1", MagicMock())
+        assert "cannot be empty" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_rejects_not_found(self) -> None:
+        from app.api.routes.agent import (
+            InvalidRequestError,
+            _validate_service_account_binding,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_user_by_user_id = AsyncMock(return_value=None)
+        with pytest.raises(InvalidRequestError) as exc_info:
+            await _validate_service_account_binding("sa-none", gp, "org-1", MagicMock())
+        assert "not found" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_rejects_inactive_or_deleted(self) -> None:
+        from app.api.routes.agent import (
+            InvalidRequestError,
+            _validate_service_account_binding,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "sa-1",
+                "userId": "sa-1",
+                "orgId": "org-1",
+                "isActive": False,
+                "email": "sa@service.pipeshub.internal",
+            }
+        )
+        with pytest.raises(InvalidRequestError) as exc_info:
+            await _validate_service_account_binding("sa-1", gp, "org-1", MagicMock())
+        assert "inactive or deleted" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_rejects_wrong_org(self) -> None:
+        from app.api.routes.agent import (
+            InvalidRequestError,
+            _validate_service_account_binding,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "sa-1",
+                "userId": "sa-1",
+                "orgId": "org-2",
+                "isActive": True,
+                "email": "sa@service.pipeshub.internal",
+            }
+        )
+        with pytest.raises(InvalidRequestError) as exc_info:
+            await _validate_service_account_binding("sa-1", gp, "org-1", MagicMock())
+        assert "does not belong to your organization" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_rejects_human_account(self) -> None:
+        from app.api.routes.agent import (
+            InvalidRequestError,
+            _validate_service_account_binding,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "u-1",
+                "userId": "u-1",
+                "orgId": "org-1",
+                "isActive": True,
+                "kind": "individual",
+                "email": "alice@company.com",
+            }
+        )
+        with pytest.raises(InvalidRequestError) as exc_info:
+            await _validate_service_account_binding("u-1", gp, "org-1", MagicMock())
+        assert "not a service account" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_accepts_valid_service_account(self) -> None:
+        from app.api.routes.agent import _validate_service_account_binding
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "sa-node-key",
+                "userId": "sa-mongo-id",
+                "orgId": "org-1",
+                "isActive": True,
+                "kind": "service",
+                "email": "bot@service.pipeshub.internal",
+            }
+        )
+        canonical = await _validate_service_account_binding("sa-node-key", gp, "org-1", MagicMock())
+        assert canonical == "sa-node-key"
+
+    @pytest.mark.asyncio
+    async def test_accepts_lookup_by_user_id_fallback(self) -> None:
+        from app.api.routes.agent import _validate_service_account_binding
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_user_by_user_id = AsyncMock(
+            return_value={
+                "_key": "sa-node-key",
+                "userId": "sa-mongo-id",
+                "orgId": "org-1",
+                "isActive": True,
+                "email": "bot@service.pipeshub.internal",
+            }
+        )
+        canonical = await _validate_service_account_binding("sa-mongo-id", gp, "org-1", MagicMock())
+        assert canonical == "sa-node-key"
+
+
+class TestAssertAgentBelongsToCallerOrg:
+    @pytest.mark.asyncio
+    async def test_matches_via_service_account(self) -> None:
+        from app.api.routes.agent import _assert_agent_belongs_to_caller_org
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"_key": "sa-1", "orgId": "org-1"}
+        )
+        agent = {"_key": "ag-1", "serviceAccountId": "sa-1", "createdBy": "other-user"}
+        # Should not raise
+        await _assert_agent_belongs_to_caller_org(agent, gp, "org-1", "ag-1")
+
+    @pytest.mark.asyncio
+    async def test_matches_via_created_by_fallback(self) -> None:
+        from app.api.routes.agent import _assert_agent_belongs_to_caller_org
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"_key": "cr-1", "orgId": "org-1"}
+        )
+        agent = {"_key": "ag-1", "createdBy": "cr-1"}
+        # Should not raise
+        await _assert_agent_belongs_to_caller_org(agent, gp, "org-1", "ag-1")
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_neither_matches(self) -> None:
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _assert_agent_belongs_to_caller_org,
+        )
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"_key": "sa-1", "orgId": "org-other"}
+        )
+        agent = {"_key": "ag-1", "serviceAccountId": "sa-1"}
+        with pytest.raises(AgentNotFoundError):
+            await _assert_agent_belongs_to_caller_org(agent, gp, "org-1", "ag-1")
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_caller_org_is_empty(self) -> None:
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _assert_agent_belongs_to_caller_org,
+        )
+
+        agent = {"_key": "ag-1", "createdBy": "cr-1"}
+        with pytest.raises(AgentNotFoundError):
+            await _assert_agent_belongs_to_caller_org(agent, AsyncMock(), "", "ag-1")
+
 
 # ============================================================================
 # _build_agent_capability_context — lines 637-698
