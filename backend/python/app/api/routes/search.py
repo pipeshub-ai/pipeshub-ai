@@ -253,7 +253,12 @@ def _apply_result_limit(results: dict[str, Any], limit: int, typed: str = "") ->
             return isinstance(content, str) and pattern.search(content) is not None
 
         def section_of(h: dict | None) -> tuple:
-            return (((h or {}).get("metadata") or {}).get("recordId"), (h or {}).get("score"))
+            h = h or {}
+            record_id = (h.get("metadata") or {}).get("recordId")
+            group = h.get("block_group_index")
+            # Equal RRF scores are common, so the score names a section only when
+            # retrieval did not say which group a passage came from.
+            return (record_id, "group", group) if group is not None else (record_id, "score", h.get("score"))
 
         typed_hits = {id(h) for h in hits if holds_typed(h)}
         # A neighbour holding the text brings its section's match with it, and

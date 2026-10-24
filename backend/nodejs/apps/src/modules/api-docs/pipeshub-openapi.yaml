@@ -11248,6 +11248,13 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        block_group_index:
+          type: integer
+          nullable: true
+          description: |
+            Set on each passage of a section brought back whole (see `distanceFromMatch`): the
+            index of that section in its record, so passages of two sections of one record can be
+            told apart. Absent on a hit that matched directly.
         timelinePeriod:
           type: integer
           minimum: 0

@@ -773,6 +773,23 @@ class TestSearchHonoursLimit:
         out = await self._run(SearchQuery(query="gravelpont9014", limit=1), {**response, "searchResults": section + generic})
         assert [h["content"] for h in out["searchResults"]] == ["the matched passage"]
 
+    @pytest.mark.asyncio
+    async def test_only_the_typed_neighbours_own_section_is_promoted(self) -> None:
+        # Two tables of one workbook with the same RRF score; only table 2 holds the code.
+        def passage(content: str, group: int, distance: int) -> dict:
+            return {"content": content, "score": 0.5, "distanceFromMatch": distance,
+                    "block_group_index": group, "metadata": {"recordId": "book"}}
+
+        hits = [
+            passage("table 1 match", 1, 0),
+            passage("table 2 match", 2, 0),
+            passage("table 2 row with gravelpont9014", 2, 1),
+            {"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}},
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "book"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["table 2 match", "table 2 row with gravelpont9014"]
+
 
 class TestSearchSurvivesQueryTransformationFailure:
     """A failed rewrite or expansion falls back to the query the user typed."""
