@@ -42,7 +42,6 @@ import * as healthRoutes from '../src/modules/tokens_manager/routes/health.route
 import * as userRoutes from '../src/modules/user_management/routes/users.routes';
 import * as userGroupRoutes from '../src/modules/user_management/routes/userGroups.routes';
 import * as orgRoutes from '../src/modules/user_management/routes/org.routes';
-import * as samlRoutes from '../src/modules/auth/routes/saml.routes';
 import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.routes';
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
@@ -170,7 +169,6 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(userRoutes, 'createUserRouter').returns(dummyRouter);
   sandbox.stub(userGroupRoutes, 'createUserGroupRouter').returns(dummyRouter);
   sandbox.stub(orgRoutes, 'createOrgRouter').returns(dummyRouter);
-  sandbox.stub(samlRoutes, 'createSamlRouter').returns(dummyRouter);
   sandbox.stub(userAccountRoutes, 'createUserAccountRouter').returns(dummyRouter);
   sandbox.stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter').returns(dummyRouter);
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
@@ -293,15 +291,7 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     .bind<any>(CrawlingSchedulerService)
     .toConstantValue(mockCrawlingScheduler);
 
-  // SamlController mock — needed for updateSamlStrategies
-  const mockSamlController = {
-    updateSamlStrategiesWithCallback: sandbox.stub(),
-  };
-  containers['auth']
-    .bind<any>('SamlController')
-    .toConstantValue(mockSamlController);
-
-  return { containers, mockNotificationService, mockOAuthTokenService, mockSamlController };
+  return { containers, mockNotificationService, mockOAuthTokenService };
 }
 
 // ---------------------------------------------------------------------------
@@ -504,26 +494,6 @@ describe('Application', () => {
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
     });
 
-    it('should update SAML strategies after server starts listening', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      await app.start();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
     it('should start telemetry and the org metrics refresh loop', async () => {
       const app = new Application();
       stubAllContainers(sandbox);
@@ -614,29 +584,6 @@ describe('Application', () => {
       // The app overrides this with a try/catch in addOAuthServicesToAuthMiddleware
       // so it should NOT throw
       await app.initialize();
-    });
-
-    it('should handle SAML strategy update failure gracefully', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      mockSamlController.updateSamlStrategiesWithCallback.throws(
-        new Error('SAML config unavailable'),
-      );
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      // Should NOT throw — updateSamlStrategies has a try/catch
-      await app.start();
     });
   });
 
@@ -899,7 +846,6 @@ describe('Application', () => {
       '/api/v1/teams',
       '/api/v1/userGroups',
       '/api/v1/org',
-      '/api/v1/saml',
       '/api/v1/userAccount',
       '/api/v1/orgAuthConfig',
       '/api/v1/document',
@@ -1474,56 +1420,6 @@ describe('Application', () => {
     });
   });
 
-  // =========================================================================
-  // updateSamlStrategies()
-  // =========================================================================
-  describe('updateSamlStrategies()', () => {
-    it('should call SamlController.updateSamlStrategiesWithCallback', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub(),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      await app.updateSamlStrategies();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
-    it('should warn but not throw if SamlController is not available', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const emptyContainer = new Container();
-      (app as any).authServiceContainer = emptyContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-
-    it('should warn but not throw if updateSamlStrategiesWithCallback throws', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub().throws(new Error('SAML error')),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-  });
 
   // =========================================================================
   // setupApiDocs()

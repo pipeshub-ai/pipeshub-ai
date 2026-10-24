@@ -249,13 +249,12 @@ _STOP_WORDS = frozenset({
 
 _ALLOWED_GREP_BINARIES = frozenset({"grep", "egrep", "fgrep", "rg"})
 _MAX_GREP_COMMAND_LENGTH = 1000
-_MAX_GREP_OUTPUT_LINES = 200
 # Caps the FIRST pipeline stage, which for `grep -rliZ a . | xargs grep b` is the
 # list of every file matching `a`. Too small and stage 2 only ever sees the first
 # few hundred files in directory-walk order; the overall timeout bounds latency.
 _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
-# so the tool's default 8K cap would keep only a few dozen of the 200 lines.
+# so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
@@ -1144,19 +1143,19 @@ def _ensure_null_delimited_pipeline(command: str) -> str:
 
 
 def _cap_grep_output(command: str) -> str:
-    """Drop ``file:0`` lines, then cap at ``_MAX_GREP_OUTPUT_LINES``.
+    """Drop ``file:0`` lines, and any head/tail cut.
 
     ``grep -c`` prints a line for every file it reads, matching or not. Unless
-    those are dropped first, they fill the line and byte caps in directory-walk
-    order and real matches later in the walk are never seen.
+    those are dropped first, they fill the output caps in directory-walk order
+    and real matches later in the walk are never seen.
+
+    find_records refuses a head/tail cut (records the user cannot read could
+    fill it and push readable ones out) and bounds the output itself, ranking
+    every line it keeps by match count.
     """
     stages = [s.strip() for s in _split_pipeline(command)]
-    cut = next(
-        (i for i, s in enumerate(stages) if i > 0 and re.match(r"(head|tail)\b", s)),
-        len(stages),
-    )
-    limit = stages[cut:] or [f"head -{_MAX_GREP_OUTPUT_LINES}"]
-    return " | ".join(stages[:cut] + [_ZERO_COUNT_FILTER] + limit)
+    stages = [s for i, s in enumerate(stages) if i == 0 or not re.match(r"(head|tail)\b", s)]
+    return " | ".join(stages + [_ZERO_COUNT_FILTER])
 
 
 async def run_pattern_match_with_llm_grep(
@@ -1628,7 +1627,6 @@ async def run_pattern_match(
                 max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
-                max_output_lines=_MAX_GREP_OUTPUT_LINES,
             )
         except Exception:
             logger_instance.warning(

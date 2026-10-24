@@ -27,6 +27,7 @@ from app.modules.agents.capability_summary import (
     format_connector_filter_lines,
 )
 from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.artifacts.reader import record_artifact_reader
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +224,7 @@ async def build_prior_routing_messages(
                     ):
                         continue
                     try:
-                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
                         if not record:
                             continue
                         if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:

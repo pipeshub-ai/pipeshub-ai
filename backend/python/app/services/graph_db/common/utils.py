@@ -92,6 +92,61 @@ PATH_MAX_CANDIDATES = 64
 KB_MAX_FOLDER_DEPTH = 20
 
 
+# Bound on the chains enumerated by ancestor_chain_rows; chains only branch on
+# graph anomalies, so this is a safety net, not a tuning knob.
+ANCESTOR_CHAIN_ENUMERATION_CAP = 10_000
+
+
+class AncestorChainLimitError(ValueError):
+    """More ancestor chains than ANCESTOR_CHAIN_ENUMERATION_CAP: a cut list could
+    leave out the canonical chain, so no chain is picked."""
+
+
+def ancestor_chain_rows(
+    start: str,
+    links: list[dict[str, str]] | None,
+    *,
+    max_depth: int,
+) -> list[list[str]]:
+    """Every maximal ancestor chain from *start*, as id lists ``[start, parent, ...]``.
+
+    *links* are distinct ``{"child", "parent"}`` pairs, so parallel edges between
+    the same two nodes count once (the path count no longer doubles per level).
+    A chain never repeats a node and has at most *max_depth* steps, matching the
+    path traversals this replaces; ``select_canonical_chain_names`` picks one.
+    Raises AncestorChainLimitError past ANCESTOR_CHAIN_ENUMERATION_CAP chains.
+    """
+    parents: dict[str, list[str]] = {}
+    for link in links or []:
+        child, parent = link.get("child"), link.get("parent")
+        if child and parent and parent not in parents.setdefault(child, []):
+            parents[child].append(parent)
+    for ids in parents.values():
+        ids.sort()
+    rows: list[list[str]] = []
+    path = [start]
+    on_path = {start}
+
+    def walk() -> None:
+        nexts = [p for p in parents.get(path[-1], []) if p not in on_path] if len(path) <= max_depth else []
+        if not nexts:
+            if len(rows) >= ANCESTOR_CHAIN_ENUMERATION_CAP:
+                raise AncestorChainLimitError(
+                    f"{start} has more than {ANCESTOR_CHAIN_ENUMERATION_CAP} ancestor chains"
+                )
+            rows.append(list(path))
+            return
+        for parent in nexts:
+            path.append(parent)
+            on_path.add(parent)
+            walk()
+            on_path.discard(parent)
+            path.pop()
+
+    walk()
+    return rows
+
+
 def select_canonical_chain_names(
     rows: list[Any] | None,
     name_fields: tuple[str, ...],

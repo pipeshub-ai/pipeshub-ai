@@ -1001,20 +1001,6 @@ class NextcloudConnector(BaseConnector):
             self.logger.debug(f"Error fetching shares for {path}: {e}")
             return []
 
-    async def _clear_parent_child_edges_for_records(
-        self, records_with_permissions: List[Tuple[Record, List]]
-    ) -> None:
-        """Nextcloud single-parent: remove existing PARENT_CHILD edges so records don't appear in both old and new location."""
-        if not records_with_permissions:
-            return
-        for record, _ in records_with_permissions:
-            deleted = await self.data_entities_processor.delete_parent_child_edge_to_record(record.id)
-            if deleted:
-                self.logger.debug(
-                    "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
-                    deleted, record.id,
-                )
-
     async def _handle_record_updates(self, record_update: RecordUpdate) -> bool:
         """Handle record updates (modified or deleted records). Follows Box connector pattern.
 
@@ -1032,7 +1018,6 @@ class NextcloudConnector(BaseConnector):
 
             elif record_update.is_updated:
                 records_batch = [(record_update.record, record_update.new_permissions or [])]
-                await self._clear_parent_child_edges_for_records(records_batch)
                 await self.data_entities_processor.on_new_records(records_batch)
 
         except Exception as e:
@@ -1127,7 +1112,6 @@ class NextcloudConnector(BaseConnector):
                 nonlocal batch_records
                 if batch_records:
                     self.logger.info(f"Processing batch of {len(batch_records)} records")
-                    await self._clear_parent_child_edges_for_records(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
                     batch_records = []
 

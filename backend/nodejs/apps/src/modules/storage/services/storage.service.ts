@@ -180,4 +180,14 @@ export interface StorageServiceInterface {
    * @param storageKey - The storage key / relative path of the object.
    */
   getObjectUrl?(storageKey: string): string;
+
+  /**
+   * Local storage only: where each document's folder now sits under a prefix,
+   * as documentId -> documentPath. Lets a tree move record what the disk
+   * actually holds instead of what it expected to move.
+   */
+  locateDocuments?(
+    prefix: string,
+    documentIds: string[],
+  ): Promise<Map<string, string>>;
 }

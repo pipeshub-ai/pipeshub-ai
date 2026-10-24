@@ -21,6 +21,8 @@ from app.utils.chat_helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.config.configuration_service import ConfigurationService
     from app.modules.retrieval.context.units import Unit
     from app.modules.transformers.blob_storage import BlobStorage
@@ -44,7 +46,11 @@ class KnowledgeContextBuilder:
         org_id: str,
         user_id: str,
         config_service: ConfigurationService | None = None,
+        connection_sources: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
+        """``connection_sources`` is a connected app's limit, which keeps a
+        parent outside it out of the graph context."""
+        self._connection_sources = connection_sources
         self._blob_store = blob_store
         self._graph_provider = graph_provider
         self._org_id = org_id
@@ -98,6 +104,7 @@ class KnowledgeContextBuilder:
                 org_id=self._org_id,
                 config_service=self._config_service,
                 user_id=self._user_id,
+                connection_sources=self._connection_sources,
             )
             await enrich_records_with_address_links(
                 records, self._graph_provider, self._org_id, user_id=self._user_id,

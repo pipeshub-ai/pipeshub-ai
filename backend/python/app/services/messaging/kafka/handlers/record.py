@@ -1438,7 +1438,9 @@ class RecordEventHandler(BaseEventService):
                 # stay for the purge, which is also what restore needs.
                 virtual_record_ids = payload.get("virtualRecordIds") or []
                 result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids, keep_mapping=True
+                    virtual_record_ids,
+                    org_id=payload.get("orgId") or None,
+                    keep_mapping=True,
                 )
                 if result.get("success") is False:
                     raise IndexingError(
@@ -1634,7 +1636,9 @@ class RecordEventHandler(BaseEventService):
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
             elif not vector_db_only and event_type in (
                 EventTypes.UPDATE_RECORD.value,
                 EventTypes.REINDEX_RECORD.value,

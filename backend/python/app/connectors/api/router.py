@@ -34,7 +34,11 @@ from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
-from app.agents.actions.knowledge_graph.models import NavigationView
+from app.agents.actions.knowledge_graph.models import (
+    NavigationView,
+    NodeRow,
+    PaginationInfo,
+)
 from app.agents.actions.knowledge_graph.navigator import GraphNavigator
 from app.agents.actions.knowledge_graph.ops.time_range import (
     parse_time_range,
@@ -46,9 +50,12 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view,
 )
 from app.api.connection_limit import (
+    hide_record_parents_outside_connection,
     ids_outside_connection,
     keep_path_inside_connection,
+    named_inside_connection,
     refuse_outside_connection,
+    root_lists_what_the_limit_names,
 )
 from app.api.middlewares.auth import (
     connection_limit,
@@ -105,7 +112,7 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
-from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
+from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -162,7 +169,8 @@ from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
-from app.utils.chat_helpers import record_to_text
+from app.utils.chat_helpers import accessible_node_ids, record_to_text
+from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.not_indexed import not_indexed_note
@@ -534,6 +542,15 @@ async def _invoke_connector_stream(
         raise to_stream_error(e, connector=connector_display) from e
 
 
+def _refuse_placeholder_content(record: Record) -> None:
+    """A placeholder is a navigation stub with no content of its own."""
+    if getattr(record, "is_placeholder", False) is True:
+        raise not_downloadable(
+            "This item is a placeholder and has no content to open.",
+            connector=getattr(record.connector_name, "value", None),
+        )
+
+
 async def _resolve_record_content_response(
     *,
     record: Record,
@@ -553,6 +570,8 @@ async def _resolve_record_content_response(
     new agent-facing internal content endpoint, so the routing decision lives
     in exactly one place.
     """
+    _refuse_placeholder_content(record)
+
     if convert_to == MimeTypes.PDF.value:
         # Before fetching, so a failed fetch cannot hide why there is no preview.
         _refuse_epub_pdf_preview(get_pdf_conversion_info(record)[2])
@@ -1325,6 +1344,8 @@ async def stream_record_internal(
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
+        _refuse_placeholder_content(record)
+
         effective_org_id = org_id
         token_user_id = claims.get("userId")
 
@@ -1855,6 +1876,9 @@ async def get_record_by_id(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+            await hide_record_parents_outside_connection(
+                request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
+            )
             record: object = cast("dict[str, object]", has_access).get("record")
             if isinstance(record, dict):
                 has_access["record"] = api_record(record)
@@ -1889,12 +1913,10 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        access_check = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
-        if not access_check:
+        # The one access check, `check_access` as the agent's fetch_record runs it;
+        # the fetch below reuses its answer.
+        accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
+        if record_id not in accessible:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
@@ -1917,6 +1939,7 @@ async def get_record_content(
             graph_provider=graph_provider,
             org_id=org_id,
             user_id=user_id,
+            accessible=accessible,
         )
     except Exception as e:
         logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
@@ -1937,6 +1960,16 @@ async def get_record_content(
         logger.error(f"Error formatting record content for {record_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to format record content") from e
 
+    if len(content) > FETCH_MAX_CHARS:
+        total = len(content)
+        notice = (
+            "\n[Content truncated: showed {shown} of {total} characters. "
+            "Request the record again with startBlock and maxChars to read it in parts.]\n"
+        )
+        # The notice counts toward the cap; it is longest with the cap itself as `shown`.
+        shown = FETCH_MAX_CHARS - len(notice.format(shown=FETCH_MAX_CHARS, total=total))
+        content = content[:shown] + notice.format(shown=shown, total=total)
+        return {"content": content, "truncated": True, "totalChars": total}
     return {"content": content}
 
 
@@ -2050,6 +2083,12 @@ async def knowledge_graph_navigate(
     # app, so it is bounded before paging, or a page could come back empty.
     root_apps = None
     limit_sources = connection_limit(request.state.user)
+    if node_id is None and root_lists_what_the_limit_names(limit_sources):
+        view = await _named_root_view(
+            request, graph_provider, org_id, user_id, page=page, limit=limit, node_types=node_types,
+            created_at=created_at, updated_at=updated_at,
+        )
+        return {**view.model_dump(), "text": render_navigation_view(view, page)}
     if node_id is None and limit_sources is not None:
         # The catalog leaves collections out, so the apps the limit names are
         # candidates too; the access check keeps only those the user reaches.
@@ -2091,9 +2130,6 @@ async def knowledge_graph_navigate(
             detail="Failed to navigate knowledge graph",
         ) from e
 
-    # shortcut: a limit to folders hides their apps at the root, so a connected
-    # app opens those folders by id (search finds them); list them at the root
-    # if apps limited to folders need to browse from the top.
     outside = await ids_outside_connection(
         request, graph_provider, org_id, user_id,
         [row.id for row in [*view.rows, *view.related, *view.breadcrumbs]],
@@ -2104,6 +2140,60 @@ async def knowledge_graph_navigate(
         view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id not in outside]
 
     return {**view.model_dump(), "text": render_navigation_view(view, page)}
+
+
+def _in_range(value: int | None, bounds: dict[str, int | None] | None) -> bool:
+    if not bounds:
+        return True
+    if value is None:
+        return False
+    return (bounds.get("gte") is None or value >= bounds["gte"]) and (bounds.get("lte") is None or value <= bounds["lte"])
+
+
+async def _named_root_view(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    user_id: str,
+    *,
+    page: int,
+    limit: int,
+    node_types: list[str] | None,
+    created_at: dict[str, int | None] | None,
+    updated_at: dict[str, int | None] | None,
+) -> NavigationView:
+    """The root of a connection limited below app level: what its limit names
+    that the user can read, apps included, the items it opens from. The usual
+    root, every record of the apps wholly inside the limit, leaves out the
+    folders and files it names."""
+    named = await named_inside_connection(request, graph_provider, org_id, user_id)
+    rows = [
+        NodeRow(
+            id=node.id,
+            name=node.name,
+            node_type=node.node_type,
+            sub_type=node.doc.get("recordType") or node.doc.get("groupType") or node.doc.get("connectorName")
+            or node.doc.get("type"),
+            is_record=node.node_type in ("record", "folder"),
+            has_children=node.node_type != "record",
+            detail=None,
+            web_url=node.doc.get("webUrl"),
+            indexing_status=node.doc.get("indexingStatus"),
+            source_created_at=node.created_at,
+            source_modified_at=node.updated_at,
+        )
+        for node in named
+        if (not node_types or node.node_type in node_types)
+        and _in_range(node.created_at, created_at) and _in_range(node.updated_at, updated_at)
+    ]
+    start = (page - 1) * limit
+    return NavigationView(
+        current=None, breadcrumbs=[], rows=rows[start:start + limit], related=[],
+        pagination=PaginationInfo(
+            page=page, limit=limit, total=len(rows), has_next=start + limit < len(rows), has_prev=page > 1,
+        ),
+        web_url=None, indexing_status=None, connector=None,
+    )
 
 
 @router.get(

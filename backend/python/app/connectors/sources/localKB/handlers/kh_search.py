@@ -22,6 +22,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_merge import PartitionFeed, merge_pages
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+)
 from app.utils.kh_cursor import (
     Boundary,
     KnowledgeHubCursor,
@@ -68,6 +72,7 @@ async def search_page(
     secret: str | bytes | None = None,
     access: dict[str, Any] | None = None,
     max_concurrency: int | None = DEFAULT_MAX_CONCURRENCY,
+    limit_apps: list[str] | None = None,
 ) -> SearchPage:
     """Assemble one page. A bad cursor raises `CursorError`; the caller answers 400.
 
@@ -195,6 +200,7 @@ async def search_page(
                 mode="search",
                 user_id=user_id,
                 org_id=org_id,
+                limit_apps=limit_apps,
             ),
             secret,
         )
@@ -302,8 +308,15 @@ async def _run(
 
     # A TaskGroup cancels its siblings when one raises, so a failed connector
     # does not leave the rest querying for a page nobody will return.
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(run(app_id)) for app_id in targets]
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(run(app_id)) for app_id in targets]
+    except ExceptionGroup as failures:
+        # A connector too large to list (or busy) fails the page as itself, not as a group nobody maps to a message.
+        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy)))
+        if refused is not None:
+            raise refused.exceptions[0] from None
+        raise
     return [task.result() for task in tasks]
 
 

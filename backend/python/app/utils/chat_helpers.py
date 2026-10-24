@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Optional
@@ -46,6 +46,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
@@ -648,7 +649,7 @@ async def build_multimodal_user_content(
 
     for vrid, att in fetch_tasks:  # noqa: B007
         try:
-            record = await blob_store.get_record_from_storage(vrid, org_id)
+            record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
             if not record:
                 continue
             block_containers = record.get("block_containers", {})
@@ -896,6 +897,10 @@ NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
 
 # Related records listed (id + name) per hit, after the permission check.
 MAX_RELATED_RECORDS_PER_HIT = 50
+# Edges read per hit and direction, before the permission check: a hit with
+# thousands of attachments costs a bounded read. 3x oversamples so that
+# unreadable neighbours do not starve the kept 50.
+RELATION_FETCH_LIMIT_PER_DIRECTION = 3 * MAX_RELATED_RECORDS_PER_HIT
 # Of those, how many also get full graph metadata + summary (one blob fetch each).
 MAX_FULL_METADATA_RELATED_PER_HIT = 15
 
@@ -1212,19 +1217,31 @@ def _merge_graph_into_blob_record(
     blob_record: dict[str, Any],
     base_doc: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Merge graph base doc fields into a blob record (blob values take priority via setdefault)."""
+    """Merge graph base doc fields into a blob record; the graph wins where it has a value.
+
+    Deduplicated content is stored once for every record that shares it, so the
+    stored copy's name, link and ids can belong to another record (even one in a
+    connector this user cannot see). The record being described is the graph's.
+    """
     if not base_doc or not isinstance(base_doc, dict):
         return blob_record
     merged = dict(blob_record)
     record_key = base_doc.get("id") or base_doc.get("_key")
+    # A copy stored by another record says nothing about this one, not even
+    # where the graph has no value.
+    copy_of_another = bool(record_key) and blob_record.get("id") not in (None, record_key)
     if record_key:
         merged["id"] = record_key
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         val = base_doc.get(graph_key)
         if val:
-            merged.setdefault(record_key_name, val)
-    # A link the graph hides stays hidden, whatever the blob copy says.
-    merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
+            merged[record_key_name] = val
+        elif copy_of_another:
+            merged.pop(record_key_name, None)
+    # A link the graph hides stays hidden, whatever the blob copy says; another
+    # record's copy does not hide this one's.
+    stored_hides = not copy_of_another and merged.get("hide_weburl")
+    merged["hide_weburl"] = bool(stored_hides or base_doc.get("hideWeburl"))
     return merged
 
 def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -1409,8 +1426,8 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
-                blob_record = await blob_store.get_record_from_storage(
-                    vrid, org_id, lookup_result=lookup_result
+                blob_record = await record_artifact_reader(blob_store).read_record(
+                    vrid, org_id, lookup=lookup_result
                 )
             except Exception as e:
                 logger.debug(
@@ -1462,7 +1479,7 @@ async def _relations_per_record(
             if outgoing
             else graph_provider.get_child_record_ids_by_relation_type
         )
-        return await fetch(record_id, relation_type)
+        return await fetch(record_id, relation_type, limit=RELATION_FETCH_LIMIT_PER_DIRECTION)
 
     jobs = [
         (record_id, relation_type, outgoing)
@@ -1487,6 +1504,8 @@ async def _relations_per_record(
             continue
         bucket = "parents" if outgoing else "children"
         for edge in result or []:
+            if len(out[record_id][bucket]) >= RELATION_FETCH_LIMIT_PER_DIRECTION:
+                break
             out[record_id][bucket].append({**edge, "relationType": relation_type})
     return out
 
@@ -1510,7 +1529,7 @@ async def _fetch_edges_for_records(
     by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
         relations = await graph_provider.get_node_relations_batch(
-            record_ids, list(by_value),
+            record_ids, list(by_value), limit_per_direction=RELATION_FETCH_LIMIT_PER_DIRECTION,
         )
     except Exception as e:
         # Returning {} here drops linked-record context for every hit in the
@@ -1712,14 +1731,14 @@ async def _resolve_target_metadata(
     if out_of_context_ids:
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
-        # get_record_from_storage, plus its own type-specific get_document.
+        # read_record, plus its own type-specific get_document.
         blob_lookups: dict[str, dict[str, Any]] = {}
         vrids_to_resolve = [
             id_to_vrid[rid] for rid in out_of_context_ids if rid in id_to_vrid
         ]
         if blob_store and org_id and vrids_to_resolve:
             try:
-                resolved_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                resolved_lookups = await record_artifact_reader(blob_store).lookup_many(
                     vrids_to_resolve
                 )
                 # Anything but a mapping means the pre-resolve did not happen;
@@ -1889,6 +1908,7 @@ async def enrich_records_with_graph_context(
     config_service: "ConfigurationService | None" = None,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
@@ -1898,6 +1918,8 @@ async def enrich_records_with_graph_context(
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
     cannot run nothing is added; the hits themselves are left untouched.
+    ``connection_sources`` is a connected app's limit: a parent outside it is
+    not named, so a file the limit names does not name the folder above it.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
@@ -1949,6 +1971,19 @@ async def enrich_records_with_graph_context(
         except Exception as exc:
             # Fail closed: without a verdict a related record may be one the user cannot open.
             logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
+            return
+    if connection_sources is not None:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        parent_ids = set(dependent_vrid_to_parent_id.values()) | {
+            rid for _, _, bucket in relation_buckets for rid, entry in bucket.items() if "PARENT" in entry["labels"]
+        }
+        try:
+            readable_ids -= await outside_connection(
+                graph_provider, user_id, org_id, parent_ids & readable_ids - in_context_ids, connection_sources,
+            )
+        except Exception as exc:
+            logger.warning("Graph context enrichment skipped: limit check unavailable: %s", exc)
             return
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
@@ -2516,7 +2551,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         else:
             try:
                 # Blob returns snake_case keys (Pydantic model_dump)
-                rec = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
+                rec = await record_artifact_reader(blob_store).read_record(vrid, org_id)
                 if not rec:
                     logger.warning("FK enrichment: could not fetch blob for vrid %s", vrid)
                     virtual_record_id_to_result[vrid] = None
@@ -2805,7 +2840,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     batched_lookups: dict[str, Any] = {}
     if records_to_fetch:
         try:
-            batched_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+            batched_lookups = await record_artifact_reader(blob_store).lookup_many(
                 list(records_to_fetch)
             )
         except Exception as e:
@@ -3623,7 +3658,7 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa
 
 async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
     try:
-        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id, lookup_result=lookup_result)
+        record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id, lookup=lookup_result)
         if record:
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:

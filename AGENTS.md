@@ -35,7 +35,7 @@ Redis can be KV, vector, and broker at once; that does not make it the graph or 
 
 ## What lives where
 
-**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, SAML, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
+**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
 
 **Python** (`backend/python/`):
 

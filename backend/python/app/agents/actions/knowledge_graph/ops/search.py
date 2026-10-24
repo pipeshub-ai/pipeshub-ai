@@ -71,6 +71,7 @@ from app.modules.retrieval.result_merging import (
     ReciprocalRankFusionMerger,
     search_hit_identity,
 )
+from app.modules.retrieval.selection_scope import connection_sources_of
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -1025,6 +1026,7 @@ async def _execute_search(
             org_id=org_id,
             user_id=user_id,
             config_service=config_service,
+            connection_sources=connection_sources_of(agent_filters),
         ).build(
             search_results,
             virtual_to_record_map,

@@ -683,9 +683,13 @@ export class UserController {
         throw new ForbiddenError(USER_LOOKUP_EMAIL_MISMATCH_MESSAGE);
       }
 
+      const tokenOrgId = (req as { tokenPayload?: { orgId?: string } })
+        .tokenPayload?.orgId;
+
       const users = await Users.find({
         email: tokenEmail.toLowerCase(),
         isDeleted: false,
+        ...(tokenOrgId ? { orgId: tokenOrgId } : {}),
       })
         .select(USER_LOOKUP_FIELDS)
         .lean()
@@ -880,67 +884,6 @@ export class UserController {
     } catch (error) {
       next(error);
     }
-  }
-
-  /**
-   * Just-In-Time user provisioning from SAML assertion
-   * Creates user, adds to everyone group, and publishes creation event
-   */
-  async provisionSamlUser(
-    email: string,
-    samlUser: any,
-    orgId: string,
-    logger: Logger,
-  ) {
-    logger.info('Auto-provisioning user from SAML', { email, orgId });
-
-    const userDetails = this.extractSamlUserDetails(samlUser, email);
-    const newUser = new Users({
-      email,
-      ...userDetails,
-      orgId,
-      hasLoggedIn: false,
-      isDeleted: false,
-      role: 'member',
-    });
-
-    await newUser.save();
-
-    // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
-
-    // Publish user creation event
-    try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id.toString(),
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
-    } catch (eventError) {
-      logger.error('Failed to publish user creation event', {
-        error: eventError,
-        userId: newUser._id,
-      });
-    } finally {
-      await this.eventService.stop();
-    }
-
-    logger.info('User auto-provisioned successfully', {
-      userId: newUser._id,
-      email,
-    });
-
-    return newUser.toObject();
   }
 
   /**
@@ -2783,56 +2726,6 @@ export class UserController {
       });
       next(error);
     }
-  }
-
-  /**
-   * Extract user details from SAML assertion with fallbacks for different IdP formats
-   */
-  private extractSamlUserDetails(samlUser: any, email: string) {
-    const SAML_CLAIM_GIVENNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname';
-    const SAML_OID_GIVENNAME = 'urn:oid:2.5.4.42';
-    const SAML_CLAIM_SURNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname';
-    const SAML_OID_SURNAME = 'urn:oid:2.5.4.4';
-    const SAML_CLAIM_NAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name';
-    const SAML_OID_DISPLAYNAME = 'urn:oid:2.16.840.1.113730.3.1.241';
-
-    // Try multiple SAML attribute names for first name
-    const firstName =
-      samlUser.firstName ||
-      samlUser.givenName ||
-      samlUser[SAML_CLAIM_GIVENNAME] ||
-      samlUser[SAML_OID_GIVENNAME];
-
-    // Try multiple SAML attribute names for last name
-    const lastName =
-      samlUser.lastName ||
-      samlUser.surname ||
-      samlUser.sn ||
-      samlUser[SAML_CLAIM_SURNAME] ||
-      samlUser[SAML_OID_SURNAME];
-
-    // Try multiple SAML attribute names for display name
-    const displayName =
-      samlUser.displayName ||
-      samlUser.name ||
-      samlUser.fullName ||
-      samlUser[SAML_CLAIM_NAME] ||
-      samlUser[SAML_OID_DISPLAYNAME];
-
-    // Construct full name with fallbacks
-    const fullName =
-      displayName ||
-      [firstName, lastName].filter(Boolean).join(' ') ||
-      email.split('@')[0];
-
-    return {
-      firstName: firstName || undefined,
-      lastName: lastName || undefined,
-      fullName,
-    };
   }
 
   async emailChange(

@@ -5,6 +5,7 @@ Since events.py and processor.py contain the same EventProcessor class,
 these tests provide additional coverage for edge cases and boundary conditions.
 """
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -400,6 +401,26 @@ class TestCheckDuplicateMd5MissingStoredContent:
             "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10,
         }
         return ep, gp, lookup, doc
+
+    @pytest.mark.asyncio
+    async def test_a_storage_error_retries_the_event_instead_of_guessing(self) -> None:
+        # A 503 while the twin's folder is being moved says nothing about its
+        # content: rebuilding on it duplicates vectors, and reusing it could
+        # complete this record with no readable content. The event is retried.
+        from app.modules.transformers.blob_storage import StorageLookupUnavailableError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        ep, gp, lookup, doc = self._setup()
+        lookup.side_effect = StorageLookupUnavailableError("storage answered 503")
+
+        with pytest.raises(StorageLookupUnavailableError) as raised:
+            await ep._check_duplicate_by_md5(b"x", doc)
+
+        gp.copy_document_relationships.assert_not_awaited()
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
     @pytest.mark.asyncio
     async def test_completed_twin_without_stored_content_is_indexed(self):
@@ -3239,3 +3260,58 @@ async def test_a_code_file_emptied_to_zero_bytes_loses_its_old_blocks() -> None:
 
     processor._drop_code_blocks.assert_awaited_once_with("rec-1")
     assert mark.await_args.args[1] == ProgressStatus.EMPTY
+
+
+class TestAbandonedVridCleanupRunsInBackground:
+    """L23: the abandoned-vrid storage cleanup waits to confirm no record still
+    uses the vrid (and backs off on errors); it must not hold the indexing slot."""
+
+    @pytest.mark.asyncio
+    async def test_indexing_continues_while_the_cleanup_is_still_waiting(self) -> None:
+        from app.events import events as events_mod
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1", "recordType": "SQL_TABLE", "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1", "rec-2"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+        release = asyncio.Event()
+        cleaned = []
+
+        async def slow_cleanup(org_id, vrid) -> None:
+            await release.wait()
+            cleaned.append(vrid)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                          return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock), \
+             patch.object(ep, "_cleanup_abandoned_vrid_storage", side_effect=slow_cleanup):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )
+            await asyncio.wait_for(_drain(ep.on_event(event_data)), timeout=5)
+
+            assert cleaned == []  # indexing finished; the cleanup is still waiting
+            pending = list(events_mod._ABANDONED_VRID_CLEANUPS)
+            assert len(pending) == 1
+            release.set()
+            await asyncio.gather(*pending)
+
+        assert cleaned == ["shared-vrid"]
+        assert not events_mod._ABANDONED_VRID_CLEANUPS
+
+    @pytest.mark.asyncio
+    async def test_a_failing_cleanup_does_not_surface_from_the_task(self) -> None:
+        ep, _, processor, _ = _make_event_processor()
+        processor.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid = AsyncMock(
+            side_effect=RuntimeError("storage down")
+        )
+        with patch("app.events.events.asyncio.sleep", new_callable=AsyncMock):
+            task = ep._spawn_abandoned_vrid_cleanup("org-1", "v-old")
+            await task
+        assert task.exception() is None
+        assert processor.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid.await_count == 3

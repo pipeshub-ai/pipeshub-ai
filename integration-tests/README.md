@@ -27,6 +27,7 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
     - [4. Run tests](#4-run-tests)
   - [Running tests](#running-tests)
   - [Test lifecycle](#test-lifecycle)
+  - [Pattern-match storage](#pattern-match-storage)
   - [Local runs](#local-runs)
   - [Sample data](#sample-data)
   - [Key files](#key-files)
@@ -352,6 +353,44 @@ Each connector test class runs an **ordered 11-step lifecycle**:
 | 9 | Disable connector | Pipeshub API |
 | 10 | Delete connector → graph clean | Pipeshub API + Neo4j: zero records/groups/edges |
 | 11 | Cleanup bucket/container/share | Storage SDK |
+
+---
+
+## Pattern-match storage
+
+Indexing files each record's processed content under
+`<orgId>/PipesHub/records/<connectorId>/<groups>/<parents>/<name>/<docId>/record_<vrid>.json`
+(plus `metadata_<vrid>.json`), so pattern-match search can grep it by place.
+`pattern_match/` (marker `pattern_match`, runs in the core shard) checks that
+MongoDB, blob storage and the graph agree on where that is:
+
+| File | What it covers |
+|------|----------------|
+| `test_internal_storage_routes.py` | The storage service's `move-tree`, record listings and connector delete, called directly. Needs no model. |
+| `test_kb_storage.py` | Knowledge-base content lands at the expected path, follows file and folder renames and moves, and leaves nothing behind when deleted. |
+| `test_shared_content.py` | Identical files in two knowledge bases share one copy that stays readable through renames and deletes. |
+
+`helper/storage_layout.py` does the looking. `assert_stored_at` and
+`assert_nothing_under` check one record or folder; `assert_connector_consistent`
+checks a whole connector (every indexed record filed where the graph puts it, no
+orphan rows or files, no flat-layout leftovers, no segment over 255 bytes). The
+connector scenario matrix ends its add, edit, rename, move, delete, full-sync
+and filter scenarios with that check, so every connector with a matrix gets it; a
+connector opts out with `STORAGE_LAYOUT_EXEMPT = "<reason>"`.
+
+Two matrix scenarios move things at the source: `incr_move` moves an item into
+another folder and `incr_rename_folder` renames the folder an item sits in. Each
+checks that the record survives, its content is filed under the new folder, and
+nothing is left at the old path. A connector runs them once its adapter
+implements `move_item` and `rename_folder` and its test class sets
+`TREE_MOVES = True`: today S3, MinIO, GCS, Azure Blob, Azure Files, SMB,
+Nextcloud, BookStack, Confluence and Google Drive Workspace.
+
+`expected_segment` in the helper is the folder-naming rule written out
+independently of the app; `unit/test_storage_layout.py` compares the two.
+
+The blob checks read local storage through `docker exec`; set
+`PIPESHUB_APP_CONTAINER` when more than one stack runs on the machine.
 
 ---
 

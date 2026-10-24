@@ -15,7 +15,6 @@ from app.utils.pattern_match import (
     DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
     GrepCommandResult,
     _LLM_GREP_TIMEOUT,
-    _MAX_GREP_OUTPUT_LINES,
     _MAX_LLM_GREP_COMMANDS,
     _MAX_SCOPED_SEARCH_PATHS,
     _PATTERN_MATCH_TIMEOUT,
@@ -1577,7 +1576,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith('grep -rli "deployment checklist" .')
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
     async def test_grep_command_overrides_stop_word_query(self):
@@ -1610,7 +1609,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith('grep -rli "config" .')
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
     async def test_grep_command_none_falls_back_to_auto(self):
@@ -1773,11 +1772,11 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert command_used.startswith(and_cmd)
-        assert "| head" in command_used
+        assert "| head" not in command_used
 
     @pytest.mark.asyncio
-    async def test_auto_appends_head_when_absent(self):
-        """Commands without head/tail get | head -N appended for scale safety."""
+    async def test_no_head_is_appended(self):
+        """find_records refuses a head cut and bounds the output itself."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1804,15 +1803,13 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
             )
 
         command_used = mock_run.call_args.kwargs["command"]
-        # Zero-count lines are dropped before the cap so real matches are not crowded out.
-        assert command_used == (
-            f'grep -rli "budget" . | grep -v \':0$\' | head -{_MAX_GREP_OUTPUT_LINES}'
-        )
+        # Zero-count lines are dropped so real matches are not crowded out of the output cap.
+        assert command_used == 'grep -rli "budget" . | grep -v \':0$\''
+
 
     @pytest.mark.asyncio
-    async def test_head_in_pipe_rejected_falls_back_to_auto(self):
-        """Commands with non-grep pipe binaries fall back to auto-derived.
-        Full binary validation for pipe stages is in _validate_command."""
+    async def test_a_head_cut_is_dropped(self):
+        """A head the model added is dropped, like the one that used to be appended."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1840,11 +1837,11 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
 
         command_used = mock_run.call_args.kwargs["command"]
         assert "budget" in command_used
-        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+        assert "head" not in command_used
 
     @pytest.mark.asyncio
-    async def test_auto_derived_command_gets_head_appended(self):
-        """Auto-derived grep commands also get | head -N appended."""
+    async def test_auto_derived_command_gets_no_head(self):
+        """Auto-derived grep commands get no head either."""
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(
             return_value={"storageType": "local"}
@@ -1871,7 +1868,7 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
 
         command_used = mock_run.call_args.kwargs["command"]
         assert "revenue" in command_used
-        assert command_used.endswith(f"| head -{_MAX_GREP_OUTPUT_LINES}")
+        assert "head" not in command_used
 
 
 # ===========================================================================
@@ -1984,9 +1981,6 @@ class TestGrepGenerationLlm:
 class TestScaleConstants:
     def test_timeout_sufficient_for_large_datasets(self):
         assert _PATTERN_MATCH_TIMEOUT >= 30
-
-    def test_output_line_limit_set(self):
-        assert _MAX_GREP_OUTPUT_LINES >= 100
 
     def test_llm_grep_timeout_set(self):
         assert _LLM_GREP_TIMEOUT == 15.0
@@ -2732,6 +2726,36 @@ class TestScopeGrepToPaths:
         assert '"./Logs"' in result
         assert "error|warning" in result
         assert "xargs grep" in result
+
+    # L17: group names reach the command, but only after sanitize_path_segment,
+    # which already turns every character that could end a double-quoted
+    # argument (", \\, |, <, >, newlines) into "_". What remains can only make
+    # the validator refuse the scoped command; pattern match then greps the
+    # whole connector, every hit still permission-checked.
+    def test_sanitized_group_names_keep_each_path_one_argument(self) -> None:
+        import shlex
+
+        from app.agents.actions.storage_search.storage_search import _validate_command
+        from app.utils.storage_path import build_record_group_prefix_from_chain
+
+        hostile = ['Q1 "plan" | rm', 'a\\b', "x<y>z", "tab\there", "$(id)", "`id`"]
+        paths = []
+        for name in hostile:
+            prefix = build_record_group_prefix_from_chain("c", [name])
+            paths.append("./" + prefix.split("/", 2)[2])
+        cmd = _scope_grep_to_paths('grep -rci "term" .', paths)
+        first_stage = cmd.split(" | ")[0]
+        assert shlex.split(first_stage)[-len(paths):] == paths
+        ok, _ = _validate_command(cmd)
+        # "$(" and backticks survive sanitizing; the validator refuses them.
+        assert ok is False
+
+    def test_names_with_ampersand_make_the_scoped_command_fall_back(self) -> None:
+        from app.agents.actions.storage_search.storage_search import _validate_command
+
+        cmd = _scope_grep_to_paths('grep -rci "term" .', ["./R&D", "./Sales"])
+        ok, err = _validate_command(cmd)
+        assert ok is False and "&" in err
 
 
 # ===========================================================================

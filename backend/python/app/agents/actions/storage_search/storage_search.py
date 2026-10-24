@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json as json_mod
 import logging
 import os
@@ -27,6 +28,8 @@ import re
 import shlex
 import shutil
 import signal
+import stat
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -59,6 +62,8 @@ _MAX_STDERR_BYTES = 64 * 1024
 _MAX_VIEW_FILES = 20_000
 _VIEW_ACCESS_CHECK_BATCH = 1_000
 _VIEWS_DIR_NAME = ".pattern_match_views"
+# A view lives for one command (30 s at most); anything much older was orphaned.
+_STALE_VIEW_SECS = 15 * 60
 _STORED_FILE_RE = re.compile(r"^(?:record|metadata)_([0-9a-f\-]+)\.json$", re.IGNORECASE)
 _MAX_FETCH_RECORD_IDS = 5
 _MAX_SCORE_READ_BYTES = 512_000
@@ -596,6 +601,95 @@ def _validate_command(command: str) -> tuple[bool, str]:
     return True, ""
 
 
+# find_records searches the whole connector folder, readable records or not, and
+# returns only records that pass the permission check. That is safe only while
+# whether a file is listed depends on that file alone: these binaries list files
+# by their own content or metadata. head/tail/sort/uniq and the like let one
+# file's content decide whether another is listed, which would hint at the
+# content of records the user cannot read.
+_LISTING_BINARIES: frozenset[str] = frozenset({"grep", "egrep", "fgrep", "rg", "find", "ls", "xargs"})
+# Options that read patterns or file lists from another file, or follow
+# symlinks out of the folder.
+_LISTING_FORBIDDEN_FLAGS: dict[str, frozenset[str]] = {
+    "grep": frozenset({"-f", "--file", "--exclude-from", "--include-from", "-R", "--dereference-recursive"}),
+    "rg": frozenset({"-f", "--file", "--ignore-file", "-L", "--follow"}),
+    # Each compares against, or follows, another file; -newerXY does too unless Y is t (a time).
+    "find": frozenset({"-newer", "-anewer", "-cnewer", "-samefile", "-follow", "-L"}),
+}
+_LISTING_FORBIDDEN_FLAGS["egrep"] = _LISTING_FORBIDDEN_FLAGS["grep"]
+_LISTING_FORBIDDEN_FLAGS["fgrep"] = _LISTING_FORBIDDEN_FLAGS["grep"]
+# GNU grep takes any unambiguous prefix of a long option (--exclude-f is
+# --exclude-from); these are whole options of their own, not such prefixes.
+_GREP_WHOLE_LONG_OPTIONS = frozenset({"--include", "--exclude"})
+# Short options that take a value: in a cluster ("-lfx"), whatever follows one
+# of them is its value, not more options.
+_SHORT_OPTIONS_WITH_VALUE = {
+    "grep": frozenset("efmABCdD"),
+    "rg": frozenset("efgmABCdEjMrtT"),
+}
+
+
+def _short_options(family: str, arg: str) -> list[str]:
+    """The options of one short-option token: ``-lfx`` is ``-l`` then ``-f`` (value ``x``)."""
+    takes_value = _SHORT_OPTIONS_WITH_VALUE[family]
+    options = []
+    for ch in arg[1:]:
+        options.append(f"-{ch}")
+        if ch in takes_value:
+            break
+    return options
+
+
+def _listing_command_error(command: str) -> str | None:
+    """Why *command* is not a pure file listing (see _LISTING_BINARIES), or None.
+
+    Call after ``_validate_command`` has accepted the command.
+    """
+    for stage in _split_pipeline_stages(command):
+        parts = shlex.split(stage)
+        index = 0
+        while True:
+            binary = parts[index]
+            if binary not in _LISTING_BINARIES:
+                return (
+                    f"Error: find_records only lists matching files; '{binary}' is not allowed here. "
+                    "Use grep -l / -c, rg -l, find or ls (use run_command for anything else)."
+                )
+            forbidden = _LISTING_FORBIDDEN_FLAGS.get(binary, frozenset())
+            family = "grep" if binary in ("grep", "egrep", "fgrep") else binary
+            value_next = False
+            for arg in _own_args(parts, index):
+                if value_next:  # the value of the option before it ("-e", "-f")
+                    value_next = False
+                    continue
+                flag = arg.split("=", 1)[0]
+                if (
+                    family == "grep"
+                    and flag.startswith("--") and len(flag) > 2
+                    and flag not in forbidden and flag not in _GREP_WHOLE_LONG_OPTIONS
+                ):
+                    flag = next((d for d in forbidden if d.startswith(flag)), flag)
+                if family in _SHORT_OPTIONS_WITH_VALUE and arg.startswith("-") and not arg.startswith("--"):
+                    options = _short_options(family, arg)
+                    value_next = (
+                        len(arg) > 1 and arg[-1] in _SHORT_OPTIONS_WITH_VALUE[family]
+                        and options[-1] == f"-{arg[-1]}" and len(options) == len(arg) - 1
+                    )
+                else:
+                    options = [flag]
+                if family == "find" and re.fullmatch(r"-newer[aBcm][aBcm]", flag):
+                    options = [flag, "-newer"]
+                if any(option in forbidden for option in options):
+                    return f"Error: '{arg}' is not allowed in find_records."
+            if binary != "xargs":
+                break
+            sub_index = _find_xargs_sub_binary(parts, index)
+            if sub_index is None:
+                break
+            index = sub_index
+    return None
+
+
 def _build_date_filtered_command(command: str, record_date: str) -> tuple[bool, str]:
     """Inject a find-based time filter around the user command.
 
@@ -890,6 +984,27 @@ def _force_xargs_null_delimited(tokens: list[str]) -> list[str]:
     return tokens[:insert_at] + ["-0"] + tokens[insert_at:]
 
 
+_LANDLOCK_EXEC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "landlock_exec.py")
+# Locale only: the app's environment holds its secrets, and no stage needs them.
+_STAGE_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_COLLATE")
+_ALLOW_UNCONFINED_ENV = "STORAGE_SEARCH_ALLOW_UNCONFINED"
+
+
+@functools.cache
+def _landlock_abi() -> int:
+    from app.agents.actions.storage_search.landlock_exec import abi_version
+
+    return abi_version()
+
+
+def _unconfined_allowed() -> bool:
+    return os.environ.get(_ALLOW_UNCONFINED_ENV, "").strip().lower() == "true"
+
+
+def _stage_env() -> dict[str, str]:
+    return {k: v for k in _STAGE_ENV_KEYS if (v := os.environ.get(k))}
+
+
 async def _run_subprocess(
     command: str,
     *,
@@ -897,6 +1012,7 @@ async def _run_subprocess(
     timeout: int = _EXEC_TIMEOUT_SECS,
     max_stdout_bytes: int = 0,
     max_output_chars: int = _MAX_OUTPUT_CHARS,
+    confine_to: str | None = None,
 ) -> tuple[bool, str]:
     """Execute a validated pipeline without a shell and return (success, output).
 
@@ -944,12 +1060,17 @@ async def _run_subprocess(
                 if i > 0:
                     stdin_data = _sanitize_xargs_input(stdin_data or b"", cwd)
                 stage_argv = _force_xargs_null_delimited(tokens)
+            if confine_to is not None:
+                # Landlock: the stage (and whatever it starts) may read only
+                # confine_to and the system's programs, write nothing, no network.
+                stage_argv = [sys.executable, "-I", "-S", _LANDLOCK_EXEC, confine_to, "--", *stage_argv]
             proc = await asyncio.create_subprocess_exec(
                 *stage_argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                env=_stage_env(),
                 # Own process group, so _kill_tree can reach xargs's children.
                 start_new_session=os.name == "posix",
             )
@@ -1337,15 +1458,25 @@ def _rank_candidates(
 
 
 def _list_stored_files(connector_dir: str) -> list[tuple[str, str]] | None:
-    """(relative path, virtualRecordId) of every stored record file, or None past the cap."""
+    """(relative path, virtualRecordId) of every stored record file, or None past the cap.
+
+    Only regular files: a symlink under records/ would point the view outside it.
+    """
     found: list[tuple[str, str]] = []
     for root, _dirs, files in os.walk(connector_dir):
         for name in files:
             m = _STORED_FILE_RE.match(name)
-            if m:
-                found.append((os.path.relpath(os.path.join(root, name), connector_dir), m.group(1)))
-                if len(found) > _MAX_VIEW_FILES:
-                    return None
+            if not m:
+                continue
+            path = os.path.join(root, name)
+            try:
+                if not stat.S_ISREG(os.lstat(path).st_mode):
+                    continue
+            except FileNotFoundError:  # removed or moved since the walk listed it
+                continue
+            found.append((os.path.relpath(path, connector_dir), m.group(1)))
+            if len(found) > _MAX_VIEW_FILES:
+                return None
     return found
 
 
@@ -1354,24 +1485,49 @@ def _populate_view(connector_dir: str, view_dir: str, files: list[tuple[str, str
     hard-linked so mtimes match.
 
     Named by virtualRecordId because a stored path carries the folder and group
-    names of containers the user may not be able to see.
+    names of containers the user may not be able to see. Never copies: a copy
+    of every record per call has no size bound, so a link failure fails the call.
     """
     os.makedirs(view_dir, exist_ok=True)
     for rel, vrid in files:
         src = os.path.join(connector_dir, rel)
         dst = os.path.join(view_dir, vrid, os.path.basename(rel))
-        if os.path.exists(dst):
+        if os.path.lexists(dst):
             continue
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
         try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
+            if not stat.S_ISREG(os.lstat(src).st_mode):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.link(src, dst, follow_symlinks=False)
+        except FileNotFoundError:  # removed or moved since it was listed
+            continue
 
 
 def _views_root(connector_dir: str) -> str:
     """Beside ``records/`` (same filesystem, so hard links work), never inside it."""
     return os.path.join(os.path.dirname(os.path.dirname(connector_dir)), _VIEWS_DIR_NAME)
+
+
+def _remove_view(view_dir: str) -> None:
+    def _log(_func: object, path: str, exc: BaseException) -> None:
+        if not isinstance(exc, FileNotFoundError):
+            logger.warning("[storage_pattern_match] could not remove view entry %s: %s", path, exc)
+    shutil.rmtree(view_dir, onexc=_log)
+
+
+def _sweep_stale_views(views_root: str, max_age_secs: float = _STALE_VIEW_SECS) -> None:
+    """Remove views a crashed worker left behind (a live one lasts one command)."""
+    try:
+        entries = list(os.scandir(views_root))
+    except FileNotFoundError:
+        return
+    cutoff = time.time() - max_age_secs
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                _remove_view(entry.path)
+        except OSError:
+            continue
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1396,7 +1552,10 @@ class StoragePatternMatch:
 
     def __init__(self, state: ChatState) -> None:
         self.state = state
-        self._containers: object | None = None
+        # vrid -> record_id, or None when not readable; answers for this turn only
+        # (the tool instance does not outlive it), so repeated commands and the
+        # output filter do not ask again.
+        self._access_by_vrid: dict[str, str | None] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1462,10 +1621,21 @@ class StoragePatternMatch:
         """The agent's knowledge scope (apps ∪ KBs), or None when it has none.
 
         Resolved exactly as retrieval does, so these tools can never reach a
-        connector the agent's semantic search could not.
+        connector the agent's semantic search could not. Under ``strictScope``
+        (a project chat) an empty scope means nothing is searchable, not
+        everything: the empty set, which every check reads as "deny".
         """
         from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+        from app.services.graph_db.interface.graph_db_provider import (
+            STRICT_SCOPE_FILTER_KEY,
+            requested_scope_ids,
+        )
 
+        filters = self.state.get("filters") or {}
+        if filters.get(STRICT_SCOPE_FILTER_KEY):
+            # Only what the request names, read as retrieval reads it: the
+            # agent's own knowledge is no fallback here.
+            return frozenset(requested_scope_ids(filters) or ())
         scope = derive_scope(self.state)
         if scope.is_empty():
             return None
@@ -1474,6 +1644,8 @@ class StoragePatternMatch:
     def _out_of_scope_error(self, connector_id: str) -> str | None:
         scope = self._scope_connector_ids()
         if scope is not None and connector_id not in scope:
+            if not scope:
+                return "Error: this chat is limited to its selected sources, and none are selected."
             return (
                 f"Error: connector '{connector_id}' is not part of this agent's knowledge. "
                 f"Searchable connectors: {', '.join(sorted(scope))}"
@@ -1489,6 +1661,20 @@ class StoragePatternMatch:
         """
         if not vrids:
             return {}
+        wanted = list(dict.fromkeys(vrids))
+        missing = [v for v in wanted if v not in self._access_by_vrid]
+        if missing:
+            fetched = await self._fetch_accessible_vrids(missing)
+            if fetched is None:
+                return None
+            for vrid in missing:
+                self._access_by_vrid[vrid] = fetched.get(vrid)
+        return {
+            vrid: record_id for vrid in wanted
+            if (record_id := self._access_by_vrid[vrid]) is not None
+        }
+
+    async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
         org_id = self.state.get("org_id", "")
         graph_provider = self.state.get("graph_provider")
@@ -1523,45 +1709,13 @@ class StoragePatternMatch:
         logger.debug("[_check_accessible_vrids] map=%s", accessible)
         return accessible or {}
 
-    async def _can_read_whole_connector(self, connector_id: str) -> bool:
-        """Whether the user may read every record under *connector_id*.
-
-        ``run_command`` returns raw output that can carry record content with
-        no file name attached (``grep -h``, ``| xargs cat``, ``| tr``), so no
-        output-side filter can attribute it to a record. Raw access is
-        therefore needs every record readable: true for APP_LEVEL connectors,
-        where reaching the connector means reaching all of its records. Any
-        other connector runs against ``_build_accessible_view``. Fails closed.
-        """
-        user_id = self.state.get("user_id", "")
-        org_id = self.state.get("org_id", "")
-        graph_provider = self.state.get("graph_provider")
-        if not user_id or not org_id or graph_provider is None:
-            return False
-        containers = self._containers
-        if containers is None:
-            try:
-                containers = await graph_provider.get_accessible_containers(
-                    user_id=user_id, org_id=org_id,
-                )
-            except Exception:
-                logger.warning(
-                    "[storage_pattern_match] container access check failed", exc_info=True,
-                )
-                return False
-            # One lookup per agent turn; the tool instance does not outlive it.
-            self._containers = containers
-        return (
-            containers is not None
-            and not containers.fallback_reason
-            and connector_id in containers.app_ids_trusted
-        )
-
     async def _build_accessible_view(self, connector_dir: str) -> tuple[str | None, str | None]:
-        """Return (view_dir, error): a copy of *connector_dir* holding only readable records.
+        """Return (view_dir, error): hard links to only the readable records of *connector_dir*.
 
-        The command then cannot read a record the user may not access, however
-        its output is shaped. The caller must remove view_dir.
+        Used for every connector, APP_LEVEL ones included: reaching a connector
+        does not make its soft-deleted, failed or still-indexing records
+        readable, and raw output cannot be traced back to the file it came
+        from. The caller must remove view_dir.
         """
         files = await asyncio.to_thread(_list_stored_files, connector_dir)
         if files is None:
@@ -1582,15 +1736,30 @@ class StoragePatternMatch:
                 )
             accessible.update(checked)
 
-        view_dir = os.path.join(_views_root(connector_dir), uuid.uuid4().hex)
+        views_root = _views_root(connector_dir)
+        await asyncio.to_thread(_sweep_stale_views, views_root)
+        view_dir = os.path.join(views_root, uuid.uuid4().hex)
+        populate = asyncio.ensure_future(asyncio.to_thread(
+            _populate_view, connector_dir, view_dir,
+            [(rel, vrid) for rel, vrid in files if vrid in accessible],
+        ))
         try:
-            await asyncio.to_thread(
-                _populate_view, connector_dir, view_dir,
-                [(rel, vrid) for rel, vrid in files if vrid in accessible],
-            )
-        except OSError:
+            await asyncio.shield(populate)
+        except asyncio.CancelledError:
+            # The thread cannot be cancelled and may still be linking files in;
+            # remove the view once it has stopped, not while it is still adding.
+            loop = asyncio.get_running_loop()
+
+            def _remove_when_done(done: asyncio.Future) -> None:
+                if not done.cancelled():
+                    done.exception()  # retrieved here: nobody else awaits it now
+                loop.run_in_executor(None, _remove_view, view_dir)
+
+            populate.add_done_callback(_remove_when_done)
+            raise
+        except Exception:
+            await asyncio.to_thread(_remove_view, view_dir)
             logger.warning("[storage_pattern_match] could not prepare the record view", exc_info=True)
-            await asyncio.to_thread(shutil.rmtree, view_dir, True)
             return None, "Error: could not prepare the record view."
         return view_dir, None
 
@@ -1599,7 +1768,7 @@ class StoragePatternMatch:
     ) -> str | None:
         """Redact command output belonging to records the user cannot access.
 
-        Defense in depth only: ``_can_read_whole_connector`` is the gate.
+        Defense in depth only: the command already ran in a view of readable records.
 
         Extracts record virtualRecordIds from both the command's file arguments
         and the output text, resolves accessibility via ``_check_accessible_vrids``,
@@ -1759,6 +1928,10 @@ class StoragePatternMatch:
             ok, result = _build_date_filtered_command(command, record_date)
             if not ok:
                 return False, result
+            # The rewrite is a new command; it passes the same checks.
+            valid, err = _validate_command(result)
+            if not valid:
+                return False, err
             effective_command = result
 
         # 3. Resolve and verify the connector's record directory.
@@ -1766,24 +1939,33 @@ class StoragePatternMatch:
         if path_err:
             return False, path_err
 
-        # 4. Execute: against the whole connector when every record is readable,
-        # otherwise against a view of only the records the user may read.
-        cwd = connector_dir
-        view_dir: str | None = None
-        if not await self._can_read_whole_connector(connector_id):
-            view_dir, view_err = await self._build_accessible_view(connector_dir)
-            if view_err:
-                return False, view_err
-            cwd = view_dir
+        # 4. Execute against a view of only the records the user may read,
+        # confined to it by the kernel: the validator is not the only barrier.
+        confined = _landlock_abi() >= 1
+        if not confined and not _unconfined_allowed():
+            return False, (
+                "Error: run_command is unavailable on this server: its kernel does not "
+                "support Landlock, which confines the command to your records. Use "
+                "storage_pattern_match.find_records instead."
+            )
+        if not confined:
+            logger.warning(
+                "[storage_pattern_match] running a command WITHOUT Landlock confinement (%s=true)",
+                _ALLOW_UNCONFINED_ENV,
+            )
+        view_dir, view_err = await self._build_accessible_view(connector_dir)
+        if view_err:
+            return False, view_err
         logger.debug(
             "[storage_pattern_match] cwd=%s effective_command_len=%d",
-            cwd, len(effective_command),
+            view_dir, len(effective_command),
         )
         try:
-            success, output = await _run_subprocess(effective_command, cwd=cwd)
+            success, output = await _run_subprocess(
+                effective_command, cwd=view_dir, confine_to=view_dir if confined else None,
+            )
         finally:
-            if view_dir:
-                await asyncio.to_thread(shutil.rmtree, view_dir, True)
+            await asyncio.to_thread(_remove_view, view_dir)
 
         # 5. Permission gate: never surface content or paths of records the
         # requesting user is not authorized to access. Mirrors the vrid gating
@@ -1875,10 +2057,13 @@ class StoragePatternMatch:
 
         max_results = min(max(max_results, 1), _MAX_FIND_RECORDS)
 
-        # Validate the command (same rules as run_command) and the scope.
+        # Validate the command (same rules as run_command, and listing only) and the scope.
         valid, err = _validate_command(command)
         if not valid:
             return False, err
+        listing_err = _listing_command_error(command)
+        if listing_err:
+            return False, listing_err
         scope_err = self._out_of_scope_error(connector_id)
         if scope_err:
             return False, scope_err
@@ -1890,10 +2075,23 @@ class StoragePatternMatch:
             return False, path_err
         logger.info("[find_records] connector_dir=%s", connector_dir)
 
-        # Execute the command
+        # Same rule as run_command: this command reads every record of the
+        # connector, readable or not, so it runs confined or not at all.
+        confined = _landlock_abi() >= 1
+        if not confined and not _unconfined_allowed():
+            return False, (
+                "Error: find_records is unavailable on this server: its kernel does not "
+                "support Landlock, which confines the command to this connector's records."
+            )
+        if not confined:
+            logger.warning(
+                "[find_records] running a command WITHOUT Landlock confinement (%s=true)",
+                _ALLOW_UNCONFINED_ENV,
+            )
         success, output = await _run_subprocess(
             command, cwd=connector_dir, max_stdout_bytes=max_stdout_bytes,
             max_output_chars=max_output_chars,
+            confine_to=connector_dir if confined else None,
         )
         # Not even at DEBUG: this stdout is from before the permission check,
         # so it can name records the user may not read.

@@ -24,9 +24,7 @@ export { UserManagerContainer } from './modules/user_management/container/userMa
 // --- Auth ---
 export { AuthServiceContainer } from './modules/auth/container/authService.container';
 export { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
-export { createSamlRouter } from './modules/auth/routes/saml.routes';
 export { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.routes';
-export { SamlController } from './modules/auth/controller/saml.controller';
 
 // --- Mail ---
 export { MailServiceContainer } from './modules/mail/container/mailService.container';

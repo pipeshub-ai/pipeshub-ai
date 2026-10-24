@@ -707,7 +707,9 @@
       "needsMultimodalModel": "멀티모달 모델 필요",
       "skipped": "건너뜀",
       "pending": "보류 중"
-    }
+    },
+    "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
+    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1817,7 +1819,14 @@
         "saveErrorTitle": "변경 사항을 저장하지 못했습니다",
         "regenerateSuccessTitle": "시크릿이 재생성됨",
         "regenerateErrorTitle": "시크릿을 재생성하지 못했습니다",
-        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1)."
+        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1).",
+        "identityBoundNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동합니다. 이를 변경하면 이미 발급된 토큰은 취소됩니다.",
+        "identityUnboundNote": "이 애플리케이션의 토큰은 이를 만든 사람으로서, 그 사람의 문서 접근 권한과 역할을 가지고 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다. 대신 서비스 계정을 지정하세요.",
+        "identityAdminOnly": "관리자만 이 애플리케이션에 서비스 계정을 지정할 수 있습니다. 관리자에게 요청하세요.",
+        "identityBindAction": "이 계정 사용",
+        "identityBindRevokes": "이 작업은 애플리케이션이 이미 발급한 토큰을 취소합니다. 이를 사용하는 모든 것은 새 토큰이 필요합니다.",
+        "identityBound": "이제 애플리케이션이 해당 서비스 계정으로서 작동합니다.",
+        "identityBindFailed": "서비스 계정을 변경하지 못했습니다. 잠시 후 다시 시도하세요."
       },
       "create": {
         "panelTitle": "OAuth 2.0 애플리케이션 생성",
@@ -1875,7 +1884,15 @@
         "errorOptionalUrlInvalid": "선택 URL을 입력하는 경우 유효한 http(s) 주소여야 합니다.",
         "grantRequiredTitle": "권한 부여 유형 필요",
         "grantRequiredDescription": "하나 이상의 권한 부여 유형이 선택된 상태여야 합니다.",
-        "clientCredentialsWarning": "클라이언트 자격 증명 토큰은 토큰 엔드포인트를 호출하는 사람이 아니라 항상 이 애플리케이션을 생성한 사용자로서 Pipeshub에 접근합니다. 부여한 스코프 범위 안에서 토큰은 그 사용자가 접근할 수 있는 모든 것에 접근할 수 있고 그 사용자의 역할까지 물려받으므로, 관리자가 생성한 애플리케이션은 관리자 권한을 갖게 됩니다. 또한 해당 계정이 삭제되면 토큰은 작동을 멈춥니다. 이 애플리케이션이 Authorization Code 플로우도 지원하는 경우, 사용자는 그 방식으로 직접 인증할 수 있습니다."
+        "serviceAccountHeading": "이 애플리케이션이 대신 작업할 서비스 계정",
+        "clientCredentialsIdentityNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동하며, 지정된 계정이 없으면 이를 만든 사람으로서 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다.",
+        "serviceAccountHelper": "클라이언트 자격 증명 토큰에는 사람이 포함되지 않으므로 이 애플리케이션에는 자체 ID가 필요합니다. 서비스 계정은 항상 구성원이며 관리자가 될 수 없고 로그인할 수 없습니다. 서비스 계정이 없으면 애플리케이션은 이를 만든 사람으로서 작업하게 됩니다.",
+        "serviceAccountPlaceholder": "서비스 계정 선택",
+        "serviceAccountLoading": "서비스 계정을 불러오는 중…",
+        "serviceAccountNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만든 다음 다시 돌아오세요.",
+        "serviceAccountLoadError": "서비스 계정을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "serviceAccountRetry": "다시 시도",
+        "errorServiceAccountRequired": "이 애플리케이션이 대신 작업할 서비스 계정을 선택하세요."
       }
     },
     "personalAccessTokens": {
@@ -2400,7 +2417,8 @@
       "enterprise": {
         "userActionsTitle": "구성원의 개인 액션",
         "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
-      }
+      },
+      "appsHeading": "앱 액션"
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",
@@ -2559,17 +2577,11 @@
       "panels": {
         "google": "Google 인증 구성",
         "microsoft": "Microsoft 인증 구성",
-        "samlSso": "SAML SSO 구성",
-        "oauth": "OAuth 2.0 구성",
         "github": "GitHub 인증 구성"
       },
       "jit": {
         "title": "JIT(Just-In-Time) 프로비저닝 활성화",
         "description": "사용자가 {{providerName}}(으)로 처음 로그인할 때 사용자 계정을 자동으로 생성합니다"
-      },
-      "xmlUpload": {
-        "parseError": "이 파일에서 SAML 메타데이터를 파싱할 수 없습니다. 유효한 IdP 메타데이터 XML인지 확인하세요.",
-        "readError": "파일 읽기에 실패했습니다."
       },
       "riskDialog": {
         "title": "인증 변경 확인",
@@ -2582,6 +2594,22 @@
       "userMethods": {
         "heading": "사용자 로그인 방법",
         "subtitle": "모든 조직의 모든 사용자가 사용할 수 있는 로그인 방법을 제어합니다."
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0에서 {{methods}} 로그인이 제거되었습니다",
+        "nowSignsInWith": "이제 이 워크스페이스는 {{methods}}(으)로 로그인합니다.",
+        "peopleIntro": "다음 사용자는 로그인한 적이 있지만 아직 비밀번호가 없습니다:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "외 {{count}}명",
+        "howToSetPassword": "Google, Microsoft 또는 이메일 OTP로 로그인하지 않는 사용자는 비밀번호를 설정해야 합니다. 로그인 페이지의 '비밀번호 찾기'를 사용할 수 있으며, 이 경우 이메일(SMTP)이 설정되어 있어야 합니다. 또는 PipesHub 서버를 운영하는 담당자가 PipesHub 1.0 업그레이드 가이드에 따라 비밀번호 설정 링크를 만들어 줄 수 있습니다.",
+        "methodNames": {
+          "password": "비밀번호",
+          "otp": "이메일 OTP",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4321,6 +4349,169 @@
         "outcomeRevoked": "권한 제거됨",
         "byAdmin": "{{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 액션",
+      "subtitle": "관리자가 에이전트에 제공한 내부 API입니다. 요청되는 경우 내 자격 증명을 연결하세요.",
+      "subtitleAdmin": "OpenAPI 명세로 내부 REST API를 액션으로 만드세요. 에이전트가 호출할 수 있는 작업과 PipesHub의 로그인 방식을 선택합니다.",
+      "emptyTitle": "첫 API 액션 추가",
+      "emptyAdmin": "내부 REST API의 OpenAPI 3.0 또는 3.1 명세를 업로드하세요.",
+      "card": {
+        "fallbackDescription": "OpenAPI 명세로 추가한 내부 REST API입니다."
+      },
+      "operationCount_other": "작업 {{count}}개",
+      "kind": {
+        "read": "읽기",
+        "write": "쓰기",
+        "destructive": "삭제"
+      },
+      "authType": {
+        "none": "인증 없음",
+        "api_key": "API 키",
+        "http_bearer": "Bearer 토큰",
+        "http_basic": "사용자 이름과 비밀번호",
+        "oauth2_client_credentials": "OAuth 2.0 클라이언트 자격 증명",
+        "oauth2_authorization_code": "OAuth 2.0 로그인"
+      },
+      "status": {
+        "connected": "연결됨",
+        "notConnected": "연결 안 됨",
+        "open": "로그인 필요 없음",
+        "shared": "공유 자격 증명"
+      },
+      "cta": {
+        "add": "API 액션 추가",
+        "connect": "연결",
+        "manageConnection": "연결 관리",
+        "details": "세부 정보",
+        "edit": "편집",
+        "delete": "삭제",
+        "more": "{{name}} 옵션 더 보기"
+      },
+      "toasts": {
+        "loadError": "API 액션을 불러오지 못했습니다",
+        "created": "API 액션을 추가했습니다",
+        "updated": "API 액션을 업데이트했습니다",
+        "saveError": "API 액션을 저장하지 못했습니다",
+        "deleted": "API 액션을 삭제했습니다",
+        "deleteError": "API 액션을 삭제하지 못했습니다",
+        "connected": "연결되었습니다",
+        "disconnected": "연결이 해제되었습니다"
+      },
+      "deleteDialog": {
+        "title": "API 액션 삭제",
+        "body": "{{name}}을(를) 삭제할까요? 저장된 모든 자격 증명이 삭제됩니다. 에이전트가 사용하는 API 액션은 삭제할 수 없습니다."
+      },
+      "editor": {
+        "addTitle": "API 액션 추가",
+        "editTitle": "API 액션 편집",
+        "spec": "OpenAPI 명세",
+        "specHint": "API의 OpenAPI 3.0/3.1 명세를 JSON 또는 YAML 형식으로 업로드하거나 붙여 넣으세요. PipesHub가 작업과 로그인 방식을 읽어 옵니다.",
+        "specEditHint": "현재 명세를 유지하려면 비워 두세요. 새 명세를 올리면 그 작업과 인증 방식 중에서 고를 수 있습니다.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "명세 읽기",
+        "previewing": "명세를 읽는 중…",
+        "validateError": "명세를 읽지 못했습니다",
+        "warnings": "명세의 일부를 건너뛰었습니다:",
+        "operations": "작업 ({{total}}개 중 {{selected}}개 선택됨)",
+        "operationsHint": "에이전트는 선택한 작업만 호출할 수 있습니다.",
+        "name": "이름",
+        "description": "설명",
+        "baseUrl": "기본 URL",
+        "baseUrlHint": "PipesHub가 요청을 보내는 주소입니다. 작업 경로가 뒤에 붙습니다.",
+        "loopbackHint": "localhost는 PipesHub 서버 자체를 뜻합니다. 네트워크의 호스트 이름처럼 PipesHub가 API에 접근하는 주소를 사용하세요.",
+        "authScheme": "인증",
+        "authSchemeLocked": "인증 방식을 바꾸려면 명세를 다시 올리세요.",
+        "scopes": "범위",
+        "oauthClientId": "OAuth 앱 클라이언트 ID",
+        "oauthClientSecret": "OAuth 앱 클라이언트 시크릿",
+        "keepSecret": "저장된 시크릿을 유지하려면 비워 두세요",
+        "sharedCredential": "공유 자격 증명 하나 사용",
+        "sharedCredentialHint": "자격 증명을 한 번 설정하면 모든 멤버가 사용합니다. 끄면 멤버마다 자신의 자격 증명을 연결합니다.",
+        "sharedCredentialForced": "클라이언트 자격 증명은 사람이 아닌 앱으로 로그인하므로 모두가 설정한 자격 증명을 공유합니다.",
+        "timeout": "시간 제한(초)",
+        "timeoutHint": "API 응답을 기다리는 시간으로, 1~{{max}}초입니다.",
+        "problems": {
+          "name": "이름을 입력하세요.",
+          "baseUrl": "기본 URL을 입력하세요.",
+          "operations": "작업을 하나 이상 선택하세요.",
+          "timeout": "1~120초 사이의 시간 제한을 입력하세요.",
+          "oauthClientId": "OAuth 앱의 클라이언트 ID를 입력하세요."
+        },
+        "create": "API 액션 추가",
+        "specLoadedHint": "이 API 액션의 기반이 되는 명세입니다. 최신 버전에서 고르려면 명세를 교체하세요.",
+        "replaceSpec": "명세 교체",
+        "specUnread": "먼저 새 명세를 읽거나 교체를 취소하세요.",
+        "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
+        "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
+        "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",
+        "sampleHint": "명세가 없나요? 모든 로그인 방식을 갖춘 헬프데스크 API 샘플로 시작하세요.",
+        "sample": {
+          "yaml": "샘플 YAML",
+          "json": "샘플 JSON"
+        },
+        "detailsHeading": "세부 정보",
+        "descriptionHint": "에이전트는 이 내용을 읽고 API를 언제 사용할지 결정합니다.",
+        "authSchemeHint": "에이전트가 API를 호출할 때 PipesHub가 로그인하는 방식입니다.",
+        "redirectUrl": "리디렉션 URL",
+        "redirectUrlHint": "이 URL을 OAuth 앱에 허용된 리디렉션으로 등록하세요.",
+        "noAuthHint": "PipesHub는 자격 증명 없이 API를 호출하므로 명세에서 공개로 표시한 작업만 작동합니다.",
+        "selectReads": "읽기만",
+        "selectAll": "전체",
+        "selectNone": "없음",
+        "unreachableWarning_other": "선택한 작업 {{count}}개에 자격 증명이 필요하므로 인증 없이는 실패합니다.",
+        "deselectUnreachable": "선택 해제",
+        "needsCredentials": "자격 증명 필요",
+        "needsCredentialsHint": "명세에 따르면 이 작업에는 자격 증명이 필요합니다. 인증하지 않으면 API가 요청을 거부합니다.",
+        "advancedHeading": "고급"
+      },
+      "connect": {
+        "mode": {
+          "none": "이 API에는 자격 증명이 필요 없습니다.",
+          "own": "에이전트가 내 자격 증명으로 이 API를 호출합니다.",
+          "shared": "모든 멤버가 여기에서 설정한 자격 증명을 사용합니다.",
+          "managed": "이 API 액션의 자격 증명은 관리자가 관리합니다."
+        },
+        "status": "상태",
+        "signIn": "로그인",
+        "signInAgain": "다시 로그인",
+        "signingIn": "로그인 중…",
+        "fields": {
+          "apiKey": "API 키",
+          "token": "토큰",
+          "username": "사용자 이름",
+          "password": "비밀번호",
+          "clientId": "클라이언트 ID",
+          "clientSecret": "클라이언트 시크릿"
+        },
+        "replaceHint": "저장되었습니다. 바꾸려면 새 값을 입력하세요.",
+        "error": "작업에 실패했습니다. 다시 시도하세요.",
+        "test": "연결 테스트",
+        "testing": "테스트 중…",
+        "testOk": "API가 응답했습니다.",
+        "testFailed": "API가 오류로 응답했습니다.",
+        "testTruncated": "응답의 앞부분만 표시됩니다.",
+        "disconnect": "연결 해제",
+        "disconnecting": "연결 해제 중…",
+        "panelTitle": "API 액션",
+        "connectionHeading": "연결",
+        "testHeading": "연결 테스트",
+        "testHint": "입력이 필요 없는 읽기 작업 하나를 호출합니다.",
+        "testIdle": "테스트 호출을 실행해 API가 무엇을 반환하는지 확인하세요.",
+        "testNeedsConnection": "먼저 연결한 다음 테스트 호출을 실행하세요.",
+        "operationsHeading_other": "에이전트가 호출할 수 있는 작업 {{count}}개"
+      },
+      "sectionTitle": "API 액션",
+      "kindCount": {
+        "read_other": "읽기 {{count}}개",
+        "write_other": "쓰기 {{count}}개",
+        "destructive_other": "삭제 {{count}}개"
+      },
+      "kindPolicy": {
+        "read": "즉시 실행",
+        "write": "먼저 사용자에게 확인",
+        "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
     }
   },
   "filePreview": {
@@ -4681,7 +4872,12 @@
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
     "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "apiToolsets": {
+      "section": "API 액션",
+      "connectTooltip": "액션에서 연결하세요",
+      "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
+    }
   },
   "recordView": {
     "sections": {
@@ -4912,9 +5108,6 @@
       "emailVerifiedDescription": "이메일 주소가 업데이트되었습니다. 새 이메일로 로그인하세요.",
       "emailVerifyFailedTitle": "이메일 인증 실패",
       "emailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다.",
-      "samlErrorTitle": "SAML 로그인 중 오류가 발생했습니다",
-      "samlSignInFailedTitle": "로그인 실패",
-      "samlSignInFailedDescription": "SAML SSO를 완료할 수 없습니다. 다시 시도해 주세요.",
       "orgEmailVerifiedTitle": "조직이 인증되었습니다",
       "orgEmailVerifiedDescription": "조직이 이제 활성화되었습니다. 계속하려면 로그인하세요.",
       "orgEmailVerifyFailedTitle": "인증 실패",
@@ -4944,13 +5137,10 @@
       "signInWithEmailOtp": "이메일 OTP로 로그인",
       "orContinueWith": "또는 {{provider}}(으)로 계속하기",
       "orContinueWithAny": "또는 다음 중 하나로 계속하기",
-      "orContinueWithSso": "또는 Single Sign-On으로 계속하기",
       "googleNotConfigured": "조직에 Google 로그인이 구성되어 있지 않습니다.",
       "microsoftNotConfigured": "조직에 Microsoft 로그인이 구성되어 있지 않습니다.",
-      "oauthNotConfigured": "조직에 OAuth 로그인이 구성되어 있지 않습니다.",
       "googleUnavailable": "현재 Google 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "microsoftUnavailable": "현재 Microsoft 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
-      "oauthUnavailable": "현재 OAuth 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "showPassword": "비밀번호 표시",
       "hidePassword": "비밀번호 숨기기",
       "accountDisabled": "계정이 비활성화되었습니다.",

@@ -17,7 +17,7 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
-    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator** and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the application's **token identity** — the service account it is pointed at (`tokenIdentityUserId`), or its creator for an application registered before that was required and never bound, and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -49,10 +49,6 @@ tags:
     description: User authentication including multi-step MFA, password reset, OTP login, and token management
   - name: Organization Auth Config
     description: Admin configuration of authentication methods including MFA steps and allowed providers
-  - name: SAML
-    description: SAML 2.0 Single Sign-On integration with enterprise Identity Providers
-  - name: OAuth
-    description: OAuth 2.0 token exchange for third-party authentication providers
   - name: OAuth Provider
     description: |
       PipesHub OAuth 2.0 Authorization Server implementing RFC 6749, RFC 7636 (PKCE), and OpenID Connect.
@@ -74,11 +70,13 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It loads the application by **`client_id`** on every such token and takes the identity from that record.
 
-      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic (which may still equal **`client_id`** for machine tokens).
+      The JWT's **`createdBy`** claim is a cross-check rather than a source: despite its name it carries the identity, not who registered the application, and a token whose claim disagrees with the record is refused with **401**. Pointing an application at a different service account also revokes the tokens it has already issued, so a stale claim should not arrive in the first place.
 
-      **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
+      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic. Where a machine token carries **`userId === client_id`** and a **`createdBy`** claim, Python copies that claim onto **`userId`** first, so both halves of the product agree on the identity.
+
+      **Operational note:** Prefer tokens whose JWT already carries the identity as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
     description: |
       Manage OAuth 2.0 client applications registered with PipesHub.
@@ -94,7 +92,7 @@ tags:
 
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
-      - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
+      - **Client credentials:** Access tokens represent the **service account the app is pointed at**, never the caller. An app that allows this grant must name one at creation, and only an administrator may choose it. Apps created before that rule, and never bound, still represent the **OAuth app creator** — the fallback this rule exists to remove.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -305,6 +303,17 @@ tags:
   - name: MCP Servers for Agents
     description: MCP credentials that belong to a service-account agent rather than a user
 
+  - name: API Toolsets
+    description: |
+      Tools compiled from the OpenAPI spec of an organization's own REST API. An administrator
+      uploads the spec, picks the operations agents may call and how PipesHub authenticates;
+      each user then connects their own credentials, unless the administrator shares one.
+      Available when the `ENABLE_API_TOOLSETS` Labs flag is on.
+
+      Base URLs may point to the deployment's private network unless the operator sets
+      `API_TOOLSETS_ALLOW_PRIVATE_NETWORK_URLS=false`. Loopback, link-local and cloud metadata
+      addresses are always refused, and redirects are never followed.
+
   - name: MCP Servers
     description: |
       Catalog and org-scoped instances of external MCP servers that agents can call.
@@ -320,7 +329,7 @@ tags:
   - name: SMTP Configuration
     description: Configure SMTP email server for sending notifications and invitations.
   - name: Authentication Configuration
-    description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
+    description: Configure the Google and Microsoft sign-in providers.
   - name: Platform Settings
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
@@ -421,6 +430,20 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
+    ApiToolsetInstanceId:
+      name: instanceId
+      in: path
+      required: true
+      description: The API toolset's id.
+      schema:
+        type: string
+    ApiToolsetDesktopSignIn:
+      name: desktop
+      in: query
+      required: false
+      description: Set by the desktop app. The callback page then hands the result back to the app.
+      schema:
+        type: boolean
     McpInstanceId:
       name: instanceId
       in: path
@@ -486,7 +509,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
-        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator — see **OAuth Provider** tag.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the application's token identity — the service account it is pointed at, or its creator for an application registered before that was required — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -788,6 +811,19 @@ components:
               type: integer
             aborted:
               type: boolean
+    StoredRecordDocument:
+      type: object
+      description: A processed-content document (`record_{id}` or `metadata_{id}`).
+      properties:
+        _id:
+          type: string
+        documentName:
+          type: string
+        documentPath:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
     StoragePurgeResult:
       type: object
       required:
@@ -980,16 +1016,13 @@ components:
       properties:
         type:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [otp, password, google, microsoft]
           description: |
             Type of authentication method:
             - `password`: Email/password authentication
             - `otp`: One-time password via email (6-digit, expires in 10 minutes)
             - `google`: Google OAuth 2.0
             - `microsoft`: Microsoft OAuth 2.0
-            - `azureAd`: Azure Active Directory
-            - `samlSso`: SAML 2.0 Single Sign-On
-            - `oauth`: Generic OAuth 2.0 provider
       required:
         - type
 
@@ -1093,7 +1126,7 @@ components:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+            enum: [otp, password, google, microsoft]
           description: List of allowed authentication methods for the current step
           example: ["password", "google", "otp"]
         message:
@@ -1139,56 +1172,6 @@ components:
           type: boolean
           description: Whether just-in-time user provisioning is enabled for Microsoft
 
-    AuthProviderAzureAdPublicConfig:
-      type: object
-      additionalProperties: false
-      description: Public Azure AD OAuth settings returned to clients
-      properties:
-        tenantId:
-          type: string
-          description: Azure AD tenant ID
-        clientId:
-          type: string
-          description: Azure AD client ID
-        enableJit:
-          type: boolean
-          description: Whether just-in-time user provisioning is enabled for Azure AD
-
-    AuthProviderOAuthPublicConfig:
-      type: object
-      additionalProperties: false
-      description: Public generic OAuth provider settings returned to clients
-      properties:
-        providerName:
-          type: string
-          description: Custom OAuth provider display name
-        clientId:
-          type: string
-          description: OAuth client ID
-        tokenEndpoint:
-          type: string
-          description: OAuth token endpoint URL
-        authorizationUrl:
-          type: string
-          description: OAuth authorization URL
-        clientSecret:
-          type: string
-          description: Client secret (omitted when stripped for public responses)
-        userInfoEndpoint:
-          type: string
-          description: UserInfo endpoint URL
-        scope:
-          type: string
-          description: Default OAuth scopes
-        enableJit:
-          type: boolean
-          description: Whether just-in-time user provisioning is enabled for this provider
-      required:
-        - providerName
-        - clientId
-        - tokenEndpoint
-        - authorizationUrl
-
     AuthProviders:
       type: object
       additionalProperties: false
@@ -1198,14 +1181,6 @@ components:
           $ref: '#/components/schemas/AuthProviderGooglePublicConfig'
         microsoft:
           $ref: '#/components/schemas/AuthProviderMicrosoftPublicConfig'
-        azuread:
-          $ref: '#/components/schemas/AuthProviderAzureAdPublicConfig'
-        oauth:
-          $ref: '#/components/schemas/AuthProviderOAuthPublicConfig'
-        saml:
-          type: object
-          description: Present when SAML SSO is an allowed method; may be an empty object
-          additionalProperties: true
 
     AuthenticateRequest:
       type: object
@@ -1217,13 +1192,10 @@ components:
         - `otp`: `{ otp: "123456" }` (6-digit code)
         - `google`: `"google-id-token-string"`
         - `microsoft`: `{ accessToken: "...", idToken: "..." }`
-        - `azureAd`: `{ accessToken: "...", idToken: "..." }`
-        - `oauth`: `{ accessToken: "...", idToken: "..." }`
-        - `samlSso`: not accepted by `/userAccount/authenticate`, which answers `400`. SAML sign-in runs as a browser redirect: send the browser to `/saml/signIn` instead
       properties:
         method:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [otp, password, google, microsoft]
           description: Authentication method to use
         credentials:
           oneOf:
@@ -1776,6 +1748,179 @@ components:
           maximum: 600
           nullable: true
           description: Blank uses the default, 60.
+    ApiToolsetOperation:
+      type: object
+      description: One spec operation offered to agents as a tool.
+      properties:
+        toolName:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        summary:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, destructive]
+        requiresAuth:
+          type: boolean
+          description: 'False when the spec lets anyone call it (`security: []`).'
+        inputSchema:
+          type: object
+          description: The JSON Schema agents fill (single toolset reads only).
+    ApiToolsetAuthScheme:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [none, api_key, http_bearer, http_basic, oauth2_client_credentials, oauth2_authorization_code]
+        description:
+          type: string
+        location:
+          type: string
+          enum: [header, query, cookie]
+        paramName:
+          type: string
+        tokenUrl:
+          type: string
+        authorizationUrl:
+          type: string
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+    ApiToolsetCompiledSpec:
+      type: object
+      properties:
+        title:
+          type: string
+        version:
+          type: string
+        openapiVersion:
+          type: string
+        description:
+          type: string
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              description:
+                type: string
+        authSchemes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        warnings:
+          type: array
+          items:
+            type: string
+        specHash:
+          type: string
+    ApiToolsetPayload:
+      type: object
+      required: [name, baseUrl, operations]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        spec:
+          type: string
+          description: The OpenAPI spec's text. Required when creating.
+        baseUrl:
+          type: string
+        authSchemeName:
+          type: string
+          description: A security scheme from the spec, or `none`.
+        operations:
+          type: array
+          description: Tool names from the compiled spec, at most 200.
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        useSharedCredential:
+          type: boolean
+          description: One credential, stored by an administrator, for every user. Always on for OAuth client credentials.
+        timeoutSeconds:
+          type: number
+          minimum: 1
+          maximum: 120
+        oauthClientId:
+          type: string
+          description: OAuth sign-in toolsets only.
+        oauthClientSecret:
+          type: string
+          description: OAuth sign-in toolsets only. Left blank on a change, the stored one is kept.
+    ApiToolset:
+      type: object
+      description: An API toolset. Never carries credentials or the OAuth app's secret.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        specTitle:
+          type: string
+        authType:
+          type: string
+        useSharedCredential:
+          type: boolean
+        isConnected:
+          type: boolean
+          description: Whether the caller (or the shared credential) is connected.
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        updatedAt:
+          type: integer
+        baseUrl:
+          type: string
+          description: Settings route only, like every field below.
+        authScheme:
+          $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        scopes:
+          type: array
+          items:
+            type: string
+        timeoutSeconds:
+          type: number
+        oauthClientId:
+          type: string
+          nullable: true
+        hasOauthClientSecret:
+          type: boolean
+    ApiToolsetCredentials:
+      type: object
+      description: Only the fields the toolset's auth scheme uses are stored.
+      properties:
+        apiKey:
+          type: string
+        token:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        clientId:
+          type: string
+        clientSecret:
+          type: string
     McpServerInstance:
       type: object
       description: A stored MCP server instance. Never carries credentials.
@@ -2726,11 +2871,17 @@ components:
         Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
 
         **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
-        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`,
+        `refreshTokenLifetime`, `tokenIdentityUserId`.
 
         **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
         (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
         at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
+
+        **Service account rule:** If the effective grant list includes `client_credentials`,
+        `tokenIdentityUserId` is **required** and the caller must be an organisation administrator.
+        That grant issues tokens with no person in them, so without a service account the app would act
+        as whoever created it. Omitting it answers `400`; a non-administrator answers `403`.
       properties:
         name:
           type: string
@@ -2738,6 +2889,15 @@ components:
           minLength: 1
           maxLength: 100
           example: "My Integration App"
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own tokens act as. Required when
+            `allowedGrantTypes` includes `client_credentials`, ignored otherwise.
+
+            Must name a service account in the same organisation that is not disabled;
+            an ordinary user's id is refused. Administrators only.
+          example: "65f0c0ffee00000000000000"
         description:
           type: string
           description: App description
@@ -2951,6 +3111,16 @@ components:
           description: Refresh token lifetime in seconds
         knowledgeLimit:
           $ref: '#/components/schemas/KnowledgeLimit'
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own `client_credentials` tokens act as.
+
+            Absent means the app has no service account and its tokens act as whoever
+            created it. Apps registered since a service account became required always
+            have one; an older app may not, and those are the ones an administrator
+            still has to move.
+          example: "65f0c0ffee00000000000000"
         createdAt:
           type: string
           format: date-time
@@ -5409,7 +5579,13 @@ components:
     GetRecordByIdResponseSchema:
       type: object
       additionalProperties: false
-      description: Response returned by GET /knowledgeBase/record/{recordId}.
+      description: |
+        Response returned by GET /knowledgeBase/record/{recordId}.
+
+        For a connected app with a limit, a collection or folder the limit
+        leaves out is not named: `knowledgeBase` and `folder` are `null` for
+        it, as are the record's own `recordGroupId` (with `externalGroupId`),
+        `rootRecordGroupId` and `parentNodeId` (with `externalParentId`).
       required:
         - record
         - knowledgeBase
@@ -5937,6 +6113,10 @@ components:
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
         may not read all answer `403` instead.
+
+        An unbudgeted read returns at most 140,000 characters of `content`. A
+        longer record is cut there, the content ends with a marker line, and
+        the response carries `truncated: true` and `totalChars`.
       required:
         - content
       properties:
@@ -5946,7 +6126,17 @@ components:
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
             the record and its indexing status instead (see above). In a
-            budgeted read, the part of the record (or thread) that fit.
+            budgeted read, the part of the record (or thread) that fit. An unbudgeted read
+            returns at most 140,000 characters; a longer record is cut there and the content
+            ends with a truncation marker (see `truncated`).
+        truncated:
+          type: boolean
+          description: >-
+            Present and true only on an unbudgeted read whose content was cut to fit 140,000
+            characters, marker included. `totalChars` is then the length of the whole content.
+        totalChars:
+          type: integer
+          description: Present only with `truncated`. The length of the record's whole content, in characters.
         mode:
           type: string
           enum: [record, thread]
@@ -6156,8 +6346,10 @@ components:
         node_type:
           type: string
           description: >-
-            One of `recordGroup`, `folder`, `record`. Listings never contain
-            `app` nodes.
+            One of `recordGroup`, `folder`, `record`, or `app`. A listing holds
+            `app` nodes only at the root of a connected app whose limit names
+            spaces, folders or files as well as whole sources: there it lists
+            those sources.
         sub_type:
           type: string
           nullable: true
@@ -7248,7 +7440,10 @@ components:
         parentId:
           type: string
           nullable: true
-          description: Parent node ID, or `null` at the root browse level.
+          description: |
+            Parent node ID, or `null` at the root browse level. Also `null`
+            for a connected app whose limit leaves the parent out: the node is
+            listed, and the folder above it is not named.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
@@ -7391,7 +7586,11 @@ components:
         parentNode:
           type: object
           nullable: true
-          description: Parent of `currentNode` when present; `null` when not applicable.
+          description: |
+            Parent of `currentNode` when present; `null` when not applicable,
+            and for a connected app whose limit leaves that parent out. For
+            such an app, `breadcrumbs` likewise names only the nodes inside
+            its limit.
           required:
             - id
             - name
@@ -7430,6 +7629,10 @@ components:
               description: Page size.
             totalItems:
               type: integer
+              description: |
+                Items in the whole result. For a search by a connected app
+                limited to spaces, folders or files, the matches found so far: it can
+                grow from page to page and is final once `hasNext` is false.
             totalPages:
               type: integer
             hasNext:
@@ -7551,6 +7754,12 @@ components:
                     $ref: '#/components/schemas/FilterOption'
                 connectors:
                   type: array
+                  description: |
+                    The apps and collections to filter by, each with its own name. For a
+                    connected app with a limit, only those the limit covers whole: an app
+                    or collection it covers only in part (some of its spaces, folders or
+                    files) is not offered. The other option lists are fixed and name no
+                    source.
                   items:
                     $ref: '#/components/schemas/FilterOption'
                 indexingStatus:
@@ -7875,8 +8084,8 @@ components:
         nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
         for that; a chat turn is not failed, its search simply finds nothing.
         At most 200 ids may be sent in one request, counted across all keys, and every id must
-        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
-        refused.
+        be a valid UUID. A key this schema does not list is refused with 400; the message names
+        the key and lists the allowed ones. A value of the wrong type is refused with 400 too.
 
         A selection that covers more than the configured number of nodes (50,000 by default),
         or that touches a source still being prepared for folder-level search, is refused:
@@ -10558,7 +10767,14 @@ components:
           minimum: 1
           maximum: 100
           default: 10
-          description: Maximum number of results to return
+          description: |
+            For a ranked search, the maximum number of passages (entries of `searchResults`) the
+            response holds, counted after query expansion and section expansion, so it holds at
+            any number of queries. `records` lists only the records those passages come from. A
+            search run as a timeline is not cut to `limit` as a whole: `limit` is what each
+            period's own search asks for, and a period can hold more (see `timeline`). When the
+            timeline was chosen automatically (`timeline` left out), each period asks for at most
+            10, whatever `limit` is.
         createdAfter:
           type: string
           maxLength: 64
@@ -10898,6 +11114,12 @@ components:
         All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
         usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
         `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
+
+        For a connected app with a limit, a parent the limit leaves out is not named: `recordGroupId`
+        (with `externalGroupId`), `rootRecordGroupId` and `parentNodeId` (with `externalParentId`) are `null`
+        for it, and `location` keeps only the part of the trail inside the limit, or is left out.
+        `connectorInstanceName`, the source's or collection's own name, is left out unless the limit
+        covers that app whole; this applies to each hit's `metadata` too.
       properties:
         _key:
           type: string
@@ -11103,6 +11325,13 @@ components:
             there are none.
           items:
             $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+        location:
+          type: string
+          description: |
+            Where the record sits, from its source down to its parent, as
+            `Name (App ID: id) -> Name (Record Group ID: id) -> Name (Record ID: id)`.
+            It names only the ancestors the caller can open; for a connected app
+            with a limit, only those inside the limit. Absent when none is left.
 
     SemanticSearchLinkedRecord:
       type: object
@@ -12602,6 +12831,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -12787,6 +13026,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13170,6 +13419,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           default: true
@@ -13355,6 +13614,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13500,6 +13769,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -16176,20 +16455,6 @@ components:
           additionalProperties: true
 
     # Authentication Configuration Schemas
-    AzureAdAuthConfig:
-      type: object
-      description: Azure Active Directory authentication configuration
-      properties:
-        clientId:
-          type: string
-          description: Azure AD application client ID
-          example: "12345678-1234-1234-1234-123456789abc"
-        tenantId:
-          type: string
-          description: Azure AD tenant ID (use 'common' for multi-tenant)
-          default: "common"
-          example: "common"
-
     MicrosoftAuthConfig:
       type: object
       description: Microsoft authentication configuration
@@ -16211,32 +16476,6 @@ components:
           type: string
           description: Google OAuth client ID
           example: "123456789-abc.apps.googleusercontent.com"
-
-    SSOAuthConfig:
-      type: object
-      description: SAML SSO authentication configuration
-      properties:
-        entryPoint:
-          type: string
-          format: uri
-          description: Identity provider SSO URL
-          example: "https://idp.example.com/sso/saml"
-        certificate:
-          type: string
-          description: X.509 certificate for signature validation (PEM format)
-        emailKey:
-          type: string
-          description: SAML attribute name for user email
-          example: "email"
-        enableJit:
-          type: boolean
-          description: Enable Just-In-Time (JIT) user provisioning
-          default: true
-          example: true
-        samlPlatform:
-          type: string
-          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
-          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -19768,7 +20007,7 @@ paths:
           the cause is recorded in the delegation log, which only an
           administrator can read.
 
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** loads the application record and resolves the identity from it, treating the **`createdBy`** claim as a cross-check — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:
@@ -20257,7 +20496,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: >-
+            The selected tokenIdentityUserId is malformed, or does not name a service
+            account in this organisation. A disabled account answers 400 instead.
           content:
             application/json:
               schema:
@@ -20393,6 +20640,16 @@ paths:
       description: |
         Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
 
+        **Adding `client_credentials`** to `allowedGrantTypes` requires an organisation administrator, because
+        it settles whose documents the application's tokens reach. A non-administrator answers `403`, and that
+        check runs first — so a member sees `403` whether or not a service account is bound.
+
+        For an administrator, it answers `400` when no service account is bound or the bound account is
+        disabled, and `404` when the bound identity no longer exists or is not a service account — distinct
+        from the `404` for an application this caller cannot see. Point the application at one first with
+        `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
+        service account predates this rule and can still be edited.
+
         Creator-only: even org admins cannot edit apps owned by other users.
 
         When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
@@ -20437,13 +20694,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: >-
+            OAuth app not found or not visible to this caller (each user only sees apps they
+            created), or the service account the application is bound to no longer exists or
+            is not a service account.
           content:
             application/json:
               schema:
@@ -21232,10 +21492,9 @@ paths:
         - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
         - `google`: `{ "credentials": "google-id-token-string" }`
         - `microsoft`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `azureAd`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `oauth`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `samlSso`: not accepted here; this endpoint answers `400`. SAML sign-in runs as a browser
-          redirect: send the browser to `/saml/signIn` instead
+
+        SAML (`samlSso`), generic OAuth (`oauth`) and Azure AD (`azureAd`) sign-in were removed in 1.0;
+        this endpoint answers `400` for them. Azure AD accounts sign in with `microsoft`.
 
         **Multi-Step Response:**
 
@@ -21280,7 +21539,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthenticateResponse'
         '400':
-          description: Invalid request, method not allowed, invalid credential format, `samlSso` sent here instead of `/saml/signIn`, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
+          description: Invalid request, method not allowed (including a method removed in 1.0), invalid credential format, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
           content:
             application/json:
               schema:
@@ -21488,70 +21747,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /userAccount/oauth/exchange:
-    post:
-      tags:
-        - OAuth
-      summary: Exchange OAuth authorization code for tokens
-      description: |
-        Exchange an OAuth authorization code for access and ID tokens.
-        Used after the OAuth authorization flow redirects back to the application.
-
-        **Supported Providers:**
-
-        - Generic OAuth 2.0 providers configured in org settings
-
-        **Flow:**
-
-        1. User is redirected to OAuth provider's authorization URL
-        2. User authorizes and is redirected back with a code
-        3. This endpoint exchanges the code for tokens
-        4. Tokens can then be used with the `/userAccount/authenticate` endpoint
-      operationId: exchangeOAuthCode
-      security: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OAuthExchangeRequest'
-        required: true
-      responses:
-        '200':
-          description: Tokens retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OAuthExchangeResponse'
-        '400':
-          description: |
-            Bad request. Possible causes: missing required parameters (code, provider, redirectUri),
-            no organization found in the system, OAuth not configured (missing tokenEndpoint or
-            clientSecret), token exchange HTTP error from the provider, or email not present in
-            the OAuth provider's userInfo response.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Failed to fetch user information from the OAuth provider using the exchanged access token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: User account not found and JIT provisioning is disabled — contact your administrator
           content:
             application/json:
               schema:
@@ -21880,6 +22075,97 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /orgAuthConfig/signInRemoval:
+    get:
+      tags:
+        - Organization Auth Config
+      summary: Get what the 1.0 upgrade turned off for this workspace
+      description: |
+        Lists the sign-in methods the 1.0 upgrade removed from this workspace's policy
+        (SAML SSO and generic OAuth), and the people who have signed in but never set a
+        password. Those people need email OTP, Google, Microsoft, or a password: they can use
+        "Forgot password" (needs email set up), or the server operator can create a single-use
+        set-password link with `node dist/scripts/set-password-link.js <email>`.
+
+        Both lists are empty when the upgrade removed nothing.
+
+        **Admin Access Required:** Only organization admins can view this.
+      operationId: getSignInRemoval
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: What was removed, and who has no password
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removedMethods, peopleWithoutPassword]
+                properties:
+                  removedMethods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [samlSso, oauth]
+                  peopleWithoutPassword:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, email]
+                      properties:
+                        userId:
+                          type: string
+                        fullName:
+                          type: string
+                        email:
+                          type: string
+        '401':
+          description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/updateAppConfig:
+    post:
+      tags:
+        - User Account
+      summary: Reload authentication settings (Internal)
+      description: |
+        Internal endpoint the configuration manager calls after settings such as the frontend
+        URL change, so the authentication service picks them up without a restart.
+      operationId: updateAuthAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Settings reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Missing or invalid service token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /orgAuthConfig/updateAuthMethod:
     post:
       tags:
@@ -21895,16 +22181,13 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
-        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
+        - `samlSso` and `oauth` were removed in 1.0 and are refused; use `microsoft` in place of `azureAd`
 
         **Available Methods:**
         - `password`: Email/password authentication
         - `otp`: One-time password via email
         - `google`: Google OAuth 2.0
         - `microsoft`: Microsoft OAuth 2.0
-        - `azureAd`: Azure Active Directory
-        - `samlSso`: SAML 2.0 Single Sign-On
-        - `oauth`: Generic OAuth 2.0 provider
 
         **Example - Single Factor (Password or Google):**
 
@@ -21962,7 +22245,7 @@ paths:
             Bad request. Possible causes:
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
-            - `samlSso` used in a policy with more than one step
+            - A method removed in 1.0 (`samlSso`, `oauth`) or the old name `azureAd`
           content:
             application/json:
               schema:
@@ -22065,336 +22348,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  # ==================== SAML ENDPOINTS ====================
-  /saml/signIn:
-    get:
-      tags:
-        - SAML
-      summary: Initiate SAML sign-in flow
-      description: |
-        Initiate SAML Single Sign-On authentication by redirecting to the Identity Provider (IDP).
-        <br><br>
-        <b>Usage:</b><br>
-        1. Call <code>/userAccount/initAuth</code> to get a session token<br>
-        2. If <code>samlSso</code> is in the allowed methods, redirect the user to this endpoint<br>
-        3. User authenticates with their IDP<br>
-        4. IDP redirects back to <code>/saml/signIn/callback</code> with SAML response<br>
-        5. Callback completes authentication and returns tokens
-        <br><br>
-        <b>Note:</b> This is a browser redirect endpoint, not a typical API call.
-        The user's browser should be redirected to this URL.
-        <br><br>
-        <b>Prerequisites:</b><br>
-        - Organization must have SAML SSO configured via <code>/saml/updateAppConfig</code><br>
-        - User must belong to an organization with SAML enabled
-      operationId: signInViaSAML
-      security: []
-      parameters:
-        - name: email
-          in: query
-          required: true
-          description: User's email address
-          schema:
-            type: string
-            format: email
-        - name: sessionToken
-          in: query
-          required: false
-          description: |
-            Session token from `/userAccount/initAuth`. Optional but recommended
-            for maintaining authentication state across the SAML flow.
-          schema:
-            type: string
-        - name: client
-          in: query
-          required: false
-          description: |
-            How the callback hands tokens back. The callback never sets cookies; it
-            redirects to `/auth/sign-in/samlSso/success` with a single-use `code`,
-            redeemed at `/saml/exchange`.
-
-            - `web`: a browser sign-in. Needs `code_challenge`.
-            - `desktop`: a sign-in started by the PipesHub desktop app. Needs `state`
-              and `code_challenge`; the success page also echoes `state` (and
-              `saml_error` on failure), and the code is redeemed at `/saml/desktop/exchange`.
-
-            A request to this `/signIn` route is always SP-initiated. Omitting
-            `client` or a valid `code_challenge` still completes at the IdP, but
-            the callback redirects to `{frontendUrl}/login?saml_error=sign_in_restart`.
-            An IdP-initiated sign-in (Okta app tile) never hits this route; that
-            callback issues a one-time `code` with no PKCE.
-          schema:
-            type: string
-            enum: [web, desktop]
-        - name: state
-          in: query
-          required: false
-          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
-          schema:
-            type: string
-        - name: code_challenge
-          in: query
-          required: false
-          description: PKCE S256 challenge (43 base64url characters) for the handoff code.
-          schema:
-            type: string
-      responses:
-        '302':
-          description: Redirect to SAML Identity Provider login page
-          headers:
-            Location:
-              description: IDP SSO URL
-              schema:
-                type: string
-        '400':
-          description: Invalid request (missing or malformed parameters)
-        '404':
-          description: User not found or SAML not configured for organization
-
-  /saml/signIn/callback:
-    post:
-      tags:
-        - SAML
-      summary: SAML sign-in callback
-      operationId: samlSignInCallback
-      description: |
-        Handles the callback from the SAML Identity Provider (IDP)
-        after successful user authentication.
-
-        This endpoint is invoked by the IDP and not directly by clients.
-
-        Flow:
-        1. IDP posts SAMLResponse and RelayState
-        2. Server validates the SAML assertion signature
-        3. Server extracts user identity
-        4. Server completes authentication
-        5. Redirects to frontend with authentication result
-
-        RelayState contains the session token or state used to resume
-        the authentication process.
-
-        **Important:** All outcomes — both success and failure — are delivered
-        as `302` redirects. This endpoint does not return JSON error bodies.
-        Errors are communicated via a `saml_error` query parameter on the
-        redirect URL. Clients should inspect this parameter after landing on
-        the frontend login page.
-
-      security: []
-
-      requestBody:
-        description: "SAML response from Identity Provider"
-        required: false
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                SAMLResponse:
-                  type: string
-                  description: Base64-encoded SAML response
-                RelayState:
-                  type: string
-                  description: Relay state from the original request
-      responses:
-        '302':
-          description: |
-            Redirect to the frontend. All outcomes use this status code.
-
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success?code=<code>`.
-            No cookies are set. The single-use `code` is redeemed at `/saml/exchange`.
-            A PipesHub-started sign-in also sends the PKCE verifier; an IdP-initiated
-            sign-in redeems the code alone.
-
-            **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
-
-            | `saml_error` value  | Meaning                                                                 |
-            |---------------------|-------------------------------------------------------------------------|
-            | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
-            | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
-            | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
-            | `sign_in_restart`   | A `web`/`desktop` start was missing a valid PKCE challenge; start again from the login page |
-            | `unknown`           | Unexpected server-side error during callback processing                 |
-            | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
-          headers:
-            Location:
-              description: |
-                Frontend success URL or `{frontendUrl}/login?saml_error=<code>` on failure.
-              schema:
-                type: string
-              examples:
-                success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success?code=0123abcd"
-                error_sso_disabled:
-                  value: "https://app.example.com/login?saml_error=saml_sso_disabled"
-                error_jit_disabled:
-                  value: "https://app.example.com/login?saml_error=jit_disabled"
-                error_auth_failed:
-                  value: "https://app.example.com/login?saml_error=auth_failed"
-                error_sign_in_restart:
-                  value: "https://app.example.com/login?saml_error=sign_in_restart"
-
-        '400':
-          description: Invalid or malformed SAML response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '401':
-          description: SAML assertion validation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '404':
-          description: Session expired or user not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '500':
-          description: Internal server error during SAML processing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-  /saml/exchange:
-    post:
-      tags:
-        - SAML
-      summary: Redeem a SAML handoff code
-      description: |
-        Exchanges the single-use code from a browser SAML sign-in for PipesHub tokens.
-        The code expires after 2 minutes and is consumed by the first attempt.
-        `codeVerifier` is required when the sign-in started from PipesHub (`client=web`);
-        omit it for an IdP-initiated code.
-      operationId: exchangeSamlCode
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                code:
-                  type: string
-                  description: Handoff code from the success page redirect
-                codeVerifier:
-                  type: string
-                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`. Omit for IdP-initiated sign-in.
-              required:
-                - code
-      responses:
-        '200':
-          description: Signed in
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken:
-                    type: string
-                  refreshToken:
-                    type: string
-        '401':
-          description: Unknown, expired, already used, or verifier mismatch
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /saml/desktop/exchange:
-    post:
-      tags:
-        - SAML
-      summary: Redeem a desktop SAML handoff code
-      description: |
-        Same as `/saml/exchange`, for the code from a desktop SAML sign-in (see
-        `client=desktop` on `/saml/signIn`).
-      operationId: exchangeSamlDesktopCode
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                code:
-                  type: string
-                  description: Handoff code from the success page redirect
-                codeVerifier:
-                  type: string
-                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
-              required:
-                - code
-                - codeVerifier
-      responses:
-        '200':
-          description: Signed in
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken:
-                    type: string
-                  refreshToken:
-                    type: string
-        '401':
-          description: Unknown, expired, already used, or verifier mismatch
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /saml/updateAppConfig:
-    post:
-      tags:
-        - SAML
-      summary: Reload SAML application configuration (Internal)
-      description: |
-        Internal endpoint to reload SAML configuration from the configuration manager.
-        This is called by other services when SAML settings are updated.<br><br>
-        <b>Purpose:</b><br>
-        When SAML configuration is updated in the Configuration Manager, this endpoint
-        is called to reload the settings into the authentication service without restart.<br><br>
-        <b>Effects:</b><br>
-        <ul>
-        <li>Reloads AppConfig from configuration files</li>
-        <li>Rebinds authentication controllers with new config</li>
-        <li>Updates SAML passport strategy settings</li>
-        </ul>
-        <b>Note:</b> This is an internal service-to-service endpoint.
-      operationId: updateSamlAppConfig
-      security:
-        - scopedToken: []
-      responses:
-        '200':
-          description: Configuration reloaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-        '400':
-          description: Invalid SAML response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
 
   /users/health:
     get:
@@ -24460,10 +24413,13 @@ paths:
         - OAuth Apps
       summary: Choose whose identity this app's client_credentials tokens carry
       description: |
-        By default a `client_credentials` token acts as the person who created
-        the application, carrying their document access and their role, and it
-        stops working if their account is deleted. Pointing the application at
-        a service account instead means its tokens act as an identity that
+        An application registered before a service account was required, and
+        never pointed at one, has `client_credentials` tokens that act as the
+        person who created it, carrying their document access and their role,
+        and stopping when their account is deleted. Applications that allow
+        this grant must now name a service account, so this endpoint changes
+        which one rather than whether there is one. Pointing the application at
+        a service account means its tokens act as an identity that
         exists for the job, holds only what someone granted it, and survives
         any one person leaving.
 
@@ -24476,7 +24432,10 @@ paths:
         afterwards.
 
         Pass `serviceAccountId: null` to put the application back to acting as
-        its creator. That revokes outstanding tokens too.
+        its creator. That revokes outstanding tokens too. It is **refused with
+        `400` while the application allows `client_credentials`**, because
+        clearing the identity there would undo what creating the application
+        required; point it at a different service account instead.
 
         This does not change who manages the application. The creator still
         owns it in Developer Settings — moving that would leave the
@@ -24507,12 +24466,16 @@ paths:
                   type: string
                   nullable: true
                   pattern: '^[0-9a-fA-F]{24}$'
-                  description: The service account, or null to revert to the creator
+                  description: >-
+                    The service account, or null to revert to the creator. Null is refused
+                    while the application allows client_credentials.
       responses:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled
+          description: >-
+            The service account is disabled, or null was passed for an application that
+            allows client_credentials, where clearing the identity is refused.
         '401':
           description: Not authenticated
         '403':
@@ -27312,6 +27275,87 @@ paths:
           description: The storage scoped token was missing or invalid.
         '503':
           description: A stored file could not be removed; its document was kept so the removal can be retried.
+  /document/internal/records/flat-documents:
+    get:
+      tags:
+        - Internal Storage
+      summary: List processed-content documents still in the flat layout (service-to-service)
+      description: |
+        Pages the organisation's live `record_{id}` / `metadata_{id}` documents
+        filed at the pre-hierarchical path `records/{id}`, in document-id order.
+        The connectors service moves them into the hierarchical layout.
+      operationId: internalListFlatRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The `_id` of the last document of the previous page.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: limit
+          in: query
+          required: false
+          description: Documents per page (default 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of flat documents; fewer than `limit` means the last page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoredRecordDocument'
+        '400':
+          description: The paging parameters are not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/records/{virtualRecordId}/documents:
+    get:
+      tags:
+        - Internal Storage
+      summary: List a virtual record's live processed-content documents (service-to-service)
+      description: |
+        The virtual record's live `record_{virtualRecordId}` and
+        `metadata_{virtualRecordId}` documents wherever they are filed, newest
+        first. A writer whose mapping was never recorded (it stopped between
+        storing and mapping) reuses what it stored instead of adding a second copy.
+      operationId: internalListVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: The virtual record's live documents (none when nothing is stored).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoredRecordDocument'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
   /document/internal/records/relocate:
     post:
       tags:
@@ -27340,6 +27384,7 @@ paths:
               properties:
                 fromConnectorId:
                   type: string
+                  pattern: '^[A-Za-z0-9_-]{1,64}$'
                 moves:
                   type: array
                   minItems: 1
@@ -27356,6 +27401,7 @@ paths:
                         description: Relative path under `records/`, without `..` segments.
                       connectorId:
                         type: string
+                        pattern: '^[A-Za-z0-9_-]{1,64}$'
                       recordGroupId:
                         type: string
       responses:
@@ -27400,6 +27446,7 @@ paths:
           required: true
           schema:
             type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
         - name: after
           in: query
           required: false
@@ -30609,6 +30656,29 @@ paths:
         - `breadcrumbs` — adds the breadcrumb trail (empty at root level)
         - `permissions` — adds the caller's permission flags
 
+        **A connected app with a limit**
+
+        A token that may see only some sources pages and counts only what
+        its limit lets it see:
+        - Limited to whole sources (apps or collections) only: the listing
+          and the search cover those, with exact totals and counts.
+        - Limited to any spaces, folders or files, alone or beside whole
+          sources: the listing returns each whole source, space (record
+          group), folder and file the limit names, one item each, to open
+          by its `id`. `totalItems` counts those items, not what is inside
+          them. A search reads
+          forward only (`prevCursor` is always null), and takes a `page`
+          number up to 5; for later pages, send `nextCursor`. Its `totalItems` counts
+          the matches found so far and can grow from page to page; it is
+          final once `hasNext` is false. `counts` is returned only when the
+          whole result fits in the first page read, and is `null` otherwise.
+        - An item can sit in a folder the limit leaves out, as a file the
+          limit names does. Its `parentId` and `parent` are then `null`: the
+          item is returned, and the folder above it is not named.
+        - A `nextCursor` or `prevCursor` belongs to the limit it was read
+          under. A token with a different limit that sends it gets a `400`;
+          start that listing again without a cursor.
+
         **Access control**
 
         Requires a valid bearer token. For OAuth tokens the `kb:read` scope
@@ -30635,6 +30705,8 @@ paths:
           description: |
             Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
             Prefer `cursor`: a page number is reached by reading the pages before it.
+            A search by a connected app whose limit names any spaces, folders or files
+            takes a page number of at most 5; for later pages, send `nextCursor`.
           schema:
             type: integer
             minimum: 1
@@ -31039,6 +31111,68 @@ paths:
                 error:
                   code: HTTP_FORBIDDEN
                   message: "Insufficient scope. Required: kb:read"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -31577,6 +31711,68 @@ paths:
                 error:
                   code: HTTP_NOT_FOUND
                   message: "Parent node not found"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -35952,7 +36148,10 @@ paths:
           description: |
             Invalid request — `query` is missing, empty, or the request
             body fails validation, including an unusable
-            `filters.entityFilters` or any `filters.where`.
+            `filters.entityFilters`, any `filters.where`, or a `filters` key
+            the `Filters` schema does not list (the message names it and lists the
+            allowed keys). The gateway validates before the search service, so
+            clients always see 400 for these, never 422.
           content:
             application/json:
               schema:
@@ -39899,9 +40098,9 @@ paths:
 
         **Reading part of a long record, or a whole Slack thread:**
 
-        With no query parameters the whole record is returned, which for a
-        pull request with its diffs or a long document can run to hundreds of
-        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        With no query parameters the record is returned up to 140,000
+        characters (a longer one is cut and marked `truncated`), which for a
+        pull request with its diffs or a long document is a large response. Pass any of `maxChars`, `startBlock`, `query`
         or `mode` for a budgeted read instead: the response stays within
         `maxChars` and says how to continue (`nextStartBlock`, or
         `nextStartRecord` for a thread). `query` makes a record too large for
@@ -40047,9 +40246,10 @@ paths:
 
         Call it with no `nodeId` for a flat listing of every record group and
         record the caller can reach, newest first. This is a starting point to
-        pick a node from, not a roster of connected apps — app nodes are never
-        returned in a listing, though an app's `id` is accepted as a `nodeId`
-        and lists that app's record groups. Pass a node's `id` to descend:
+        pick a node from, not a roster of connected apps — app nodes are not
+        returned in a listing (except at the root of a limited connected app,
+        below), though an app's `id` is accepted as a `nodeId` and lists that
+        app's record groups. Pass a node's `id` to descend:
         record groups contain records and folders, and a record contains its
         own children — comments, attachments, sub-tasks — plus a `related`
         section of cross-referenced records, such as the Confluence page linked
@@ -40085,7 +40285,19 @@ paths:
 
         **Scope:** everything the caller can read, across both connectors and
         Knowledge Base collections. No connector-level filter is applied — the
-        listing is bounded by per-node permissions alone.
+        listing is bounded by per-node permissions, and for a connected app
+        with a limit by that limit too: no row, breadcrumb or related node
+        outside it is returned.
+
+        **A connected app with a limit:** with no `nodeId`, the root depends
+        on what the limit names.
+        - Whole sources (apps or collections) only: the usual flat root,
+          every record group and record in those sources.
+        - Any spaces, folders or files, alone or beside whole sources: one
+          row for each whole source, space (record group), folder and file
+          the limit names, and nothing from inside them. `pagination.total`
+          counts those rows, not the records inside them. `depth` is not
+          applied on this call; pass a row's `id` as `nodeId` to open it.
 
         **Permission scoping:**
 
@@ -44190,6 +44402,465 @@ paths:
         '409':
           description: No OAuth app is configured and the provider doesn't support dynamic registration
 
+  # -------------------- API Toolsets --------------------
+  /api-toolsets/validate:
+    post:
+      tags:
+        - API Toolsets
+      summary: Preview an OpenAPI spec (administrators)
+      description: |
+        Compiles an OpenAPI 3.0 or 3.1 spec (JSON or YAML) without saving anything, and returns
+        the operations it offers as tools, its security schemes, its servers and any warnings
+        about operations that can't be used.
+      operationId: validateApiToolsetSpec
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The spec to compile
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spec]
+              properties:
+                spec:
+                  type: string
+                  description: The spec's text, at most 5 MB.
+      responses:
+        '200':
+          description: The compiled spec
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolsetCompiledSpec'
+        '400':
+          description: The spec can't be used; the detail says why
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances:
+    get:
+      tags:
+        - API Toolsets
+      summary: List API toolsets
+      description: |
+        Every API toolset of the organization, with whether the caller has connected it.
+        How each one is reached and authenticated is on the settings route, for administrators.
+      operationId: listApiToolsets
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: API toolsets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: API Toolsets are disabled
+    post:
+      tags:
+        - API Toolsets
+      summary: Add an API toolset (administrators)
+      description: |
+        Compiles the spec again on the server and stores only the selected operations, never the
+        spec itself. OAuth client-credentials toolsets always use one shared credential.
+      operationId: createApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset to add
+        required: true
+        content:
+          application/json:
+            schema:
+              # The spec is required here; an edit may leave it out to keep the stored one.
+              allOf:
+                - $ref: '#/components/schemas/ApiToolsetPayload'
+                - type: object
+                  required: [spec]
+      responses:
+        '200':
+          description: The new toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid spec, operation, auth scheme, scope, timeout or base URL
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances/{instanceId}:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset
+      description: The toolset with each selected operation's input schema.
+      operationId: getApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    put:
+      tags:
+        - API Toolsets
+      summary: Change an API toolset (administrators)
+      description: |
+        Same body as creating one. Without `spec`, operations are picked from those already
+        stored and the auth scheme stays. Choosing another auth scheme removes every
+        credential stored for the old one.
+      operationId: updateApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset's new settings
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetPayload'
+      responses:
+        '200':
+          description: The changed toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid change
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Delete an API toolset (administrators)
+      description: |
+        Deletes the toolset with every credential and its OAuth app. Refused while an agent
+        uses one of its operations.
+      operationId: deleteApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Deleted
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+        '409':
+          description: An agent uses the toolset; the detail names it
+        '503':
+          description: Which agents use the toolset couldn't be checked, so nothing was deleted
+  /api-toolsets/instances/{instanceId}/config:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset's settings (administrators)
+      description: |
+        The toolset with its base URL, auth scheme, scopes, timeout and OAuth app client ID.
+        Never the OAuth app's secret.
+      operationId: getApiToolsetConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset's settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Connect your credentials
+      description: |
+        Stores the fields the toolset's auth scheme uses; any other field is ignored. OAuth
+        sign-in toolsets use the sign-in flow instead, and a toolset with a shared credential
+        takes it from the shared-credentials route.
+      operationId: saveApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field the auth scheme needs is missing, or the toolset uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Disconnect your credentials
+      description: Removes the caller's own credential.
+      operationId: deleteApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Disconnected
+        '401':
+          description: Unauthorized
+        '400':
+          description: The toolset uses a shared credential
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Set the shared credential (administrators)
+      description: The one credential every member's calls use, for a toolset set up to share one.
+      operationId: saveApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field is missing, or the toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Remove the shared credential (administrators)
+      description: Every member's calls fail until an administrator sets a new one.
+      operationId: deleteApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Removed
+        '400':
+          description: The toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start the shared OAuth sign-in (administrators)
+      description: Signs in once for everyone; finished on the same callback as a member's sign-in.
+      operationId: getApiToolsetSharedOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset has no shared credential or doesn't use OAuth sign-in
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/test:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    post:
+      tags:
+        - API Toolsets
+      summary: Test the connection
+      description: |
+        Calls one operation with the caller's credentials: the one named, or else the first
+        read that needs no arguments. Returns the API's status and the start of its answer.
+      operationId: testApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The operation to call and its arguments; both optional
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toolName:
+                  type: string
+                arguments:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The API answered (with any status)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: integer
+                  body:
+                    type: string
+                  truncated:
+                    type: boolean
+        '400':
+          description: Not connected, an unknown operation, or invalid arguments
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+        '502':
+          description: The API could not be reached or did not answer in time
+  /api-toolsets/instances/{instanceId}/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start an OAuth sign-in
+      description: Returns the URL to open; the sign-in can be finished within 10 minutes.
+      operationId: getApiToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset doesn't use OAuth sign-in, has no OAuth app, or uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/oauth/callback:
+    get:
+      tags:
+        - API Toolsets
+      summary: Finish an OAuth sign-in
+      description: Only the person who started the sign-in can finish it, once.
+      operationId: handleApiToolsetOAuthCallback
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  instanceId:
+                    type: string
+                  name:
+                    type: string
+        '400':
+          description: The sign-in expired, was already used, or was refused by the API
+        '401':
+          description: Unauthorized
+
   # -------------------- Skills --------------------
   /skills:
     get:
@@ -46049,56 +46720,6 @@ paths:
           description: Unauthorized
 
   # -------------------- Authentication Configuration --------------------
-  /configurationManager/authConfig/azureAd:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure Azure AD authentication
-      description: Set up Azure Active Directory as an authentication provider for user login.
-      operationId: setAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure Azure AD authentication"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AzureAdAuthConfig'
-      responses:
-        '200':
-          description: Azure AD configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get Azure AD configuration
-      description: Retrieve Azure AD authentication configuration.
-      operationId: getAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      parameters:
-        - $ref: '#/components/parameters/RevealStoredSecrets'
-      responses:
-        '200':
-          description: Azure AD configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AzureAdAuthConfig'
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
   /configurationManager/authConfig/microsoft:
     post:
       tags:
@@ -46194,111 +46815,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GoogleAuthConfig'
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
-  /configurationManager/authConfig/sso:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure SAML SSO authentication
-      description: Set up SAML 2.0 Single Sign-On with your identity provider (Okta, OneLogin, etc.).
-      operationId: setSsoAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure SAML SSO authentication"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SSOAuthConfig'
-      responses:
-        '200':
-          description: SSO configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get SAML SSO configuration
-      description: "Get SAML SSO configuration."
-      operationId: getSsoAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      responses:
-        '200':
-          description: SSO configuration retrieved
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SSOAuthConfig'
-                  - type: object
-                    properties:
-                      spEntityId:
-                        type: string
-                        description: Service Provider entity ID derived from SAML_SP_ENTITY_ID env var or the frontend public URL
-                        example: "https://app.example.com"
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
-  /configurationManager/authConfig/oauth:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure generic OAuth provider
-      description: Set up a custom OAuth 2.0 authentication provider.
-      operationId: setOAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure generic OAuth provider"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GenericOAuthConfig'
-      responses:
-        '200':
-          description: OAuth configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get generic OAuth configuration
-      description: "Get generic OAuth configuration."
-      operationId: getGenericOAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      parameters:
-        - $ref: '#/components/parameters/RevealStoredSecrets'
-      responses:
-        '200':
-          description: OAuth configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
         '403':

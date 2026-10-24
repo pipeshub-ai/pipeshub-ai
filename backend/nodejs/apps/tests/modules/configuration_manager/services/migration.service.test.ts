@@ -54,7 +54,7 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call connectorSyncScheduleMigration, chatKbFiltersMigration, adminRoleMigration and documentOrgIdMigration', async () => {
+    it('should run the sign-in methods removal first, then the other migrations', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       const mockScheduler = {
         scheduleJob: sinon.stub().resolves(),
@@ -65,6 +65,7 @@ describe('MigrationService', () => {
         connectorBackend: 'http://localhost:8088',
       }
       // Stub migrations so they don't make real HTTP calls or DB queries
+      const signInStub = sinon.stub(service, 'signInMethodsRemovalMigration' as any).resolves()
       const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
       const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
       const chatSessionsStub = sinon.stub(service, 'chatSessionsMigration' as any).resolves()
@@ -76,6 +77,8 @@ describe('MigrationService', () => {
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
+      expect(signInStub.calledOnce).to.be.true
+      expect(signInStub.calledBefore(connectorStub)).to.be.true
       expect(connectorStub.calledOnce).to.be.true
       expect(chatStub.calledOnce).to.be.true
       expect(chatSessionsStub.calledOnce).to.be.true
@@ -143,6 +146,47 @@ describe('MigrationService', () => {
       const setArg = mockEncService.encrypt.firstCall.args[0]
       const parsed = JSON.parse(setArg)
       expect(parsed.llm[0].modelKey).to.equal('existing-key')
+    })
+  })
+
+  describe('signInMethodsRemovalMigration', () => {
+    let runStub: sinon.SinonStub
+
+    beforeEach(() => {
+      const { SignInMethodsRemovalMigration } = require('../../../../src/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration')
+      runStub = sinon.stub(SignInMethodsRemovalMigration.prototype, 'run')
+    })
+
+    afterEach(() => {
+      runStub.restore()
+    })
+
+    it('logs success when every policy was rewritten', async () => {
+      runStub.resolves({ policiesUpdated: 2, azureAdConfigCopied: true, errored: 0 })
+
+      await new MigrationService(mockLogger, mockKeyValueStore).signInMethodsRemovalMigration()
+
+      expect(runStub.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith('✅ Sign-in methods removed', sinon.match.object)).to.be.true
+    })
+
+    it('warns, so the next boot retries, when some policies failed', async () => {
+      runStub.resolves({ policiesUpdated: 1, azureAdConfigCopied: false, errored: 1 })
+
+      await new MigrationService(mockLogger, mockKeyValueStore).signInMethodsRemovalMigration()
+
+      expect(mockLogger.warn.calledWith(
+        '⚠️  Sign-in methods removal finished with errors — will retry on next boot',
+        sinon.match.object,
+      )).to.be.true
+    })
+
+    it('logs and swallows an unexpected failure', async () => {
+      runStub.rejects(new Error('DB error'))
+
+      await new MigrationService(mockLogger, mockKeyValueStore).signInMethodsRemovalMigration()
+
+      expect(mockLogger.error.calledWith('Sign-in methods removal failed', sinon.match.object)).to.be.true
     })
   })
 

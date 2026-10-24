@@ -16,6 +16,7 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
@@ -44,6 +45,8 @@ export class MigrationService {
   async runMigration(deps: MigrationDependencies): Promise<void> {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
+    // First: until it runs, a policy may still name a removed sign-in method.
+    await this.signInMethodsRemovalMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
@@ -72,6 +75,29 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Admin-role migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async signInMethodsRemovalMigration(): Promise<void> {
+    this.logger.info('Removing SAML and OAuth from sign-in policies');
+    try {
+      const result = await new SignInMethodsRemovalMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Sign-in methods removal finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Sign-in methods removed', result);
+      }
+    } catch (error) {
+      this.logger.error('Sign-in methods removal failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

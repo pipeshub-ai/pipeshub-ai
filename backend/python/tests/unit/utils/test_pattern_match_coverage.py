@@ -89,12 +89,16 @@ class TestRunPatternMatchCoverage:
         assert "matched more than could be listed" in render_pattern_match_coverage_note(coverage)
 
     @pytest.mark.asyncio
-    async def test_the_grep_is_told_its_line_cap(self) -> None:
+    async def test_the_grep_is_bounded_by_bytes_not_a_line_cut(self) -> None:
+        # find_records refuses a head cut, so the output is bounded by its byte caps,
+        # whose truncation marker is what reports a cut-short search.
         find = AsyncMock(return_value=_found([]))
 
         await _run(find, ["c1"])
 
-        assert find.await_args.kwargs["max_output_lines"] == 200
+        kwargs = find.await_args.kwargs
+        assert "max_output_lines" not in kwargs
+        assert kwargs["max_stdout_bytes"] > 0 and kwargs["max_output_chars"] > 0
 
     @pytest.mark.asyncio
     async def test_a_search_that_covered_everything_adds_no_note(self) -> None:

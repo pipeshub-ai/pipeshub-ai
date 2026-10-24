@@ -620,7 +620,10 @@
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
       "skipped": "छोड़ा गया",
       "pending": "लंबित"
-    }
+    },
+    "allRecordsBusy_one": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
+    "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
+    "allRecordsLoadFailed": "रिकॉर्ड लोड नहीं हो सके"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1739,7 +1742,14 @@
         "saveErrorTitle": "परिवर्तन सहेजे नहीं जा सके",
         "regenerateSuccessTitle": "सीक्रेट पुनः उत्पन्न",
         "regenerateErrorTitle": "सीक्रेट पुनः उत्पन्न नहीं हो सका",
-        "errorLifetimeInvalid": "मान्य आयु दर्ज करें (पूर्ण सेकंड, कम से कम 1)।"
+        "errorLifetimeInvalid": "मान्य आयु दर्ज करें (पूर्ण सेकंड, कम से कम 1)।",
+        "identityBoundNote": "इस एप्लिकेशन के टोकन निर्दिष्ट सेवा खाते की ओर से कार्य करते हैं। इसे बदलने पर पहले से जारी किए गए टोकन रद्द हो जाते हैं।",
+        "identityUnboundNote": "इस एप्लिकेशन के टोकन उसी की ओर से कार्य करते हैं जिसने इसे बनाया, उनके दस्तावेज़ अधिकार और उनकी भूमिका के साथ — यदि इसे प्रशासक ने बनाया है तो इसका अर्थ प्रशासक पहुँच है। इसके बजाय इसे एक सेवा खाता दें।",
+        "identityAdminOnly": "केवल एक प्रशासक ही इस एप्लिकेशन को सेवा खाता दे सकता है। किसी प्रशासक से यह करने को कहें।",
+        "identityBindAction": "यह खाता उपयोग करें",
+        "identityBindRevokes": "इससे एप्लिकेशन द्वारा पहले जारी किए गए टोकन रद्द हो जाएँगे। उनका उपयोग करने वाली हर चीज़ को नया टोकन चाहिए होगा।",
+        "identityBound": "एप्लिकेशन अब उस सेवा खाते की ओर से कार्य करता है।",
+        "identityBindFailed": "सेवा खाता नहीं बदला जा सका। थोड़ी देर में पुनः प्रयास करें।"
       },
       "create": {
         "panelTitle": "OAuth 2.0 अनुप्रयोग बनाएँ",
@@ -1786,7 +1796,15 @@
         "returnToAppsButton": "OAuth 2.0 ऐप्स पर लौटें",
         "showSecretAria": "क्लाइंट सीक्रेट दिखाएँ",
         "hideSecretAria": "क्लाइंट सीक्रेट छिपाएँ",
-        "clientCredentialsWarning": "क्लाइंट क्रेडेंशियल टोकन हमेशा Pipeshub तक उस उपयोगकर्ता की पहचान से पहुँचते हैं जिसने यह एप्लिकेशन बनाया था — न कि टोकन एंडपॉइंट को कॉल करने वाले की। आपके द्वारा दिए गए स्कोप के भीतर, टोकन वह सब कुछ देख सकता है जो वह व्यक्ति देख सकता है, और वह उसकी भूमिका भी प्राप्त करता है, इसलिए किसी एडमिन द्वारा बनाए गए एप्लिकेशन को एडमिन पहुँच मिलती है। यदि वह खाता हटा दिया जाए तो टोकन काम करना बंद कर देता है। यदि यह एप्लिकेशन authorization code फ़्लो का भी समर्थन करता है, तो उपयोगकर्ता उस रास्ते से इसे अपने लिए अधिकृत कर सकते हैं।",
+        "serviceAccountHeading": "वह सेवा खाता जिसकी ओर से यह एप्लिकेशन कार्य करता है",
+        "clientCredentialsIdentityNote": "इस एप्लिकेशन के टोकन उस सेवा खाते की ओर से कार्य करते हैं जिसकी ओर यह इशारा करता है, और यदि कोई नहीं है तो उसी की ओर से जिसने इसे बनाया — प्रशासक के मामले में इसका अर्थ प्रशासक पहुँच है।",
+        "serviceAccountHelper": "क्लाइंट क्रेडेंशियल टोकन में कोई व्यक्ति नहीं होता, इसलिए इस एप्लिकेशन को अपनी पहचान चाहिए। सेवा खाता हमेशा सदस्य होता है, कभी प्रशासक नहीं, और साइन इन नहीं कर सकता। इसके बिना एप्लिकेशन उसी की ओर से कार्य करेगा जिसने इसे बनाया है।",
+        "serviceAccountPlaceholder": "एक सेवा खाता चुनें",
+        "serviceAccountLoading": "सेवा खाते लोड हो रहे हैं…",
+        "serviceAccountNone": "अभी तक कोई सेवा खाता नहीं है। कार्यस्थान → सेवा खाते में एक बनाएँ और फिर यहाँ लौटें।",
+        "serviceAccountLoadError": "सेवा खाते लोड नहीं हो सके। थोड़ी देर में फिर कोशिश करें।",
+        "serviceAccountRetry": "पुनः प्रयास करें",
+        "errorServiceAccountRequired": "वह सेवा खाता चुनें जिसकी ओर से यह एप्लिकेशन कार्य करता है।",
         "successTitle": "अनुप्रयोग बनाया गया",
         "successDescription": "आपका OAuth अनुप्रयोग सफलतापूर्वक बनाया गया।",
         "errorCreateTitle": "अनुप्रयोग नहीं बनाया जा सका",
@@ -2257,7 +2275,8 @@
       "enterprise": {
         "userActionsTitle": "लोगों की अपनी कार्रवाइयाँ",
         "userActionsDescription": "आपके संगठन के लोग अपने लिए जो कार्रवाइयाँ जोड़ते हैं, उन्हें देखें और हटाएँ।"
-      }
+      },
+      "appsHeading": "ऐप कार्रवाइयाँ"
     },
     "rightPanel": {
       "primaryDisabledHint": "जारी रखने के लिए ऊपर स्क्रॉल करें और आवश्यक फ़ील्ड (* चिह्न वाले) पूरे करें।",
@@ -2416,17 +2435,11 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0",
         "github": "GitHub प्रमाणीकरण कॉन्फ़िगर करें"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
-      },
-      "xmlUpload": {
-        "parseError": "इस फ़ाइल से SAML मेटाडेटा पार्स नहीं किया जा सका। जाँच लें कि यह एक मान्य IdP मेटाडेटा XML है।",
-        "readError": "फ़ाइल पढ़ने में विफल।"
       },
       "riskDialog": {
         "title": "प्रमाणीकरण परिवर्तन की पुष्टि करें",
@@ -2439,6 +2452,23 @@
       "userMethods": {
         "heading": "उपयोगकर्ता साइन-इन विधियाँ",
         "subtitle": "नियंत्रित करता है कि हर संगठन में हर उपयोगकर्ता के लिए कौन-सी साइन-इन विधियाँ उपलब्ध हैं।"
+      },
+      "signInRemoval": {
+        "title_one": "PipesHub 1.0 में {{methods}} से साइन इन हटा दिया गया है",
+        "title_other": "PipesHub 1.0 में {{methods}} से साइन इन हटा दिया गया है",
+        "nowSignsInWith": "अब इस वर्कस्पेस में {{methods}} से साइन इन होता है।",
+        "peopleIntro": "इन लोगों ने पहले साइन इन किया है, लेकिन इनका अभी तक कोई पासवर्ड नहीं है:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "और {{count}} अन्य",
+        "howToSetPassword": "जो लोग Google, Microsoft या ईमेल OTP से साइन इन नहीं करते, उन्हें पासवर्ड सेट करना होगा। वे साइन-इन पेज पर \"पासवर्ड भूल गए\" का उपयोग कर सकते हैं, जिसके लिए ईमेल (SMTP) सेट होना ज़रूरी है, या आपका PipesHub सर्वर चलाने वाला व्यक्ति उनके लिए पासवर्ड सेट करने का लिंक बना सकता है, जैसा कि PipesHub 1.0 अपग्रेड गाइड में बताया गया है।",
+        "methodNames": {
+          "password": "पासवर्ड",
+          "otp": "ईमेल OTP",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4246,6 +4276,176 @@
         "outcomeRevoked": "अनुमति हटाई गई",
         "byAdmin": "{{admin}} द्वारा"
       }
+    },
+    "apiToolsets": {
+      "title": "API कार्रवाइयाँ",
+      "subtitle": "आपके एडमिन द्वारा एजेंट्स के लिए उपलब्ध कराए गए आंतरिक API। जहाँ माँगा जाए, वहाँ अपना क्रेडेंशियल कनेक्ट करें।",
+      "subtitleAdmin": "किसी आंतरिक REST API को उसके OpenAPI स्पेक से कार्रवाइयों में बदलें। चुनें कि एजेंट कौन-से ऑपरेशन कॉल कर सकते हैं और PipesHub कैसे साइन इन करे।",
+      "emptyTitle": "अपनी पहली API कार्रवाई जोड़ें",
+      "emptyAdmin": "किसी भी आंतरिक REST API का OpenAPI 3.0 या 3.1 स्पेक अपलोड करें।",
+      "card": {
+        "fallbackDescription": "एक आंतरिक REST API, जिसे उसके OpenAPI स्पेक से जोड़ा गया है।"
+      },
+      "operationCount_one": "{{count}} ऑपरेशन",
+      "operationCount_other": "{{count}} ऑपरेशन",
+      "kind": {
+        "read": "पढ़ना",
+        "write": "लिखना",
+        "destructive": "हटाना"
+      },
+      "authType": {
+        "none": "कोई ऑथेंटिकेशन नहीं",
+        "api_key": "API की",
+        "http_bearer": "बेयरर टोकन",
+        "http_basic": "यूज़रनेम और पासवर्ड",
+        "oauth2_client_credentials": "OAuth 2.0 क्लाइंट क्रेडेंशियल",
+        "oauth2_authorization_code": "OAuth 2.0 साइन-इन"
+      },
+      "status": {
+        "connected": "कनेक्टेड",
+        "notConnected": "कनेक्ट नहीं",
+        "open": "साइन-इन की ज़रूरत नहीं",
+        "shared": "साझा क्रेडेंशियल"
+      },
+      "cta": {
+        "add": "API कार्रवाई जोड़ें",
+        "connect": "कनेक्ट करें",
+        "manageConnection": "कनेक्शन प्रबंधित करें",
+        "details": "विवरण",
+        "edit": "संपादित करें",
+        "delete": "हटाएँ",
+        "more": "{{name}} के लिए और विकल्प"
+      },
+      "toasts": {
+        "loadError": "API कार्रवाइयाँ लोड नहीं हो सकीं",
+        "created": "API कार्रवाई जोड़ी गई",
+        "updated": "API कार्रवाई अपडेट हुई",
+        "saveError": "API कार्रवाई सहेजी नहीं जा सकी",
+        "deleted": "API कार्रवाई हटाई गई",
+        "deleteError": "API कार्रवाई हटाई नहीं जा सकी",
+        "connected": "कनेक्ट हुआ",
+        "disconnected": "डिस्कनेक्ट हुआ"
+      },
+      "deleteDialog": {
+        "title": "API कार्रवाई हटाएँ",
+        "body": "{{name}} हटाएँ? इसके सभी सहेजे गए क्रेडेंशियल हटा दिए जाएँगे। जिस API कार्रवाई को कोई एजेंट इस्तेमाल करता है, उसे हटाया नहीं जा सकता।"
+      },
+      "editor": {
+        "addTitle": "API कार्रवाई जोड़ें",
+        "editTitle": "API कार्रवाई संपादित करें",
+        "spec": "OpenAPI स्पेक",
+        "specHint": "API का OpenAPI 3.0 या 3.1 स्पेक JSON या YAML में अपलोड या पेस्ट करें। PipesHub उसके ऑपरेशन और साइन-इन के तरीके पढ़ता है।",
+        "specEditHint": "मौजूदा स्पेक रखने के लिए खाली छोड़ें। उसके ऑपरेशन और ऑथेंटिकेशन स्कीम में से चुनने के लिए नया स्पेक अपलोड करें।",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "स्पेक पढ़ें",
+        "previewing": "स्पेक पढ़ा जा रहा है…",
+        "validateError": "स्पेक पढ़ा नहीं जा सका",
+        "warnings": "स्पेक के कुछ हिस्से छोड़ दिए गए:",
+        "operations": "ऑपरेशन ({{total}} में से {{selected}} चुने गए)",
+        "operationsHint": "एजेंट केवल आपके चुने हुए ऑपरेशन कॉल कर सकते हैं।",
+        "name": "नाम",
+        "description": "विवरण",
+        "baseUrl": "बेस URL",
+        "baseUrlHint": "PipesHub अनुरोध कहाँ भेजता है। ऑपरेशन के पाथ इसमें जोड़े जाते हैं।",
+        "loopbackHint": "localhost का मतलब PipesHub सर्वर ही है। वह पता डालें जिस पर PipesHub API तक पहुँचता है, जैसे आपके नेटवर्क पर उसका होस्ट नाम।",
+        "authScheme": "ऑथेंटिकेशन",
+        "authSchemeLocked": "PipesHub के ऑथेंटिकेशन का तरीका बदलने के लिए स्पेक फिर से अपलोड करें।",
+        "scopes": "स्कोप",
+        "oauthClientId": "OAuth ऐप का क्लाइंट ID",
+        "oauthClientSecret": "OAuth ऐप का क्लाइंट सीक्रेट",
+        "keepSecret": "सहेजा गया सीक्रेट रखने के लिए खाली छोड़ें",
+        "sharedCredential": "एक साझा क्रेडेंशियल",
+        "sharedCredentialHint": "आप क्रेडेंशियल एक बार सेट करते हैं और सभी सदस्य उसका उपयोग करते हैं। बंद होने पर हर सदस्य अपना कनेक्ट करता है।",
+        "sharedCredentialForced": "क्लाइंट क्रेडेंशियल ऐप के रूप में साइन इन करते हैं, किसी व्यक्ति के रूप में नहीं, इसलिए सभी आपके सेट किए गए क्रेडेंशियल का उपयोग करते हैं।",
+        "timeout": "टाइमआउट (सेकंड)",
+        "timeoutHint": "API के लिए कितनी देर प्रतीक्षा करें, 1 से {{max}} सेकंड तक।",
+        "problems": {
+          "name": "नाम दर्ज करें।",
+          "baseUrl": "बेस URL दर्ज करें।",
+          "operations": "कम से कम एक ऑपरेशन चुनें।",
+          "timeout": "1 से 120 सेकंड का टाइमआउट दर्ज करें।",
+          "oauthClientId": "OAuth ऐप का क्लाइंट ID दर्ज करें।"
+        },
+        "create": "API कार्रवाई जोड़ें",
+        "specLoadedHint": "वह स्पेक जिससे यह API कार्रवाई बनी है। नए संस्करण में से चुनने के लिए इसे बदलें।",
+        "replaceSpec": "स्पेक बदलें",
+        "specUnread": "पहले नया स्पेक पढ़ें, या उसे बदलना रद्द करें।",
+        "specSummary_one": "संस्करण {{version}} · OpenAPI {{openapi}} · {{count}} ऑपरेशन",
+        "specSummary_other": "संस्करण {{version}} · OpenAPI {{openapi}} · {{count}} ऑपरेशन",
+        "dropFile": "स्पेक फ़ाइल यहाँ छोड़ें, या चुनने के लिए क्लिक करें",
+        "dropFileHint": "JSON या YAML। आप नीचे स्पेक पेस्ट भी कर सकते हैं।",
+        "sampleHint": "स्पेक पास नहीं है? सैंपल से शुरू करें, एक हेल्पडेस्क API जिसमें हर तरह का साइन-इन है।",
+        "sample": {
+          "yaml": "सैंपल YAML",
+          "json": "सैंपल JSON"
+        },
+        "detailsHeading": "विवरण",
+        "descriptionHint": "API का उपयोग कब करना है, यह तय करने के लिए एजेंट इसे पढ़ते हैं।",
+        "authSchemeHint": "जब कोई एजेंट API कॉल करता है, तब PipesHub कैसे साइन इन करता है।",
+        "redirectUrl": "रीडायरेक्ट URL",
+        "redirectUrlHint": "इस URL को OAuth ऐप में अनुमत रीडायरेक्ट के रूप में रजिस्टर करें।",
+        "noAuthHint": "PipesHub बिना क्रेडेंशियल के API कॉल करता है, इसलिए केवल वे ऑपरेशन काम करते हैं जिन्हें स्पेक सार्वजनिक बताता है।",
+        "selectReads": "केवल पढ़ने वाले",
+        "selectAll": "सभी",
+        "selectNone": "कोई नहीं",
+        "unreachableWarning_one": "{{count}} चुने गए ऑपरेशन को क्रेडेंशियल चाहिए, इसलिए ऑथेंटिकेशन के बिना वह विफल होता है।",
+        "unreachableWarning_other": "{{count}} चुने गए ऑपरेशन को क्रेडेंशियल चाहिए, इसलिए ऑथेंटिकेशन के बिना वे विफल होते हैं।",
+        "deselectUnreachable": "इनका चयन हटाएँ",
+        "needsCredentials": "क्रेडेंशियल चाहिए",
+        "needsCredentialsHint": "स्पेक के अनुसार इस ऑपरेशन को क्रेडेंशियल चाहिए। ऑथेंटिकेशन के बिना API इसे अस्वीकार कर देता है।",
+        "advancedHeading": "उन्नत"
+      },
+      "connect": {
+        "mode": {
+          "none": "इस API को किसी क्रेडेंशियल की ज़रूरत नहीं है।",
+          "own": "एजेंट इस API को आपके अपने क्रेडेंशियल से कॉल करते हैं।",
+          "shared": "सभी सदस्य वही क्रेडेंशियल इस्तेमाल करते हैं जो आप यहाँ सेट करते हैं।",
+          "managed": "इस API कार्रवाई का क्रेडेंशियल आपका एडमिन संभालता है।"
+        },
+        "status": "स्थिति",
+        "signIn": "साइन इन करें",
+        "signInAgain": "फिर से साइन इन करें",
+        "signingIn": "साइन इन हो रहा है…",
+        "fields": {
+          "apiKey": "API की",
+          "token": "टोकन",
+          "username": "यूज़रनेम",
+          "password": "पासवर्ड",
+          "clientId": "क्लाइंट ID",
+          "clientSecret": "क्लाइंट सीक्रेट"
+        },
+        "replaceHint": "सहेजा गया। इसे बदलने के लिए नया मान दर्ज करें।",
+        "error": "यह काम नहीं किया। फिर से कोशिश करें।",
+        "test": "कनेक्शन जाँचें",
+        "testing": "जाँच हो रही है…",
+        "testOk": "API ने जवाब दिया।",
+        "testFailed": "API ने त्रुटि के साथ जवाब दिया।",
+        "testTruncated": "जवाब का केवल शुरुआती हिस्सा दिखाया गया है।",
+        "disconnect": "डिस्कनेक्ट करें",
+        "disconnecting": "डिस्कनेक्ट हो रहा है…",
+        "panelTitle": "API कार्रवाई",
+        "connectionHeading": "कनेक्शन",
+        "testHeading": "कनेक्शन जाँचें",
+        "testHint": "ऐसा एक पढ़ने वाला ऑपरेशन कॉल करता है जिसे किसी इनपुट की ज़रूरत नहीं।",
+        "testIdle": "API क्या लौटाता है, यह देखने के लिए टेस्ट कॉल चलाएँ।",
+        "testNeedsConnection": "पहले कनेक्ट करें, फिर टेस्ट कॉल चलाएँ।",
+        "operationsHeading_one": "{{count}} ऑपरेशन जिसे एजेंट कॉल कर सकते हैं",
+        "operationsHeading_other": "{{count}} ऑपरेशन जिन्हें एजेंट कॉल कर सकते हैं"
+      },
+      "sectionTitle": "API कार्रवाइयाँ",
+      "kindCount": {
+        "read_one": "{{count}} रीड ऑपरेशन",
+        "read_other": "{{count}} रीड ऑपरेशन",
+        "write_one": "{{count}} राइट ऑपरेशन",
+        "write_other": "{{count}} राइट ऑपरेशन",
+        "destructive_one": "{{count}} डिलीट ऑपरेशन",
+        "destructive_other": "{{count}} डिलीट ऑपरेशन"
+      },
+      "kindPolicy": {
+        "read": "तुरंत चलता है",
+        "write": "पहले उपयोगकर्ता से पूछता है",
+        "destructive": "तब तक ब्लॉक, जब तक एजेंट के कार्रवाई नियम इसकी अनुमति न दें"
+      }
     }
   },
   "filePreview": {
@@ -4608,7 +4808,12 @@
     "limitSource": "चुनें कि {{name}} में क्या खोजा जाए",
     "limitSourceHint": "पूरे स्रोत को चुना रहने दें, या उसे हटाकर वे फ़ोल्डर और आइटम चुनें जिनमें एजेंट खोज सकता है।",
     "limitSourceCount": "{{count}} चुने गए आइटम तक सीमित",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} आपकी व्यक्तिगत कार्रवाई है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।"
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} आपकी व्यक्तिगत कार्रवाई है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।",
+    "apiToolsets": {
+      "section": "API कार्रवाइयाँ",
+      "connectTooltip": "इसे कार्रवाइयों में कनेक्ट करें",
+      "serviceAccountBlocked": "सर्विस-अकाउंट एजेंट केवल साझा क्रेडेंशियल वाली या बिना साइन-इन वाली API कार्रवाइयाँ इस्तेमाल कर सकते हैं।"
+    }
   },
   "recordView": {
     "sections": {
@@ -4839,9 +5044,6 @@
       "emailVerifiedDescription": "आपका ईमेल पता अपडेट किया गया। नए ईमेल से साइन इन करें।",
       "emailVerifyFailedTitle": "ईमेल सत्यापन विफल",
       "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
-      "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
-      "samlSignInFailedTitle": "साइन-इन विफल",
-      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।",
       "orgEmailVerifiedTitle": "संगठन सत्यापित",
       "orgEmailVerifiedDescription": "आपका संगठन अब सक्रिय है। जारी रखने के लिए साइन इन करें।",
       "orgEmailVerifyFailedTitle": "सत्यापन विफल",
@@ -4871,13 +5073,10 @@
       "signInWithEmailOtp": "ईमेल OTP से साइन इन करें",
       "orContinueWith": "या {{provider}} से जारी रखें",
       "orContinueWithAny": "या इनमें से किसी एक से जारी रखें",
-      "orContinueWithSso": "या सिंगल साइन-ऑन से जारी रखें",
       "googleNotConfigured": "Google साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
       "microsoftNotConfigured": "Microsoft साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
-      "oauthNotConfigured": "OAuth साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
       "googleUnavailable": "Google साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "microsoftUnavailable": "Microsoft साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
-      "oauthUnavailable": "OAuth साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "showPassword": "पासवर्ड दिखाएं",
       "hidePassword": "पासवर्ड छुपाएं",
       "accountDisabled": "आपका खाता अक्षम कर दिया गया है।",

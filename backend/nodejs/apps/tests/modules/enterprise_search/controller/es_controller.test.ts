@@ -385,8 +385,8 @@ describe('Enterprise Search Controller', () => {
     if (!(ChatSessionMessage.findOne as any).restore) {
       sinon.stub(ChatSessionMessage, 'findOne').resolves(createMockMessageDoc({ messageType: 'bot_response' }))
     }
-    if (!(ChatSessionMessage.findById as any).restore) {
-      sinon.stub(ChatSessionMessage, 'findById').resolves(createMockMessageDoc({ seq: 1 }))
+    if (!(ChatSessionMessage.findOne as any).restore) {
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(createMockMessageDoc({ seq: 1 }))
     }
     if (!(ChatSessionMessage.findOneAndReplace as any).restore) {
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(createMockMessageDoc())
@@ -1344,6 +1344,27 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('getConversationById', () => {
+
+    it('loads the session org so message reads are scoped to it', async () => {
+      // Message reads filter by session.orgId; a projection without orgId makes
+      // every conversation look empty, including to its author.
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        query: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      await getConversationById(createMockAppConfig())(req, createMockResponse(), createMockNext())
+
+      expect(findOneChain.select.called).to.be.true
+      const projection = findOneChain.select.firstCall.args[0]
+      expect(projection).to.include({ orgId: 1 })
+    })
     it('should call next when user is not authenticated', async () => {
       const req = createMockRequest({ user: undefined, params: { conversationId: 'c-1' } })
       const res = createMockResponse()
@@ -1788,6 +1809,8 @@ describe('Enterprise Search Controller', () => {
         messages: [{ citations: [{ citationId: VALID_OID3 }] }],
       }
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as any)
 
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
@@ -1806,11 +1829,10 @@ describe('Enterprise Search Controller', () => {
 
       await deleteConversationById(createMockAppConfig())(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response.status).to.equal('deleted')
-      }
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].status).to.equal('deleted')
+      expect((ChatSession.findOneAndUpdate as sinon.SinonStub).firstCall.args[0].orgId.toString()).to.equal(VALID_OID2)
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -2457,7 +2479,7 @@ describe('Enterprise Search Controller', () => {
 
     it('should update feedback successfully on happy path', async () => {
       const messageId = new mongoose.Types.ObjectId()
-      const mockConversation = { _id: VALID_OID }
+      const mockConversation = { _id: VALID_OID, orgId: VALID_OID2 }
       // performFeedbackUpdate does a bare `await ChatSession.findOne(query, null, opts)`
       // (no .exec()) — stubThenableFindOne matches that call shape.
       const findOne = stubThenableFindOne(ChatSession, mockConversation)
@@ -2489,7 +2511,7 @@ describe('Enterprise Search Controller', () => {
       expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
       // Feedback is appended via appendMessageFeedback (findOneAndUpdate on the
       // message itself), not a positional $push on an embedded array.
-      expect(feedbackUpdate.calledWith({ _id: messageId.toString() })).to.be.true
+      expect(feedbackUpdate.calledWith({ _id: messageId.toString(), orgId: VALID_OID2 })).to.be.true
     })
 
     it('should call next when conversation not found for feedback', async () => {
@@ -2873,6 +2895,25 @@ describe('Enterprise Search Controller', () => {
       expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'modifiedAfter', 'modifiedBefore')
     })
 
+    it('forwards the limit to the AI service for limits 1, 10 and 50', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({ statusCode: 200, data: { searchResults: [], records: [] } } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      for (const limit of [1, 10, 50]) {
+        const req = createMockRequest({ body: { query: 'q', limit }, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        await handler(req, createMockResponse(), createMockNext())
+      }
+
+      expect(sent.map((b) => b.limit)).to.deep.equal([1, 10, 50])
+    })
+
     it('forwards rewriteQuery only when the caller set it', async () => {
       const handler = search(createMockAppConfig())
       const sent: any[] = []
@@ -3110,7 +3151,7 @@ describe('Enterprise Search Controller', () => {
         exec: sinon.stub().resolves(mockHistory),
       }
       sinon.stub(EnterpriseSemanticSearch, 'find').returns(findChain as any)
-      sinon.stub(EnterpriseSemanticSearch, 'countDocuments').resolves(1)
+      const countStub = sinon.stub(EnterpriseSemanticSearch, 'countDocuments').resolves(1)
 
       const req = createMockRequest({
         query: {},
@@ -3120,6 +3161,10 @@ describe('Enterprise Search Controller', () => {
       const next = createMockNext()
 
       await searchHistory(req, res, next)
+
+      // the count must use the same org/user filter as the page query
+      expect(countStub.firstCall.args[0]).to.equal((EnterpriseSemanticSearch.find as sinon.SinonStub).firstCall.args[0])
+      expect(countStub.firstCall.args[0]).to.not.have.property('filter')
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -4322,6 +4367,27 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('getAgentConversationById', () => {
+
+    it('loads the session org so message reads are scoped to it', async () => {
+      // Message reads filter by session.orgId; a projection without orgId makes
+      // every conversation look empty, including to its author.
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        query: {},
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      await getAgentConversationById(createMockAppConfig())(req, createMockResponse(), createMockNext())
+
+      expect(findOneChain.select.called).to.be.true
+      const projection = findOneChain.select.firstCall.args[0]
+      expect(projection).to.include({ orgId: 1 })
+    })
     it('should call next when user is not authenticated', async () => {
       const req = createMockRequest({ user: undefined, params: { conversationId: 'ac-1' } })
       const res = createMockResponse()

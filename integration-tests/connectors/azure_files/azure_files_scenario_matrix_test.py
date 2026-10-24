@@ -66,4 +66,5 @@ async def scenario_adapter(
 @pytest.mark.azure_files
 class TestAzureFilesScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Azure Files"
+    TREE_MOVES = True
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}

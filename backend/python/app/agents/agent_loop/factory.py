@@ -176,6 +176,7 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.openapi_tool_loader import OpenAPIToolProvider
 from app.agents.agent_loop.output_cap_transport import (
     max_turn_output_chars,
     with_output_cap,
@@ -541,6 +542,7 @@ class PipesHubAgentFactory:
         # every MCP-less chat).
         if not context.mcp_servers or await is_mcp_enabled(context.config_service):
             await MCPToolProvider().load_into(tool_registry, context)
+        await OpenAPIToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode

@@ -1009,6 +1009,7 @@ async def _render_timeline(
 async def _build_contexts(state: ChatState, hits: list[_PeriodHits]) -> list[Any]:
     """Each period's hits as the units the model can be shown (None: no hits)."""
     from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+    from app.modules.retrieval.selection_scope import connection_sources_of
     from app.modules.transformers.blob_storage import BlobStorage
 
     config_service = state.get("config_service")
@@ -1021,6 +1022,7 @@ async def _build_contexts(state: ChatState, hits: list[_PeriodHits]) -> list[Any
         org_id=state.get("org_id", ""),
         user_id=state.get("user_id", ""),
         config_service=config_service,
+        connection_sources=connection_sources_of(state.get("filters")),
     )
     is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
     return await asyncio.gather(*(

@@ -499,8 +499,10 @@ async def list_selected_nodes(
     """The turn's selection as a listing, or None when it is not below app
     level. Each line names one selected node the user can read and that a
     saved agent's and a project's sources admit."""
-    from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames
-    from app.modules.retrieval.selection_scope import resolve_request_scopes
+    from app.modules.retrieval.selection_scope import (
+        readable_named_nodes,
+        resolve_request_scopes,
+    )
 
     filters: dict = state.get("filters") or {}
     if not _has_selection(filters):
@@ -513,36 +515,11 @@ async def list_selected_nodes(
     }
     bound_filters = {key: filters[key] for key in ALLOWED_FILTER_KEYS if key in filters}
     _, bounds = await resolve_request_scopes(graph_provider, user_key, org_id, bound_filters)
-    access = await graph_provider.check_access(
-        user_key, org_id, node_ids=[i for ids in selected.values() for i in ids], scopes=bounds,
-    )
-    readable = access.node_ids_in_scope if bounds else access.node_ids
-
-    async def _names(collection: str, ids: list[str], fields: list[str]) -> dict[str, dict]:
-        ids = [i for i in ids if i in readable]
-        if not ids:
-            return {}
-        rows = await graph_provider.get_nodes_by_field_in(collection, "id", ids, return_fields=["id", *fields])
-        return {(row.get("id") or row.get("_key")): row for row in rows or []}
-
-    apps = await _names(CollectionNames.APPS.value, [*selected["apps"], *selected["kb"]], ["name"])
-    groups = await _names(CollectionNames.RECORD_GROUPS.value, selected["recordGroups"], ["groupName"])
-    records = await _names(
-        CollectionNames.RECORDS.value, [*selected["records"], *selected["recordsExact"]],
-        ["recordName", "mimeType"],
-    )
     lines: list[str] = []
-    for key, ids in selected.items():
-        for node_id in ids:
-            if key in ("apps", "kb") and node_id in apps:
-                lines.append(f"- {apps[node_id].get('name') or node_id} [{_SELECTED_KINDS[key]}] id={node_id}")
-            elif key == "recordGroups" and node_id in groups:
-                lines.append(f"- {groups[node_id].get('groupName') or node_id} [record group] id={node_id}")
-            elif key in ("records", "recordsExact") and node_id in records:
-                row = records[node_id]
-                kind = "folder" if row.get("mimeType") in FOLDER_MIME_TYPES else "record"
-                alone = " (this item only, nothing under it)" if key == "recordsExact" else ""
-                lines.append(f"- {row.get('recordName') or node_id} [{kind}] id={node_id}{alone}")
+    for named in await readable_named_nodes(graph_provider, user_key, org_id, selected, bounds):
+        kind = _SELECTED_KINDS.get(named.key) or named.node_type
+        alone = " (this item only, nothing under it)" if named.key == "recordsExact" else ""
+        lines.append(f"- {named.name} [{kind}] id={named.id}{alone}")
     if not lines:
         return "Nothing this conversation is limited to is available."
     page_size = max(1, page_size)

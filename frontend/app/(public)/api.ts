@@ -24,12 +24,6 @@ export interface ResetPasswordResponse {
   accessToken?: string;
 }
 
-export interface OAuthCodeExchangePayload {
-  code: string;
-  provider: 'oauth' | 'google' | 'microsoft' | 'azureAd';
-  redirectUri: string;
-}
-
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 
 export const AuthApi = {
@@ -176,78 +170,16 @@ export const AuthApi = {
   },
 
   /**
-   * Authenticate using Microsoft / Azure AD tokens obtained client-side
-   * (e.g. via MSAL). Sends both `accessToken` and `idToken` to the backend.
-   * Use `method: 'azureAd'` for Azure AD enterprise tenants.
+   * Authenticate using Microsoft tokens obtained client-side (e.g. via MSAL).
+   * Sends both `accessToken` and `idToken` to the backend.
    */
   async signInWithMicrosoft(
     credentials: { accessToken: string; idToken: string },
-    method: 'microsoft' | 'azureAd' = 'microsoft',
   ): Promise<SignInResponse> {
     return postUserAccountAuthenticate(
-      { credentials, method },
+      { credentials, method: 'microsoft' },
       getAuthSessionRequestConfig(),
     );
-  },
-
-  /**
-   * Authenticate using a generic OAuth provider's access token.
-   * The token is obtained after the callback page exchanges the authorization
-   * code via /oauth/exchange. This method sends it to /authenticate with
-   * method: 'oauth' so the backend can resolve the user and issue app JWTs.
-   */
-  async signInWithOAuth(accessToken: string): Promise<SignInResponse> {
-    return postUserAccountAuthenticate(
-      { method: 'oauth', credentials: { accessToken } },
-      getAuthSessionRequestConfig(),
-    );
-  },
-
-  /** Redeem the single-use code a browser SAML sign-in hands back on the success page. */
-  async exchangeSamlCode(code: string, codeVerifier?: string): Promise<SignInResponse> {
-    const { data } = await publicAuthClient.post<SignInResponse>(
-      '/api/v1/saml/exchange',
-      codeVerifier ? { code, codeVerifier } : { code },
-    );
-    return data;
-  },
-
-  /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
-  async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
-    const { data } = await publicAuthClient.post<SignInResponse>(
-      '/api/v1/saml/desktop/exchange',
-      { code, codeVerifier },
-    );
-    return data;
-  },
-
-  /**
-   * Exchange OAuth authorization code for application tokens.
-   */
-  async exchangeOAuthCode(
-    payload: OAuthCodeExchangePayload,
-  ): Promise<SignInResponse> {
-    const sessionToken =
-      typeof window !== 'undefined'
-        ? sessionStorage.getItem('auth_session_token')
-        : null;
-
-    const { data } = await publicAuthClient.post<SignInResponse & {
-      access_token?: string;
-      refresh_token?: string;
-    }>(
-      '/api/v1/userAccount/oauth/exchange',
-      payload,
-      sessionToken
-        ? { headers: { 'x-session-token': sessionToken } }
-        : undefined,
-    );
-
-    return {
-      ...data,
-      accessToken: data.accessToken ?? data.access_token,
-      refreshToken: data.refreshToken ?? data.refresh_token,
-    };
   },
 };
 

@@ -707,7 +707,9 @@
       "needsMultimodalModel": "需要多模態模型",
       "skipped": "已略過",
       "pending": "待處理"
-    }
+    },
+    "allRecordsBusy_other": "此檢視目前忙碌中，將在 {{count}} 秒後重試。",
+    "allRecordsLoadFailed": "載入記錄失敗"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1817,7 +1819,14 @@
         "saveErrorTitle": "儲存變更失敗",
         "regenerateSuccessTitle": "密鑰已重新產生",
         "regenerateErrorTitle": "重新產生密鑰失敗",
-        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。"
+        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。",
+        "identityBoundNote": "此應用程式的權杖以所指向的服務帳號身分行事。變更它會撤銷已經簽發的權杖。",
+        "identityUnboundNote": "此應用程式的權杖以建立它的人的身分行事，擁有其文件權限和角色——如果建立者是管理員，就意味著管理員權限。請改為將其指向一個服務帳號。",
+        "identityAdminOnly": "只有管理員才能為此應用程式指定服務帳號。請聯絡管理員處理。",
+        "identityBindAction": "使用此帳號",
+        "identityBindRevokes": "此操作會撤銷該應用程式已簽發的權杖。使用它們的一切都需要重新取得。",
+        "identityBound": "該應用程式現在以此服務帳號的身分行事。",
+        "identityBindFailed": "無法變更服務帳號。請稍後再試。"
       },
       "create": {
         "panelTitle": "建立 OAuth 2.0 應用程式",
@@ -1875,7 +1884,15 @@
         "errorOptionalUrlInvalid": "選填的 URL 若有填寫，必須是有效的 http(s) 位址。",
         "grantRequiredTitle": "必須選取授權類型",
         "grantRequiredDescription": "至少必須保留一種已選取的授權類型。",
-        "clientCredentialsWarning": "用戶端憑證 token 一律以建立此應用程式的使用者身分存取 Pipeshub，而非以呼叫 token 端點的人的身分。在您授予的權限範圍（scope）內，token 可以存取該使用者能存取的一切，並繼承其角色，因此由管理員建立的應用程式將擁有管理員權限。若該帳號被刪除，token 也會失效。若此應用程式同時支援授權碼流程，使用者仍可透過該方式為自己授權。"
+        "serviceAccountHeading": "此應用程式代表其行事的服務帳號",
+        "clientCredentialsIdentityNote": "此應用程式的權杖以所指向的服務帳號身分行事；若未設定，則以建立它的人的身分行事——如果建立者是管理員，就意味著管理員權限。",
+        "serviceAccountHelper": "用戶端認證權杖不包含任何人員，因此此應用程式需要自己的身分。服務帳號始終是成員，絕不會是管理員，且無法登入。沒有服務帳號，應用程式將以建立它的人的身分行事。",
+        "serviceAccountPlaceholder": "選擇服務帳號",
+        "serviceAccountLoading": "正在載入服務帳號…",
+        "serviceAccountNone": "目前還沒有服務帳號。請在「工作區 → 服務帳號」中建立一個，然後返回此處。",
+        "serviceAccountLoadError": "無法載入服務帳號。請稍後再試。",
+        "serviceAccountRetry": "重試",
+        "errorServiceAccountRequired": "請選擇此應用程式代表其行事的服務帳號。"
       }
     },
     "personalAccessTokens": {
@@ -2400,7 +2417,8 @@
       "enterprise": {
         "userActionsTitle": "成員自己的動作",
         "userActionsDescription": "檢視並移除組織成員為自己新增的動作。"
-      }
+      },
+      "appsHeading": "應用程式動作"
     },
     "rightPanel": {
       "primaryDisabledHint": "請向上捲動並填寫必填欄位（標有 * 者）以繼續。",
@@ -2559,17 +2577,11 @@
       "panels": {
         "google": "設定 Google 驗證",
         "microsoft": "設定 Microsoft 驗證",
-        "samlSso": "設定 SAML SSO",
-        "oauth": "設定 OAuth 2.0",
         "github": "設定 GitHub 驗證"
       },
       "jit": {
         "title": "啟用即時（JIT）佈建",
         "description": "使用者首次以 {{providerName}} 登入時自動建立使用者帳戶"
-      },
-      "xmlUpload": {
-        "parseError": "無法從此檔案解析 SAML 中繼資料。請確認它是有效的 IdP 中繼資料 XML。",
-        "readError": "讀取檔案失敗。"
       },
       "riskDialog": {
         "title": "確認驗證變更",
@@ -2582,6 +2594,22 @@
       "userMethods": {
         "heading": "使用者登入方式",
         "subtitle": "控制所有組織中每位使用者可使用的登入方式。"
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0 已移除 {{methods}} 登入",
+        "nowSignsInWith": "此工作區現在使用{{methods}}登入。",
+        "peopleIntro": "以下人員曾經登入過，但尚未設定密碼：",
+        "person": "{{name}}（{{email}}）",
+        "andMore": "以及其他 {{count}} 人",
+        "howToSetPassword": "未使用 Google、Microsoft 或電子郵件驗證碼登入的人員需要設定密碼。他們可以在登入頁面使用「忘記密碼」（需要已設定電子郵件 SMTP），也可以由執行 PipesHub 伺服器的人員依照 PipesHub 1.0 升級指南為其建立設定密碼的連結。",
+        "methodNames": {
+          "password": "密碼",
+          "otp": "電子郵件驗證碼",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4321,6 +4349,169 @@
         "outcomeRevoked": "已移除權限",
         "byAdmin": "由 {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 動作",
+      "subtitle": "管理員提供給代理程式的內部 API。需要時，請連線您自己的憑證。",
+      "subtitleAdmin": "透過 OpenAPI 規格將內部 REST API 轉換為動作。選擇代理程式可以呼叫的操作，以及 PipesHub 的登入方式。",
+      "emptyTitle": "新增您的第一個 API 動作",
+      "emptyAdmin": "上傳任何內部 REST API 的 OpenAPI 3.0 或 3.1 規格。",
+      "card": {
+        "fallbackDescription": "依 OpenAPI 規格新增的內部 REST API。"
+      },
+      "operationCount_other": "{{count}} 個操作",
+      "kind": {
+        "read": "讀取",
+        "write": "寫入",
+        "destructive": "刪除"
+      },
+      "authType": {
+        "none": "不需驗證",
+        "api_key": "API 金鑰",
+        "http_bearer": "Bearer 權杖",
+        "http_basic": "使用者名稱和密碼",
+        "oauth2_client_credentials": "OAuth 2.0 用戶端憑證",
+        "oauth2_authorization_code": "OAuth 2.0 登入"
+      },
+      "status": {
+        "connected": "已連線",
+        "notConnected": "未連線",
+        "open": "不需登入",
+        "shared": "共用憑證"
+      },
+      "cta": {
+        "add": "新增 API 動作",
+        "connect": "連線",
+        "manageConnection": "管理連線",
+        "details": "詳細資料",
+        "edit": "編輯",
+        "delete": "刪除",
+        "more": "{{name}} 的更多選項"
+      },
+      "toasts": {
+        "loadError": "無法載入 API 動作",
+        "created": "已新增 API 動作",
+        "updated": "已更新 API 動作",
+        "saveError": "無法儲存 API 動作",
+        "deleted": "已刪除 API 動作",
+        "deleteError": "無法刪除 API 動作",
+        "connected": "已連線",
+        "disconnected": "已中斷連線"
+      },
+      "deleteDialog": {
+        "title": "刪除 API 動作",
+        "body": "要刪除 {{name}} 嗎？為它儲存的所有憑證都會移除。代理程式正在使用的 API 動作無法刪除。"
+      },
+      "editor": {
+        "addTitle": "新增 API 動作",
+        "editTitle": "編輯 API 動作",
+        "spec": "OpenAPI 規格",
+        "specHint": "上傳或貼上該 API 的 OpenAPI 3.0 或 3.1 規格（JSON 或 YAML 格式）。PipesHub 會讀取其中的操作和登入方式。",
+        "specEditHint": "留白即保留目前的規格。上傳新規格後可從其操作和驗證方式中選擇。",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "讀取規格",
+        "previewing": "正在讀取規格…",
+        "validateError": "無法讀取規格",
+        "warnings": "已略過規格中的部分內容：",
+        "operations": "操作（已選 {{selected}} / {{total}}）",
+        "operationsHint": "代理程式只能呼叫您選擇的操作。",
+        "name": "名稱",
+        "description": "說明",
+        "baseUrl": "基礎 URL",
+        "baseUrlHint": "PipesHub 傳送要求的位址，操作路徑會附加在其後。",
+        "loopbackHint": "localhost 指的是 PipesHub 伺服器本身。請使用 PipesHub 存取該 API 的位址，例如它在你網路中的主機名稱。",
+        "authScheme": "驗證",
+        "authSchemeLocked": "重新上傳規格才能變更 PipesHub 的驗證方式。",
+        "scopes": "權限範圍",
+        "oauthClientId": "OAuth 應用程式用戶端 ID",
+        "oauthClientSecret": "OAuth 應用程式用戶端密碼",
+        "keepSecret": "留白即保留已儲存的密碼",
+        "sharedCredential": "使用一組共用憑證",
+        "sharedCredentialHint": "您只需設定一次憑證，所有成員都會使用。關閉後，每位成員各自連線自己的憑證。",
+        "sharedCredentialForced": "用戶端憑證以應用程式而非個人身分登入，因此所有人共用您設定的憑證。",
+        "timeout": "逾時（秒）",
+        "timeoutHint": "等待 API 回應的時間，1 到 {{max}} 秒。",
+        "problems": {
+          "name": "請輸入名稱。",
+          "baseUrl": "請輸入基礎 URL。",
+          "operations": "請至少選擇一個操作。",
+          "timeout": "請輸入 1 到 120 秒之間的逾時時間。",
+          "oauthClientId": "請輸入 OAuth 應用程式的用戶端 ID。"
+        },
+        "create": "新增 API 動作",
+        "specLoadedHint": "此 API 動作所依據的規格。取代規格即可從較新版本中選擇。",
+        "replaceSpec": "取代規格",
+        "specUnread": "請先讀取新規格，或取消取代。",
+        "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 個操作",
+        "dropFile": "將規格檔案拖放到這裡，或按一下選擇檔案",
+        "dropFileHint": "JSON 或 YAML。您也可以在下方貼上規格。",
+        "sampleHint": "手邊沒有規格？從範例開始：一個支援所有登入方式的服務台 API。",
+        "sample": {
+          "yaml": "範例 YAML",
+          "json": "範例 JSON"
+        },
+        "detailsHeading": "詳細資料",
+        "descriptionHint": "代理程式會讀取這段內容來決定何時使用該 API。",
+        "authSchemeHint": "代理程式呼叫 API 時 PipesHub 的登入方式。",
+        "redirectUrl": "重新導向 URL",
+        "redirectUrlHint": "在 OAuth 應用程式中將此 URL 註冊為允許的重新導向位址。",
+        "noAuthHint": "PipesHub 不帶憑證呼叫該 API，因此只有規格中標示為公開的操作才能正常運作。",
+        "selectReads": "僅讀取",
+        "selectAll": "全部",
+        "selectNone": "全不選",
+        "unreachableWarning_other": "已選的 {{count}} 個操作需要憑證，未經驗證將會失敗。",
+        "deselectUnreachable": "取消選取這些操作",
+        "needsCredentials": "需要憑證",
+        "needsCredentialsHint": "規格顯示此操作需要憑證。未經驗證，API 會拒絕該要求。",
+        "advancedHeading": "進階"
+      },
+      "connect": {
+        "mode": {
+          "none": "此 API 不需要憑證。",
+          "own": "代理程式使用您自己的憑證呼叫此 API。",
+          "shared": "所有成員都使用您在此設定的憑證。",
+          "managed": "此 API 動作的憑證由管理員管理。"
+        },
+        "status": "狀態",
+        "signIn": "登入",
+        "signInAgain": "重新登入",
+        "signingIn": "正在登入…",
+        "fields": {
+          "apiKey": "API 金鑰",
+          "token": "權杖",
+          "username": "使用者名稱",
+          "password": "密碼",
+          "clientId": "用戶端 ID",
+          "clientSecret": "用戶端密碼"
+        },
+        "replaceHint": "已儲存。輸入新值即可取代。",
+        "error": "操作未成功，請再試一次。",
+        "test": "測試連線",
+        "testing": "正在測試…",
+        "testOk": "API 已回應。",
+        "testFailed": "API 回傳了錯誤。",
+        "testTruncated": "僅顯示回應的開頭部分。",
+        "disconnect": "中斷連線",
+        "disconnecting": "正在中斷連線…",
+        "panelTitle": "API 動作",
+        "connectionHeading": "連線",
+        "testHeading": "測試連線",
+        "testHint": "呼叫一個不需輸入的讀取操作。",
+        "testIdle": "執行測試呼叫，查看 API 回傳的內容。",
+        "testNeedsConnection": "請先連線，再執行測試呼叫。",
+        "operationsHeading_other": "代理程式可以呼叫的 {{count}} 個操作"
+      },
+      "sectionTitle": "API 動作",
+      "kindCount": {
+        "read_other": "{{count}} 個讀取",
+        "write_other": "{{count}} 個寫入",
+        "destructive_other": "{{count}} 個刪除"
+      },
+      "kindPolicy": {
+        "read": "立即執行",
+        "write": "先詢問使用者",
+        "destructive": "除非代理程式的動作規則允許，否則會被封鎖"
+      }
     }
   },
   "filePreview": {
@@ -4681,7 +4872,12 @@
     "limitSource": "選擇 {{name}} 的搜尋範圍",
     "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
     "limitSourceCount": "僅限所選的 {{count}} 項",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。"
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
+    "apiToolsets": {
+      "section": "API 動作",
+      "connectTooltip": "請在「動作」中連線",
+      "serviceAccountBlocked": "服務帳戶代理程式只能使用具有共用憑證或不需登入的 API 動作。"
+    }
   },
   "recordView": {
     "sections": {
@@ -4912,9 +5108,6 @@
       "emailVerifiedDescription": "您的電子郵件地址已更新。請使用新的電子郵件登入。",
       "emailVerifyFailedTitle": "電子郵件驗證失敗",
       "emailVerifyFailedDescription": "連結可能無效或已過期。",
-      "samlErrorTitle": "使用 SAML 登入時發生錯誤",
-      "samlSignInFailedTitle": "登入失敗",
-      "samlSignInFailedDescription": "SAML SSO 無法完成。請再試一次。",
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
@@ -4944,13 +5137,10 @@
       "signInWithEmailOtp": "使用電子郵件 OTP 登入",
       "orContinueWith": "或使用 {{provider}} 繼續",
       "orContinueWithAny": "或使用其中任一方式繼續",
-      "orContinueWithSso": "或使用單一登入（SSO）繼續",
       "googleNotConfigured": "您的組織尚未設定 Google 登入。",
       "microsoftNotConfigured": "您的組織尚未設定 Microsoft 登入。",
-      "oauthNotConfigured": "您的組織尚未設定 OAuth 登入。",
       "googleUnavailable": "Google 登入目前無法使用。請聯絡您的管理員。",
       "microsoftUnavailable": "Microsoft 登入目前無法使用。請聯絡您的管理員。",
-      "oauthUnavailable": "OAuth 登入目前無法使用。請聯絡您的管理員。",
       "showPassword": "顯示密碼",
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",

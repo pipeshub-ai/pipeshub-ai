@@ -48,9 +48,7 @@ import {
   UserManagerContainer,
   AuthServiceContainer,
   createUserAccountRouter,
-  createSamlRouter,
   createOrgAuthConfigRouter,
-  SamlController,
   MailServiceContainer,
   createMailServiceRouter,
   EnterpriseSearchAgentContainer,
@@ -120,6 +118,8 @@ import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes'
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { ApiToolsetsContainer } from './modules/api_toolsets/container/api_toolsets.container';
+import { createApiToolsetsRouter } from './modules/api_toolsets/routes/api_toolsets.routes';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import {
   createMcpClientMetadataHandler,
@@ -175,6 +175,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private apiToolsetsContainer!: Container;
   private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -299,6 +300,9 @@ export class Application {
         configurationManagerConfig,
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.apiToolsetsContainer = await ApiToolsetsContainer.initialize(
         configurationManagerConfig,
       );
       this.projectsContainer = await ProjectsContainer.initialize(
@@ -610,8 +614,6 @@ export class Application {
       createFeatureFlagRouter(this.entityManagerContainer),
     );
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
-
     this.app.use(
       '/api/v1/userAccount',
       createUserAccountRouter(this.authServiceContainer),
@@ -742,6 +744,12 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
+    this.app.use(
+      '/api/v1/api-toolsets',
+      createApiToolsetsRouter(this.apiToolsetsContainer),
     );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.
@@ -891,11 +899,7 @@ export class Application {
           resolve();
         });
       });
-      if (this.authServiceContainer) {
-        await this.updateSamlStrategies();
-      }
       await editionBoot.afterListen(this.logger, this.editionContainers());
-
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1206,16 +1210,6 @@ export class Application {
       this.logger.info('OAuth token service registered for AuthMiddleware factory');
     } catch (error) {
       this.logger.warn('Failed to register OAuth token service', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-  async updateSamlStrategies(): Promise<void> {
-    try {
-      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      await samlController.updateSamlStrategiesWithCallback();
-    } catch (error) {
-      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

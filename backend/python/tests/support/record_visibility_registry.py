@@ -162,6 +162,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
     ),
+    "get_record_group_virtual_record_ids": (
+        Rule.ALL,
+        "a storage move takes every stored file under the group, or a restored record would lose its content",
+    ),
     # Writes.
     "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),

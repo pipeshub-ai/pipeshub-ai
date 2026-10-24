@@ -22,6 +22,7 @@ import {
   ConnectorVirtualRecordsSchema,
   RelocateVirtualRecordsSchema,
   MissingDocumentsSchema,
+  FlatRecordDocumentsQuery,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
@@ -201,6 +202,40 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.purgeVirtualRecordDocuments(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/records/flat-documents',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(FlatRecordDocumentsQuery),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.listFlatRecordDocuments(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/records/:virtualRecordId/documents',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeVirtualRecordParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.listVirtualRecordDocuments(req, res, next);
       } catch (error) {
         next(error);
       }

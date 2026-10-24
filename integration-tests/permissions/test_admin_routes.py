@@ -39,6 +39,7 @@ from helper.admin_route_table import (
     TOOL_RULES_HANDLERS,
     AdminRoute,
 )
+from helper.feature_flags import feature_flag
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
@@ -58,8 +59,19 @@ _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
 )
-# Python answers this when MCP is switched off for the org, before any admin check.
-_MCP_DISABLED = "MCP servers are disabled"
+# What Python answers when a Labs feature is switched off for the org, before any admin check.
+_FEATURE_DISABLED = {
+    "api/routes/mcp_servers.py": "MCP servers are disabled",
+    "api/routes/api_toolsets.py": "API Toolsets are disabled",
+}
+
+
+def _skip_if_feature_is_off(route: AdminRoute, status: int, text: str) -> None:
+    for handler_file, disabled in _FEATURE_DISABLED.items():
+        if route.handler.startswith(handler_file) and disabled in text:
+            pytest.skip(f"{disabled} on this stack, so the admin check is never reached")
+    if route.handler in TOOL_RULES_HANDLERS and status == 404 and ORG_TOOL_RULES_OFF in text:
+        pytest.skip("Organization tool rules are off in this edition, so the admin check is never reached")
 
 
 def _call(
@@ -111,6 +123,13 @@ def _admin_request(route: AdminRoute) -> tuple[str, Any]:
     return ABSENT_ID, route.member_body
 
 
+@pytest.fixture(scope="module", autouse=True)
+def api_actions_on(pipeshub_client: PipeshubClient) -> Iterator[None]:
+    """API actions are off by default, and while off their routes answer before the admin check."""
+    with feature_flag(pipeshub_client, "ENABLE_API_TOOLSETS", True):
+        yield
+
+
 @pytest.fixture(scope="module")
 def member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
     pipeshub_client._ensure_access_token()
@@ -128,10 +147,7 @@ class TestMembersAreRefused:
             member.base_url, member.token, route,
             path_value=ABSENT_ID, body=_member_body(route), timeout=member.timeout,
         )
-        if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
-            pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
-        if route.handler in TOOL_RULES_HANDLERS and status == 404 and ORG_TOOL_RULES_OFF in text:
-            pytest.skip("Organization tool rules are off in this edition, so the admin check is never reached")
+        _skip_if_feature_is_off(route, status, text)
         assert status == route.refusal_status and route.refusal_words.lower() in text.lower(), (
             f"A member calling {route.id} got HTTP {status}, not the admin refusal "
             f"({route.refusal_status} mentioning {route.refusal_words!r}). "
@@ -149,10 +165,7 @@ class TestTheAdminGetsThrough:
             user_session_client.base_url, user_session_client.token, route,
             path_value=path_value, body=body, timeout=user_session_client.timeout_seconds,
         )
-        if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
-            pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
-        if route.handler in TOOL_RULES_HANDLERS and status == 404 and ORG_TOOL_RULES_OFF in text:
-            pytest.skip("Organization tool rules are off in this edition, so the admin check is never reached")
+        _skip_if_feature_is_off(route, status, text)
         lowered = text.lower()
         refused = (
             status in (401, 403)

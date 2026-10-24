@@ -231,6 +231,7 @@ class EntityEventService(BaseEventService):
             )
             await self._remove_mcp_data("org", payload["orgId"])
             await self._remove_personal_toolsets("org", payload["orgId"])
+            await self._remove_api_toolset_data(payload["orgId"])
             return True
 
         except Exception as e:
@@ -413,6 +414,7 @@ class EntityEventService(BaseEventService):
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
+                await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
             return True
 
         except Exception as e:
@@ -448,6 +450,20 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
             self.logger.error(f"Could not remove personal toolset instances for deleted {owner_kind} {user_id or org_id}: {e}")
+
+    async def _remove_api_toolset_data(self, org_id: str, user_id: str | None = None) -> None:
+        """A deleted org's API toolsets, or a deleted user's credentials for them. The graph
+        change is already done, so a failure here is logged, not raised."""
+        from app.agents.openapi.store import ApiToolsetStore
+
+        try:
+            store = ApiToolsetStore(self.app_container.config_service())
+            if user_id:
+                await store.remove_owner(org_id, user_id)
+            else:
+                await store.remove_org(org_id)
+        except Exception as e:
+            self.logger.error(f"Could not remove API toolset data for deleted {'user' if user_id else 'org'} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:

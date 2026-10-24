@@ -6,6 +6,7 @@ whose ``check_access`` applies the scopes it is given, so what is checked is
 the real ``outside_connection`` path, not a stub of it.
 """
 
+import json
 from collections.abc import Iterable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,6 +38,7 @@ from app.connectors.api.router import (
     stream_record,
 )
 from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_nodes
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     CONNECTION_OUTSIDE_MESSAGE,
@@ -371,7 +373,8 @@ class TestBrowsing:
         service = AsyncMock()
         service.get_nodes = AsyncMock(return_value=SimpleNamespace(
             success=True, error=None, errorCode=None, typed_records={"rec-out": {}, "rec-in": {}},
-            items=[SimpleNamespace(id="rec-in"), SimpleNamespace(id="rec-out")],
+            items=[SimpleNamespace(id=i, parentId=None, parent=None) for i in ("rec-in", "rec-out")],
+            breadcrumbs=None, parentNode=None,
         ))
         kwargs = {
             "parent_type": None, "only_containers": False, "page": 1, "limit": 50, "sort_by": "updatedAt",
@@ -578,3 +581,134 @@ class TestChatTurns:
             )
         assert filters == {"prepared": True}
         assert prepare.call_args.kwargs["connection_sources"]["records"] == ["rec-in"]
+
+
+#: A file in a folder of app-in; a limit naming only the file leaves the folder out.
+FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["rec-in"]}
+FOLDER_LIMIT = {"apps": [], "recordGroups": [], "records": ["folder-in"]}
+
+
+def _graph_under(limit: dict) -> AsyncMock:
+    graph = _graph()
+    ROWS.setdefault("folder-in", {"id": "folder-in", "connectorId": "app-in", "groupIds": []})
+    below = {"rec-in": ["rec-in"], "folder-in": ["folder-in", "rec-in"]}
+    graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": [
+        {"id": i, "vrid": "", "connectorId": "app-in"} for named in limit["records"] for i in below.get(named, [])
+    ]})
+    return graph
+
+
+def _file_doc() -> dict:
+    return {
+        "_key": "rec-in", "recordName": "budget.xlsx", "connectorId": "app-in",
+        "recordGroupId": "app-in", "externalGroupId": "ext-collection",
+        "parentNodeId": "folder-in", "externalParentId": "ext-folder", "rootRecordGroupId": None,
+    }
+
+
+class TestParentsOutsideTheLimit:
+    """A file the limit names can sit in a folder the limit leaves out: the
+    file is returned and that folder is not named."""
+
+    @staticmethod
+    async def _search(limit: dict | None) -> tuple[dict, AsyncMock]:
+        graph = _graph_under(limit or FILE_LIMIT)
+        doc = _file_doc()
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={
+            "searchResults": [{"metadata": {"recordId": "rec-in"}}], "records": [doc],
+            "virtual_to_record_map": {"v-in": doc}, "status_code": 200,
+        })
+        request = _request(limit)
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            response = await search(request=request, body=SearchQuery(query="q"),
+                                    retrieval_service=retrieval, graph_provider=graph)
+        return json.loads(response.body), graph
+
+    @pytest.mark.asyncio
+    async def test_a_search_hit_named_alone_does_not_name_its_folder(self) -> None:
+        body, _ = await self._search(FILE_LIMIT)
+
+        (record,) = body["records"]
+        assert record["parentNodeId"] is None and record["externalParentId"] is None
+        assert record["recordGroupId"] is None and record["externalGroupId"] is None
+        assert body["virtual_to_record_map"]["v-in"]["parentNodeId"] is None
+        assert "folder-in" not in json.dumps(body) and "ext-folder" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    async def test_a_search_hit_in_a_named_folder_keeps_its_folder(self) -> None:
+        body, _ = await self._search(FOLDER_LIMIT)
+
+        (record,) = body["records"]
+        assert record["parentNodeId"] == "folder-in" and record["externalParentId"] == "ext-folder"
+        assert record["recordGroupId"] is None  # the collection is only partly shared
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_search_is_unchanged(self) -> None:
+        body, graph = await self._search(None)
+
+        assert body["records"] == [_file_doc()]
+        graph.check_access.assert_not_awaited()
+
+    @staticmethod
+    async def _details(limit: dict | None) -> dict:
+        graph = _graph_under(limit or FILE_LIMIT)
+        graph.check_record_access_with_details = AsyncMock(return_value={
+            "record": _file_doc(),
+            "knowledgeBase": {"id": "app-in", "name": "Finance", "orgId": "org-1"},
+            "folder": {"id": "folder-in", "name": "Q3"},
+        })
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
+        request = _request(limit)
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
+            return await get_record_by_id("rec-in", request, graph_provider=graph)
+
+    @pytest.mark.asyncio
+    async def test_record_details_of_a_file_named_alone_name_no_folder(self) -> None:
+        details = await self._details(FILE_LIMIT)
+
+        assert details["folder"] is None and details["knowledgeBase"] is None
+        assert details["record"]["parentNodeId"] is None and details["record"]["recordName"] == "budget.xlsx"
+
+    @pytest.mark.asyncio
+    async def test_record_details_in_a_named_folder_keep_the_folder(self) -> None:
+        details = await self._details(FOLDER_LIMIT)
+
+        assert details["folder"] == {"id": "folder-in", "name": "Q3"}
+        assert details["record"]["parentNodeId"] == "folder-in"
+
+    @pytest.mark.asyncio
+    async def test_unlimited_record_details_are_unchanged(self) -> None:
+        details = await self._details(None)
+
+        assert details["folder"]["id"] == "folder-in" and details["knowledgeBase"]["id"] == "app-in"
+        assert details["record"] == _file_doc()
+
+    @pytest.mark.asyncio
+    async def test_a_restore_refusal_does_not_name_a_trashed_folder_outside_the_limit(self) -> None:
+        members = [{"record": {"_key": "rec-in"}, "parentId": "trashed-dir", "parentIsDeleted": True,
+                    "parentName": "Secret plans"}]
+
+        async def refusal(limit: dict | None) -> dict:
+            request = _request(limit, graph=_graph_under(limit or FILE_LIMIT))
+            outside = None if limit is None else (
+                lambda kb_id, live, trashed: ids_outside_connection_on_restore(
+                    request, request.app.state.graph_provider, "org-1", "user-1", kb_id, live, trashed,
+                )
+            )
+            return await KnowledgeBaseService._trashed_parent_refusal(
+                "budget.xlsx", members, {"rec-in"}, "app-in", outside,
+            )
+
+        hidden = await refusal(FILE_LIMIT)
+        assert "Secret plans" not in hidden["reason"] and "parentId" not in hidden
+        assert hidden["code"] == 409
+        shown = await refusal(None)
+        assert "Secret plans" in shown["reason"] and shown["parentId"] == "trashed-dir"
+        whole = await refusal(LIMIT)
+        assert "Secret plans" in whole["reason"]

@@ -103,6 +103,9 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
     )
 
 
+# Storage cleanups of abandoned virtual record ids still running in the background.
+_ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
+
 class EventProcessor:
     def __init__(
         self,
@@ -186,6 +189,16 @@ class EventProcessor:
             self.logger.error(
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
+
+    def _spawn_abandoned_vrid_cleanup(self, org_id: str, virtual_record_id: str) -> asyncio.Task:
+        task = asyncio.create_task(
+            self._cleanup_abandoned_vrid_storage(org_id, virtual_record_id),
+            name=f"abandoned-vrid-cleanup-{virtual_record_id}",
+        )
+        # Held until done: the event loop keeps only weak references to tasks.
+        _ABANDONED_VRID_CLEANUPS.add(task)
+        task.add_done_callback(_ABANDONED_VRID_CLEANUPS.discard)
+        return task
 
     async def _cleanup_abandoned_vrid_storage(
         self, org_id: str, virtual_record_id: str
@@ -798,6 +811,9 @@ class EventProcessor:
         if blob_storage is None:
             # Cannot check; keep reusing the duplicate as before.
             return True
+        # Raises StorageLookupUnavailableError when storage cannot tell (a 503
+        # mid-move): neither "present" nor "gone" is safe to assume, so the event
+        # fails and is retried.
         return await blob_storage.get_actual_content_path(org_id, virtual_record_id) is not None
 
     async def _check_duplicate_by_md5(
@@ -1577,9 +1593,9 @@ class EventProcessor:
                 abandoned_virtual_record_id
                 and abandoned_virtual_record_id != virtual_record_id
             ):
-                await self._cleanup_abandoned_vrid_storage(
-                    org_id, abandoned_virtual_record_id
-                )
+                # Off the indexing slot: the cleanup waits to confirm no record
+                # still uses the vrid, and backs off on errors, before deleting.
+                self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record

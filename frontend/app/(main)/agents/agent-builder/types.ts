@@ -106,6 +106,8 @@ export interface AgentFormPayload {
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
   mcpServers?: McpServerReference[];
+  /** Sent only when changed — see `changedAttachments`. */
+  apiToolsetTools?: string[];
   skills?: SkillReference[];
   webSearch?: AgentWebSearchAttachment | null;
   /** Fallback applied when a chat request against this agent omits its own reasoningEffort. */

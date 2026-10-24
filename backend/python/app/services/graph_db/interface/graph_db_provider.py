@@ -1786,7 +1786,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
@@ -1796,6 +1797,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
@@ -1807,7 +1809,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
@@ -1817,6 +1820,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
@@ -1828,8 +1832,13 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
         """Edges for many records and relation types at once.
+
+        ``limit_per_direction`` caps the parents and the children kept per record,
+        so a hit with thousands of attachments costs a bounded read. Which edges
+        survive the cap is unspecified.
 
         Returns {record_id: {"parents": [...], "children": [...]}} where the two
         lists hold what `get_parent_record_ids_by_relation_type` and
@@ -1859,7 +1868,7 @@ class IGraphDBProvider(ABC):
                 if outgoing
                 else self.get_child_record_ids_by_relation_type
             )
-            return await call(record_id, relation_type, transaction)
+            return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
         results = await asyncio.gather(
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
@@ -1877,6 +1886,8 @@ class IGraphDBProvider(ABC):
             for edge in edges or []:
                 if not isinstance(edge, Mapping):
                     continue
+                if limit_per_direction is not None and len(bucket) >= limit_per_direction:
+                    break
                 bucket.append({**edge, "relationType": relation_type})
         return out
 
@@ -2916,6 +2927,21 @@ class IGraphDBProvider(ABC):
         i.e. the content stored under this record's storage path.
 
         Raises on a query failure: an empty list means "owns no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record in *record_group_id*
+        or in a record group nested beneath it -- the content stored under the
+        group's storage prefix.
+
+        Raises on a query failure: an empty list means "holds no content", which
         a storage move acts on.
         """
         pass
@@ -6009,6 +6035,21 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_api_toolset_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that may call an operation of the API toolset
+        (an `apiToolsetTools` entry starting with `"<instance_id>:"`).
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the toolset.
+        """
+        pass
+
+    @abstractmethod
     async def check_mcp_instance_in_use(
         self,
         instance_id: str,
@@ -7244,6 +7285,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         name_parents: bool = True,
         user_key: str | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what the user may see under one start node: the App's
         direct children, a folder or group's (``include_scope`` adds the browse
@@ -7251,7 +7293,8 @@ class IGraphDBProvider(ABC):
         Returns ``{rows, hasMore, total, counts, scope}``; rows carry their own
         ``sortKey``/``nullRank`` for the partition merge. With neither
         ``granted_ids`` nor ``grants_by_connector``, ``user_key`` has the page read
-        the grants of its own connector alone (``get_knowledge_hub_connector_grants``)."""
+        the grants of its own connector alone (``get_knowledge_hub_connector_grants``).
+        ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:

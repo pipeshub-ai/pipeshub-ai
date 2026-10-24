@@ -287,6 +287,7 @@ class TestAbstractMethodInventory:
         "get_record_path",
         "get_record_path_segments",
         "get_descendant_virtual_record_ids",
+        "get_record_group_virtual_record_ids",
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
@@ -443,6 +444,7 @@ class TestAbstractMethodInventory:
         "check_edge_exists",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_api_toolset_in_use",
         "check_mcp_instance_in_use",
         "check_connector_in_use",
         # Knowledge hub operations. The three inventory tests below fail if one

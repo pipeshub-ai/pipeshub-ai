@@ -92,6 +92,9 @@ class AgentContext(BaseModel):
     # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # API toolset operations the agent may call, as stored on the agent:
+    # `"<instanceId>:<toolName>"` (see `app/agents/openapi/attachments.py`).
+    api_toolset_tools: list[str] = Field(default_factory=list)
 
     # Knowledge config
     has_knowledge: bool = False
@@ -462,6 +465,7 @@ class AgentContext(BaseModel):
             toolset_configs=state.get("toolset_configs") or {},
             mcp_servers=state.get("mcp_servers") or [],
             mcp_server_configs=state.get("mcp_server_configs") or {},
+            api_toolset_tools=state.get("api_toolset_tools") or [],
             web_search_config=state.get("web_search_config"),
             deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
             has_knowledge=bool(state.get("has_knowledge", False)),

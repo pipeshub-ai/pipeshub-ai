@@ -13,7 +13,6 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
-import { deriveNameFromEmail } from '../../../utils/generic-functions';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -21,7 +20,7 @@ export interface JitUserDetails {
   fullName: string;
 }
 
-export type JitProvider = 'google' | 'microsoft' | 'azureAd' | 'oauth' | 'saml';
+export type JitProvider = 'google' | 'microsoft';
 
 /**
  * Service responsible for Just-In-Time (JIT) user provisioning.
@@ -35,7 +34,7 @@ export class JitProvisioningService {
   ) { }
 
   /**
-   * Provision a new user via JIT from an OAuth/SAML provider.
+   * Provision a new user via JIT from a Google or Microsoft sign-in.
    * Creates user, adds to everyone group, and publishes creation event.
    */
   async provisionUser(
@@ -127,7 +126,7 @@ export class JitProvisioningService {
   }
 
   /**
-   * Extract user details from Microsoft/Azure AD decoded token
+   * Extract user details from a Microsoft decoded token
    */
   extractMicrosoftUserDetails(decodedToken: any, email: string): JitUserDetails {
     const firstName = decodedToken?.given_name;
@@ -138,86 +137,6 @@ export class JitProvisioningService {
       displayName ||
       [firstName, lastName].filter(Boolean).join(' ') ||
       email.split('@')[0];
-
-    return {
-      firstName: firstName || undefined,
-      lastName: lastName || undefined,
-      fullName,
-    };
-  }
-
-  /**
-   * Extract user details from OAuth userInfo response
-   */
-  extractOAuthUserDetails(userInfo: any, email: string): JitUserDetails {
-    // Common OAuth/OIDC claims
-    const firstName =
-      userInfo?.given_name ||
-      userInfo?.first_name ||
-      userInfo?.firstName;
-    const lastName =
-      userInfo?.family_name ||
-      userInfo?.last_name ||
-      userInfo?.lastName;
-    const displayName =
-      userInfo?.name ||
-      userInfo?.displayName ||
-      userInfo?.preferred_username;
-
-    const fullName =
-      displayName ||
-      [firstName, lastName].filter(Boolean).join(' ') ||
-      email.split('@')[0];
-
-    return {
-      firstName: firstName || undefined,
-      lastName: lastName || undefined,
-      fullName,
-    };
-  }
-
-  /**
-   * Extract user details from SAML assertion with fallbacks for different IdP formats
-   */
-  extractSamlUserDetails(samlUser: any, email: string): JitUserDetails {
-    const SAML_CLAIM_GIVENNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname';
-    const SAML_OID_GIVENNAME = 'urn:oid:2.5.4.42';
-    const SAML_CLAIM_SURNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname';
-    const SAML_OID_SURNAME = 'urn:oid:2.5.4.4';
-    const SAML_CLAIM_NAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name';
-    const SAML_OID_DISPLAYNAME = 'urn:oid:2.16.840.1.113730.3.1.241';
-
-    // Try multiple SAML attribute names for first name
-    const firstName =
-      samlUser.firstName ||
-      samlUser.givenName ||
-      samlUser[SAML_CLAIM_GIVENNAME] ||
-      samlUser[SAML_OID_GIVENNAME] || deriveNameFromEmail(email).firstName;
-
-    // Try multiple SAML attribute names for last name
-    const lastName =
-      samlUser.lastName ||
-      samlUser.surname ||
-      samlUser.sn ||
-      samlUser[SAML_CLAIM_SURNAME] ||
-      samlUser[SAML_OID_SURNAME] || deriveNameFromEmail(email).lastName;
-
-    // Try multiple SAML attribute names for display name
-    const displayName =
-      samlUser.displayName ||
-      samlUser.name ||
-      samlUser.fullName ||
-      samlUser[SAML_CLAIM_NAME] ||
-      samlUser[SAML_OID_DISPLAYNAME] || deriveNameFromEmail(email).fullName;
-
-    // Construct full name with fallbacks
-    const fullName =
-      displayName ||
-      [firstName, lastName].filter(Boolean).join(' ') ||
-      deriveNameFromEmail(email).fullName;
 
     return {
       firstName: firstName || undefined,

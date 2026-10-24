@@ -67,7 +67,10 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
     PermissionVerificationUnavailableError,
+    is_out_of_memory,
 )
 from app.models.entities import (
     AppRole,
@@ -253,10 +256,18 @@ _CONNECTOR_DELETE_HANDLE_CHUNK = 5000
 # instead of enumerating every NODE_RELATION path and filtering afterwards.
 # The parent is a record: NODE_RELATION also runs from record groups and Apps.
 # Needs $relation_types bound to CANONICAL_PARENT_RELATION_TYPES.
+# Of several canonical edges between the same parent and child only the one
+# with the lowest element id is followed: each parallel edge would otherwise
+# double the paths enumerated at its level (2^depth for a chain of them).
 CANONICAL_ANCESTOR_STEPS = """((child)<-[rel:NODE_RELATION]-(parent:Record)
                 WHERE rel.relationshipType IN $relation_types
                   AND (child.externalParentId = parent.externalRecordId
-                       OR child.externalParentId = parent.id)){0,100}"""
+                       OR child.externalParentId = parent.id)
+                  AND NOT EXISTS {
+                      MATCH (child)<-[twin:NODE_RELATION]-(parent)
+                      WHERE twin.relationshipType IN $relation_types
+                        AND elementId(twin) < elementId(rel)
+                  }){0,100}"""
 
 # Cypher's default match mode only keeps relationships distinct; Arango's
 # path traversals use uniqueVertices: "path", so drop paths that revisit a node.
@@ -5415,6 +5426,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return rows[0]["vrids"] if rows else []
 
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        # Level by level with a visited set: a variable-length match enumerates
+        # every path, which doubles at each group with two parent edges.
+        sub_groups_query = """
+        UNWIND $frontier AS gid
+        MATCH (sub:RecordGroup)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+        RETURN collect(DISTINCT sub.id) AS ids
+        """
+        visited = {record_group_id}
+        frontier = [record_group_id]
+        for _ in range(50):  # same depth bound as get_record_group_path
+            if not frontier:
+                break
+            rows = await self.client.execute_query(
+                sub_groups_query, parameters={"frontier": frontier}, txn_id=transaction,
+            )
+            found = rows[0]["ids"] if rows else []
+            frontier = [g for g in found if g not in visited]
+            visited.update(frontier)
+        rows = await self.client.execute_query(
+            """
+            UNWIND $groups AS gid
+            MATCH (r:Record)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+            WHERE r.virtualRecordId IS NOT NULL
+            RETURN collect(DISTINCT r.virtualRecordId) AS vrids
+            """,
+            parameters={"groups": list(visited)},
+            txn_id=transaction,
+        )
+        return rows[0]["vrids"] if rows else []
+
     async def get_record_group_path(
         self,
         record_group_id: str,
@@ -5424,7 +5470,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[str]:
         query = f"""
         MATCH path = (start:RecordGroup {{id: $record_group_id}})
-            ((:RecordGroup)-[:BELONGS_TO]->(:RecordGroup)){{0,50}}
+            ((child:RecordGroup)-[edge:BELONGS_TO]->(parent:RecordGroup)
+                WHERE NOT EXISTS {{
+                    MATCH (child)-[twin:BELONGS_TO]->(parent)
+                    WHERE elementId(twin) < elementId(edge)
+                }}){{0,50}}
             (:RecordGroup)
         WITH nodes(path) AS path_nodes
         WHERE {NO_REPEATED_PATH_NODES}
@@ -8763,7 +8813,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that have an edge pointing TO this record
@@ -8785,11 +8836,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.childTableName, '') AS childTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -8849,7 +8904,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that this record has an edge pointing TO
@@ -8871,11 +8927,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.parentTableName, '') AS parentTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -8901,8 +8961,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-        """Both edge directions for every record, in one query.
+        """Both edge directions for every record, in one query, at most
+        ``limit_per_direction`` edges per record and direction (all when None).
 
         The per-record methods cost one query each per relation type per
         direction; a turn enriching 30 hits over 2 relation types spent 120
@@ -8914,21 +8976,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not record_ids or not relation_types:
             return out
         try:
-            query = """
-            MATCH (a:Record)-[r:NODE_RELATION|RECORD_LINK]-(b:Record)
-            WHERE a.id IN $record_ids AND r.relationshipType IN $relation_types
-            RETURN a.id AS anchor_id,
-                   b.id AS record_id,
-                   startNode(r).id = a.id AS outgoing,
-                   r.relationshipType AS relationType,
-                   COALESCE(r.parentTableName, '') AS parentTable,
-                   COALESCE(r.childTableName, '') AS childTable,
-                   COALESCE(r.sourceColumn, '') AS sourceColumn,
-                   COALESCE(r.targetColumn, '') AS targetColumn
+            # One LIMIT per anchor and direction: a folder with 100k children is
+            # cut in the database, not after the rows are shipped.
+            def arm(pattern: str, outgoing: str, alias: str) -> str:
+                return f"""
+            CALL (rid) {{
+                MATCH {pattern}
+                WHERE r.relationshipType IN $relation_types
+                WITH r, b LIMIT $limit
+                RETURN collect({{
+                    record_id: b.id, outgoing: {outgoing}, relationType: r.relationshipType,
+                    parentTable: COALESCE(r.parentTableName, ''),
+                    childTable: COALESCE(r.childTableName, ''),
+                    sourceColumn: COALESCE(r.sourceColumn, ''),
+                    targetColumn: COALESCE(r.targetColumn, '')
+                }}) AS {alias}
+            }}"""
+            query = (
+                "UNWIND $record_ids AS rid"
+                + arm("(:Record {id: rid})-[r:NODE_RELATION|RECORD_LINK]->(b:Record)", "true", "outs")
+                + arm("(:Record {id: rid})<-[r:NODE_RELATION|RECORD_LINK]-(b:Record)", "false", "ins")
+                + """
+            UNWIND outs + ins AS e
+            RETURN rid AS anchor_id, e.record_id AS record_id, e.outgoing AS outgoing,
+                   e.relationType AS relationType, e.parentTable AS parentTable,
+                   e.childTable AS childTable, e.sourceColumn AS sourceColumn,
+                   e.targetColumn AS targetColumn
             """
+            )
             results = await self.client.execute_query(
                 query,
-                parameters={"record_ids": record_ids, "relation_types": relation_types},
+                parameters={
+                    "record_ids": record_ids, "relation_types": relation_types,
+                    "limit": limit_per_direction if limit_per_direction is not None else 2**31 - 1,
+                },
                 txn_id=transaction,
             )
             for record in results:
@@ -8957,7 +9038,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "Failed to batch record relations for %d records: %s", len(record_ids), str(e),
             )
             return await super().get_node_relations_batch(
-                record_ids, relation_types, transaction,
+                record_ids, relation_types, transaction, limit_per_direction,
             )
 
     async def batch_upsert_record_groups(
@@ -18543,6 +18624,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "recordType": f"{node_var}.recordType",
             "recordGroupType": f"{node_var}.groupType",
             "indexingStatus": f"{node_var}.indexingStatus",
+            "reason": f"{node_var}.reason",
             "createdAt": _cypher_kh_date(node_var, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
             "updatedAt": _cypher_kh_date(node_var, "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": f"{node_var}.sizeInBytes",
@@ -19136,7 +19218,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 **{k: v for k, v in parameters.items() if k not in names},
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
-        return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        try:
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        except Exception as e:
+            # Transaction memory is one pool: any listing statement can be the one that finds it spent.
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            raise
 
     # The global flatten lets each connector's page read its own grants.
     kh_grants_per_connector = True
@@ -19242,8 +19330,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         group's records): the count is the stored degree, not a walk."""
         rows = await self.client.execute_query(
             """
-            MATCH (n {id: $id})
-            WHERE n:Record OR n:RecordGroup OR n:App
+            MATCH (n:Record|RecordGroup|App {id: $id})
             RETURN CASE WHEN n:App THEN n.id ELSE n.connectorId END AS connectorId,
                    COUNT { (n)<-[:BELONGS_TO]-() } AS belonging
             """,
@@ -19734,6 +19821,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         name_parents: bool = True,
         user_key: str | None = None,
         grants_out: dict[str, list[str]] | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what is visible under one start node.
 
@@ -19886,7 +19974,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
-        depth = "{1,50}" if flatten else "{1}"
+        depth = f"{{1,{max_depth}}}" if flatten else "{1}"
         # The declared and seed arms exist only in the flatten from the App. A
         # folder or group start is admitted by a walk up to the app, then listed
         # from that start.
@@ -20028,6 +20116,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN collect(DISTINCT kh_x) AS extra
         }}
         WITH app, regionA + [kh_x IN extra WHERE NOT kh_x IN regionA] AS allNodes
+            """
+            if max_depth < 50:
+                # Depth is the number of hierarchy hops from the App (App -> group
+                # is 1). The declared, seed and collection arms do not start at the
+                # App, so the bound on the walk alone does not cover them: keep what
+                # lies within `max_depth` hops. A record the hierarchy does not place
+                # (it only BELONGS_TO a group or the App) counts one below that
+                # container; a record the hierarchy does place counts by its hops, so
+                # belonging to a near group never admits a deep record. A node two
+                # arms reach is kept if either is near. Arango applies the same rule.
+                shorter = (
+                    f"""OPTIONAL MATCH (app)
+                  ((sp)-[kh_sr:NODE_RELATION]->(sc) WHERE kh_sr.relationshipType {hierarchy}){{1,{max_depth - 1}}} (sw)
+            WITH app, byHierarchy, collect(DISTINCT sw) AS shorterWalk
+            WITH byHierarchy, [app] + shorterWalk AS shorter"""
+                    if max_depth > 1 else "WITH byHierarchy, [app] AS shorter"
+                )
+                scope += f"""
+        CALL (app) {{
+            OPTIONAL MATCH (app)
+                  ((wp)-[kh_wr:NODE_RELATION]->(wc) WHERE kh_wr.relationshipType {hierarchy}){{1,{max_depth}}} (ww)
+            WITH app, collect(DISTINCT ww) AS byHierarchy
+            {shorter}
+            CALL (shorter) {{
+                UNWIND shorter AS kh_g
+                MATCH (kh_m:Record)-[:BELONGS_TO]->(kh_g)
+                WHERE NOT EXISTS {{
+                    ()-[kh_pr:NODE_RELATION]->(kh_m) WHERE kh_pr.relationshipType {hierarchy}
+                }}
+                RETURN collect(DISTINCT kh_m) AS members
+            }}
+            RETURN byHierarchy + members AS within
+        }}
+        WITH app, [kh_x IN allNodes WHERE kh_x IN within] AS allNodes
             """
         elif start_is_app:
             direct_hop = self._kh_v3_granted_hop(
@@ -20478,6 +20600,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             reason = None
             if not state:
                 reason = "listing state not stamped yet"
+            elif max_depth < 50:
+                reason = "a depth bound (kh_scope holds the whole connector)"
             elif any(v for k, v in filters.items() if k not in ("origins", "connector_ids")):
                 reason = "a per-node filter"
             elif app_id in self._kh_scope_untrusted:
@@ -20523,9 +20647,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 use_scope = False
         if not use_scope:
             try:
-                rows = await self._kh_query(
-                    query, parameters=params, txn_id=transaction,
-                )
+                walk_started = time.monotonic()
+                rows = await self._kh_query(query, parameters=params, txn_id=transaction)
+            except KnowledgeHubListingBusy as busy:
+                if not (flatten and busy.out_of_memory):
+                    raise
+                elapsed = time.monotonic() - walk_started
+                self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
+                raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:
                 self.logger.error(
                     f"❌ get_knowledge_hub_connector_page_v3 failed: {str(e)}"
@@ -20665,6 +20794,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         WITH app, allNodes
             """
+
+    @staticmethod
+    def _kh_out_of_memory(error: Exception) -> bool:
+        """Whether Neo4j gave up on a statement for want of transaction or heap memory."""
+        return is_out_of_memory(error)
+
+    @staticmethod
+    def _kh_walk_refusal(elapsed: float) -> Exception:
+        """What a whole-connector walk that ran out of memory after ``elapsed`` seconds is told. One that ran for a
+        while before the pool was spent was itself big: too large to list (422). One that failed at once only met a
+        pool that other requests had spent: busy, retry (503)."""
+        if elapsed >= 0.5:
+            return KnowledgeHubListingTooLarge()
+        return KnowledgeHubListingBusy(out_of_memory=True)
 
     async def _kh_scope_mode(self) -> str:
         """``on``, ``verify`` (run both, log any difference, answer with the full query) or ``off``.
@@ -22262,8 +22405,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         and None for connector nodes.
         """
         query = """
-            MATCH (n {id: $node_id})
-            WHERE (n:Record OR n:RecordGroup OR n:App) AND n.orgId = $org_id
+            MATCH (n:Record|RecordGroup|App {id: $node_id})
+            WHERE n.orgId = $org_id
             OPTIONAL MATCH (kb:App {type: 'KB'})
             WHERE kb.id = CASE WHEN n:App THEN n.id ELSE n.connectorId END
             RETURN CASE
@@ -23758,6 +23901,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
+    async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with an operation of this API toolset attached."""
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        query = f"""
+        MATCH (agent:{agent_label})
+        WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+          AND any(entry IN coalesce(agent.apiToolsetTools, []) WHERE entry STARTS WITH $prefix)
+        RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
+        """
+        results = await self.client.execute_query(query, parameters={"prefix": f"{instance_id}:"}, txn_id=transaction)
+        return dedupe_agents_by_id(results)
+
     async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the non-deleted agents with this MCP server instance attached."""
         try:
@@ -24522,7 +24677,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

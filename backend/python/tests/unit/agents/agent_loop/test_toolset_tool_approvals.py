@@ -4,6 +4,7 @@ admin for everyone. The card has no "Don't ask again", and an answer resumes the
 way it does for an MCP tool."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -276,6 +277,58 @@ class TestWithoutOrganizationRules:
         assert ctx.decision == PreDecision.DENY
         reason = ctx.decision_reason or ""
         assert "approve it in the PipesHub app" in reason and "admin" not in reason
+
+
+async def _api_action_gate(context: Any, name: str, **arguments: Any) -> ToolCallContext:  # noqa: ANN401
+    """`_gate` for an API action's operation: the loader records it with an MCP tool's starting rules."""
+    tools = _tools(context)
+    recorded = context.tool_state[approvals.TOOLSET_TOOLS_BY_PATH]
+    for path, target in list(recorded.items()):
+        recorded[path] = replace(target, defaults="mcp")
+    ctx = ToolCallContext(tool_path=tools[name].path, tool_input=dict(arguments))
+    reached: list[bool] = []
+
+    async def _next() -> None:
+        reached.append(True)
+
+    await approvals.approval_gate(context)(ctx, _next)
+    assert reached == [True]
+    return ctx
+
+
+class TestAnApiAction:
+    """Any REST call an admin picked from a spec: it starts like an MCP tool, under the org's rules."""
+
+    async def test_a_read_runs_a_write_asks_and_a_delete_is_refused(self) -> None:
+        store = _Store()
+        assert (await _api_action_gate(_context(store), "jira__search_issues", jql="x")).decision == PreDecision.ALLOW
+        write = await _api_action_gate(_context(store), "jira__create_issue", title="Bug")
+        assert write.decision == PreDecision.ASK and write.pending_approval is not None
+        assert write.pending_approval.details["kind"] == "write"
+        delete = await _api_action_gate(_context(store), "jira__delete_issue", key="ENG-1")
+        assert delete.decision == PreDecision.DENY and "can delete data" in (delete.decision_reason or "")
+        assert _Jira.created == [] and _Jira.deleted == []
+
+    async def test_a_write_doesnt_run_where_nobody_can_answer(self) -> None:
+        ctx = await _api_action_gate(_context(client_name="api"), "jira__create_issue", title="Bug")
+        assert ctx.decision == PreDecision.DENY
+        assert "approve it in the PipesHub app" in (ctx.decision_reason or "")
+
+    async def test_an_admins_rules_still_apply(self) -> None:
+        store = _Store()
+        await _set_rules(store, create_issue="allow", delete_issue="ask")
+        context = _context(store)
+        assert (await _api_action_gate(context, "jira__create_issue", title="Bug")).decision == PreDecision.ALLOW
+        assert (await _api_action_gate(context, "jira__delete_issue", key="ENG-1")).decision == PreDecision.ASK
+
+    async def test_without_organization_rules_a_refused_delete_names_no_rule_to_change(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("app.edition_config.organization_toolset_tool_rules", False, raising=False)
+        ctx = await _api_action_gate(_context(), "jira__delete_issue", key="ENG-1")
+        reason = ctx.decision_reason or ""
+        assert ctx.decision == PreDecision.DENY
+        assert "do it in Jira (Engineering) itself" in reason and "change its rule" not in reason
 
 
 class _MariaDb:

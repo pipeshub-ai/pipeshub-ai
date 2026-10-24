@@ -40,6 +40,8 @@ import {
   type MyActionsTab,
 } from '../types';
 import type { ActionCardCta } from '../components/action-card';
+import { ApiActionsSection } from '@/app/(main)/workspace/api-toolsets/components';
+import { API_ACTION_FILTERS, type ApiActionFilter } from '@/app/(main)/workspace/api-toolsets/toolset-form';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 
 /** The setup panel's registry row for editing a personal action. */
@@ -63,6 +65,12 @@ const PERSONAL_CATALOG_TABS: { value: MyActionsTab; labelKey: string }[] = [
   { value: 'authenticated', labelKey: 'workspace.actions.tabs.authenticated' },
   { value: 'not_authenticated', labelKey: 'workspace.actions.tabs.notAuthenticated' },
 ];
+
+const API_ACTION_FILTER_BY_TAB: Record<MyActionsTab, ApiActionFilter> = {
+  all: API_ACTION_FILTERS.all,
+  authenticated: API_ACTION_FILTERS.connected,
+  not_authenticated: API_ACTION_FILTERS.notConnected,
+};
 
 function PersonalActionsPageContent() {
   const { t } = useTranslation();
@@ -490,6 +498,14 @@ function PersonalActionsPageContent() {
               }
             : null
         }
+        leadingSection={
+          <ApiActionsSection
+            manage={false}
+            searchQuery={searchQuery}
+            filter={API_ACTION_FILTER_BY_TAB[catalogTab]}
+          />
+        }
+        itemsHeading={t('workspace.actions.appsHeading')}
         items={items}
         resolveCta={resolveCta}
         onCta={handleCta}

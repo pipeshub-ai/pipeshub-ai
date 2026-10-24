@@ -26,6 +26,7 @@ describe('OAuthAppController', () => {
       regenerateSecret: sinon.stub(),
       suspendApp: sinon.stub(),
       activateApp: sinon.stub(),
+      setTokenIdentity: sinon.stub(),
     }
     mockOAuthTokenService = {
       revokeAllTokensForApp: sinon.stub().resolves(),
@@ -133,6 +134,33 @@ describe('OAuthAppController', () => {
       mockReq.body = { name: 'Updated' }
       await controller.updateApp(mockReq, mockRes, mockNext)
       expect(mockRes.json.calledOnce).to.be.true
+    })
+  })
+
+  describe('setTokenIdentity', () => {
+    /**
+     * The shape, not just the value. The manage panel reads the binding out of
+     * `app` on this body to decide whether the application is still unbound,
+     * and the service-level test only covers what `setTokenIdentity` returns —
+     * which is the app on its own, so it cannot see this envelope at all.
+     */
+    it('answers with the app nested under `app`, carrying the binding', async () => {
+      const app = {
+        id: 'app-1',
+        name: 'Nightly export',
+        tokenIdentityUserId: 'svc-1',
+      }
+      mockOAuthAppService.setTokenIdentity.resolves(app)
+      mockReq.params = { appId: 'app-1' }
+      mockReq.body = { serviceAccountId: 'svc-1' }
+
+      await controller.setTokenIdentity(mockReq, mockRes, mockNext)
+
+      expect(mockRes.json.calledOnce).to.be.true
+      const body = mockRes.json.firstCall.args[0]
+      expect(body).to.have.property('message')
+      expect(body.app).to.deep.equal(app)
+      expect(body.app.tokenIdentityUserId).to.equal('svc-1')
     })
   })
 

@@ -59,6 +59,8 @@ from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
     SelectionScope,
     SelectionTooLargeError,
+    connection_bound_scope,
+    connection_sources_of,
     require_membership_ready,
     resolve_request_scopes,
 )
@@ -1091,6 +1093,15 @@ class RetrievalService:
                     )
 
             await self._attach_connector_instance_names(fetched_records)
+            limit_sources = connection_sources_of(filter_groups)
+            if limit_sources is not None:
+                # The app's own name is its source's or collection's name: shown
+                # only when the limit covers that app whole, as the Location
+                # trail and record details show it.
+                whole_apps = set(limit_sources.get("apps") or ())
+                for r in fetched_records:
+                    if r and r.get("connectorId") not in whole_apps:
+                        r.pop("connectorInstanceName", None)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -1282,12 +1293,23 @@ class RetrievalService:
                     if not rids:
                         return {}
 
+                    # A connected app's limit trims the trail to what it shares;
+                    # past it, the trail names nothing rather than everything.
+                    try:
+                        limit_scope = await connection_bound_scope(
+                            self.graph_provider, user_key or "", org_id, filter_groups,
+                        )
+                    except Exception as limit_exc:
+                        self.logger.warning("fetch_locations: limit unresolved — %s", limit_exc)
+                        return {}
+
                     result = await resolve_ancestor_locations(
                         rids,
                         graph_provider=self.graph_provider,
                         org_id=org_id,
                         user_key=user_key or "",
                         record_docs=record_id_to_record_map,
+                        connection_limit=limit_scope,
                     )
                     self.logger.debug(
                         "fetch_locations: %d/%d trails resolved",

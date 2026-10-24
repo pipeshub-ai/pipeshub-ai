@@ -77,6 +77,10 @@ spec:
             # Core environment settings
             - name: PORT
               value: {{ .Values.config.backendPort | quote }}
+            # Most app pods this release may run; the app refuses local blob
+            # storage above one (each pod would keep its own files).
+            - name: PIPESHUB_APP_MAX_REPLICAS
+              value: {{ include "pipeshub-ai.maxReplicas" . | quote }}
             - name: NODEJS_PORT
               value: {{ .Values.config.backendPort | quote }}
             - name: NODE_ENV

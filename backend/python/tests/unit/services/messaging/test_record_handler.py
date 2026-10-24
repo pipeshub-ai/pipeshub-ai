@@ -1728,7 +1728,7 @@ class TestSoftDeleteRecordsEvent:
         events = await _collect_events(handler, EventTypes.SOFT_DELETE_RECORDS.value, payload)
 
         assert [e.event for e in events] == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["v1", "v2"], keep_mapping=True)
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["v1", "v2"], org_id="o1", keep_mapping=True)
         pipeline.purge_connector_by_virtual_record_ids.assert_not_called()
         pipeline.purge_connector.assert_not_called()
         handler.event_processor.graph_provider.get_document.assert_not_called()
@@ -2463,7 +2463,7 @@ class TestUpdateRecordEvent:
             mock_dl.return_value = b"file content"
             events = await _collect_events(handler, EventTypes.UPDATE_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
         assert len(events) == 2
 
 
@@ -5079,7 +5079,7 @@ class TestReconciliationPath:
             mock_dl.return_value = b"pptx"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
 
 
 # ===================================================================
@@ -5766,7 +5766,7 @@ class TestStageRedrive:
         await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload())
         ingress.redrive.assert_awaited_once()
         # Past the stage branch: the regular reindex path clears the old vectors.
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
 
 
 # ---------------------------------------------------------------------------

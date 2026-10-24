@@ -1192,6 +1192,12 @@ agent_schema = {
                 "type": ["string", "null"],
                 "enum": ["none", "low", "medium", "high", "max", None],
             },
+            # API toolset operations the agent may call: "<instanceId>:<toolName>".
+            "apiToolsetTools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
             "sendUserContext": {"type": "boolean", "default": True},
