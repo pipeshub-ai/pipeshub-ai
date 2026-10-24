@@ -553,7 +553,7 @@ class TestResolvePreferredSiteFallback:
 
 class TestConfluenceBuildFromToolsetApiTokenWikiUrl:
     @pytest.mark.asyncio
-    async def test_site_url_ending_in_wiki_is_not_doubled(self, logger):
+    async def test_site_url_ending_in_wiki_is_not_doubled(self, logger: logging.Logger) -> None:
         instance = {"auth": {"baseUrl": "https://acme.atlassian.net/wiki/"}}
         toolset_cfg = {
             "authType": "API_TOKEN",
