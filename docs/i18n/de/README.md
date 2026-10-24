@@ -133,7 +133,7 @@ Eine Kontextschicht, viele Produkte darauf. Nutzen Sie die integrierten Apps so,
 
 Rund zehn Minuten, sobald PipesHub läuft und Daten indexiert sind. Erstellen Sie ein Personal Access Token (keine Adminrechte nötig), verbinden Sie Ihren Assistenten (ein Befehl für Claude Code, eine Konfigurationsdatei für Cursor oder Codex) und fragen Sie *„Warum wurde die Retry-Logik im Billing-Worker geändert?“*. Die Antwort stützt sich auf das Incident-Postmortem, den Pull Request, den Chat-Thread und das Design-Dokument, jeweils mit Zitat, und nur, wenn Sie diese sehen dürfen.
 
-Über MCP erhalten Assistenten schon heute die Such-, Chat- und Datensatz-Tools von PipesHub. Die übrigen Agent-Tools (`grep`, `navigate`, Entitätsabfragen) kommen als Nächstes zu MCP.
+Über MCP erhalten Assistenten schon heute die Such-, Chat-, Datensatz- und Navigations-Tools von PipesHub. `grep` und Entitätsabfragen kommen als Nächstes zu MCP.
 
 Sie möchten dasselbe Retrieval in Ihrem eigenen Code oder hinter einem Suchfeld für Ihr Team? Das [SDK-Starter- und Suchbeispiel](https://github.com/pipeshub-ai/examples) deckt beides ab. Etwas gebaut? [Zeigen Sie es uns](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -317,7 +317,7 @@ Es verbindet Systeme wie Slack, Google Drive, GitHub, Microsoft 365 und Notion u
 
 Ja. Die PipesHub-Web-App nutzt dieselbe API, die Sie auch selbst aufrufen können. Alles, was Sie in der Oberfläche tun, können Sie also auch im Code tun: Quellen verbinden, Dateien hochladen, Nutzer und Berechtigungen verwalten, suchen, chatten sowie Agenten bauen und ausführen.
 
-- **REST API:** eine [OpenAPI-Spezifikation](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) mit rund 300 Endpunkten. Sie finden sie unter `/api/v1/docs` auf Ihrer Instanz.
+- **REST API:** eine [OpenAPI-Spezifikation](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) mit rund 470 Endpunkten. Sie finden sie unter `/api/v1/docs` auf Ihrer Instanz.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) und [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** für Claude Code, Cursor, Codex und andere MCP-Clients.
 
@@ -330,7 +330,7 @@ Teams nutzen das, um eigene Produkte auf PipesHub zu bauen, etwa Workflow-Builde
 
 ### Wie unterscheidet sich PipesHub von anderen KI-Tools für den Arbeitsplatz?
 
-Die meisten Tools geben einem KI-Modell ein paar abgerufene Text-Chunks. PipesHub gibt Agenten Tools, um das Wissen Ihres Unternehmens so zu erkunden, wie ein Coding-Agent ein Repository erkundet: hybride Suche, `grep` über Datensätze, Ordnernavigation und Knowledge-Graph-Abfragen. Jedes davon wird gegen die Berechtigungen des anfragenden Nutzers im Quellsystem geprüft. Jede Quelle wird zu Blocks, sodass Antworten die genaue Seite, Tabellenzelle, Zeile oder Folie zitieren. PipesHub ist vollständig Open Source (Apache 2.0) und selbst hostbar, Ihre Daten verlassen also nie Ihre Infrastruktur. Siehe [Warum eine Kontextschicht?](#warum-eine-kontextschicht)
+Die meisten Tools geben einem KI-Modell ein paar abgerufene Text-Chunks. PipesHub gibt Agenten Tools, um das Wissen Ihres Unternehmens so zu erkunden, wie ein Coding-Agent ein Repository erkundet: hybride Suche, `grep` über Datensätze, Ordnernavigation und Knowledge-Graph-Abfragen. Jedes davon wird gegen die Berechtigungen des anfragenden Nutzers im Quellsystem geprüft. Jede Quelle wird zu Blocks, sodass Antworten die genaue Seite, Tabellenzelle, Zeile oder Folie zitieren. PipesHub ist vollständig Open Source (Apache 2.0) und selbst hostbar. Mit einem lokalen Modell (etwa über Ollama) verlassen Ihre Daten nie Ihre Infrastruktur; mit einem gehosteten LLM-Anbieter gehen die Passagen, aus denen eine Antwort entsteht, an diesen Anbieter. Siehe [Warum eine Kontextschicht?](#warum-eine-kontextschicht)
 
 ### Welche Konnektoren unterstützt PipesHub?
 

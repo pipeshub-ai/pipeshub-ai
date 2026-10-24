@@ -34,6 +34,12 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 | `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
 | `--print-env-only` | Write `.env` and print the compose command without starting containers |
 | `--build` | Build images from your checkout instead of pulling prebuilt ones (cloned repository only) |
+| `--no-pull` | Start from the locally cached image instead of refreshing it (air-gapped hosts, or to keep a known-good image) |
+| `--upgrade` | Pull or rebuild images and recreate containers; data is preserved |
+| `--rotate-signing-secrets` | Replace the JWT, scoped JWT and cookie signing secrets. Every session, refresh token, password-reset link and in-flight service token stops working. Needs an existing `.env`; combine with `--upgrade` to rotate during an image refresh |
+| `--stop` | Stop the running stack; data is preserved |
+| `--uninstall` | Stop the stack and remove all data volumes (irreversible) |
+| `-h` / `--help` | Print the options and the environment overrides |
 
 ---
 

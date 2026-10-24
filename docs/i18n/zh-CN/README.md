@@ -133,7 +133,7 @@ flowchart LR
 
 在 PipesHub 已运行且数据已完成索引的前提下，大约十分钟即可完成。创建一个个人访问令牌（Personal Access Token，无需管理员权限），连接你的助手（Claude Code 只需一条命令，Cursor 或 Codex 只需一个配置文件），然后提问 *“为什么修改了计费 worker 中的重试逻辑？”* 它会依据事故复盘、拉取请求、聊天讨论串和设计文档作答，每条都附有引用，并且只引用你有权查看的内容。
 
-目前，助手可以通过 MCP 使用 PipesHub 的搜索、对话和记录工具。其余智能体工具（`grep`、`navigate`、实体查询）接下来会陆续接入 MCP。
+目前，助手可以通过 MCP 使用 PipesHub 的搜索、对话、记录和导航工具。`grep` 和实体查询接下来会接入 MCP。
 
 想在自己的代码里使用同样的检索能力，或者为团队做一个搜索框？[SDK 入门示例和搜索示例](https://github.com/pipeshub-ai/examples) 两者都有覆盖。做出了什么作品？[展示给我们看](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml)。
 
@@ -316,7 +316,7 @@ PipesHub 是开源的 AI 智能体上下文层。它把分散在公司各个业�
 
 可以。PipesHub 的 Web 应用使用的就是你可以自己调用的同一套 API，所以在界面中能做的事，在代码中也都能做：连接数据源、上传文件、管理用户和权限、搜索、聊天，以及构建和运行智能体。
 
-- **REST API：** 一份包含约 300 个端点的 [OpenAPI 规范](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml)。可在你的实例上访问 `/api/v1/docs` 浏览。
+- **REST API：** 一份包含约 470 个端点的 [OpenAPI 规范](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml)。可在你的实例上访问 `/api/v1/docs` 浏览。
 - **SDK：** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python)、[TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) 和 [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go)。
 - **MCP：** 适用于 Claude Code、Cursor、Codex 和其他 MCP 客户端。
 
@@ -329,7 +329,7 @@ PipesHub 是开源的 AI 智能体上下文层。它把分散在公司各个业�
 
 ### PipesHub 与其他职场 AI 工具有什么不同？
 
-大多数工具只是把几段检索到的文本块交给 AI 模型。PipesHub 则为智能体提供工具，让它们像编程智能体探索代码仓库一样探索公司知识：混合搜索、对记录执行 `grep`、文件夹导航和知识图谱查询，每一项都会按源系统中发起请求的用户的权限进行校验。每个数据源都会转换为 Blocks，因此回答可以引用确切的页面、表格单元格、行或幻灯片。它完全开源（Apache 2.0）且支持自托管，你的数据永远不会离开你的基础设施。参见[为什么需要上下文层？](#为什么需要上下文层)
+大多数工具只是把几段检索到的文本块交给 AI 模型。PipesHub 则为智能体提供工具，让它们像编程智能体探索代码仓库一样探索公司知识：混合搜索、对记录执行 `grep`、文件夹导航和知识图谱查询，每一项都会按源系统中发起请求的用户的权限进行校验。每个数据源都会转换为 Blocks，因此回答可以引用确切的页面、表格单元格、行或幻灯片。它完全开源（Apache 2.0）且支持自托管。使用本地模型（例如通过 Ollama）时，你的数据永远不会离开你的基础设施；使用托管的 LLM 服务商时，用于生成回答的段落会发送给该服务商。参见[为什么需要上下文层？](#为什么需要上下文层)
 
 ### PipesHub 支持哪些连接器？
 

@@ -27,7 +27,7 @@ Structured (SQL, CRM), semi-structured (spreadsheets, tickets, chat) and unstruc
 
 ### Every document becomes greppable text
 
-PipesHub saves the text of every record as a file, in folders that match the source system. So `grep` works on PDFs (scanned ones too), Word files, slide decks, spreadsheets, emails and chat threads, not just plain text files. When `grep` finds a match, the agent can open that record and cite the exact block.
+PipesHub saves the text of every record as a file, in folders that match the source system. So `grep` works on PDFs (scanned ones too), Word files, slide decks, spreadsheets, emails and chat threads, not just plain text files, when blob storage is local and the record is under the size limit (see [Current limitations](#current-limitations)). When `grep` finds a match, the agent can open that record and cite the exact block.
 
 ## 2. How the Blocks are organized: folders and a knowledge graph
 
@@ -83,12 +83,12 @@ Answers cite blocks as `[source](refN)`. Each reference maps to a real block, an
 
 ## Using the context layer from outside PipesHub
 
-- **MCP:** the Node API serves `/mcp` (Streamable HTTP) with OAuth, personal access tokens or service tokens. Tools: `pipeshub_search`, `pipeshub_chat`, `pipeshub_get_record_content`, `pipeshub_download_record`, `pipeshub_directory`, `pipeshub_sources`, `pipeshub_agents`. Setup for Claude Code, Cursor and Codex: [examples/company-knowledge-mcp](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp).
+- **MCP:** the Node API serves `/mcp` (Streamable HTTP) with OAuth, personal access tokens or service tokens. Tools: `pipeshub_search`, `pipeshub_chat`, `pipeshub_get_record_content`, `pipeshub_download_record`, `pipeshub_directory`, `pipeshub_sources`, `pipeshub_agents`, plus the `pipeshub_code_*` tools when code repositories are indexed. Setup for Claude Code, Cursor and Codex: [examples/company-knowledge-mcp](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp).
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript), [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 
 ## Current limitations
 
 - `grep` and `find` over records work when blob storage is local. On S3 or Azure Blob, search still runs, but the pattern-match tools are skipped.
-- MCP exposes search, chat and record tools. `grep`, `navigate` and the entity tools are available to PipesHub's own agents and are coming to MCP next.
+- MCP exposes search, chat, record reading, lookup and navigation (`pipeshub_get_record_content` with `mode` `content`, `lookup` or `navigate`), and the code-graph tools. `grep`/`find` and the entity tools are available to PipesHub's own agents and are coming to MCP next.
 - A `wc -l` style count can include records the user cannot open. The lines themselves are filtered.
 - `grep` skips very large records (over 20 MB of text). Search still finds them.

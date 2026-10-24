@@ -133,7 +133,7 @@ Une seule couche de contexte, de nombreux produits par-dessus. Utilisez les appl
 
 Comptez environ dix minutes une fois PipesHub lancé et vos données indexées. Créez un Personal Access Token (pas besoin d'être administrateur), connectez votre assistant (une commande pour Claude Code, un fichier de configuration pour Cursor ou Codex) et demandez *« pourquoi la logique de retry du billing worker a-t-elle changé ? »*. Il répond à partir du postmortem de l'incident, de la pull request, du fil de discussion et du document de conception, chacun cité, et seulement si vous avez le droit de les voir.
 
-Via MCP, les assistants ont déjà accès aux outils de recherche, de chat et d'enregistrements de PipesHub. Le reste des outils d'agent (`grep`, `navigate`, requêtes d'entités) arrive bientôt sur MCP.
+Via MCP, les assistants ont déjà accès aux outils de recherche, de chat, d'enregistrements et de navigation de PipesHub. `grep` et les requêtes d'entités arrivent bientôt sur MCP.
 
 Vous voulez la même récupération dans votre propre code, ou derrière une barre de recherche pour votre équipe ? Le [starter SDK et l'exemple de recherche](https://github.com/pipeshub-ai/examples) couvrent les deux cas. Vous avez construit quelque chose ? [Montrez-le-nous](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -317,7 +317,7 @@ Il connecte des systèmes comme Slack, Google Drive, GitHub, Microsoft 365 et No
 
 Oui. L'application web de PipesHub utilise la même API que vous pouvez appeler vous-même. Tout ce que vous faites dans l'interface, vous pouvez donc aussi le faire dans votre code : connecter des sources, importer des fichiers, gérer les utilisateurs et les permissions, rechercher, discuter, et construire et exécuter des agents.
 
-- **API REST :** une [spécification OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) d'environ 300 endpoints. Consultez-la à l'adresse `/api/v1/docs` sur votre instance.
+- **API REST :** une [spécification OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) d'environ 470 endpoints. Consultez-la à l'adresse `/api/v1/docs` sur votre instance.
 - **SDK :** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) et [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP :** pour Claude Code, Cursor, Codex et les autres clients MCP.
 
@@ -330,7 +330,7 @@ Des équipes s'en servent pour construire leurs propres produits sur PipesHub, c
 
 ### En quoi PipesHub diffère-t-il des autres outils d'IA pour le travail ?
 
-La plupart des outils donnent à un modèle d'IA quelques fragments de texte récupérés. PipesHub donne aux agents des outils pour explorer les connaissances de votre entreprise comme un agent de code explore un dépôt : recherche hybride, `grep` sur les enregistrements, navigation dans les dossiers et requêtes dans le graphe de connaissances. Chacun est vérifié par rapport aux permissions de l'utilisateur dans le système source. Chaque source devient des Blocks, si bien que les réponses citent la page, la cellule de tableau, la ligne ou la diapositive exacte. Il est entièrement open source (Apache 2.0) et auto-hébergeable : vos données ne quittent jamais votre infrastructure. Voir [Pourquoi une couche de contexte ?](#pourquoi-une-couche-de-contexte-)
+La plupart des outils donnent à un modèle d'IA quelques fragments de texte récupérés. PipesHub donne aux agents des outils pour explorer les connaissances de votre entreprise comme un agent de code explore un dépôt : recherche hybride, `grep` sur les enregistrements, navigation dans les dossiers et requêtes dans le graphe de connaissances. Chacun est vérifié par rapport aux permissions de l'utilisateur dans le système source. Chaque source devient des Blocks, si bien que les réponses citent la page, la cellule de tableau, la ligne ou la diapositive exacte. Il est entièrement open source (Apache 2.0) et auto-hébergeable. Avec un modèle local (par exemple via Ollama), vos données ne quittent jamais votre infrastructure ; avec un fournisseur de LLM hébergé, les passages qui servent à construire une réponse sont envoyés à ce fournisseur. Voir [Pourquoi une couche de contexte ?](#pourquoi-une-couche-de-contexte-)
 
 ### Quels connecteurs PipesHub prend-il en charge ?
 

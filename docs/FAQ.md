@@ -1,6 +1,6 @@
 # PipesHub FAQ
 
-### What is PipesHub?
+## What is PipesHub?
 
 PipesHub is the open-source context layer for AI agents. It turns the knowledge stored across your company's business systems into a permission-aware workspace that agents can search, `grep`, navigate and cite.
 
@@ -10,7 +10,7 @@ It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notio
 
 Yes. The PipesHub web app uses the same API you can call yourself, so anything you do in the UI you can also do in code: connect sources, upload files, manage users and permissions, search, chat, and build and run agents.
 
-- **REST API:** an [OpenAPI spec](../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 300 endpoints. Browse it at `/api/v1/docs` on your instance.
+- **REST API:** an [OpenAPI spec](../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 470 endpoints. Browse it at `/api/v1/docs` on your instance.
 - **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** for Claude Code, Cursor, Codex and other MCP clients.
 
@@ -23,7 +23,7 @@ Teams use this to build their own products on PipesHub, such as workflow builder
 
 ## How is PipesHub different from other workplace AI tools?
 
-Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents tools to explore your company's knowledge the way a coding agent explores a repository: hybrid search, `grep` over records, folder navigation and knowledge-graph lookups, each checked against the requesting user's permissions in the source system. Every source becomes Blocks, so answers cite the exact page, table cell, row or slide. It is fully open source (Apache 2.0) and self-hostable, so your data never leaves your infrastructure. See [Why a context layer?](../README.md#why-a-context-layer)
+Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents tools to explore your company's knowledge the way a coding agent explores a repository: hybrid search, `grep` over records, folder navigation and knowledge-graph lookups, each checked against the requesting user's permissions in the source system. Every source becomes Blocks, so answers cite the exact page, table cell, row or slide. It is fully open source (Apache 2.0) and self-hostable. With a local model (for example through Ollama) your data never leaves your infrastructure; with a hosted LLM provider, the passages an answer is built from are sent to that provider. See [Why a context layer?](../README.md#why-a-context-layer)
 
 ## What connectors does PipesHub support?
 

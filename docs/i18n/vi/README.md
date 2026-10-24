@@ -133,7 +133,7 @@ Một lớp ngữ cảnh, nhiều sản phẩm bên trên. Dùng các ứng dụ
 
 Mất khoảng mười phút khi PipesHub đã chạy và dữ liệu đã được lập chỉ mục. Tạo một Personal Access Token (không cần quyền quản trị). Kết nối trợ lý của bạn: một lệnh cho Claude Code, một tệp cấu hình cho Cursor hoặc Codex. Rồi hỏi *"tại sao logic thử lại trong billing worker bị thay đổi?"* Trợ lý trả lời dựa trên báo cáo sự cố, pull request, luồng chat và tài liệu thiết kế, mỗi nguồn đều có trích dẫn, và chỉ khi bạn được phép xem chúng.
 
-Qua MCP, trợ lý hiện đã có các công cụ tìm kiếm, chat và bản ghi của PipesHub. Phần còn lại của bộ công cụ tác nhân (`grep`, `navigate`, tra cứu thực thể) sẽ sớm có trên MCP.
+Qua MCP, trợ lý hiện đã có các công cụ tìm kiếm, chat, bản ghi và điều hướng của PipesHub. `grep` và tra cứu thực thể sẽ sớm có trên MCP.
 
 Muốn có cùng khả năng truy xuất trong mã của riêng bạn, hoặc sau một ô tìm kiếm cho nhóm của bạn? [SDK starter và ví dụ tìm kiếm](https://github.com/pipeshub-ai/examples) đáp ứng cả hai. Đã xây dựng được gì đó? [Hãy cho chúng tôi xem](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -317,7 +317,7 @@ Nó kết nối các hệ thống như Slack, Google Drive, GitHub, Microsoft 36
 
 Có. Ứng dụng web của PipesHub dùng chính API mà bạn có thể tự gọi, nên mọi việc bạn làm trên giao diện cũng làm được bằng mã: kết nối nguồn, tải tệp lên, quản lý người dùng và quyền, tìm kiếm, trò chuyện, xây dựng và chạy tác nhân.
 
-- **REST API:** một [đặc tả OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) với khoảng 300 endpoint. Xem tại `/api/v1/docs` trên instance của bạn.
+- **REST API:** một [đặc tả OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) với khoảng 470 endpoint. Xem tại `/api/v1/docs` trên instance của bạn.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) và [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** cho Claude Code, Cursor, Codex và các MCP client khác.
 
@@ -330,7 +330,7 @@ Các nhóm dùng cách này để xây dựng sản phẩm của riêng họ tr�
 
 ### PipesHub khác gì so với các công cụ AI cho nơi làm việc khác?
 
-Hầu hết công cụ chỉ đưa cho mô hình AI vài đoạn văn bản được truy xuất. PipesHub cung cấp cho tác nhân các công cụ để khám phá tri thức công ty như cách tác nhân lập trình khám phá một kho mã: tìm kiếm lai, `grep` trên bản ghi, điều hướng thư mục và tra cứu đồ thị tri thức, mỗi thao tác đều được kiểm tra theo quyền của người dùng gửi yêu cầu trong hệ thống nguồn. Mọi nguồn đều trở thành Blocks, nên câu trả lời trích dẫn chính xác trang, ô bảng, hàng hoặc slide. PipesHub hoàn toàn mã nguồn mở (Apache 2.0) và có thể tự lưu trữ, nên dữ liệu của bạn không bao giờ rời khỏi hạ tầng của bạn. Xem [Tại sao cần một lớp ngữ cảnh?](#tại-sao-cần-một-lớp-ngữ-cảnh)
+Hầu hết công cụ chỉ đưa cho mô hình AI vài đoạn văn bản được truy xuất. PipesHub cung cấp cho tác nhân các công cụ để khám phá tri thức công ty như cách tác nhân lập trình khám phá một kho mã: tìm kiếm lai, `grep` trên bản ghi, điều hướng thư mục và tra cứu đồ thị tri thức, mỗi thao tác đều được kiểm tra theo quyền của người dùng gửi yêu cầu trong hệ thống nguồn. Mọi nguồn đều trở thành Blocks, nên câu trả lời trích dẫn chính xác trang, ô bảng, hàng hoặc slide. PipesHub hoàn toàn mã nguồn mở (Apache 2.0) và có thể tự lưu trữ. Với mô hình cục bộ (ví dụ qua Ollama), dữ liệu của bạn không bao giờ rời khỏi hạ tầng của bạn; với nhà cung cấp LLM được lưu trữ, các đoạn văn dùng để tạo câu trả lời sẽ được gửi tới nhà cung cấp đó. Xem [Tại sao cần một lớp ngữ cảnh?](#tại-sao-cần-một-lớp-ngữ-cảnh)
 
 ### PipesHub hỗ trợ những trình kết nối nào?
 

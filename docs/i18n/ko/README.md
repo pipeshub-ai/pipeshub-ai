@@ -133,7 +133,7 @@ flowchart LR
 
 PipesHub가 실행 중이고 데이터 인덱싱이 끝났다면 10분 정도면 됩니다. Personal Access Token을 발급하고(관리자 권한 불필요), 어시스턴트를 연결한 다음(Claude Code는 명령어 하나, Cursor나 Codex는 설정 파일 하나), *"결제 워커의 재시도 로직은 왜 바뀌었나요?"* 라고 물어보세요. 장애 포스트모템, 풀 리퀘스트, 채팅 스레드, 설계 문서를 바탕으로 각각 인용과 함께 답합니다. 물론 여러분이 볼 수 있는 자료만 사용합니다.
 
-현재 어시스턴트는 MCP를 통해 PipesHub의 검색, 채팅, 레코드 도구를 사용할 수 있습니다. 나머지 에이전트 도구(`grep`, `navigate`, 엔티티 조회)도 곧 MCP에 추가될 예정입니다.
+현재 어시스턴트는 MCP를 통해 PipesHub의 검색, 채팅, 레코드, 탐색 도구를 사용할 수 있습니다. `grep`과 엔티티 조회도 곧 MCP에 추가될 예정입니다.
 
 같은 검색을 직접 작성한 코드 안에서, 또는 팀을 위한 검색창 뒤에서 쓰고 싶으신가요? [SDK 스타터와 검색 예제](https://github.com/pipeshub-ai/examples)가 두 경우를 모두 다룹니다. 무언가를 만드셨나요? [저희에게 보여 주세요](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -316,7 +316,7 @@ Slack, Google Drive, GitHub, Microsoft 365, Notion 같은 시스템을 연결한
 
 네. PipesHub 웹 앱은 여러분이 직접 호출할 수 있는 같은 API를 사용합니다. 그래서 UI에서 하는 모든 작업을 코드로도 할 수 있습니다. 소스 연결, 파일 업로드, 사용자와 권한 관리, 검색, 채팅, 에이전트 구축과 실행이 모두 가능합니다.
 
-- **REST API:** 약 300개 엔드포인트를 담은 [OpenAPI 명세](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). 인스턴스의 `/api/v1/docs`에서 살펴볼 수 있습니다.
+- **REST API:** 약 470개 엔드포인트를 담은 [OpenAPI 명세](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). 인스턴스의 `/api/v1/docs`에서 살펴볼 수 있습니다.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript), [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** Claude Code, Cursor, Codex 및 기타 MCP 클라이언트용.
 
@@ -329,7 +329,7 @@ Slack, Google Drive, GitHub, Microsoft 365, Notion 같은 시스템을 연결한
 
 ### PipesHub는 다른 업무용 AI 도구와 무엇이 다른가요?
 
-대부분의 도구는 검색된 텍스트 청크 몇 개를 AI 모델에 넘겨줄 뿐입니다. PipesHub는 코딩 에이전트가 저장소를 탐색하듯 회사 지식을 탐색할 수 있는 도구를 에이전트에게 제공합니다. 하이브리드 검색, 레코드 대상 `grep`, 폴더 탐색, 지식 그래프 조회이며, 모두 소스 시스템에서 요청한 사용자의 권한으로 확인됩니다. 모든 소스가 Blocks로 변환되므로 답변은 정확한 페이지, 표 셀, 행, 슬라이드를 인용합니다. 완전한 오픈소스(Apache 2.0)이며 셀프 호스팅이 가능하므로, 데이터가 여러분의 인프라 밖으로 나가지 않습니다. [왜 컨텍스트 레이어인가?](#왜-컨텍스트-레이어인가)를 참고하세요.
+대부분의 도구는 검색된 텍스트 청크 몇 개를 AI 모델에 넘겨줄 뿐입니다. PipesHub는 코딩 에이전트가 저장소를 탐색하듯 회사 지식을 탐색할 수 있는 도구를 에이전트에게 제공합니다. 하이브리드 검색, 레코드 대상 `grep`, 폴더 탐색, 지식 그래프 조회이며, 모두 소스 시스템에서 요청한 사용자의 권한으로 확인됩니다. 모든 소스가 Blocks로 변환되므로 답변은 정확한 페이지, 표 셀, 행, 슬라이드를 인용합니다. 완전한 오픈소스(Apache 2.0)이며 셀프 호스팅이 가능합니다. 로컬 모델(예: Ollama)을 쓰면 데이터가 여러분의 인프라 밖으로 나가지 않습니다. 호스팅형 LLM 제공자를 쓰면 답변에 쓰이는 구절이 해당 제공자에게 전송됩니다. [왜 컨텍스트 레이어인가?](#왜-컨텍스트-레이어인가)를 참고하세요.
 
 ### PipesHub는 어떤 커넥터를 지원하나요?
 

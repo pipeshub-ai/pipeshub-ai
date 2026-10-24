@@ -133,7 +133,7 @@ Tek bağlam katmanı, üzerinde birçok ürün. Yerleşik uygulamaları olduğu 
 
 PipesHub çalışır durumda ve veriler indekslenmişse yaklaşık on dakika sürer. Bir Personal Access Token oluşturun (yönetici yetkisi gerekmez), asistanınızı bağlayın (Claude Code için tek komut, Cursor veya Codex için tek yapılandırma dosyası) ve *"faturalama worker'ındaki retry mantığı neden değiştirildi?"* diye sorun. Asistan; olay sonrası raporundan, pull request'ten, sohbet dizisinden ve tasarım belgesinden, her birini kaynak göstererek yanıt verir. Bunu da yalnızca onları görme izniniz varsa yapar.
 
-MCP üzerinden asistanlar bugün PipesHub'ın arama, sohbet ve kayıt araçlarına erişebilir. Ajan araç setinin geri kalanı (`grep`, `navigate`, varlık sorguları) yakında MCP'ye geliyor.
+MCP üzerinden asistanlar bugün PipesHub'ın arama, sohbet, kayıt ve gezinme araçlarına erişebilir. `grep` ve varlık sorguları yakında MCP'ye geliyor.
 
 Aynı getirmeyi kendi kodunuzda ya da ekibiniz için bir arama kutusunun arkasında mı istiyorsunuz? [SDK başlangıç projesi ve arama örneği](https://github.com/pipeshub-ai/examples) ikisini de kapsar. Bir şey mi geliştirdiniz? [Bize gösterin](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -317,7 +317,7 @@ Slack, Google Drive, GitHub, Microsoft 365 ve Notion gibi sistemleri bağlar ve 
 
 Evet. PipesHub web uygulaması, sizin de çağırabileceğiniz aynı API'yi kullanır. Bu yüzden arayüzde yaptığınız her şeyi kodla da yapabilirsiniz: kaynak bağlamak, dosya yüklemek, kullanıcıları ve izinleri yönetmek, arama yapmak, sohbet etmek, ajan oluşturmak ve çalıştırmak.
 
-- **REST API:** yaklaşık 300 uç noktalı bir [OpenAPI belirtimi](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). Kendi örneğinizde `/api/v1/docs` adresinden inceleyebilirsiniz.
+- **REST API:** yaklaşık 470 uç noktalı bir [OpenAPI belirtimi](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). Kendi örneğinizde `/api/v1/docs` adresinden inceleyebilirsiniz.
 - **SDK'lar:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) ve [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** Claude Code, Cursor, Codex ve diğer MCP istemcileri için.
 
@@ -330,7 +330,7 @@ Ekipler bunu PipesHub üzerinde kendi ürünlerini geliştirmek için kullanır;
 
 ### PipesHub diğer iş yeri yapay zekâ araçlarından nasıl ayrılır?
 
-Çoğu araç, bir yapay zekâ modeline getirilmiş birkaç metin parçası verir. PipesHub ise ajanlara, şirket bilginizi bir kodlama ajanının depoyu keşfettiği gibi keşfetmeleri için araçlar verir: hibrit arama, kayıtlar üzerinde `grep`, klasör gezintisi ve bilgi grafı sorguları. Her biri, istekte bulunan kullanıcının kaynak sistemdeki izinlerine göre denetlenir. Her kaynak Blocks'a dönüşür; böylece yanıtlar sayfayı, tablo hücresini, satırı veya slaytı tam olarak gösterir. Tamamen açık kaynaklıdır (Apache 2.0) ve kendi sunucunuzda barındırılabilir; verileriniz altyapınızdan hiç çıkmaz. Bkz. [Neden bir bağlam katmanı?](#neden-bir-bağlam-katmanı)
+Çoğu araç, bir yapay zekâ modeline getirilmiş birkaç metin parçası verir. PipesHub ise ajanlara, şirket bilginizi bir kodlama ajanının depoyu keşfettiği gibi keşfetmeleri için araçlar verir: hibrit arama, kayıtlar üzerinde `grep`, klasör gezintisi ve bilgi grafı sorguları. Her biri, istekte bulunan kullanıcının kaynak sistemdeki izinlerine göre denetlenir. Her kaynak Blocks'a dönüşür; böylece yanıtlar sayfayı, tablo hücresini, satırı veya slaytı tam olarak gösterir. Tamamen açık kaynaklıdır (Apache 2.0) ve kendi sunucunuzda barındırılabilir. Yerel bir modelle (örneğin Ollama üzerinden) verileriniz altyapınızdan hiç çıkmaz; barındırılan bir LLM sağlayıcısıyla, yanıtın dayandığı pasajlar o sağlayıcıya gönderilir. Bkz. [Neden bir bağlam katmanı?](#neden-bir-bağlam-katmanı)
 
 ### PipesHub hangi bağlayıcıları destekler?
 

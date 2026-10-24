@@ -133,7 +133,7 @@ Una capa de contexto, muchos productos encima. Usa las aplicaciones integradas t
 
 Unos diez minutos con PipesHub en marcha y los datos indexados. Crea un Personal Access Token (no hace falta ser administrador), conecta tu asistente (un comando para Claude Code, un archivo de configuración para Cursor o Codex) y pregunta *«¿por qué se cambió la lógica de reintentos del billing worker?»*. Responde a partir del postmortem del incidente, la pull request, el hilo de chat y el documento de diseño, cada uno citado, y solo si tienes permiso para verlos.
 
-Mediante MCP, los asistentes ya tienen hoy las herramientas de búsqueda, chat y registros de PipesHub. El resto de herramientas del agente (`grep`, `navigate`, consultas de entidades) llegará pronto a MCP.
+Mediante MCP, los asistentes ya tienen hoy las herramientas de búsqueda, chat, registros y navegación de PipesHub. `grep` y las consultas de entidades llegarán pronto a MCP.
 
 ¿Quieres la misma recuperación dentro de tu propio código, o detrás de un buscador para tu equipo? El [starter de SDK y el ejemplo de búsqueda](https://github.com/pipeshub-ai/examples) cubren ambos casos. ¿Has construido algo? [Enséñanoslo](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
@@ -317,7 +317,7 @@ Conecta sistemas como Slack, Google Drive, GitHub, Microsoft 365 y Notion, y pon
 
 Sí. La aplicación web de PipesHub usa la misma API que puedes llamar tú mismo, así que todo lo que haces en la interfaz también puedes hacerlo desde código: conectar fuentes, subir archivos, gestionar usuarios y permisos, buscar, chatear, y crear y ejecutar agentes.
 
-- **API REST:** una [especificación OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) con unos 300 endpoints. Consúltala en `/api/v1/docs` de tu instancia.
+- **API REST:** una [especificación OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) con unos 470 endpoints. Consúltala en `/api/v1/docs` de tu instancia.
 - **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) y [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
 - **MCP:** para Claude Code, Cursor, Codex y otros clientes MCP.
 
@@ -330,7 +330,7 @@ Los equipos lo usan para construir sus propios productos sobre PipesHub, como cr
 
 ### ¿En qué se diferencia PipesHub de otras herramientas de IA para el trabajo?
 
-La mayoría de las herramientas dan a un modelo de IA unos pocos fragmentos de texto recuperados. PipesHub da a los agentes herramientas para explorar el conocimiento de tu empresa como un agente de código explora un repositorio: búsqueda híbrida, `grep` sobre registros, navegación por carpetas y consultas al grafo de conocimiento. Cada una se comprueba contra los permisos del usuario en el sistema de origen. Cada fuente se convierte en Blocks, así que las respuestas citan la página, la celda, la fila o la diapositiva exacta. Es totalmente de código abierto (Apache 2.0) y autoalojable, así que tus datos nunca salen de tu infraestructura. Consulta [¿Por qué una capa de contexto?](#por-qué-una-capa-de-contexto)
+La mayoría de las herramientas dan a un modelo de IA unos pocos fragmentos de texto recuperados. PipesHub da a los agentes herramientas para explorar el conocimiento de tu empresa como un agente de código explora un repositorio: búsqueda híbrida, `grep` sobre registros, navegación por carpetas y consultas al grafo de conocimiento. Cada una se comprueba contra los permisos del usuario en el sistema de origen. Cada fuente se convierte en Blocks, así que las respuestas citan la página, la celda, la fila o la diapositiva exacta. Es totalmente de código abierto (Apache 2.0) y autoalojable. Con un modelo local (por ejemplo, mediante Ollama) tus datos nunca salen de tu infraestructura; con un proveedor de LLM alojado, los pasajes con los que se construye una respuesta se envían a ese proveedor. Consulta [¿Por qué una capa de contexto?](#por-qué-una-capa-de-contexto)
 
 ### ¿Qué conectores admite PipesHub?
 
