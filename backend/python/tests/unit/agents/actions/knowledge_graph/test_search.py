@@ -816,18 +816,24 @@ class TestRecordsTheResultDoesNotShow:
         return patch.object(KnowledgeRenderer, "select", first_record_only)
 
     @pytest.mark.asyncio
-    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("targeted", [False, True])
+    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch, targeted: bool) -> None:
         """Each record the fit drops adds a row, so the passes can end over the
         size: the lowest-ranked rows go, and only the ids still shown are
         remembered."""
         monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        monkeypatch.setenv("TARGETED_RETRIEVAL", str(targeted).lower())
 
         vrids = ["vr1", "vr2", "vr3", "vr4", "vr5", "vr6"]
         with self._first_record_only():
             full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
             row = len("\n- Record ID: r-vr6 | Doc vr6")
             budget = len(full) - 2 * row - 5
-            with patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget):
+            fit_budget = (
+                patch(f"{self._SEARCH}.search_max_chars", return_value=budget) if targeted
+                else patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget)
+            )
+            with fit_budget:
                 result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
 
         assert "- Record ID: r-vr6 | Doc vr6" in full
