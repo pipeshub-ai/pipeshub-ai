@@ -7927,21 +7927,34 @@ class TestFetchConfluenceMediaAsBase64:
             "page-1", "media-id", "alt.png", "page", attachments=attachments
         )
 
+    def test_images_left_out_of_the_body_are_decided_from_the_list(self):
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            MAX_INLINE_IMAGE_BYTES,
+            images_not_inlined,
+        )
+
+        mib = 1024 * 1024
+        attachments = [
+            {"id": "big", "mediaType": "image/png", "fileSize": MAX_INLINE_IMAGE_BYTES + 1},
+            {"id": "pdf", "mediaType": "application/pdf", "fileSize": 50 * mib},
+            *({"id": f"i{n}", "mediaType": "image/png", "fileSize": 9 * mib} for n in range(5)),
+            {"id": "v1", "extensions": {"mediaType": "image/png", "fileSize": 1 * mib}},
+        ]
+        # 4 x 9 MiB + 1 MiB fit in 40 MiB; the fifth 9 MiB image does not.
+        assert images_not_inlined(attachments) == {"big", "i4"}
+
     @pytest.mark.asyncio
-    async def test_media_fetcher_stops_inlining_past_the_page_budget(self):
-        from app.connectors.sources.atlassian.confluence_cloud.connector import MAX_INLINE_IMAGE_BYTES_PER_PAGE
+    async def test_an_image_left_out_of_the_body_is_not_downloaded(self):
+        from app.connectors.sources.atlassian.confluence_cloud.connector import MAX_INLINE_IMAGE_BYTES
 
         c = _mk_connector()
-        c._fetch_page_attachments_list = AsyncMock(return_value=[])
-        # Each image decodes to about half the page budget.
-        half = "data:image/png;base64," + "A" * (MAX_INLINE_IMAGE_BYTES_PER_PAGE * 4 // 3 // 2 + 8)
-        c._fetch_confluence_media_as_base64 = AsyncMock(return_value=half)
-        fetcher = c._create_confluence_media_fetcher("page-2", "blogpost")
+        ds = MagicMock()
+        ds.download_attachment = MagicMock()
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        attachments = [{"id": "att-1", "title": "a.png", "mediaType": "image/png", "fileSize": MAX_INLINE_IMAGE_BYTES + 1}]
 
-        assert await fetcher("m1", "a.png") == half
-        assert await fetcher("m2", "b.png") == half
-        assert await fetcher("m3", "c.png") is None
-        assert c._fetch_confluence_media_as_base64.await_count == 2
+        assert await c._fetch_confluence_media_as_base64("p1", "m1", "a.png", attachments=attachments) is None
+        ds.download_attachment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_page_image_resolves_by_file_id(self):

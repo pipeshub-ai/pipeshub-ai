@@ -2425,6 +2425,20 @@ class TestCommentRecordsFromOlderVersions:
         assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
         assert not {"c1", "c2"} & set(db.records)
 
+    async def test_they_stay_when_comments_are_not_indexed(self, api, db, checkpoints, search, monkeypatch) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+
+        async def off(_: object) -> bool:
+            return False
+
+        monkeypatch.setattr(connector, "_comments_indexed", off)
+        search.by_cursor[None] = search_page([v1_page("10", version=2)])
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        assert {"c1", "c2"} <= set(db.records), "the blocks carry no comments, so the records are all there is"
+
     async def test_an_unchanged_html_page_keeps_them(self, api, db, checkpoints, search) -> None:
         connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
 

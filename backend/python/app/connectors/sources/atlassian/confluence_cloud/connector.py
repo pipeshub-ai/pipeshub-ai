@@ -253,8 +253,32 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 # Largest image inlined into a page's content (10 MiB, as fetch_authenticated_binary allows).
 MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
-# Images inlined into one page in all; past it the rest stay as text references.
+# Images inlined into one page in all; past it the rest stay attachment records.
 MAX_INLINE_IMAGE_BYTES_PER_PAGE = 40 * 1024 * 1024
+
+
+def images_not_inlined(attachments: list[dict[str, Any]]) -> set[str]:
+    """Image attachments left out of the page body, so they stay attachment records instead.
+
+    Decided from the attachment list alone, so sync and streaming leave out the same ones:
+    an image over MAX_INLINE_IMAGE_BYTES, and any image that would take the page's images
+    past MAX_INLINE_IMAGE_BYTES_PER_PAGE (in list order).
+    """
+    left_out: set[str] = set()
+    total = 0
+    for att in attachments:
+        att_id = att.get("id")
+        extensions = att.get("extensions") or {}
+        if not att_id or not str(att.get("mediaType") or extensions.get("mediaType") or "").startswith("image/"):
+            continue
+        size = att.get("fileSize", extensions.get("fileSize"))
+        # shortcut: an image of unknown size counts as 0; the per-download size guard still applies.
+        size = size if isinstance(size, int) else 0
+        if size > MAX_INLINE_IMAGE_BYTES or total + size > MAX_INLINE_IMAGE_BYTES_PER_PAGE:
+            left_out.add(str(att_id))
+        else:
+            total += size
+    return left_out
 
 # Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
 USER_SEARCH_CAP = 10_000
@@ -588,7 +612,7 @@ class ConfluenceConnector(BaseConnector):
         self._sync_finished = False
         self._close_after_sync = False
         # Pages just stored as blocks, whose comment records from older versions are dropped once saved.
-        self._now_blocks: set[str] = set()
+        self._now_blocks: dict[str, RecordType] = {}
         # The status the audit log was refused with this run (401/403), if it was.
         self._audit_log_refused: int | None = None
 
@@ -2344,18 +2368,14 @@ class ConfluenceConnector(BaseConnector):
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
                                 attachment_mime_types: dict[str, str] = {}
-                                # Too big to inline into the page: kept as an attachment record instead,
-                                # or it would be in neither.
-                                oversized_image_ids: set[str] = set()
                                 for att in attachments:
                                     att_id = att.get("id")
                                     if att_id:
                                         mime_type = att.get("mediaType", "")
                                         if mime_type:
                                             attachment_mime_types[att_id] = mime_type
-                                        size = att.get("fileSize", (att.get("extensions") or {}).get("fileSize"))
-                                        if isinstance(size, int) and size > MAX_INLINE_IMAGE_BYTES:
-                                            oversized_image_ids.add(att_id)
+                                # Not inlined into the page: kept as an attachment record instead, or it would be in neither.
+                                oversized_image_ids = images_not_inlined(attachments)
                                 if content_type == "page":
                                     page_adf_response = await datasource.get_page_content_v2(
                                         page_id=item_id,
@@ -3230,10 +3250,16 @@ class ConfluenceConnector(BaseConnector):
 
         The blocks carry the page's comments, so the separate records would answer twice.
         An HTML page keeps them until it is converted (when it next changes or is re-indexed).
+        With comment indexing off the blocks carry no comments, so the records stay.
         """
-        page_ids, self._now_blocks = self._now_blocks, set()
+        pages, self._now_blocks = self._now_blocks, {}
         comment_types = (RecordType.COMMENT, RecordType.INLINE_COMMENT)
-        for page_id in sorted(page_ids):
+        indexed: dict[RecordType, bool] = {}
+        for page_id, record_type in sorted(pages.items()):
+            if record_type not in indexed:
+                indexed[record_type] = await self._comments_indexed(record_type)
+            if not indexed[record_type]:
+                continue
             try:
                 queue, owned = [page_id], []
                 while queue:
@@ -4805,7 +4831,7 @@ class ConfluenceConnector(BaseConnector):
                 not is_new and isinstance(existing_record.mime_type, str)
                 and existing_record.mime_type != MimeTypes.BLOCKS.value and mime_type == MimeTypes.BLOCKS.value
             ):
-                self._now_blocks.add(item_id)
+                self._now_blocks[item_id] = record_type
 
             return WebpageRecord(
                 id=record_id,
@@ -5957,7 +5983,6 @@ class ConfluenceConnector(BaseConnector):
         captured_record_type = record_type
         page_meta_cache: dict[str, dict[str, Any] | None] = {}
         page_attachments: list[dict[str, Any]] | None = None
-        inlined_bytes = 0
 
         async def _ensure_page_attachments() -> list[dict[str, Any]]:
             nonlocal page_attachments
@@ -6024,11 +6049,7 @@ class ConfluenceConnector(BaseConnector):
             url: str,
             image_context: HtmlImageContext,
         ) -> tuple[bytes, str] | None:
-            nonlocal inlined_bytes
             if not is_cloud_attachment_download_url(url):
-                return None
-            if inlined_bytes >= MAX_INLINE_IMAGE_BYTES_PER_PAGE:
-                self.logger.debug(f"Page {page_id} already inlines {inlined_bytes} bytes of images; leaving the rest out")
                 return None
 
             url_filename = extract_attachment_filename_from_download_url(url)
@@ -6046,6 +6067,8 @@ class ConfluenceConnector(BaseConnector):
             attachment_id = attachment.get("id")
             if not attachment_id:
                 return None
+            if str(attachment_id) in images_not_inlined(await _ensure_page_attachments()):
+                return None
 
             try:
                 content = bytearray()
@@ -6061,7 +6084,6 @@ class ConfluenceConnector(BaseConnector):
                 content_bytes = bytes(content)
                 if not content_bytes:
                     return None
-                inlined_bytes += len(content_bytes)
                 return content_bytes, mime_type
             except AtlassianQuotaExhausted:
                 raise
@@ -6132,15 +6154,8 @@ class ConfluenceConnector(BaseConnector):
             list(attachments_data) if attachments_data else None
         )
 
-        inlined_bytes = 0
-
         async def fetcher(media_id: str, alt_text: str) -> str | None:
-            nonlocal page_attachments, inlined_bytes
-            if inlined_bytes >= MAX_INLINE_IMAGE_BYTES_PER_PAGE:
-                self.logger.debug(
-                    f"Page {captured_page_id} already inlines {inlined_bytes} bytes of images; leaving the rest out"
-                )
-                return None
+            nonlocal page_attachments
             record_type = (
                 RecordType.CONFLUENCE_BLOGPOST
                 if captured_content_type == "blogpost"
@@ -6151,16 +6166,13 @@ class ConfluenceConnector(BaseConnector):
                     captured_page_id,
                     record_type,
                 )
-            data_uri = await self._fetch_confluence_media_as_base64(
+            return await self._fetch_confluence_media_as_base64(
                 captured_page_id,
                 media_id,
                 alt_text,
                 captured_content_type,
                 attachments=page_attachments,
             )
-            if data_uri:
-                inlined_bytes += len(data_uri) * 3 // 4  # base64 back to bytes
-            return data_uri
 
         return fetcher
 
@@ -6226,6 +6238,9 @@ class ConfluenceConnector(BaseConnector):
 
             if not mime_type.startswith("image/"):
                 self.logger.debug(f"Skipping non-image media type: {mime_type} for {media_alt}")
+                return None
+            if str(attachment_id) in images_not_inlined(page_attachments):
+                self.logger.debug(f"Image {attachment_id} is left out of the page body; it stays an attachment")
                 return None
 
             content = bytearray()
@@ -6625,11 +6640,14 @@ class ConfluenceConnector(BaseConnector):
             mime_type = _attachment_mime_types.get(attachment_id, "")
             return mime_type.startswith("image/")
 
+        # Images left out of the body stay attachment records
+        not_inlined = images_not_inlined(attachments_data or [])
+
         # Track which attachments were used as images in blocks
         if adf_dict:
             for media_info in extract_media_from_adf(adf_dict):
                 attachment_id = resolve_attachment_id(media_info)
-                if attachment_id and is_image_attachment(attachment_id):
+                if attachment_id and is_image_attachment(attachment_id) and attachment_id not in not_inlined:
                     used_attachment_ids.add(attachment_id)
 
         # 2. Fetch and process comments
@@ -6819,7 +6837,7 @@ class ConfluenceConnector(BaseConnector):
                         attachment_id = resolve_attachment_id(media_info)
                         if attachment_id and attachment_id in (attachment_children_map or {}):
                             comment_attachment_ids.add(attachment_id)
-                            if not is_image_attachment(attachment_id):
+                            if not is_image_attachment(attachment_id) or attachment_id in not_inlined:
                                 comment_children.append(attachment_children_map[attachment_id])
 
                     # Create BlockComment for metadata only
@@ -7941,7 +7959,7 @@ class ConfluenceConnector(BaseConnector):
             has_html_mime = record.mime_type == MimeTypes.HTML.value
             
             if is_page_or_blogpost and has_html_mime:
-                self._now_blocks.add(record.external_record_id)
+                self._now_blocks[record.external_record_id] = record.record_type
                 self.logger.info(
                     f"Detected legacy HTML mime type for {record.record_type.value} "
                     f"{record.record_name} ({record.external_record_id}), updating to BLOCKS"
