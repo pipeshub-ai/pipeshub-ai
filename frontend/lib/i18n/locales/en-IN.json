@@ -847,6 +847,19 @@
       "tryAgain": "Try again",
       "unavailable": "Couldn't start the sign-in here. Connect it in Workspace → MCP Servers."
     },
+    "connectTools": {
+      "blockedTitle": "Connect these tools to use this agent",
+      "serviceAccountTitle": "This agent's tools aren't connected",
+      "noticeTitle": "This answer couldn't use some tools",
+      "chip": "Some tools aren't connected",
+      "chipAction": "Connect",
+      "askAdmin": "Ask an admin to connect it",
+      "serviceAccount": "This agent uses its own connections. Ask an admin to connect {{tools}} in Agent Builder.",
+      "toolsetUnavailable": "Couldn't start the sign-in here. Connect it in Workspace → Actions.",
+      "connectedAskAgain": "Connected. Ask again to use it.",
+      "couldNotUse": "{{agent}} couldn't use {{tools}}",
+      "defaultAgent": "The agent"
+    },
     "mcpSignIn": {
       "title": "Sign in again to give these MCP servers the permission they asked for",
       "needs": "Needs: {{scopes}}",

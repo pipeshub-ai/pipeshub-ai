@@ -130,6 +130,7 @@ export function chatResponseProps(
     feedbackInfo: pair.feedbackInfo,
     status: pair.status,
     streamError: pair.streamError,
+    unavailableTools: pair.unavailableTools,
     failed: pair.failed,
     onRetry: ctx.canSend ? ctx.onRetry : undefined,
     canSend: ctx.canSend,

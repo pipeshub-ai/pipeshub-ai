@@ -844,6 +844,19 @@
       "tryAgain": "Erneut versuchen",
       "unavailable": "Die Anmeldung konnte hier nicht gestartet werden. Verbinden Sie den Server unter Workspace → MCP-Server."
     },
+    "connectTools": {
+      "blockedTitle": "Verbinden Sie diese Tools, um diesen Agenten zu nutzen",
+      "serviceAccountTitle": "Die Tools dieses Agenten sind nicht verbunden",
+      "noticeTitle": "Diese Antwort konnte einige Tools nicht nutzen",
+      "chip": "Einige Tools sind nicht verbunden",
+      "chipAction": "Verbinden",
+      "askAdmin": "Bitten Sie einen Admin, es zu verbinden",
+      "serviceAccount": "Dieser Agent nutzt eigene Verbindungen. Bitten Sie einen Admin, {{tools}} im Agent Builder zu verbinden.",
+      "toolsetUnavailable": "Die Anmeldung konnte hier nicht gestartet werden. Verbinden Sie es unter Workspace → Aktionen.",
+      "connectedAskAgain": "Verbunden. Fragen Sie erneut, um es zu nutzen.",
+      "couldNotUse": "{{agent}} konnte {{tools}} nicht nutzen",
+      "defaultAgent": "Der Agent"
+    },
     "mcpSignIn": {
       "title": "Melden Sie sich erneut an, um diesen MCP-Servern die angeforderte Berechtigung zu geben",
       "needs": "Benötigt: {{scopes}}",

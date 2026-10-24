@@ -969,6 +969,19 @@
       "tryAgain": "重试",
       "unavailable": "无法在此处开始登录。请在 Workspace → MCP 服务器中连接。"
     },
+    "connectTools": {
+      "blockedTitle": "连接这些工具以使用此智能体",
+      "serviceAccountTitle": "此智能体的工具尚未连接",
+      "noticeTitle": "此回答无法使用某些工具",
+      "chip": "部分工具尚未连接",
+      "chipAction": "连接",
+      "askAdmin": "请管理员连接",
+      "serviceAccount": "此智能体使用自己的连接。请管理员在 Agent Builder 中连接 {{tools}}。",
+      "toolsetUnavailable": "无法在此处开始登录。请在 Workspace → 操作 中连接。",
+      "connectedAskAgain": "已连接。再问一次即可使用。",
+      "couldNotUse": "{{agent}} 无法使用 {{tools}}",
+      "defaultAgent": "智能体"
+    },
     "mcpSignIn": {
       "title": "重新登录，为这些 MCP 服务器授予它们请求的权限",
       "needs": "需要：{{scopes}}",

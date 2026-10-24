@@ -14,6 +14,7 @@ import { ChatSection } from './chat-section';
 import { chatSlots } from '@/config';
 import { groupConversationsWithPinned } from './time-group';
 import { orderPinnedFirst } from '@/chat/utils/pinned-conversations';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 
 /**
  * Maximum number of chat items shown per section before
@@ -49,6 +50,7 @@ export const ChatSections = React.memo(function ChatSections({
   const slots = useChatStore((s) => s.slots);
   const pagination = useChatStore((s) => s.pagination);
   const sharedPagination = useChatStore((s) => s.sharedPagination);
+  const today = useLocalDay();
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[sidebar] [ChatSections]');
@@ -104,7 +106,7 @@ export const ChatSections = React.memo(function ChatSections({
     : orderedYour;
 
   // Group only "Your Chats": Pinned first, then by time
-  const yourNonEmptyGroups = groupConversationsWithPinned(visibleYour);
+  const yourNonEmptyGroups = groupConversationsWithPinned(visibleYour, today);
 
   const activePendingConversations = useMemo(() => {
     const convIds = new Set(conversations.map((c) => c.id));

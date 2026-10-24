@@ -1009,6 +1009,19 @@
       "tryAgain": "Zkusit znovu",
       "unavailable": "Přihlášení se zde nepodařilo spustit. Připojte jej v Pracovní prostor → MCP servery."
     },
+    "connectTools": {
+      "blockedTitle": "Pro použití tohoto agenta připojte tyto nástroje",
+      "serviceAccountTitle": "Nástroje tohoto agenta nejsou připojené",
+      "noticeTitle": "Tato odpověď nemohla použít některé nástroje",
+      "chip": "Některé nástroje nejsou připojené",
+      "chipAction": "Připojit",
+      "askAdmin": "Požádejte správce o připojení",
+      "serviceAccount": "Tento agent používá vlastní připojení. Požádejte správce, aby připojil {{tools}} v Tvůrci agentů.",
+      "toolsetUnavailable": "Přihlášení se zde nepodařilo spustit. Připojte jej v Pracovní prostor → Akce.",
+      "connectedAskAgain": "Připojeno. Pro použití se zeptejte znovu.",
+      "couldNotUse": "{{agent}} nemohl použít {{tools}}",
+      "defaultAgent": "Agent"
+    },
     "mcpSignIn": {
       "title": "Přihlaste se znovu a udělte těmto MCP serverům oprávnění, o která požádaly",
       "needs": "Vyžaduje: {{scopes}}",

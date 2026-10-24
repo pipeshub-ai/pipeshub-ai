@@ -176,6 +176,28 @@ describe('run limits', () => {
         expect(run.answer()?.content).to.equal('Ten minutes later.')
       })
 
+      it("saves what streamed through the answer hooks' redactStopped, and never through prepare", async () => {
+        const prepare = sinon.stub().rejects(new Error('a stopped run gets no prepare'))
+        const redactStopped = sinon.stub().callsFake((text: string, parts?: unknown[]) => ({
+          text: text.replace('secret', '@Bea'),
+          parts,
+        }))
+        sinon.stub(conversationExtensions().turns, 'streamFor').returns({
+          respondingAgentView: () => Promise.resolve(undefined),
+          runLimits: () => DEFAULT_RUN_LIMITS,
+          answer: { observe: () => undefined, prepare, stored: sinon.stub().resolves(), redactStopped },
+        })
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Ask secret'))
+        await settle()
+        clock.tick(60_000)
+        await settle(20)
+
+        expect(redactStopped.calledOnce).to.equal(true)
+        expect(prepare.called).to.equal(false)
+        expect(run.answer()).to.include({ content: 'Ask @Bea', status: 'stopped' })
+      })
+
       it('ends the run on the limits its turn extension sets', async () => {
         const runLimits = sinon.stub().returns({ silenceMs: 60_000, idleMs: 30_000 })
         sinon.stub(conversationExtensions().turns, 'streamFor').returns({

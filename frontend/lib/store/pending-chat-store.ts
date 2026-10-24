@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import type { AttachmentRef, ChatSettings } from '@/chat/types';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -44,6 +45,11 @@ export interface PendingChatContext {
   message: string;
   /** Server-assigned refs for attachments uploaded by the widget. */
   attachments?: AttachmentRef[];
+  /**
+   * What the composer's send carried besides the text (the agents and people it `@`-mentions). The message keeps
+   * their tokens; without this the chat page sends them as text the server makes inert, and nobody is mentioned.
+   */
+  extra?: ComposerSendExtra;
   /** Chat settings snapshot (mode, queryMode, agentStrategy) */
   settings?: Partial<ChatSettings>;
   /** Page-specific context (collections, selected records, etc.) */

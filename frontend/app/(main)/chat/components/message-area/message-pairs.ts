@@ -2,6 +2,7 @@ import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, Att
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { ChatStreamErrorInfo } from '../../stream-error';
+import type { UnavailableTool } from '../../unavailable-tools';
 import { chatExtension } from '@/config';
 import type { PairMessage, RowCustom } from '../../chat-extension';
 
@@ -32,6 +33,8 @@ export interface MessagePair {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run (live turns only). */
   streamError?: ChatStreamErrorInfo;
+  /** Tools the person asking had not connected; the answer went on without them. */
+  unavailableTools?: UnavailableTool[];
   /** The run failed: `answer` holds the error text, not an answer. */
   failed?: boolean;
   /** No assistant row follows this question — render the question alone, no answer area. */
@@ -51,6 +54,7 @@ type AssistantCustom = {
   persistedParts?: MessagePart[];
   status?: 'stopped';
   streamError?: ChatStreamErrorInfo;
+  unavailableTools?: UnavailableTool[];
   failed?: boolean;
 };
 
@@ -206,6 +210,7 @@ export function buildMessagePairs(
         persistedParts: metadata?.persistedParts,
         status: metadata?.status,
         streamError: metadata?.streamError,
+        unavailableTools: metadata?.unavailableTools,
         ...(metadata?.failed ? { failed: true } : {}),
       }, {
         user: userMsgCustom as RowCustom | undefined,

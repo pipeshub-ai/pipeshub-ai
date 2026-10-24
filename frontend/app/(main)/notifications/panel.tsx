@@ -518,7 +518,8 @@ export function NotificationsPanel() {
           top: 0,
           left: `${leftOffset}px`,
           bottom: 0,
-          width: `${panelWidth}px`,
+          // A phone is narrower than the panel's least width; there it takes the whole screen.
+          width: isMobile ? '100%' : `${panelWidth}px`,
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
@@ -531,7 +532,7 @@ export function NotificationsPanel() {
         }}
       >
         {/* Resize handle — right edge */}
-        <Box
+        {!isMobile && <Box
           onMouseDown={handleResizeMouseDown}
           onMouseEnter={() => setResizeHandleHovered(true)}
           onMouseLeave={() => setResizeHandleHovered(false)}
@@ -559,7 +560,7 @@ export function NotificationsPanel() {
               backgroundColor: 'var(--olive-8)',
             }}
           />
-        </Box>
+        </Box>}
         {/* ── Header ──────────────────────────────────────────── */}
         <Flex
           align="center"
@@ -620,6 +621,19 @@ export function NotificationsPanel() {
               </Tooltip>
             </Box>
             <NotificationFilterMenu value={listFilter} onChange={handleFilterChange} />
+            {/* On a phone the panel covers the screen and its toggle is in the shut drawer, so it closes here. */}
+            {isMobile && (
+              <IconButton
+                variant="ghost"
+                size="2"
+                color="gray"
+                aria-label={t('common.close')}
+                onClick={closePanel}
+                style={{ minWidth: 44, minHeight: 44, margin: 0, cursor: 'pointer' }}
+              >
+                <MaterialIcon name="close" size={20} color="var(--slate-11)" />
+              </IconButton>
+            )}
           </Flex>
         </Flex>
 

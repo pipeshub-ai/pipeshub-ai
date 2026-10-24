@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import type { Conversation } from '@/chat/types';
 
@@ -63,5 +63,30 @@ describe('ChatSections', () => {
     render(<ChatSections onOpenMoreChats={() => {}} />);
     fireEvent.click(screen.getByText('Recents'));
     expect(rows()).toEqual(['Today chat']);
+  });
+
+  it("moves a chat from Today to Yesterday at the viewer's midnight while the sidebar stays open", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-22T06:00:00Z')); // 21 Oct 23:00 PDT
+      useChatStore.setState({
+        sharedConversations: [],
+        conversations: [chat('c1', 'Evening chat', Date.parse('2026-10-22T05:00:00Z'))], // 21 Oct 22:00 PDT
+      });
+      render(<ChatSections onOpenMoreChats={() => {}} />);
+      fireEvent.click(screen.getByText('Recents'));
+      expect(screen.getByText('Today')).toBeTruthy();
+
+      act(() => vi.advanceTimersByTime(2 * 60 * 60 * 1000)); // 22 Oct 01:00 PDT
+      expect(screen.queryByText('Today')).toBeNull();
+      expect(screen.getByText('Yesterday')).toBeTruthy();
+      expect(rows()).toEqual(['Evening chat']);
+    } finally {
+      vi.useRealTimers();
+      if (zone === undefined) delete process.env.TZ;
+      else process.env.TZ = zone;
+    }
   });
 });

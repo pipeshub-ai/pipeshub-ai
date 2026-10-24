@@ -1,8 +1,9 @@
+import { isSameLocalDay } from '@/lib/utils/local-day';
+
 export function formatMessageTime(isoString: string): string {
   const date = new Date(isoString);
   if (isNaN(date.getTime())) return '';
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
+  const isToday = isSameLocalDay(date, Date.now());
   const timeStr = date.toLocaleTimeString(undefined, {
     hour: 'numeric',
     minute: '2-digit',

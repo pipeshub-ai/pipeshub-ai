@@ -336,6 +336,29 @@ describe('Enterprise Search Utils', () => {
       expect(result.confidence).to.equal(0.9)
     })
 
+    it('keeps the tools the answer ran without, cleaned and bounded', () => {
+      const gmail = { kind: 'toolset', instanceId: ' i-gmail ', displayName: ' Gmail ', name: 'gmail', problem: 'not_authenticated', authMode: null, sharedCredential: false, userCanConnect: true, token: 's3cret' }
+      const many = Array.from({ length: 60 }, (_, i) => ({ kind: 'mcp', instanceId: `m${i}`, displayName: `S${i}`, problem: 'not_found' }))
+      const message = buildAIResponseMessage({
+        statusCode: 200,
+        data: {
+          answer: 'No Gmail here',
+          unavailableTools: [gmail, { ...gmail }, { kind: 'agent', instanceId: 'x', problem: 'not_found' }, { kind: 'mcp', problem: 'not_found' }, 'junk', ...many],
+        },
+      } as any)
+      expect(message.unavailableTools).to.have.length(50)
+      expect(message.unavailableTools![0]).to.deep.equal({
+        kind: 'toolset', instanceId: 'i-gmail', displayName: 'Gmail', name: 'gmail', problem: 'not_authenticated', sharedCredential: false, userCanConnect: true,
+      })
+      expect(message.unavailableTools![1]).to.deep.equal({ kind: 'mcp', instanceId: 'm0', displayName: 'S0', problem: 'not_found', sharedCredential: false, userCanConnect: false })
+      expect(JSON.stringify(message)).not.to.include('s3cret')
+    })
+
+    it('stores no unavailableTools when the run had none', () => {
+      const message = buildAIResponseMessage({ statusCode: 200, data: { answer: 'Hi', unavailableTools: [] } } as any)
+      expect(message).to.not.have.property('unavailableTools')
+    })
+
     it('keeps answerMatchType only for the Capability Card', () => {
       const card = buildAIResponseMessage({
         statusCode: 200,

@@ -856,6 +856,19 @@
       "tryAgain": "Reintentar",
       "unavailable": "No se pudo iniciar el inicio de sesión aquí. Conéctalo en Workspace → Servidores MCP."
     },
+    "connectTools": {
+      "blockedTitle": "Conecta estas herramientas para usar este agente",
+      "serviceAccountTitle": "Las herramientas de este agente no están conectadas",
+      "noticeTitle": "Esta respuesta no pudo usar algunas herramientas",
+      "chip": "Algunas herramientas no están conectadas",
+      "chipAction": "Conectar",
+      "askAdmin": "Pide a un administrador que la conecte",
+      "serviceAccount": "Este agente usa sus propias conexiones. Pide a un administrador que conecte {{tools}} en Agent Builder.",
+      "toolsetUnavailable": "No se pudo iniciar el inicio de sesión aquí. Conéctala en Workspace → Acciones.",
+      "connectedAskAgain": "Conectada. Vuelve a preguntar para usarla.",
+      "couldNotUse": "{{agent}} no pudo usar {{tools}}",
+      "defaultAgent": "El agente"
+    },
     "mcpSignIn": {
       "title": "Vuelve a iniciar sesión para dar a estos servidores MCP el permiso que pidieron",
       "needs": "Necesita: {{scopes}}",

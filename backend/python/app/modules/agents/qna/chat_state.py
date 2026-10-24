@@ -137,6 +137,9 @@ class ChatState(TypedDict):
     api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
+    # Attached toolsets/MCP servers the caller has not connected (`readiness.UnavailableTool` wire
+    # dicts, no credentials): left out of the run, named in the prompt and the completion.
+    unavailable_tools: list[dict[str, Any]] | None
 
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
@@ -697,6 +700,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
         "api_toolset_tools": chat_query.get("apiToolsetTools", []),
+        "unavailable_tools": chat_query.get("unavailableTools") or [],
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object

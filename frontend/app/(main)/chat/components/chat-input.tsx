@@ -537,7 +537,13 @@ export function ChatInput({
 
   // Active slot ID for regenerate/edit flows
   const activeSlotId = useChatStore((s) => s.activeSlotId);
-  const composerInput = chatSlots.useComposerInput({ composerRef, message, setMessage, slotId: activeSlotId });
+  const composerInput = chatSlots.useComposerInput({
+    composerRef,
+    message,
+    setMessage,
+    slotId: activeSlotId,
+    attachmentCount: uploadedFiles.filter((f) => f.status !== 'error').length,
+  });
 
   // Is the active slot currently streaming? The widget composer starts a new
   // chat, so a run left going on the chat page is not its run.

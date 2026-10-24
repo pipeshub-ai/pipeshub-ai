@@ -162,6 +162,7 @@ import {
   TurnOutcome,
 } from '../services/conversation/turn/turn-lifecycle';
 import { TurnRun, turnWrite } from '../services/conversation/turn/turn-run';
+import type { TurnAnswerHooks } from '../services/conversation/turn/turn-extension';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
 import {
   RunWatchdog,
@@ -1665,6 +1666,8 @@ async function regenerateAnswersInternal(
     finalizeAnswered?: () => boolean;
     /** Set once streaming: a shutdown stops waiting for the run, and its time limits stop counting. */
     stopWatching?: () => void;
+    /** Set once streaming: what a stopped answer is saved through. */
+    answer?: TurnAnswerHooks;
   } = {};
 
   const stopped = async (): Promise<void> => {
@@ -1691,9 +1694,15 @@ async function regenerateAnswersInternal(
   const saveStopped = async (): Promise<void> => {
     try {
       if (existingConversation) {
-        const partialText = contentAccumulator.getText();
+        const streamed = {
+          text: contentAccumulator.getText(),
+          parts: contentAccumulator.getParts(),
+        };
+        const { text, parts } =
+          live.answer?.redactStopped?.(streamed.text, streamed.parts) ??
+          streamed;
         // A partial answer was shown for the edited question, so the question is saved with it.
-        if (partialText) {
+        if (streamed.text) {
           try {
             await saveEditedQuestion();
           } catch (err: unknown) {
@@ -1703,10 +1712,10 @@ async function regenerateAnswersInternal(
             });
           }
         }
-        await savePartialConversation(existingConversation, partialText, null, {
+        await savePartialConversation(existingConversation, text, null, {
           replaceMessageId: messageId,
           run,
-          parts: contentAccumulator.getParts(),
+          parts,
         });
         await dropReplacedTurn();
       }
@@ -2223,6 +2232,7 @@ async function regenerateAnswersInternal(
       gate.lease,
     );
     const streamExtension = turns.streamFor(req, deps);
+    live.answer = streamExtension.answer;
     const watchdog = new RunWatchdog(
       streamExtension.runLimits(turnRun, existingConversation),
       (limit) => {

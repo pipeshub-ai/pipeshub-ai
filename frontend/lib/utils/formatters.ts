@@ -1,3 +1,5 @@
+import { localDaysBetween } from './local-day';
+
 /**
  * Format file size in bytes to human readable format
  */
@@ -117,16 +119,18 @@ export function formatRelativeTime(timestamp?: number | null): string {
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  const weeks = Math.floor(days / 7);
 
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
   if (seconds < 60) return rtf.format(-seconds, 'second');
   if (minutes < 60) return rtf.format(-minutes, 'minute');
   if (hours < 24) return rtf.format(-hours, 'hour');
+
+  // Past a day, count the viewer's calendar days: 11 PM two days back is "2 days ago", not "yesterday".
+  const days = Math.max(1, localDaysBetween(timestamp, now));
   if (days < 7) return rtf.format(-days, 'day');
 
+  const weeks = Math.floor(days / 7);
   if (weeks < 4) return rtf.format(-weeks, 'week');
 
   const date = new Date(timestamp);

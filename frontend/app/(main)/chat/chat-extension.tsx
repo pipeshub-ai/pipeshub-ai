@@ -101,8 +101,11 @@ export interface ChatExtension {
   slot: {
     /** Fields of a fresh slot. */
     defaults(isNew: boolean): Partial<ChatSlot>;
-    /** Fields of a chat the user just created. */
-    ownerFields(): Partial<ChatSlot>;
+    /**
+     * Fields of a chat the user just created, as its first run ends; `slot` is the slot just before, which may already
+     * hold what the page learned while the run went on (the chat was shared from the header meanwhile).
+     */
+    ownerFields(slot?: ChatSlot): Partial<ChatSlot>;
     /** The slot stays on screen while active but is never handed out again for its conversation. */
     isRetired(slot: ChatSlot): boolean;
     /** Shown beside the active slot: never evicted, and streamed at the active slot's rate. */
@@ -115,6 +118,8 @@ export interface ChatExtension {
     requestFields(slot: ChatSlot, message: ThreadMessageLike, ctx: { isAgent: boolean }): Partial<StreamChatRequest>;
     /** Request fields for a new message appended to the thread. */
     newMessageFields(request: StreamChatRequest, message: ThreadMessageLike): Partial<StreamChatRequest>;
+    /** `metadata.custom` of a message another page's composer handed to the chat page (`PendingChatContext.extra`). */
+    handoffCustom(extra: ComposerSendExtra | undefined): RowCustom;
   };
   history: {
     /** Options for the detail fetch. */
@@ -127,6 +132,11 @@ export interface ChatExtension {
     prepare(messages: ConversationMessage[]): ConversationMessage[];
     /** Extra `metadata.custom` fields of a mapped row. */
     rowCustom(msg: ConversationMessage, opts: HistoryLoadOptions): RowCustom;
+    /**
+     * The `rowCustom` fields a card's row takes when the reply to its answer is folded onto it (`answer`, of that
+     * reply); `card` is the row's own. The row keeps the card's place in the thread.
+     */
+    foldedRowCustom(answer: RowCustom, card: RowCustom): RowCustom;
     /** A tool row that adds fields to its turn's answer; `null` when it is not one. */
     turnCustomFromToolRow(msg: ConversationMessage): RowCustom | null;
     /** A row type the base mapping does not know: the row to show, `null` to drop it, `undefined` when not handled. */
@@ -212,6 +222,7 @@ export const defaultChatExtension: ChatExtension = {
     hold: () => false,
     requestFields: () => NO_FIELDS,
     newMessageFields: () => NO_FIELDS,
+    handoffCustom: () => NO_FIELDS,
   },
   history: {
     loadOptions: () => NO_FIELDS,
@@ -219,6 +230,7 @@ export const defaultChatExtension: ChatExtension = {
     loadFailureFields: () => null,
     prepare: (messages) => messages,
     rowCustom: () => NO_FIELDS,
+    foldedRowCustom: (answer) => answer,
     turnCustomFromToolRow: () => null,
     mapRow: () => undefined,
     askCardFields: () => NO_FIELDS,
@@ -325,6 +337,8 @@ export interface ComposerInputOptions {
   message: string;
   setMessage(text: string): void;
   slotId: string | null;
+  /** Files in the composer that a send would carry: uploaded or still uploading, not failed. */
+  attachmentCount?: number;
 }
 
 export interface ComposerInputExtension {
@@ -415,6 +429,11 @@ export interface ChatResponseExtension {
   askCardReadOnlyFor?: { name: string | null };
   /** The live question card can be filled in but not sent yet; the text says why. */
   askCardSubmitHeld?: string;
+  /**
+   * Someone else asked this question: the viewer sees which tools the agent could not use, but cannot connect them
+   * for that turn. Unset, the viewer asked it.
+   */
+  toolsConnectReadOnlyFor?: { agentName: string | null };
   /** Who answers the approval card instead of the conversation's owner: this person, or the viewer when `null`. */
   approvalCardReadOnlyFor?: { name: string | null } | null;
   /** Adjusts the request that answers a live question card. */

@@ -880,12 +880,16 @@ export class TurnStreamPump {
     const { conversation, run, requestId } = this.o;
     try {
       await this.writes;
-      await savePartialConversation(
-        conversation,
-        this.content.getText(),
-        null,
-        { run, parts: this.content.getParts() },
-      );
+      const streamed = {
+        text: this.content.getText(),
+        parts: this.content.getParts(),
+      };
+      const { text, parts } =
+        this.o.extension?.answer?.redactStopped?.(
+          streamed.text,
+          streamed.parts,
+        ) ?? streamed;
+      await savePartialConversation(conversation, text, null, { run, parts });
     } catch (error: unknown) {
       logger.error('Failed to save partial conversation on disconnect', {
         requestId,

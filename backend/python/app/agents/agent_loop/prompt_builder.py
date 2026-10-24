@@ -55,6 +55,7 @@ from app.modules.agents.context.knowledge_context import _build_knowledge_contex
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.modules.agents.context.user_context import _format_user_context
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
+from app.modules.agents.readiness import unavailable_tools_note
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -893,6 +894,7 @@ class PipesHubPromptBuilder:
         for section, text in get_chat_extension().prompt_sections(self._context, user_context).items():
             tpl.set(section, text)
         tpl.set("skills_overview", render_skills_overview(runtime) or None)
+        tpl.set("unavailable_tools", unavailable_tools_note(self._context.tool_state.get("unavailable_tools")))
         tpl.set(
             "answer_confidence",
             _build_answer_confidence_section() if confidence_enabled() else None,

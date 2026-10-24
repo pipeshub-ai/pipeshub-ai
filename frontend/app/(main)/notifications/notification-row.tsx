@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
+import { localDaysBetween } from '@/lib/utils/local-day';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
 import type { NotificationRowDecoration, NotificationRowExtraAction } from './notification-extension';
 
@@ -43,7 +44,8 @@ export function chatConversationIdFromHref(href: string): string | null {
   return url.searchParams.get('conversationId') || null;
 }
 
-function formatRelativeTime(
+/** How long ago a notice came: hours within a day, then the viewer's calendar days. */
+export function formatRelativeTime(
   iso: string | undefined,
   lang: string,
   compact = false,
@@ -51,11 +53,11 @@ function formatRelativeTime(
   if (!iso) return '';
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return '';
-  const diff = Date.now() - ts;
+  const now = Date.now();
+  const diff = now - ts;
   const secs = Math.floor(diff / 1000);
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(mins / 60);
-  const days = Math.floor(hrs / 24);
   const rtf = new Intl.RelativeTimeFormat(lang, {
     numeric: 'auto',
     style: compact ? 'narrow' : 'long',
@@ -63,7 +65,8 @@ function formatRelativeTime(
   if (secs < 60) return rtf.format(0, 'second');
   if (mins < 60) return rtf.format(-mins, 'minute');
   if (hrs < 24) return rtf.format(-hrs, 'hour');
-  return rtf.format(-days, 'day');
+  // Past a day, count the viewer's calendar days, as the chat list's "Yesterday" does.
+  return rtf.format(-Math.max(1, localDaysBetween(ts, now)), 'day');
 }
 
 export function severityIcon(severity: NotificationSeverity): string {

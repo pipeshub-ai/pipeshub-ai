@@ -32,6 +32,12 @@ const MIME_ICONS: Record<string, string> = {
   'application/json': 'data_object',
 };
 
+/**
+ * A ghost IconButton sizes to its glyph and pulls its margins in by its padding, so the spinner that replaces a glyph
+ * resizes it and neighbours' hit areas overlap. A fixed box keeps every action the same size, a gap apart.
+ */
+const ACTION_BUTTON_STYLE: React.CSSProperties = { width: 28, height: 28, padding: 0, margin: 0, flexShrink: 0 };
+
 function getIconForMime(mimeType: string): string {
   for (const [prefix, icon] of Object.entries(MIME_ICONS)) {
     if (mimeType.startsWith(prefix)) return icon;
@@ -453,7 +459,7 @@ function ArtifactCard({
         )}
       </Flex>
 
-      <Flex gap="1">
+      <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {onViewSource && artifact.derivedFromCodeArtifactId && !sourceGone && (
           <IconButton
             size="1"
@@ -462,7 +468,7 @@ function ArtifactCard({
             disabled={isViewingSource}
             aria-label={isViewingSource ? t('chat.artifactsPanel.loadingSource') : t('chat.artifactsPanel.viewSource')}
             title={t('chat.artifactsPanel.viewSourceTitle')}
-            style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
+            style={{ ...ACTION_BUTTON_STYLE, cursor: isViewingSource ? 'wait' : 'pointer' }}
           >
             {isViewingSource ? (
               <Spinner size={16} />
@@ -478,7 +484,7 @@ function ArtifactCard({
             onClick={runPreview}
             disabled={isPreviewing}
             aria-label={isPreviewing ? t('chat.artifactsPanel.loadingPreview') : t('chat.artifactsPanel.preview')}
-            style={{ cursor: isPreviewing ? 'wait' : 'pointer' }}
+            style={{ ...ACTION_BUTTON_STYLE, cursor: isPreviewing ? 'wait' : 'pointer' }}
           >
             {isPreviewing ? (
               <Spinner size={16} />
@@ -493,7 +499,7 @@ function ArtifactCard({
           onClick={runDownload}
           disabled={isDownloading}
           aria-label={isDownloading ? t('chat.artifactsPanel.downloading') : t('chat.artifactsPanel.download')}
-          style={{ cursor: isDownloading ? 'wait' : 'pointer' }}
+          style={{ ...ACTION_BUTTON_STYLE, cursor: isDownloading ? 'wait' : 'pointer' }}
         >
           {isDownloading ? (
             <Spinner size={16} />

@@ -969,6 +969,19 @@
       "tryAgain": "重試",
       "unavailable": "無法在此開始登入。請在 Workspace → MCP 伺服器中連線。"
     },
+    "connectTools": {
+      "blockedTitle": "連接這些工具以使用此代理",
+      "serviceAccountTitle": "此代理的工具尚未連接",
+      "noticeTitle": "此回答無法使用部分工具",
+      "chip": "部分工具尚未連接",
+      "chipAction": "連接",
+      "askAdmin": "請管理員連接",
+      "serviceAccount": "此代理使用自己的連線。請管理員在 Agent Builder 中連接 {{tools}}。",
+      "toolsetUnavailable": "無法在此處開始登入。請在 Workspace → 動作 中連接。",
+      "connectedAskAgain": "已連接。再問一次即可使用。",
+      "couldNotUse": "{{agent}} 無法使用 {{tools}}",
+      "defaultAgent": "代理"
+    },
     "mcpSignIn": {
       "title": "重新登入，為這些 MCP 伺服器授予它們要求的權限",
       "needs": "需要：{{scopes}}",

@@ -69,6 +69,7 @@ import {
   userFacingChatError,
 } from './chat-error-messages';
 import { stripSignedUrlLinks } from './signed-url';
+import { sanitizeUnavailableTools } from './unavailable-tools';
 import { AIRequestRefusedError } from './ai-stream';
 
 const logger = new Logger({
@@ -977,6 +978,11 @@ export const buildAIResponseMessage = (
     data.parts.length > 0
   ) {
     message.parts = data.parts;
+  }
+
+  const unavailableTools = sanitizeUnavailableTools(data.unavailableTools);
+  if (unavailableTools.length > 0) {
+    message.unavailableTools = unavailableTools;
   }
 
   if (data.status === 'stopped') {

@@ -43,6 +43,20 @@ async function clickPreview(answer: string) {
 }
 
 describe('ChatResponse artifact preview', () => {
+  it('offers View and Download on the answer card, and View opens the streamed record', async () => {
+    kb.streamRecord.mockResolvedValue(new Blob(['a,b'], { type: 'text/csv' }));
+
+    await clickPreview(answerWith(SIGNED));
+
+    expect(screen.getByRole('button', { name: 'Download artifact' })).toBeTruthy();
+    await waitFor(() => expect(useChatStore.getState().previewFile?.id).toBe('rec-1'));
+    expect(kb.streamRecord).toHaveBeenCalledWith('rec-1', expect.objectContaining({ version: 1 }));
+    const preview = useChatStore.getState().previewFile;
+    expect(preview).toMatchObject({ name: 'data.csv', version: 1, showDownload: true });
+    expect(preview?.url).not.toBe(SIGNED);
+    expect(typeof preview?.onVersionChange).toBe('function');
+  });
+
   it.each([
     ['a plain URL', EVIL],
     ['a URL that only looks signed', 'https://evil.example/steal.csv?X-Amz-Signature=x'],

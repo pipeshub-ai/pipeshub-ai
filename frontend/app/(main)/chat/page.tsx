@@ -956,6 +956,7 @@ function ChatContent() {
             pending.attachments && pending.attachments.length > 0
               ? pending.attachments
               : undefined,
+          ...chatExtension.send.handoffCustom(pending.extra),
         },
       },
       startRun: true,

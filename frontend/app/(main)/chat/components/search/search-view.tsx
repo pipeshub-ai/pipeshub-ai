@@ -13,6 +13,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { groupConversationsByTime, getNonEmptyGroups } from '@/chat/sidebar/time-group';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 import type { TimeGroupKey } from '@/lib/utils/group-by-time';
 import { TimeGroupedSkeleton, SearchResultsSkeleton } from './skeleton';
 import { ChatRow } from './chat-row';
@@ -183,10 +184,11 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
     };
   }, [open]);
 
+  const today = useLocalDay();
   const timeGroups = useMemo(() => {
-    const grouped = groupConversationsByTime(browseConversations);
+    const grouped = groupConversationsByTime(browseConversations, today);
     return getNonEmptyGroups(grouped);
-  }, [browseConversations]);
+  }, [browseConversations, today]);
 
   const trimmedInput = searchQuery.trim();
   const inSearchMode = trimmedInput.length > 0;

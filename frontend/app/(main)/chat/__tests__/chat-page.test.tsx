@@ -367,6 +367,27 @@ describe('Chat page — new chat', () => {
     expect(usePendingChatStore.getState().pending).toBeNull();
   });
 
+  it('sends a handed-over question with the row fields the extension makes of what its send carried', async () => {
+    const extra = { mentions: [{ type: 'agent', id: 'ag-1' }] };
+    const handoff = vi.spyOn(chatExtension.send, 'handoffCustom').mockReturnValue({ mentions: extra.mentions });
+    usePendingChatStore.getState().setPending({
+      message: '<@agent:ag-1> what changed?',
+      extra,
+      pageContext: {},
+      referrerPage: '/projects',
+    });
+
+    renderPage('projectId=p1');
+
+    await waitFor(() => expect(append).toHaveBeenCalledTimes(1));
+    expect(handoff).toHaveBeenCalledWith(extra);
+    expect(append.mock.calls[0][0]).toMatchObject({
+      content: [{ type: 'text', text: '<@agent:ag-1> what changed?' }],
+      metadata: { custom: { mentions: extra.mentions } },
+    });
+    handoff.mockRestore();
+  });
+
   it('opens scoped to the rows handed over from All Records, replacing the selection and sending nothing', async () => {
     useChatStore.getState().setFilters({ apps: ['jira-1'], kb: [] });
     usePendingChatStore.getState().setPending({

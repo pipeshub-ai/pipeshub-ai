@@ -61,6 +61,7 @@ import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
+import { TOOLS_UNAVAILABLE_EVENT, toolsUnavailableNotice, type ToolsUnavailableNotice } from './unavailable-tools';
 import { chatExtension } from '@/config';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
@@ -736,6 +737,13 @@ function withFinalAnswerMarked(parts: MessagePart[]): MessagePart[] {
 }
 
 /** `rows` with `incoming` merged in by `key`: a known row is replaced where it stands, the rest go at the end. */
+/** An older server stores no `unavailableTools`: the answer row takes the live event's instead. */
+export function stampLiveUnavailableTools(row: ThreadMessageLike, notice: ToolsUnavailableNotice): void {
+  const custom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  if (Array.isArray(custom.unavailableTools) && custom.unavailableTools.length > 0) return;
+  Object.assign(row, { metadata: { ...row.metadata, custom: { ...custom, unavailableTools: notice.items } } });
+}
+
 export function mergeById<T>(rows: readonly T[], incoming: readonly T[], key: (row: T) => unknown): T[] {
   const incomingByKey = new Map(incoming.map((row) => [key(row), row]));
   const known = new Set(rows.map(key));
@@ -989,6 +997,8 @@ export async function streamMessageForSlot(
   // built by `agui-event-handler.ts`'s `LivePartsBuilder` — piggybacks on
   // the same throttled flush as streamingContent so a burst of parts
   // updates doesn't cause its own separate wave of Zustand writes.
+  // Tools the run went on without; kept on the answer row when the stored reply does not name them itself.
+  let liveToolsNotice: ToolsUnavailableNotice | null = null;
   let latestParts: MessagePart[] = [];
 
   // Minimum-dwell scheduler for SSE status messages (see
@@ -1210,6 +1220,10 @@ export async function streamMessageForSlot(
 
       onCustomEvent: (name, value) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (name === TOOLS_UNAVAILABLE_EVENT) {
+          liveToolsNotice = toolsUnavailableNotice(value) ?? liveToolsNotice;
+          return;
+        }
         chatExtension.stream.onCustomEvent(slotId, name, value);
       },
 
@@ -1255,6 +1269,7 @@ export async function streamMessageForSlot(
         const pendingBefore = slotBeforeComplete?.pendingAskUserQuestion;
         let remappedPending: PendingAskUserQuestion | undefined;
         const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
+        if (lastAsst && liveToolsNotice) stampLiveUnavailableTools(lastAsst, liveToolsNotice);
         const cardRow = findAskUserQuestionRow(finalMessages, pendingBefore);
         if (
           resumeAskUserQuestion &&
@@ -1381,7 +1396,7 @@ export async function streamMessageForSlot(
             conversationModelInfo: data.conversation.modelInfo,
             rawMessages: rows,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
-            ...(isNewConversation ? { isOwner: true, ...chatExtension.slot.ownerFields() } : {}),
+            ...(isNewConversation ? { isOwner: true, ...chatExtension.slot.ownerFields(slotBeforeComplete) } : {}),
             pendingAskUserQuestion: (
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {

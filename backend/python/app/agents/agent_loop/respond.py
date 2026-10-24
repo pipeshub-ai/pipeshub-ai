@@ -130,6 +130,9 @@ class AnswerFinalizer:
         sent, so the persisted transcript's final segment always matches
         `completion_data["answer"]` (see `TranscriptCollector.
         replace_final_text`)."""
+        # Every way a turn ends passes here; the saved answer keeps what the run left out.
+        if unavailable := self._context.tool_state.get("unavailable_tools"):
+            completion_data["unavailableTools"] = list(unavailable)
         collector = self._context.transcript_collector
         if collector is None:
             return

@@ -8,7 +8,9 @@ import { useKnowledgeBaseStore } from '../store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import type { PendingChatContext } from '@/lib/store/pending-chat-store';
 import { ChatApi } from '@/chat/api';
+import { useNewChatComposerScope } from '@/chat/hooks/use-new-chat-composer-scope';
 import type { AttachmentRef } from '@/chat/types';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { toast } from '@/lib/store/toast-store';
@@ -46,6 +48,7 @@ export function ChatWidgetWrapper({
   const router = useRouter();
   const pathname = usePathname();
   const { t } = useTranslation();
+  useNewChatComposerScope(null);
 
   // Read selected items from KB store
   const selectedItems = useKnowledgeBaseStore((s) => s.selectedItems);
@@ -97,7 +100,7 @@ export function ChatWidgetWrapper({
   }, []);
 
   const handleSend = useCallback(
-    async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
+    async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[], extra?: ComposerSendExtra) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return false;
 
       // @ mentions, then the open node, then the open collection, then the filter bar,
@@ -146,6 +149,7 @@ export function ChatWidgetWrapper({
       const context: PendingChatContext = {
         message,
         attachments,
+        extra,
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
           selectedNodes,

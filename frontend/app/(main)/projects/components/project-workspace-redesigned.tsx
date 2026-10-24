@@ -12,6 +12,8 @@ import { ShareSidebar } from '@/app/components/share';
 import { ChatInput } from '@/chat/components/chat-input';
 import { ChatApi } from '@/chat/api';
 import type { AttachmentRef, AppliedFilters } from '@/chat/types';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { createProjectShareAdapter } from '@/chat/share-adapter';
@@ -20,6 +22,7 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { chatContentColumnStyle } from '@/chat/constants';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useNewChatComposerScope } from '@/chat/hooks/use-new-chat-composer-scope';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
 import { DeleteProjectDialog } from '@/chat/sidebar/dialogs';
@@ -138,6 +141,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   // Every settings edit below calls `setProject(...)`, so the composer's
   // allow-list follows the right-hand cards live.
   useProjectScopeHydration(project);
+  useNewChatComposerScope(projectId);
 
   // Preload org models so the composer's model pill (and the "Chat defaults"
   // card) aren't empty on a fresh session that never visited /chat first.
@@ -265,11 +269,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
 
   // ── Composer: hands the message off to /chat via the pending-chat buffer ──
   const handleSend = useCallback(
-    (message: string, attachments?: AttachmentRef[]) => {
+    (message: string, attachments?: AttachmentRef[], _nodes?: MentionNode[], extra?: ComposerSendExtra) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return;
       usePendingChatStore.getState().setPending({
         message,
         attachments,
+        extra,
         pageContext: {},
         referrerPage: pathname,
       });

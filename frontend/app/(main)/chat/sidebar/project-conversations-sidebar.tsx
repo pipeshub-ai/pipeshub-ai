@@ -19,6 +19,7 @@ import { ChatSidebarFooter } from '@/config';
 import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 import { SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE } from '../constants';
 import { chatExtension, chatSlots } from '@/config';
 
@@ -87,6 +88,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
   const closeMobile = useMobileSidebarStore((s) => s.close);
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const isMobile = useIsMobile();
+  const today = useLocalDay();
   const currentUserId = useUserStore((s) => s.profile?.userId ?? '');
 
   const conversationsVersion = useChatStore((s) => s.conversationsVersion);
@@ -168,7 +170,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
       [conversations, currentUserId, projectId],
     ),
   );
-  const timeGroups = getNonEmptyGroups(groupByTime(rows, ({ row }) => row.lastActivityAt));
+  const timeGroups = getNonEmptyGroups(groupByTime(rows, ({ row }) => row.lastActivityAt, { now: today }));
 
   return (
     <SidebarBase

@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { groupConversationsByTime, getNonEmptyGroups } from '@/chat/sidebar/time-group';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 import type { TimeGroupKey } from '@/lib/utils/group-by-time';
 import { TimeGroupedSkeleton } from '@/chat/components/search/skeleton';
 import { ChatRow } from '@/chat/components/search/chat-row';
@@ -58,10 +59,11 @@ export function ArchivedChatSearch({
   // Ref to track in-flight request for cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const today = useLocalDay();
   const timeGroups = useMemo(() => {
-    const grouped = groupConversationsByTime(conversations);
+    const grouped = groupConversationsByTime(conversations, today);
     return getNonEmptyGroups(grouped);
-  }, [conversations]);
+  }, [conversations, today]);
 
   // Measure main content area offset
   useEffect(() => {

@@ -11,9 +11,11 @@ import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
-import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
+import { ArtifactsPanel } from './artifacts-panel';
+import { useArtifactActions } from './use-artifact-actions';
 import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
-import { McpConnectRequiredCard } from './mcp-connect-required-card';
+import { ConnectToolsCard } from './connect-tools-card';
+import { UnavailableToolsNotice } from './unavailable-tools-notice';
 import { McpSignInCard } from './mcp-sign-in-card';
 import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
 import {
@@ -24,7 +26,8 @@ import {
   withoutWaitingLine,
 } from '../../tool-approval';
 import { mcpSignInServers } from '../../mcp-sign-in';
-import { mcpConfigMissingDetails, type ChatStreamErrorInfo } from '../../stream-error';
+import { toolsBlockedDetails, type ChatStreamErrorInfo } from '../../stream-error';
+import type { UnavailableTool } from '../../unavailable-tools';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
@@ -47,7 +50,7 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
-import { parseDownloadMarkers, parseArtifactMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
+import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
@@ -140,6 +143,8 @@ export interface ChatResponseProps {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run. */
   streamError?: ChatStreamErrorInfo;
+  /** Tools the person asking had not connected; the answer went on without them. */
+  unavailableTools?: UnavailableTool[];
   /** The run failed: `answer` is the error text. */
   failed?: boolean;
   /** Resend the turn; offered on a failed last answer to someone who can send in this chat. */
@@ -198,6 +203,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   feedbackInfo,
   status,
   streamError,
+  unavailableTools,
   failed = false,
   onRetry,
   canSend = true,
@@ -207,7 +213,7 @@ export const ChatResponse = React.memo(function ChatResponse({
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
-  const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
+  const blockedTools = isStreaming ? null : toolsBlockedDetails(streamError);
   const isMobile = useIsMobile();
   const ext = chatSlots.useResponseExtension({ pair, layout, question, isStreaming, isLastMessage, unanswered });
 
@@ -315,110 +321,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     [setPreviewFile, setPreviewMode],
   );
 
-  /**
-   * Streams `artifact.recordId` at `overrideVersion` (defaulting to
-   * `artifact.version`) and replaces the preview panel's content in place.
-   * Used both for the initial "Preview" click (`ArtifactsPanel.onPreview`)
-   * and for every later version switch (bound back to this same function as
-   * `ChatPreviewFile.onVersionChange`) — one code path, so streaming options
-   * (PDF conversion for PPT/DOCX, mime resolution, DOCX blob handling) never
-   * drift between the two entry points.
-   */
-  const loadArtifactPreview = useCallback(
-    async (artifact: ChatArtifact, overrideVersion?: number) => {
-      const version = overrideVersion ?? artifact.version;
-      const recordId = artifact.recordId;
-      const isSwitch = overrideVersion !== undefined;
-      const latestVersion = recordId ? latestArtifactVersions?.get(recordId) : undefined;
-      const effectiveLatest =
-        latestVersion !== undefined && version !== undefined
-          ? Math.max(latestVersion, version)
-          : latestVersion ?? version;
-      const onVersionChange = recordId
-        ? (v: number) => loadArtifactPreview(artifact, v)
-        : undefined;
-
-      if (recordId) {
-        // A version switch (not the initial open) — keep the current
-        // content on screen and only flip the small spinner in the version
-        // pill, so the panel doesn't flash back to the loading skeleton.
-        if (isSwitch) {
-          const current = useChatStore.getState().previewFile;
-          if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: true });
-        }
-        try {
-          const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-          const streamAsPdf =
-            isPresentationFile(artifact.mimeType, artifact.fileName) ||
-            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-          const blob = await KnowledgeBaseApi.streamRecord(recordId, {
-            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-            ...(version !== undefined ? { version } : {}),
-            // The card shows a deleted artifact itself; a version switch has no card to tell.
-            ...(isSwitch ? {} : { suppressErrorToast: isArtifactGone }),
-          });
-          const resolvedType = resolvePreviewMimeAfterStream(
-            artifact.mimeType,
-            artifact.fileName,
-            blob,
-            streamAsPdf,
-          );
-          const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
-          const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
-
-          // Release the previous blob URL now that nothing references it —
-          // otherwise every version switch leaks one object URL.
-          const previous = useChatStore.getState().previewFile;
-          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
-
-          setPreviewFile({
-            id: recordId,
-            url: objectUrl,
-            blob: isDocx ? blob : undefined,
-            name: artifact.fileName,
-            type: resolvedType,
-            size: artifact.sizeBytes,
-            hideFileDetails: true,
-            showDownload: true,
-            version,
-            latestVersion: effectiveLatest,
-            onVersionChange,
-            isSwitchingVersion: false,
-          });
-          return;
-        } catch (error) {
-          if (isSwitch) {
-            // Keep showing the last successfully loaded version rather than
-            // falling back to a stale/foreign URL below.
-            const current = useChatStore.getState().previewFile;
-            if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
-            return;
-          }
-          if (isArtifactGone(error)) throw error;
-          // Initial-open failure — fall through to the URL-classification
-          // fallback below (never trusts an arbitrary marker URL, see
-          // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
-        }
-      }
-
-      const fallbackUrl = artifact.downloadUrl?.trim();
-      const trusted = !!fallbackUrl && (isTrustedApiUrl(fallbackUrl) || isSignedUrl(fallbackUrl));
-      setPreviewFile({
-        id: artifact.id,
-        url: trusted ? fallbackUrl : '',
-        ...(trusted ? {} : { error: t('artifacts.previewFailed') }),
-        name: artifact.fileName,
-        type: artifact.mimeType,
-        size: artifact.sizeBytes,
-        hideFileDetails: true,
-        showDownload: true,
-        version,
-        latestVersion: effectiveLatest,
-        onVersionChange,
-      });
-    },
-    [latestArtifactVersions, setPreviewFile, t],
-  );
+  const artifactActions = useArtifactActions(latestArtifactVersions);
 
   const pendingAskUserQuestion = useChatStore((s) =>
     answerSlotId ? s.slots[answerSlotId]?.pendingAskUserQuestion ?? null : null
@@ -665,7 +568,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     const padding = opts?.padding ?? 'var(--space-4) 0';
     switch (activeTab) {
       case 'answer':
-        if (failed && !isStreaming && !mcpConnectDetails) {
+        if (failed && !isStreaming && !blockedTools) {
           return (
             <Box style={{ padding }}>
               <AnswerFailed
@@ -757,10 +660,24 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
-            {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
-            {mcpConnectDetails && (
-              <McpConnectRequiredCard details={mcpConnectDetails} question={question} />
-            )}
+            {/* A reply stopped on tools that aren't connected shows how to connect them instead. */}
+            {blockedTools && (ext.toolsConnectReadOnlyFor ? (
+              <UnavailableToolsNotice
+                items={blockedTools.items}
+                answer=""
+                question={question}
+                readOnlyFor={ext.toolsConnectReadOnlyFor}
+              />
+            ) : (
+              <ConnectToolsCard
+                items={blockedTools.items}
+                agentId={blockedTools.agentId}
+                serviceAccount={blockedTools.serviceAccount}
+                question={question}
+                blocked
+                testId={blockedTools.items.every((item) => item.kind === 'mcp') ? 'mcp-connect-required' : undefined}
+              />
+            ))}
 
             {/* Continuation / final answer — below the question card so the
                 turn reads tools → question → answer. Hidden while the card
@@ -771,7 +688,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-            {answerShown && !questionPending && !mcpConnectDetails && (
+            {answerShown && !questionPending && !blockedTools && (
               <Box
                 style={{
                   marginTop:
@@ -787,6 +704,16 @@ export const ChatResponse = React.memo(function ChatResponse({
                   isStreaming={isStreaming}
                 />
               </Box>
+            )}
+
+            {/* The answer went on without tools the asker hasn't connected: offer to connect them once it is done. */}
+            {!isStreaming && !failed && !blockedTools && answerShown && unavailableTools && unavailableTools.length > 0 && (
+              <UnavailableToolsNotice
+                items={unavailableTools}
+                answer={answerShown}
+                question={question}
+                readOnlyFor={ext.toolsConnectReadOnlyFor}
+              />
             )}
 
             {/* After an answered question the reply carries on in this row and can stop on an
@@ -846,32 +773,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 latestArtifactVersions={latestArtifactVersions}
-                onPreview={loadArtifactPreview}
-                onViewSource={async (codeArtifactId) => {
-                  // The code artifact is registered through the same pipeline as any
-                  // other record, so it streams/previews via the standard KB record
-                  // APIs exactly like the `recordId` path above — no separate endpoint.
-                  try {
-                    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                    const [details, blob] = await Promise.all([
-                      KnowledgeBaseApi.getRecordDetails(codeArtifactId, { suppressErrorToast: isArtifactGone }),
-                      KnowledgeBaseApi.streamRecord(codeArtifactId, { suppressErrorToast: isArtifactGone }),
-                    ]);
-                    const objectUrl = URL.createObjectURL(blob);
-                    useChatStore.getState().setPreviewFile({
-                      id: codeArtifactId,
-                      url: objectUrl,
-                      name: details.record.recordName,
-                      type: details.record.mimeType || 'text/plain',
-                      size: details.record.fileRecord?.sizeInBytes ?? blob.size,
-                      hideFileDetails: true,
-                      showDownload: true,
-                    });
-                  } catch (error) {
-                    // The card hides "view source" once the source is gone.
-                    if (isArtifactGone(error)) throw error;
-                  }
-                }}
+                onPreview={artifactActions.onPreview}
+                onViewSource={artifactActions.onViewSource}
               />
             )}
           </Box>

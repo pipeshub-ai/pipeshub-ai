@@ -10,6 +10,7 @@ import {
   CONFIDENCE_LEVELS,
   REASONING_EFFORT_VALUES,
 } from '../../enterprise_search/constants/constants';
+import { unavailableToolSchema } from './unavailable-tool.schema';
 
 const followUpQuestionSchema = new Schema<IFollowUpQuestion>(
   {
@@ -250,6 +251,8 @@ const messageSchema = new Schema<IMessage>(
     // Ordered agent-activity transcript (additive, `agui` protocol only —
     // see the comment above and IMessagePart).
     parts: [Schema.Types.Mixed],
+    // Tools the requester could not use on this turn (additive).
+    unavailableTools: { type: [unavailableToolSchema], default: undefined },
   },
   { timestamps: true },
 );

@@ -9,6 +9,7 @@ import {
   CONFIDENCE_LEVELS,
   REASONING_EFFORT_VALUES,
 } from '../constants/constants';
+import { unavailableToolSchema } from './unavailable-tool.schema';
 import { schemaExtensions } from '../../../edition-schemas';
 
 const toolCallItemSchema = new Schema(
@@ -293,6 +294,8 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // Mixed for the same reason as the legacy schema's identical field:
     // shape varies by `type`, and `sub_agent` nests the same shape recursively.
     parts: [Schema.Types.Mixed],
+    // Tools the requester could not use on this turn (additive).
+    unavailableTools: { type: [unavailableToolSchema], default: undefined },
   },
   {
     timestamps: true, // parity with the old embedded messageSchema

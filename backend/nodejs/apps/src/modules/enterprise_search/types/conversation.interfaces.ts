@@ -174,6 +174,20 @@ export interface IMessagePart {
   }>;
 }
 
+/** An agent tool the requester could not use: not set up, not signed in, or removed. Holds no credentials. */
+export interface IUnavailableTool {
+  kind: 'toolset' | 'mcp';
+  instanceId: string;
+  displayName: string;
+  name?: string | null;
+  problem: 'not_configured' | 'not_authenticated' | 'not_found';
+  authMode?: string | null;
+  /** One credential an administrator enters for everyone. */
+  sharedCredential: boolean;
+  /** The requester can connect it themselves. */
+  userCanConnect: boolean;
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call' | 'note';
   content: string;
@@ -200,6 +214,8 @@ export interface IMessage {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Tools the agent had but the requester could not use on this turn; the answer ran without them. */
+  unavailableTools?: IUnavailableTool[];
   /** `user_query`; absent on legacy rows (author = session owner). */
   authorUserId?: Types.ObjectId;
   /** `bot_response` / `error` / `tool_call`: the user whose turn produced the row. */
@@ -434,6 +450,8 @@ export interface IAIResponse {
   parts?: IMessagePart[];
   /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
   errorCode?: string;
+  /** Tools the run left out because the requester has not connected them (AI backend `UnavailableTool`). */
+  unavailableTools?: IUnavailableTool[];
   /** Non-streaming routes only: the run's custom events the chat extension asked to keep. Never stored. */
   events?: unknown[];
 }

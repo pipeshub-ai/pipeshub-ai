@@ -860,6 +860,8 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** Tools the person asking had not connected; the answer went on without them. Parsed before use. */
+  unavailableTools?: unknown;
 }
 
 export interface ConversationCompleteData {

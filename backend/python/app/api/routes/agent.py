@@ -9,6 +9,7 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from dataclasses import replace
 from logging import Logger
 from typing import Any, Literal
 
@@ -20,7 +21,10 @@ from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
-from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.protocol.stream_collector import (
+    StreamOutcome,
+    collect_stream_outcome,
+)
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
@@ -63,7 +67,7 @@ from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
 from app.modules.agents.readiness import (
-    TOOLSET_CONFIG_MISSING_CODE,
+    TOOLS_UNAVAILABLE_EVENT,
     AgentReadiness,
     compute_agent_readiness,
 )
@@ -1698,7 +1702,7 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
     ],
 )
 async def get_agent_readiness(request: Request, agent_id: str) -> AgentReadiness:
-    """Whether the caller has every toolset of this agent configured and authenticated."""
+    """Which of this agent's toolsets and MCP servers the caller can use, and whether a run would start."""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
@@ -1716,15 +1720,19 @@ async def get_agent_readiness(request: Request, agent_id: str) -> AgentReadiness
                 raise AgentNotFoundError(agent_id)
 
         config_service = services["config_service"]
+        from app.agents.mcp.service import is_mcp_enabled
         from app.services.featureflag.platform_settings import is_actions_enabled
 
-        actions_enabled = await is_actions_enabled(config_service)
+        actions_enabled, mcp_enabled = await asyncio.gather(
+            is_actions_enabled(config_service), is_mcp_enabled(config_service),
+        )
         return await compute_agent_readiness(
             agent,
             user_context,
             config_service=config_service,
             agent_id=agent_id,
             toolsets=agent.get("toolsets", []) if actions_enabled else [],
+            mcp_servers=(agent.get("mcpServers") or []) if mcp_enabled else [],
         )
     except HTTPException:
         raise
@@ -1759,9 +1767,24 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
 
     outcome = await collect_stream_outcome(
         streaming_response.body_iterator, request.is_disconnected,
-        keep_events=get_chat_extension().completion_events(),
+        keep_events=get_chat_extension().completion_events() | {TOOLS_UNAVAILABLE_EVENT},
     )
-    return outcome.to_response()
+    return _with_unavailable_tools(outcome).to_response()
+
+
+def _with_unavailable_tools(outcome: StreamOutcome) -> StreamOutcome:
+    """The answer names the tools the run left out, as a streamed answer's completion does."""
+    notices = [e for e in outcome.events if e.get("name") == TOOLS_UNAVAILABLE_EVENT]
+    if not notices:
+        return outcome
+    events = tuple(e for e in outcome.events if e.get("name") != TOOLS_UNAVAILABLE_EVENT)
+    completion = outcome.completion
+    if completion is not None and not completion.get("unavailableTools"):
+        value = notices[-1].get("value")
+        items = value.get("items") if isinstance(value, dict) else None
+        if items:
+            completion = {**completion, "unavailableTools": items}
+    return replace(outcome, completion=completion, events=events)
 
 
 @router.post(
@@ -2060,8 +2083,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 is_service_account = bool(agent.get("isServiceAccount", False))
                 executing_user_id = user_context["userId"]
-                # For service account agents, credentials are keyed by agentKey not userId
-                credential_lookup_id = agent_id if is_service_account else executing_user_id
 
                 readiness = await compute_agent_readiness(
                     agent,
@@ -2070,145 +2091,44 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     agent_id=agent_id,
                     toolsets=agent_toolsets,
                     prefetched_auth=prefetched_toolset_auth,
+                    mcp_servers=agent_mcp_servers,
+                    prefetched_mcp=prefetched_mcp,
                 )
                 toolset_configs = readiness.toolset_configs  # SENSITIVE: Contains user/agent credentials
+                # SENSITIVE: MCP instances and credentials, read under the same owner as the toolsets.
+                # An MCP server's instance (transport/url/authMode) is never stored on the graph node.
+                mcp_server_configs: dict[str, dict[str, Any]] = readiness.mcp_server_configs
 
-                # Hard-block if ANY toolset is either unconfigured or unauthenticated
+                # A service-account agent answers with its own credentials, which only an admin can
+                # set up, so a missing one stops the run. Everyone else runs with what they have
+                # connected, and the model and the client are told what was left out.
                 if not readiness.can_send:
                     logger.info(
-                        f"Blocking agent {agent_id} execution "
-                        f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                        f"missing={readiness.missing_toolsets} unauthenticated={readiness.unauthenticated_toolsets}"
+                        f"Blocking service account agent {agent_id}: unavailable="
+                        f"{[(i.kind, i.instance_id, i.problem) for i in readiness.unavailable_tools]}"
                     )
-                    yield _stream_error_frame(protocol, readiness.blocked_message, code=TOOLSET_CONFIG_MISSING_CODE)
+                    yield _stream_error_frame(
+                        protocol, readiness.blocked_message, code=readiness.blocked_code,
+                        details=readiness.blocked_details(agent_id),
+                    )
                     return
 
                 if readiness.configured_toolsets is not None:
                     agent_toolsets = readiness.configured_toolsets
+                if readiness.configured_mcp_servers is not None:
+                    agent_mcp_servers = readiness.configured_mcp_servers
+                unavailable_tools = [item.wire() for item in readiness.unavailable_tools]
+                if unavailable_tools:
+                    logger.info(
+                        f"Agent {agent_id} runs without tools user {executing_user_id!r} has not connected: "
+                        f"{[(i['kind'], i['instanceId'], i['problem']) for i in unavailable_tools]}"
+                    )
+                    yield _stream_custom_frame(
+                        protocol, TOOLS_UNAVAILABLE_EVENT,
+                        readiness.unavailable_event(None if agent_id == UNIVERSAL_AGENT_ID else agent_id),
+                    )
 
                 timer.mark("toolset_cfg")
-
-                # ============================================================================
-                # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
-                # ============================================================================
-                # Mirrors the toolset config loading immediately above: same
-                # `credential_lookup_id` (agentKey for service accounts, executing user
-                # otherwise), same hard-block-on-unauthenticated policy. Unlike toolset
-                # configs, an MCP server also needs its org-level instance definition
-                # (transport/url/authMode) — never stored on the graph node
-                # (`_create_mcp_server_edges` avoids secrets there) — so each fetch is a
-                # two-step: `get_instance` then `resolve_effective_user_auth`.
-                # ============================================================================
-                mcp_server_configs: dict[str, dict[str, Any]] = {}  # SENSITIVE: contains credentials
-
-                named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
-                if named_mcp_servers:
-                    import asyncio as _asyncio
-
-                    from app.agents.mcp import service as mcp_service
-                    from app.edition_config import get_mcp_instance_resolved
-
-                    async def _fetch_mcp_server_config(
-                        mcp_server: dict,
-                    ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
-                        """Return (mcp_server, instance_or_None, effective_auth) without raising."""
-                        instance_id = mcp_server["instanceId"]
-                        if prefetched := prefetched_mcp.get(instance_id):
-                            return mcp_server, prefetched["instance"], prefetched["auth"]
-                        try:
-                            instance = await get_mcp_instance_resolved(
-                                instance_id, services["config_service"], org_key,
-                                None if is_service_account else executing_user_id,
-                            )
-                            if not instance:
-                                return mcp_server, None, None
-                            effective_auth = await mcp_service.resolve_effective_user_auth(
-                                instance, credential_lookup_id, services["config_service"],
-                            )
-                            return mcp_server, instance, effective_auth
-                        except Exception as exc:
-                            logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
-                            return mcp_server, None, None
-
-                    mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
-
-                    configured_mcp_servers = []
-                    missing_mcp_server_display_names: list[str] = []          # instance no longer exists
-                    unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
-                    # The same, for the chat to offer a Connect button per server.
-                    blocked_mcp_servers: list[dict[str, Any]] = []
-
-                    for mcp_server, instance, effective_auth in mcp_fetch_results:
-                        instance_id = mcp_server["instanceId"]
-                        display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
-
-                        if instance is None:
-                            missing_mcp_server_display_names.append(display_name)
-                            blocked_mcp_servers.append(
-                                {"instanceId": instance_id, "name": display_name, "problem": "not_found"}
-                            )
-                            logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
-                            continue
-
-                        if mcp_service.is_effective_auth_authenticated(effective_auth):
-                            mcp_server_configs[instance_id] = {
-                                "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
-                            }
-                            configured_mcp_servers.append(mcp_server)
-                        else:
-                            unauthenticated_mcp_server_display_names.append(display_name)
-                            blocked_mcp_servers.append({
-                                "instanceId": instance_id,
-                                "name": display_name,
-                                "problem": "not_connected",
-                                "authMode": instance.get("authMode"),
-                                "sharedCredential": mcp_service.uses_shared_credential(instance),
-                            })
-                            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
-                            logger.warning(
-                                f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
-                                f"for {cred_owner}."
-                            )
-
-                    if missing_mcp_server_display_names or unauthenticated_mcp_server_display_names:
-                        problem_parts = []
-                        if missing_mcp_server_display_names:
-                            missing_list = ", ".join(f"'{n}'" for n in missing_mcp_server_display_names)
-                            problem_parts.append(f"not found: {missing_list}")
-                        if unauthenticated_mcp_server_display_names:
-                            unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_mcp_server_display_names)
-                            problem_parts.append(f"not authenticated: {unauth_list}")
-
-                        if is_service_account:
-                            error_message = (
-                                f"This service account agent requires the following MCP servers to be configured — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please configure the agent's MCP server credentials in Agent Builder."
-                            )
-                        else:
-                            error_message = (
-                                f"This agent requires the following MCP servers to be set up — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please connect them in Workspace → MCP Servers before using this agent."
-                            )
-                        logger.info(
-                            f"Blocking agent {agent_id} execution "
-                            f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                            f"MCP server issue(s) — {'; '.join(problem_parts)}"
-                        )
-
-                        yield _stream_error_frame(
-                            protocol, error_message, code="mcp_server_config_missing",
-                            details={
-                                "agentId": agent_id,
-                                "serviceAccount": bool(is_service_account),
-                                "servers": blocked_mcp_servers,
-                            },
-                        )
-                        return
-
-                    agent_mcp_servers = configured_mcp_servers
-
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
@@ -2368,6 +2288,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
                     "toolsetConfigs": toolset_configs,
+                    # Attached tools left out of this run (no credentials): the prompt names them.
+                    "unavailableTools": unavailable_tools,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
                     "artifact_owner_user_id": artifact_owner_user_id,
@@ -2476,7 +2398,7 @@ def _stream_error_frame(
 
     Used once the response headers are already sent, where an HTTP status is no
     longer available to carry the failure. `details` is what the UI needs to offer
-    a fix (for `mcp_server_config_missing`, which servers and what each needs).
+    a fix (for a service-account agent's missing credentials, which tools and what each needs).
     """
     extra = {"details": details} if details is not None else {}
     if protocol == "agui":
@@ -2508,6 +2430,16 @@ async def _assistant_api_toolset_tools(
         # The assistant still answers without them, like it does without toolsets above.
         logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
         return []
+
+
+def _stream_custom_frame(protocol: str, name: str, value: dict[str, Any]) -> str:
+    """A non-fatal named event the client renders on its own; the run goes on."""
+    if protocol == "agui":
+        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+
+        evt = frame(AGUIEventType.CUSTOM, name=name, value=value)
+        return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+    return f"event: {name}\ndata: {json.dumps(value)}\n\n"
 
 
 async def get_assistant_agent(

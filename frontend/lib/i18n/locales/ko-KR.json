@@ -969,6 +969,19 @@
       "tryAgain": "다시 시도",
       "unavailable": "여기서 로그인을 시작할 수 없습니다. Workspace → MCP 서버에서 연결하세요."
     },
+    "connectTools": {
+      "blockedTitle": "이 에이전트를 사용하려면 다음 도구를 연결하세요",
+      "serviceAccountTitle": "이 에이전트의 도구가 연결되지 않았습니다",
+      "noticeTitle": "이 답변에서 일부 도구를 사용하지 못했습니다",
+      "chip": "일부 도구가 연결되지 않았습니다",
+      "chipAction": "연결",
+      "askAdmin": "관리자에게 연결을 요청하세요",
+      "serviceAccount": "이 에이전트는 자체 연결을 사용합니다. 관리자에게 Agent Builder에서 {{tools}}을(를) 연결해 달라고 요청하세요.",
+      "toolsetUnavailable": "여기서 로그인을 시작할 수 없습니다. Workspace → 작업에서 연결하세요.",
+      "connectedAskAgain": "연결되었습니다. 사용하려면 다시 질문하세요.",
+      "couldNotUse": "{{agent}}이(가) {{tools}}을(를) 사용하지 못했습니다",
+      "defaultAgent": "에이전트"
+    },
     "mcpSignIn": {
       "title": "이 MCP 서버가 요청한 권한을 부여하려면 다시 로그인하세요",
       "needs": "필요: {{scopes}}",

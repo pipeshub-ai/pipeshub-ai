@@ -9,6 +9,7 @@ import {
   IChatSessionDocument,
   IChatSessionMessageDocument,
   IMessage,
+  IMessagePart,
 } from '../../../types/conversation.interfaces';
 import { ChatTarget } from '../../../utils/ai-chat-payload';
 import { ResolvedProjectLink } from '../../../utils/project-context';
@@ -106,6 +107,14 @@ export interface TurnAnswerHooks {
     row: IChatSessionMessageDocument,
     context: TurnAnswerContext & { dbSession: ClientSession | null },
   ): Promise<void>;
+  /**
+   * What a run stopped before its answer arrived saves of what streamed (it gets no `prepare`, and
+   * mentions nobody). Absent, it is saved as it streamed.
+   */
+  redactStopped?(
+    text: string,
+    parts?: IMessagePart[],
+  ): { text: string; parts?: IMessagePart[] };
 }
 
 /** What the stream relay may ask about a turn. */

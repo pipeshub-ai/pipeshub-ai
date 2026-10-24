@@ -101,6 +101,8 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("sender_context",             Volatility.TURN),
+    # Attached tools this sender has not connected; depends on who asks, so it is per turn.
+    ("unavailable_tools",          Volatility.TURN),
     ("attachments",                Volatility.TURN),
     # Citation rules for an agent that cites only what a question brought
     # (retrieved results, attachments); see `citation_rules` above otherwise.

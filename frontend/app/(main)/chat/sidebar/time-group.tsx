@@ -31,13 +31,14 @@ const TIME_GROUP_I18N: Record<SidebarGroupKey, string> = {
 };
 
 /**
- * Groups conversations into time buckets.
+ * Groups conversations into the viewer's local-day buckets, relative to `now` (default: the current time).
  * Delegates to the shared `groupByTime` utility.
  */
 export function groupConversationsByTime(
-  conversations: Conversation[]
+  conversations: Conversation[],
+  now?: number,
 ): Record<TimeGroupKey, Conversation[]> {
-  return groupByTime(conversations, (conv) => getConversationLastActivityMs(conv));
+  return groupByTime(conversations, (conv) => getConversationLastActivityMs(conv), { now });
 }
 
 /**
@@ -55,10 +56,11 @@ export function getNonEmptyGroups(
  * not again under the day it was last active.
  */
 export function groupConversationsWithPinned(
-  conversations: Conversation[]
+  conversations: Conversation[],
+  now?: number,
 ): Array<[SidebarGroupKey, Conversation[]]> {
   const { pinned, rest } = splitPinned(conversations);
-  const timed = getNonEmptyGroups(groupConversationsByTime(rest));
+  const timed = getNonEmptyGroups(groupConversationsByTime(rest, now));
   return pinned.length > 0 ? [['Pinned', pinned], ...timed] : timed;
 }
 

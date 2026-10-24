@@ -9440,6 +9440,48 @@ components:
           items:
             $ref: '#/components/schemas/MessagePart'
 
+    UnavailableTool:
+      type: object
+      additionalProperties: false
+      description: |
+        An agent tool the requester could not use: an action (`toolset`) or an
+        MCP server (`mcp`). Holds no credentials.
+      required:
+        - kind
+        - instanceId
+        - displayName
+        - problem
+        - sharedCredential
+        - userCanConnect
+      properties:
+        kind:
+          type: string
+          enum: [toolset, mcp]
+        instanceId:
+          type: string
+        displayName:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The toolset type or MCP server name.
+        problem:
+          type: string
+          enum: [not_configured, not_authenticated, not_found]
+          description: |
+            `not_configured`: no credentials yet. `not_authenticated`: set up but
+            not signed in. `not_found`: the MCP server was removed.
+        authMode:
+          type: string
+          nullable: true
+          description: How an MCP server signs in (`none`, `api_token`, `oauth`, `headers`).
+        sharedCredential:
+          type: boolean
+          description: One credential an administrator enters for everyone.
+        userCanConnect:
+          type: boolean
+          description: The requester can connect it themselves.
+
     Message:
       type: object
       additionalProperties: false
@@ -9578,6 +9620,15 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        unavailableTools:
+          type: array
+          description: |
+            Tools the agent has that the requester could not use on this turn
+            (not set up, not signed in, or removed). The answer ran without them.
+            Absent when there were none.
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/UnavailableTool'
         createdAt:
           type: string
           format: date-time
@@ -14577,6 +14628,15 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        unavailableTools:
+          type: array
+          description: |
+            Tools the agent has that the requester could not use on this turn
+            (not set up, not signed in, or removed). The answer ran without them.
+            Absent when there were none.
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/UnavailableTool'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -14877,6 +14937,17 @@ components:
         treated as informational updates. Those forwarded lifecycle and
         child-run events may contain `runId`, `threadId`, and `parentRunId`;
         the gateway-generated root terminal event does not.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -14929,6 +15000,17 @@ components:
         Forwarded upstream lifecycle or child-run events may contain `runId`,
         `threadId`, and `parentRunId`. Gateway-generated root terminal events
         do not. Clients should ignore unknown event names.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -14991,6 +15073,17 @@ components:
         do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -15052,6 +15145,17 @@ components:
         do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -15101,6 +15205,17 @@ components:
         `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -15159,6 +15274,17 @@ components:
         `threadId`, or `parentRunId`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -33738,6 +33864,15 @@ paths:
                               description: Ordered agent-activity transcript for this turn.
                               items:
                                 $ref: '#/components/schemas/MessagePart'
+                            unavailableTools:
+                              type: array
+                              description: |
+                                Tools the agent has that the requester could not use on this turn
+                                (not set up, not signed in, or removed). The answer ran without them.
+                                Absent when there were none.
+                              maxItems: 50
+                              items:
+                                $ref: '#/components/schemas/UnavailableTool'
                             metadata:
                               type: object
                               additionalProperties: false

@@ -50,6 +50,7 @@ import { appendResumeParts } from './utils/tool-display';
 import { isToolApprovalResumeQuery } from './tool-approval';
 import { chatExtension } from '@/config';
 import type { HistoryLoadOptions, RowCustom } from './chat-extension';
+import { parseUnavailableTools } from './unavailable-tools';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 export const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -603,6 +604,12 @@ function peekFollowingAskPayload(
  *     `bot_response` is merged into the question's assistant row so the
  *     answer continues in the same turn.
  */
+/** The tools a stored answer could not use, as the thread row keeps them. */
+function unavailableToolsCustom(msg: ConversationMessage): { unavailableTools?: ReturnType<typeof parseUnavailableTools> } {
+  const items = parseUnavailableTools(msg.unavailableTools);
+  return items.length ? { unavailableTools: items } : {};
+}
+
 export function loadHistoricalMessages(
   rawMessages: ConversationMessage[],
   options: HistoryLoadOptions = {},
@@ -615,6 +622,9 @@ export function loadHistoricalMessages(
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
   let mergeNextBotIntoId: string | null = null;
+  // The row the last card answer continues (`null`: it found none), until the reply it produced lands. A card the
+  // resumed run asks belongs there: the last row may be another person's turn that came in between.
+  let resumedRowId: string | null | undefined;
   const closedCardRowIds = new Set<string>();
   let pendingTurnCustom: RowCustom | null = null;
   let toolCard: AskCardRef | null = null;
@@ -627,6 +637,28 @@ export function loadHistoricalMessages(
     lastUnansweredAssistantId !== rowId &&
     history.cardIsAnswerable(lastUnansweredCard ?? {}) &&
     !history.cardIsAnswerable(newer);
+  // Someone else's open card that a card of the viewer's took the place of: it is the open one again once the
+  // viewer's closes, so it still reads "Waiting for <name>" instead of losing its card.
+  let displacedCard: { id: string; payload: AskUserQuestionPayload; card: AskCardRef | null } | null = null;
+  const openCardOn = (rowId: string) => {
+    if (
+      lastUnansweredAssistantId &&
+      lastUnansweredAssistantId !== rowId &&
+      lastUnansweredPayload &&
+      !history.cardIsAnswerable(lastUnansweredCard ?? {})
+    ) {
+      displacedCard = { id: lastUnansweredAssistantId, payload: lastUnansweredPayload, card: lastUnansweredCard };
+    }
+    if (displacedCard?.id === rowId) displacedCard = null;
+  };
+  const closeOpenCard = () => {
+    const back = displacedCard;
+    displacedCard = null;
+    lastUnansweredAssistantId = back?.id ?? null;
+    lastUnansweredPayload = back?.payload ?? null;
+    lastUnansweredAnswers = {};
+    lastUnansweredCard = back?.card ?? null;
+  };
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -643,7 +675,10 @@ export function loadHistoricalMessages(
       const payload = askPayloadFromToolCall(msg);
       if (payload) {
         const card: AskCardRef = history.askCardFields(msg, { messages, index: i, cardRowId: msg._id });
-        const last = result[result.length - 1];
+        const last =
+          resumedRowId === undefined
+            ? result[result.length - 1]
+            : result.find((m) => m.role === 'assistant' && m.id === resumedRowId);
         if (last?.role === 'assistant' && typeof last.id === 'string') {
           const botIndex = messages.findIndex(
             (m) => String(m._id) === String(last.id),
@@ -657,6 +692,7 @@ export function loadHistoricalMessages(
           const stamped = rowCustom.persistedAskUserQuestion ?? payload;
           const stampedAnswers = rowCustom.persistedAskUserQuestionAnswers ?? {};
           toolPayload = stamped;
+          toolCard = card;
           const knownAnswers = lastUnansweredAssistantId === last.id
             ? { ...lastUnansweredAnswers, ...stampedAnswers }
             : stampedAnswers;
@@ -674,12 +710,7 @@ export function loadHistoricalMessages(
                 },
               },
             });
-            if (lastUnansweredAssistantId === last.id) {
-              lastUnansweredAssistantId = null;
-              lastUnansweredPayload = null;
-              lastUnansweredAnswers = {};
-              lastUnansweredCard = null;
-            }
+            if (lastUnansweredAssistantId === last.id) closeOpenCard();
             continue;
           }
           closedCardRowIds.delete(last.id);
@@ -692,9 +723,12 @@ export function loadHistoricalMessages(
               !hasUnansweredQuestions(stamped, stampedAnswers)) ||
               isCardDropped(messages, botIndex, (question) => history.questionClosesCard(question, card)));
           if (!answered && !keepsOpenCard(last.id, card)) {
+            // Another row's selections belong to that row's card.
+            const carried = lastUnansweredAssistantId === last.id ? lastUnansweredAnswers : {};
+            openCardOn(last.id);
             lastUnansweredAssistantId = last.id;
             lastUnansweredPayload = stamped;
-            lastUnansweredAnswers = { ...lastUnansweredAnswers, ...stampedAnswers };
+            lastUnansweredAnswers = { ...carried, ...stampedAnswers };
             lastUnansweredCard = card;
           }
         } else {
@@ -710,6 +744,7 @@ export function loadHistoricalMessages(
     if (msg.messageType === 'user_query') pendingTurnCustom = null;
 
     if (msg.messageType === 'error') {
+      resumedRowId = undefined;
       toolPayload = null;
       pendingTurnCustom = null;
       if (isFailedCardResumeError(messages, i)) {
@@ -725,6 +760,7 @@ export function loadHistoricalMessages(
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
             failed: true,
+            ...unavailableToolsCustom(msg),
             ...history.rowCustom(msg, options),
             ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
           },
@@ -734,6 +770,7 @@ export function loadHistoricalMessages(
     }
 
     if (msg.messageType === 'bot_response') {
+      resumedRowId = undefined;
       const cardFromToolRow = toolPayload !== null;
       const capturedPayload =
         toolPayload ?? askPayloadFromParts(msg.parts) ?? askPayloadFromToolCall(msg);
@@ -744,6 +781,8 @@ export function loadHistoricalMessages(
         ...(askPayloadFromToolCall(msg) ? { cardRowId: msg._id } : {}),
       });
       const askCard: AskCardRef = cardFromToolRow && toolCard ? toolCard : botCard;
+      // Consumed here: a later answer must not take this card for its own.
+      toolCard = null;
 
       const isAnswered = capturedPayload
         ? isAskUserQuestionAnswered(messages, i, (answer) => history.answersCard(answer, askCard)) ||
@@ -769,6 +808,7 @@ export function loadHistoricalMessages(
             result, lastUnansweredAssistantId, lastUnansweredPayload,
           );
         }
+        openCardOn(cardRowId);
         lastUnansweredAssistantId = cardRowId;
         lastUnansweredPayload = capturedPayload;
         lastUnansweredAnswers = {};
@@ -825,7 +865,7 @@ export function loadHistoricalMessages(
                 confidence: msg.confidence,
                 modelInfo: msg.modelInfo,
                 ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
-                ...history.rowCustom(msg, options),
+                ...history.foldedRowCustom(history.rowCustom(msg, options), prevCustom as RowCustom),
                 ...(feedbackInfo ? { feedbackInfo } : {}),
                 ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
@@ -859,6 +899,7 @@ export function loadHistoricalMessages(
             // legacy protocol and every pre-existing conversation; consumers
             // fall back to plain `content` (see AgentActivityTimeline).
             ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+            ...unavailableToolsCustom(msg),
           },
         },
       });
@@ -887,6 +928,7 @@ export function loadHistoricalMessages(
         lastUnansweredAssistantId,
         (rowId) => history.answersCard(msg, cardOfRow.get(rowId) ?? {}),
       );
+      resumedRowId = typeof last?.id === 'string' ? last.id : null;
       if (last?.role === 'assistant' && typeof last.id === 'string') {
         // An answer to another card leaves the open card as it was.
         const forOpenCard =
@@ -918,10 +960,9 @@ export function loadHistoricalMessages(
           },
         });
         if (forOpenCard && followUpComplete) {
-          lastUnansweredAssistantId = null;
-          lastUnansweredPayload = null;
-          lastUnansweredAnswers = {};
+          closeOpenCard();
         } else if (forOpenCard) {
+          openCardOn(last.id);
           lastUnansweredAssistantId = last.id;
           lastUnansweredCard = cardOfRow.get(last.id) ?? lastUnansweredCard;
           if (payload) lastUnansweredPayload = payload;
@@ -934,8 +975,8 @@ export function loadHistoricalMessages(
 
     mergeNextBotIntoId = null;
     toolPayload = null;
+    resumedRowId = undefined;
     // A real question: the reply after it is its own row, whatever came before.
-    mergeNextBotIntoId = null;
     result.push({
       id: msg._id,
       role: 'user' as const,

@@ -847,6 +847,19 @@
       "tryAgain": "फिर से कोशिश करें",
       "unavailable": "यहां साइन-इन शुरू नहीं हो सका। इसे Workspace → MCP Servers में कनेक्ट करें।"
     },
+    "connectTools": {
+      "blockedTitle": "इस एजेंट का उपयोग करने के लिए ये टूल कनेक्ट करें",
+      "serviceAccountTitle": "इस एजेंट के टूल कनेक्ट नहीं हैं",
+      "noticeTitle": "यह जवाब कुछ टूल का उपयोग नहीं कर सका",
+      "chip": "कुछ टूल कनेक्ट नहीं हैं",
+      "chipAction": "कनेक्ट करें",
+      "askAdmin": "इसे कनेक्ट करने के लिए किसी एडमिन से कहें",
+      "serviceAccount": "यह एजेंट अपने कनेक्शन का उपयोग करता है। Agent Builder में {{tools}} कनेक्ट करने के लिए किसी एडमिन से कहें।",
+      "toolsetUnavailable": "यहाँ साइन-इन शुरू नहीं हो सका। इसे Workspace → Actions में कनेक्ट करें।",
+      "connectedAskAgain": "कनेक्ट हो गया। इसका उपयोग करने के लिए फिर से पूछें।",
+      "couldNotUse": "{{agent}} {{tools}} का उपयोग नहीं कर सका",
+      "defaultAgent": "एजेंट"
+    },
     "mcpSignIn": {
       "title": "इन MCP सर्वर को माँगी गई अनुमति देने के लिए फिर से साइन इन करें",
       "needs": "चाहिए: {{scopes}}",

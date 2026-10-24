@@ -120,6 +120,45 @@ describe('ArtifactsPanel card', () => {
     expect(screen.getByText(/Data file/)).toBeTruthy();
     expect(screen.queryByText(/DATA_FILE/)).toBeNull();
   });
+
+  it('draws its actions as one fixed-size, non-shrinking row beside a truncating name', () => {
+    const longName = `${'quarterly-ticket-prioritization-'.repeat(6)}.md`;
+    renderPanel([artifact({ mimeType: 'text/markdown', fileName: longName, derivedFromCodeArtifactId: 'code-1' })], {
+      onPreview: vi.fn(),
+      onViewSource: vi.fn(),
+    });
+
+    const buttons = ['View source code', 'Preview artifact', 'Download artifact'].map((name) =>
+      screen.getByRole('button', { name }),
+    );
+    for (const button of buttons) {
+      expect(button.style.width).toBe('28px');
+      expect(button.style.height).toBe('28px');
+      expect(button.style.margin).toBe('0px');
+      expect(button.style.flexShrink).toBe('0');
+    }
+    const row = buttons[0].parentElement as HTMLElement;
+    expect(buttons.every((b) => b.parentElement === row)).toBe(true);
+    expect(row.style.flexShrink).toBe('0');
+
+    const name = screen.getByText(longName);
+    expect(name.style.whiteSpace).toBe('nowrap');
+    expect(name.style.textOverflow).toBe('ellipsis');
+    expect(name.style.overflow).toBe('hidden');
+  });
+
+  it('keeps an action the same size while it is busy', async () => {
+    let resolve: () => void = () => {};
+    const onPreview = vi.fn(() => new Promise<void>((r) => { resolve = r; }));
+    renderPanel([artifact({ mimeType: 'text/markdown', fileName: 'notes.md' })], { onPreview });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview artifact' }));
+    const busy = await screen.findByRole('button', { name: 'Loading preview' });
+    expect(busy.style.width).toBe('28px');
+    expect(busy.style.height).toBe('28px');
+    resolve();
+    await screen.findByRole('button', { name: 'Preview artifact' });
+  });
 });
 
 describe('ArtifactsPanel header', () => {

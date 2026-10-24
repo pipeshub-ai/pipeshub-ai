@@ -20,6 +20,7 @@ import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { ChatSidebarHeader } from './header';
 import { ChatSection } from './chat-section';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
+import { useLocalDay } from '@/lib/hooks/use-local-day';
 import { SidebarItem } from './sidebar-item';
 import { AgentMoreChatsSidebar } from './agent-more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
@@ -46,6 +47,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const closeMobile = useMobileSidebarStore((s) => s.close);
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const isMobile = useIsMobile();
+  const today = useLocalDay();
 
   const setAgentSidebarAgentId = useChatStore((s) => s.setAgentSidebarAgentId);
   const setAgentConversations = useChatStore((s) => s.setAgentConversations);
@@ -143,7 +145,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     ? agentConversations.slice(0, MAX_VISIBLE_CHATS)
     : agentConversations;
 
-  const yourTimeGroups = getNonEmptyGroups(groupConversationsByTime(visibleYour));
+  const yourTimeGroups = getNonEmptyGroups(groupConversationsByTime(visibleYour, today));
   const visibleShared = chatSlots.useAgentSharedConversations(sharedAgentConversations).slice(0, MAX_VISIBLE_CHATS);
 
   const activePendingConversations = useMemo(() => {

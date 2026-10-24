@@ -123,6 +123,7 @@ class StreamOutcome:
 
 def _error_response(error: dict[str, Any]) -> JSONResponse:
     code = error.get("code") if isinstance(error.get("code"), str) else None
+    details = error.get("details")
     return JSONResponse(
         status_code=_status_for_error(error, code),
         content={
@@ -131,6 +132,8 @@ def _error_response(error: dict[str, Any]) -> JSONResponse:
             "message": error.get("message") or error.get("error") or NO_RESPONSE_MESSAGE,
             "searchResults": [],
             "records": [],
+            # What the client needs to offer a fix, as the streamed error frame carries it.
+            **({"details": details} if isinstance(details, dict) else {}),
         },
     )
 
