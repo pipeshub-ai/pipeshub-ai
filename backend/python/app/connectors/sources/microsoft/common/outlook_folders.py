@@ -43,6 +43,15 @@ _RECORD_SCAN_PAGE_SIZE = 500
 _DAY_MS = 24 * 60 * 60 * 1000
 
 
+def _graph_http_session(client: MSGraphClient) -> httpx.AsyncClient:
+    """The httpx session under the client's Kiota adapter (a private attribute: fail clearly if a
+    Kiota release renames it)."""
+    session = getattr(client.get_client().get_ms_graph_service_client().request_adapter, "_http_client", None)
+    if session is None:
+        raise RuntimeError("The Graph SDK's request adapter has no HTTP session (_http_client); check the kiota-http version")
+    return session
+
+
 def prefer_immutable_ids(client: MSGraphClient) -> MSGraphClient:
     """Ask Graph for immutable ids on every mailbox call ``client`` makes.
 
@@ -51,7 +60,7 @@ def prefer_immutable_ids(client: MSGraphClient) -> MSGraphClient:
     on the client's HTTP session covers every call, nextLink and deltaLink pages included.
     Group calls are left as they are, so stored group post ids never change.
     """
-    http_client: httpx.AsyncClient = client.get_client().get_ms_graph_service_client().request_adapter._http_client
+    http_client = _graph_http_session(client)
 
     async def add_prefer(request: httpx.Request) -> None:
         if "groups" in request.url.path.split("/"):
@@ -70,7 +79,7 @@ def pace_graph_calls(client: MSGraphClient, policy: ResiliencePolicy | None) -> 
     """Take a rate-limit slot from the connector's policy before each Graph call ``client`` sends.
     Retries stay with the SDK's retry handler, below this hook."""
     if policy is not None:
-        http_client: httpx.AsyncClient = client.get_client().get_ms_graph_service_client().request_adapter._http_client
+        http_client = _graph_http_session(client)
 
         async def take_slot(_request: httpx.Request) -> None:
             await policy.acquire()
@@ -86,7 +95,7 @@ async def open_graph_stream(client: MSGraphClient, path: str) -> httpx.Response:
     info = RequestInformation(Method.GET)
     info.url = f"{adapter.base_url.rstrip('/')}/{path}"
     request = await adapter.convert_to_native_async(info)
-    return await adapter._http_client.send(request, stream=True)
+    return await _graph_http_session(client).send(request, stream=True)
 
 
 async def raise_for_graph_stream(response: httpx.Response, connector: str) -> None:
@@ -144,6 +153,7 @@ async def read_delta_pages(
     url = delta_link
     first_page = True
     full_read = delta_link is None
+    followed: set[str] = set()
     while True:
         response = await fetch_page(url)
         if not response.success:
@@ -156,6 +166,9 @@ async def read_delta_pages(
         first_page = False
         page = response.data
         if page.odata_next_link:
+            if page.odata_next_link in followed:
+                raise Exception(f"Graph repeated a delta nextLink for folder {folder_id}")
+            followed.add(page.odata_next_link)
             yield list(page.value or []), None, full_read
             url = page.odata_next_link
         elif page.odata_delta_link:
@@ -297,10 +310,18 @@ class OutlookFolderInventoryMixin:
     The folder listing reports through two attributes, reset before each listing:
     ``_folder_listing_complete`` (False when a child-folder listing was not proven complete)
     and ``_folders_maybe_present`` (folder ids the listing left out that may still exist).
+    Mail removals and full folder reads are collected per mailbox and applied once all its
+    folders were read; ``_full_sync_incomplete`` tells the full-sync sweep to unlink nothing.
     """
 
     # The filters that decide which folders are listed.
     FOLDER_FILTER_KEYS: tuple[SyncFilterKey, ...] = ()
+
+    _folder_listing_complete: bool = True
+    _folders_maybe_present: frozenset[str] | set[str] = frozenset()
+    _pending_removals: list[Any] | None = None
+    _pending_full_reads: list[Any] | None = None
+    _full_sync_incomplete: bool = False
 
     def _folder_sync_point_key(self, user: AppUser, folder_id: str) -> str:
         """The sync point holding a folder's delta link."""
@@ -310,6 +331,7 @@ class OutlookFolderInventoryMixin:
 
     def _full_sync_running(self) -> bool:
         running = getattr(self.data_entities_processor, "full_sync_running", None)
+        # A processor without the check: assume a full sync, which deletes no unseen mail.
         return bool(running(self.connector_id)) if callable(running) else True
 
     async def _folders_listed_before_upgrade(self, user: AppUser, listed: list[MailFolder]) -> set[str]:
@@ -327,7 +349,7 @@ class OutlookFolderInventoryMixin:
         On a mailbox's first inventory outside a full sync (an upgrade), the stored folders
         an earlier version synced and this one no longer lists are dropped.
         """
-        if not getattr(self, "_folder_listing_complete", True):
+        if not self._folder_listing_complete:
             self.logger.warning(f"The folder listing of {user.email} was not complete; no folder is removed this run")
             self._full_sync_incomplete = True
             return
@@ -340,7 +362,7 @@ class OutlookFolderInventoryMixin:
         gone: set[str] = set()
         if previous.get(OutlookSyncPointKeys.FILTER_FINGERPRINT) == fingerprint:
             previous_ids = set(previous.get(OutlookSyncPointKeys.FOLDER_IDS) or [])
-            kept = previous_ids & getattr(self, "_folders_maybe_present", set())
+            kept = previous_ids & self._folders_maybe_present
             gone = previous_ids - current_folder_ids - kept
         elif not previous and not self._full_sync_running():
             try:
@@ -427,7 +449,7 @@ class OutlookFolderInventoryMixin:
             {**sync_point_data, OutlookSyncPointKeys.ID_TYPE: IMMUTABLE_ID_TYPE, OutlookSyncPointKeys.HELD_BACK_RUNS: 0},
             encrypt_fields=[OutlookSyncPointKeys.ENCRYPT_FIELD_DELTA_LINK],
         )
-        pending = getattr(self, "_pending_removals", None)
+        pending = self._pending_removals
         if removed_ids and pending is not None:
             pending.append((folder_id, removed_ids, save))
             return
@@ -473,7 +495,7 @@ class OutlookFolderInventoryMixin:
             # A full sync reads every folder in full; what it did not see is unlinked by its
             # sweep, which a filter change (a narrower date window) must not turn into deletes.
             return
-        pending = getattr(self, "_pending_full_reads", None)
+        pending = self._pending_full_reads
         if pending is not None:
             pending.append((folder_id, seen_ids))
             return
@@ -482,7 +504,7 @@ class OutlookFolderInventoryMixin:
     async def _apply_mail_removals(self) -> None:
         """Delete the mail each folder's delta reported removed, then save that folder's link;
         then delete the mail each full folder read did not see."""
-        pending, self._pending_removals = getattr(self, "_pending_removals", None) or [], None
+        pending, self._pending_removals = self._pending_removals or [], None
         for folder_id, removed_ids, save in pending:
             try:
                 await self._delete_removed_mail(folder_id, removed_ids)
@@ -492,7 +514,7 @@ class OutlookFolderInventoryMixin:
                 self._full_sync_incomplete = True
                 continue
             await save()
-        full_reads, self._pending_full_reads = getattr(self, "_pending_full_reads", None) or [], None
+        full_reads, self._pending_full_reads = self._pending_full_reads or [], None
         for folder_id, seen_ids in full_reads:
             try:
                 await self._delete_unseen_mail(folder_id, seen_ids)

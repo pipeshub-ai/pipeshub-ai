@@ -50806,6 +50806,8 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
+    # groups_list_threads, groups_threads_list_posts and groups_threads_get_post carry hand-added
+    # next_url / expand parameters the Outlook connector pages with: keep them if this file is regenerated.
     async def groups_list_threads(
         self,
         group_id: str,

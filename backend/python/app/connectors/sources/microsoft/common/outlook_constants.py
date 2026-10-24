@@ -212,13 +212,13 @@ class OutlookAPIFields:
     # Minimal user ID select field (for user existence check)
     USER_ID_SELECT_FIELDS: list[str] = ["id"]
     
-    # Team connector - Group conversation threads select fields
     # $expand on a group post: attachment metadata without contentBytes.
     POST_ATTACHMENTS_METADATA_EXPAND = "attachments($select=id,name,contentType,size,lastModifiedDateTime)"
 
     # Mail attachment listing without contentBytes (@odata.type is still returned).
     ATTACHMENT_SELECT_FIELDS: list[str] = ["id", "name", "contentType", "size", "lastModifiedDateTime", "isInline"]
 
+    # Team connector - Group conversation threads select fields
     THREAD_SELECT_FIELDS: list[str] = [
         "id",
         "topic",

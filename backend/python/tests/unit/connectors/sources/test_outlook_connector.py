@@ -5793,6 +5793,21 @@ class TestTransformFolderNestedFolder:
 # ===========================================================================
 
 
+class TestDeltaPaging:
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_delta_next_link_raises_instead_of_looping(self) -> None:
+        from app.connectors.sources.microsoft.common.outlook_folders import read_delta_pages
+
+        page = MagicMock(value=[], odata_next_link="https://graph.microsoft.com/v1.0/delta?$skiptoken=1", odata_delta_link=None)
+        fetch = AsyncMock(return_value=MagicMock(success=True, data=page))
+
+        with pytest.raises(Exception, match="repeated a delta nextLink"):
+            async for _ in read_delta_pages(fetch, None, "inbox", MagicMock()):
+                pass
+        assert fetch.await_count == 2
+
+
 class TestChildFolderPaging:
 
     @pytest.mark.asyncio

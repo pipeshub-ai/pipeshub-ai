@@ -595,7 +595,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
         holds, so nothing is unlinked after it."""
         # No window_start_ms: Received Date is saved as absolute bounds, so stored mail older
         # than the start is there only because the filter was narrowed, and should be unlinked.
-        return FullSyncCoverage(complete=not getattr(self, "_full_sync_incomplete", False))
+        return FullSyncCoverage(complete=not self._full_sync_incomplete)
 
     async def _sync_users(self) -> AppUser:
         """Get creator as AppUser for personal connector."""
@@ -630,7 +630,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
     async def _process_user_emails(self, org_id: str, user: AppUser) -> str:
         """Process emails from all folders sequentially."""
         try:
-            incomplete_before, self._full_sync_incomplete = getattr(self, "_full_sync_incomplete", False), False
+            incomplete_before, self._full_sync_incomplete = self._full_sync_incomplete, False
             # Sync folders as RecordGroups and get folder data for email processing
             folders = await self._sync_user_folders(user)
 
@@ -1709,7 +1709,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
         while page.odata_next_link:
             next_link = page.odata_next_link
             page = await self._call_graph(
-                lambda client: client.client.me.messages.by_message_id(message_id).attachments.with_url(next_link).get()
+                lambda client, url=next_link: client.client.me.messages.by_message_id(message_id).attachments.with_url(url).get()
             )
             attachments.extend(page.value or [])
         return attachments

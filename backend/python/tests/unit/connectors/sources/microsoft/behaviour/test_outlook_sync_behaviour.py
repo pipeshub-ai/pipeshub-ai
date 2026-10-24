@@ -768,6 +768,18 @@ class TestGroups:
         (grant,) = db.record_group_permissions[GROUP]
         assert (grant.entity_type, grant.external_id, grant.type) == (EntityType.GROUP, GROUP, PermissionType.READ)
 
+    async def test_nested_groups_and_devices_among_the_members_are_passed_over(self, connector, api, db) -> None:
+        serve_group(api, [
+            member("u-ana", ANA),
+            {"@odata.type": "#microsoft.graph.group", "id": "g-nested", "displayName": "Nested", "mail": None},
+            {"@odata.type": "#microsoft.graph.device", "id": "d1", "displayName": "Laptop"},
+        ])
+
+        await connector.run_sync()
+
+        assert db.user_groups == {GROUP: [ANA]}
+        assert connector._skipped["groups"] == 0
+
     async def test_group_conversation_posts_are_saved_as_group_mail(self, connector, api, db) -> None:
         serve_group(api, [member("u-ana", ANA)], threads=page([thread("t1", "Launch")]))
         api.on("GET", f"/v1.0/groups/{GROUP}/threads/t1/posts", page([post("p1")]))

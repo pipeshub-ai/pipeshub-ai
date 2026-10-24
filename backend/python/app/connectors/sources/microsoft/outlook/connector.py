@@ -413,10 +413,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         except Exception as e:
             self.logger.warning(f"Graph credential needs reinitialization: {e}")
 
-        try:
-            await self.external_client.get_client().close()
-        except Exception:
-            pass
+        await close_graph_client(self.external_client, self.logger)
 
         self.external_client = prefer_immutable_ids(ExternalMSGraphClient.build_with_config(
             MSGraphClientWithClientIdSecretConfig(
@@ -600,7 +597,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         a skipped mailbox's stored mail as seen, so the whole run counts as incomplete."""
         # No window_start_ms: Received Date is saved as absolute bounds, so stored mail older
         # than the start is there only because the filter was narrowed, and should be unlinked.
-        return FullSyncCoverage(complete=not getattr(self, "_full_sync_incomplete", False))
+        return FullSyncCoverage(complete=not self._full_sync_incomplete)
 
     async def _sync_users(self) -> list[AppUser]:
         """Sync organization users and return active users to process."""
@@ -847,7 +844,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # Convert to AppUser objects - members are Pydantic User objects from _get_group_members
                     app_users = []
                     for member in members:
-                        member_email = (member.mail or member.user_principal_name)
+                        # transitiveMembers also lists nested groups and devices, which have no UPN.
+                        member_email = getattr(member, "mail", None) or getattr(member, "user_principal_name", None)
                         if member_email:
                             # Look up existing user from cache
                             user_id = self._user_cache.get(member_email.lower())
@@ -1708,7 +1706,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
     async def _process_user_emails(self, org_id: str, user: AppUser) -> str:
         """Process emails from all folders sequentially."""
         try:
-            incomplete_before, self._full_sync_incomplete = getattr(self, "_full_sync_incomplete", False), False
+            incomplete_before, self._full_sync_incomplete = self._full_sync_incomplete, False
             # Sync folders as RecordGroups and get folder data for email processing
             folders = await self._sync_user_folders(user)
 
