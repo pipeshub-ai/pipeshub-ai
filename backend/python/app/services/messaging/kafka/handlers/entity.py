@@ -268,6 +268,12 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
+                # Set on the existing node too, which is what lets the user
+                # management service fill in nodes that predate the field by
+                # republishing them. Left alone when absent, so an older
+                # producer cannot blank a value a newer one has already set.
+                if payload.get("kind"):
+                    user_data["kind"] = payload["kind"]
             else:
                 user_key = str(uuid4())
                 user_data = {
@@ -282,6 +288,9 @@ class EntityEventService(BaseEventService):
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
                     "isActive": True,
+                    # Absence means a person. Every producer of a service
+                    # account sends this; nothing else needs to.
+                    "kind": payload.get("kind") or "human",
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }

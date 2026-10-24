@@ -210,6 +210,10 @@ export class ServiceAccountsService {
       fullName: serviceAccount.fullName,
       email: serviceAccount.email,
       syncAction: SyncAction.Immediate,
+      // Told to the graph rather than inferred there. A consumer that had to
+      // work this out from the address would be guessing at a rule this
+      // service owns.
+      kind: 'service',
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -365,6 +369,7 @@ export class ServiceAccountsService {
       fullName: finished.fullName,
       email: finished.email,
       syncAction: SyncAction.Immediate,
+      kind: 'service',
     };
     await this.publish({
       eventType: EventType.NewUserEvent,

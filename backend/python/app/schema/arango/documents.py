@@ -72,6 +72,16 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
+            # What sort of principal this is. Absent on nodes written before
+            # this field existed and on anything an older producer sends, so
+            # readers treat absence as "human" rather than as unknown.
+            #
+            # Always carried on the event, never worked out here. The user
+            # management service decides what is a service account, and a
+            # second rule in this process — reading the address, say — would
+            # be a copy of that one, free to drift. Existing nodes are filled
+            # in by that service republishing them, for the same reason.
+            "kind": {"type": "string", "enum": ["human", "service"]},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry

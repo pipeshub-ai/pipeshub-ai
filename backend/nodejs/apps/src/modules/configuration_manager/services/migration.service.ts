@@ -18,6 +18,8 @@ import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
+import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
+import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -36,6 +38,8 @@ export class MigrationService {
   constructor(
     @inject('Logger') logger: Logger,
     @inject('KeyValueStoreService') keyValueStoreService: KeyValueStoreService,
+    @inject('EntitiesEventProducer')
+    private readonly entityEvents: EntitiesEventProducer,
   ) {
     this.logger = logger;
     this.keyValueStoreService = keyValueStoreService;
@@ -53,8 +57,34 @@ export class MigrationService {
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.delegationLogRetentionMigration();
+    await this.serviceAccountKindBackfillMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
+  }
+
+  async serviceAccountKindBackfillMigration(): Promise<void> {
+    try {
+      const result = await new ServiceAccountKindBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        this.entityEvents,
+      ).run();
+
+      if (result.skipped) return;
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Service-account kind backfill finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Service accounts marked in the graph', result);
+      }
+    } catch (error) {
+      this.logger.error('Service-account kind backfill failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async adminRoleMigration(): Promise<void> {
