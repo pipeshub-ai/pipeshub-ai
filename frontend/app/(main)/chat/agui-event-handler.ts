@@ -39,8 +39,10 @@ interface AGUIStreamState {
   rawLength: number;
 }
 
-// Mirrors the server-side caps in `transcript_collector.py` — defensive
-// only, since the server already truncates before these deltas are sent.
+// Mirrors the server-side caps in `transcript_collector.py`. A result arrives
+// already truncated, but a TOOL_CALL_ARGS `delta` is the call's whole JSON:
+// `args` takes the frame's `argsPreview`, and cuts `delta` only from a server
+// that does not send one.
 const MAX_TOOL_ARGS_CHARS = 2000;
 const MAX_TOOL_RESULT_CHARS = 2000;
 
@@ -202,7 +204,7 @@ class LivePartsBuilder {
     const part = this.openToolCalls.get(toolCallId);
     if (!part) return;
     const delta = typeof data.delta === 'string' ? data.delta : '';
-    part.args = delta.slice(0, MAX_TOOL_ARGS_CHARS);
+    part.args = typeof data.argsPreview === 'string' ? data.argsPreview : delta.slice(0, MAX_TOOL_ARGS_CHARS);
     if (typeof data.argsSummary === 'string') {
       part.argsSummary = data.argsSummary;
     }
