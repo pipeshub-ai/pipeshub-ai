@@ -7601,6 +7601,12 @@ components:
                     $ref: '#/components/schemas/FilterOption'
                 connectors:
                   type: array
+                  description: |
+                    The apps and collections to filter by, each with its own name. For a
+                    connected app with a limit, only those the limit covers whole: an app
+                    or collection it covers only in part (some of its spaces, folders or
+                    files) is not offered. The other option lists are fixed and name no
+                    source.
                   items:
                     $ref: '#/components/schemas/FilterOption'
                 indexingStatus:
