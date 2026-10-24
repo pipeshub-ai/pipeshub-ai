@@ -976,7 +976,9 @@ class TestReviewFindingsOnTheRelatedStack:
 
     @pytest.mark.asyncio
     async def test_an_update_whose_limit_check_fails_names_nothing_above_the_record(self) -> None:
-        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
 
         graph = _graph_under(FILE_LIMIT)
         graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "app-in", "kb_name": "Finance"})
