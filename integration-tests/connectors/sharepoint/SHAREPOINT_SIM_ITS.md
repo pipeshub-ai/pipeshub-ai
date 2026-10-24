@@ -76,11 +76,12 @@ suites must never share its shard.
 
 ## Running it locally
 
-1. Build the simulator image from connectors-simulator (`docker build -t pipeshub/connectors-simulator:it .`).
+1. Build the simulator image from connectors-simulator (`docker build -t pipeshub/connectors-simulator:it .`). The override uses that tag unless
+   `SHAREPOINT_SIM_IMAGE` names another.
 2. Make the TLS material: `deployment/docker-compose/sharepoint-sim/make-certs.sh /some/dir` and export
    `SHAREPOINT_SIM_TLS_DIR=/some/dir`.
-3. Start the stack with the override:
-   `docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.sharepoint-sim.yml up -d`
+3. Start the stack with the override, from `deployment/docker-compose`:
+   `cd deployment/docker-compose && docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.sharepoint-sim.yml up -d`
    (or the ArangoDB file), create the org and admin as CI does.
 4. Load `integration-tests/connectors/sharepoint_sim.env` into the environment, with the usual
    integration-test variables (base URL, admin login, graph database, Mongo, Redis, AI models).
@@ -119,8 +120,8 @@ explicitly through `/_sim/sharepoint/behaviours`:
 |---|---|---|---|---|---|---|
 | SYNC-001 first sync matches source | Base tenant; Site Pages listed among the drives (set explicitly) | None | First sync succeeds; the check passes, so no page is stored twice | F-PAGES-AS-FILES | pass | pass |
 | SYNC-002 unchanged sync changes nothing | Small tenant | A second sync with no change | Succeeds; no record appears, goes or changes version; the check passes | | pass | pass |
-| SYNC-003 incremental picks up changes | Base tenant | Add a file, edit one, rename one, add a folder, move a file into it | Succeeds; the check passes; the rename keeps the same record; every record sits under its source parent | F-ROOT-PARENT | pass | pass |
-| SYNC-004 full sync converges | Base tenant | Add a file, delete one, full sync | Succeeds; the check passes | | pass | pass |
+| SYNC-003 incremental picks up changes | Base tenant | Add a file, edit one, rename one, add a folder, move a file into it | Succeeds; the check passes; the edited file's stored revision changes; the rename keeps the same record; every record sits under its source parent | F-ROOT-PARENT | pass | pass |
+| SYNC-004 full sync converges | Base tenant | Add a file, delete one, full sync | Succeeds; the deleted file's record is no longer active; the check passes | | pass | pass |
 | FLT-001 site filter narrowed then widened | Base tenant | Filter to Engineering only; then clear the filter | After narrowing, records of other sites are deleted and nobody opens them; after widening, everything is back | | pass | pass |
 | FLT-002 library filter | Base tenant, filter to Engineering's Documents before the first sync | None | Only that library is synced; nothing else has a record | | pass | pass |
 | FLT-003 extension filter narrowed | Base tenant | Filter to pdf | Records of other files are deleted and nobody opens them | | pass | pass |
@@ -171,7 +172,7 @@ Every test here ends with the check (LEAK, DENIED and the rest) after each sync.
 | FAIL-001 [delta] | Base tenant | Full sync while one library's delta answers 503 | Same | F-FULLSYNC-PARTIAL-REMOVES, F-SUCCESS-ON-FAILURE | pass | pass |
 | FAIL-002 site permission read fails | Base tenant | Sync while site role assignments answer 503 | The run is not a success; nobody loses access | F-SITE-ACL-FAILURE | pass | pass |
 | FAIL-003 group member read fails | Base tenant; Finance group renamed so its members are read again | Sync while group member reads answer 503 | The run is not a success; nobody loses access | F-MEMBER-FAILURE-WIPES | pass | pass |
-| FAIL-004 SharePoint REST throttling | Base tenant | Sync while SharePoint REST is rate limited (429 with Retry-After) | The run succeeds; nobody loses access | F-SPREST-NO-RETRY | pass | pass |
+| FAIL-004 SharePoint REST throttling | Base tenant | Grant frank Read on the Finance site, then sync while SharePoint REST is rate limited (429 with Retry-After) | The run succeeds; frank gains Finance; nobody loses access | F-SPREST-NO-RETRY | pass | pass |
 | FAIL-005 app without site access | Base tenant; the app lacks Sites.Read.All | Enable the connector | Enabling is refused and the connector stays off | F-CONNECTION-TEST | pass | pass |
 | FAIL-006 app without Graph Sites.FullControl.All | Base tenant; the app has Sites.Read.All but not Sites.FullControl.All, so `GET /sites/root/permissions` answers 403 | Enable the connector | Enabling is refused with a message naming Sites.FullControl.All, and the connector stays off. Without that permission delta never reports user grants changed on items with their own permissions (seen on a live tenant) | | pass | pass |
 

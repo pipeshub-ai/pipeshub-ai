@@ -84,14 +84,17 @@ class TestSharePointSimFailures:
         await w.assert_matches_source("after a sync whose group member reads failed")
 
     async def test_tc_spsim_fail_004_sharepoint_rest_throttling(self, sharepoint_world: SharePointWorld) -> None:
+        """A site grant only SharePoint REST reports (role assignments) must arrive through the throttling:
+        a throttled read that was dropped and left the old access would deny frank the Finance files."""
         w = sharepoint_world
         await w.start(base_tenant(), behaviours=QUIET)
+        w.ops({"op": "grant", "target": "fin", "kind": "user", "ref": "frank", "roles": ["Read"]})
         w.faults({"match": {"path_regex": "/_api/"},
                   "effect": {"type": "rate_limit", "capacity": 3, "refill_per_s": 3}})
         outcome = await w.sync()
         w.clear_faults()
         assert succeeded(outcome), f"a sync throttled by SharePoint REST did not finish: {outcome}"
-        await w.assert_matches_source("after a sync throttled by SharePoint REST")
+        await w.assert_matches_source("after a sync throttled by SharePoint REST, with frank granted on Finance")
 
     async def test_tc_spsim_fail_005_connection_test_refuses_app_without_site_access(
         self, sharepoint_world: SharePointWorld,

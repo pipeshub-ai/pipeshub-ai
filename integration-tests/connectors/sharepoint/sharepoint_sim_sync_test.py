@@ -71,6 +71,7 @@ class TestSharePointSimSync:
         w = sharepoint_world
         await w.start(base_tenant(), behaviours=QUIET)
         before = await w.record_of("fin-budget")
+        design_before = await w.record_of("eng-design")
         w.ops({"op": "add_file", "parent": "hr-policies", "name": "leave.pdf", "key": "hr-leave"},
               {"op": "edit_file", "item": "eng-design", "size": 9000},
               {"op": "rename", "item": "fin-budget", "name": "budget-2027.xlsx"},
@@ -84,15 +85,26 @@ class TestSharePointSimSync:
             "a rename must keep the record, not replace it"
         )
         assert after.record_name == "budget-2027.xlsx", f"the rename was not applied: {after.record_name!r}"
+        design_after = await w.record_of("eng-design")
+        # The stored record, not a stream: streaming reads the source at that moment, edited or not.
+        assert design_before is not None and design_after is not None
+        assert design_after.external_revision_id != design_before.external_revision_id, (
+            "the edit was not applied: the stored record still has the old revision"
+        )
         await w.assert_hierarchy_matches_source("parents after the move")
 
     async def test_tc_spsim_sync_004_full_sync_converges(self, sharepoint_world: SharePointWorld) -> None:
         w = sharepoint_world
         await w.start(base_tenant(), behaviours=QUIET)
+        deleted = await w.record_of("fin-budget")
+        assert deleted is not None
         w.ops({"op": "add_file", "parent": "eng-specs", "name": "api.md", "key": "eng-api"},
               {"op": "delete", "item": "fin-budget"})
         outcome = await w.sync(full=True)
         assert succeeded(outcome), f"full sync reported {outcome}"
+        # assert_matches_source reports a stale record only when someone can still open it.
+        active = {r["id"] for r in await w.records() if not r.get("isDeleted") and not r.get("isPlaceholder")}
+        assert deleted.id not in active, "the full sync left the deleted file's record active"
         await w.assert_matches_source("after the full sync")
 
     async def test_tc_spsim_flt_001_site_filter_narrowed_then_widened(self, sharepoint_world: SharePointWorld) -> None:
