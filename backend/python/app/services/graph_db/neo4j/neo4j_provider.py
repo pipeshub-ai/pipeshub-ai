@@ -15770,18 +15770,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         deleted = 0
         for start in range(0, len(pairs), _STAGE_STATE_VRID_BATCH):
             # The rule is evaluated again here: a record may have moved back onto the
-            # revision, or its stage claimed again, since it was read.
+            # revision, or its stage claimed again, since it was read. The states are
+            # locked before their age is read, as in stage_state_compare_and_set: a
+            # claim committed while this waited for the lock would otherwise be deleted
+            # on the age read before it.
             rows = await self._stage_cypher(
                 f"""
                 UNWIND $pairs AS pair
                 WITH pair[0] AS vrid, pair[1] AS rev
-                WHERE NOT EXISTS {{
-                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
-                }}
                 MATCH (state:{label})
                 WHERE state.virtualRecordId = vrid AND state.rev = rev
-                WITH vrid, rev, collect(state) AS states, max(coalesce(state.updatedAtMs, 0)) AS newest
-                WHERE newest < $before
+                SET state.{_MATCH_LOCK} = true
+                REMOVE state.{_MATCH_LOCK}
+                WITH vrid, rev, collect(state) AS states
+                WHERE all(s IN states WHERE coalesce(s.updatedAtMs, 0) < $before)
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
                 UNWIND states AS state
                 DETACH DELETE state
                 RETURN count(*) AS deleted

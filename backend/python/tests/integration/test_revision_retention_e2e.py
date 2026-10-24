@@ -14,6 +14,7 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -28,9 +29,11 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.neo4j import collection_to_label
 from app.models.entities import DeleteSource, FileRecord, RecordType
 from app.modules.artifacts.retention import RevisionRetentionSweep
 from app.modules.pipeline.models import Priority, StageJob, StageState
+from app.services.graph_db.arango.arango_http_client import ArangoQueryError
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.resource_governor.models import ParseTier
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -41,7 +44,7 @@ from tests.integration.real_graph import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -250,3 +253,124 @@ async def test_the_sweep_against_the_graph(world: _World) -> None:
     assert (report.revisions_deleted, report.skipped_trashed, report.stage_states_deleted) == (1, 1, 1)
     assert await world.revs_with_states(kept) == set()
     assert await world.graph.stage_states_for_revision(binned, "r0") != []
+
+
+class _Leases:
+    """``record:<id>`` leases, as the record consumer and the sweep take them."""
+
+    def __init__(self) -> None:
+        self.owners: dict[str, str] = {}
+
+    async def try_acquire(self, pool: str, owner: str, limit: int, lease_seconds: float) -> bool:
+        if self.owners.get(pool, owner) != owner:
+            return False
+        self.owners[pool] = owner
+        return True
+
+    async def renew_many(self, leases: list[tuple[str, str]], lease_seconds: float) -> dict[tuple[str, str], bool]:
+        return {(p, o): self.owners.get(p) == o for p, o in leases}
+
+    async def release(self, pool: str, owner: str) -> None:
+        if self.owners.get(pool) == owner:
+            del self.owners[pool]
+
+
+@contextlib.asynccontextmanager
+async def _uncommitted(graph: IGraphDBProvider, collection: str, key: str, fields: dict) -> AsyncIterator[None]:
+    """A write to one document, held open: committed when the block ends."""
+    if isinstance(graph, Neo4jProvider):
+        session = graph.client.driver.session(database=graph.client.database)
+        try:
+            tx = await session.begin_transaction()
+            await (await tx.run(
+                f"MATCH (n:{collection_to_label(collection)} {{id: $id}}) SET n += $fields", {"id": key, "fields": fields}
+            )).consume()
+            yield
+            await tx.commit()
+        finally:
+            await session.close()
+        return
+    txn = await graph.http_client.begin_transaction(read=[], write=[collection])
+    try:
+        await graph.http_client.execute_aql(
+            f"UPDATE {{_key: @id}} WITH @fields IN {collection}", {"id": key, "fields": fields}, txn_id=txn
+        )
+        yield
+    except BaseException:
+        await graph.http_client.abort_transaction(txn)
+        raise
+    await graph.http_client.commit_transaction(txn)
+
+
+async def _until_blocked(graph: Neo4jProvider, statement: Awaitable[int], marker: str) -> asyncio.Task[int]:
+    """Start ``statement`` and return once Neo4j shows it waiting for a lock."""
+    task = asyncio.ensure_future(statement)
+    for _ in range(200):
+        rows = await graph.client.execute_query(
+            "SHOW TRANSACTIONS YIELD currentQuery, status WHERE currentQuery CONTAINS $marker RETURN status",
+            parameters={"marker": marker},
+        )
+        if any(str(row["status"]).startswith("Blocked") for row in rows):
+            return task
+        assert not task.done(), "the statement ran without waiting for the lock"
+        await asyncio.sleep(0.05)
+    raise AssertionError("the statement never waited for the lock")
+
+
+async def test_a_stage_state_written_while_the_delete_waits_is_kept(world: _World) -> None:
+    """A stage state claimed again (or settled) while the delete reads it is not deleted on the
+    age it had before. Neo4j reads committed data without a lock, so the statement locks the
+    states before reading their age; on ArangoDB the delete conflicts with the write."""
+    now = get_epoch_timestamp_in_ms()
+    vrid = world.vrid("v")
+    await world.record("on2", vrid, "r2")
+    await world.state(vrid, "r1", "classify", now - 48 * HOUR_MS)
+    world.vrids.append(vrid)
+    delete = world.graph.stage_states_delete_unheld_revisions([(vrid, "r1")], updated_before_ms=now - 24 * HOUR_MS)
+
+    async with _uncommitted(world.graph, CollectionNames.STAGE_STATES.value, f"{vrid}:r1:classify",
+                            {"updatedAtMs": now, "status": ProgressStatus.QUEUED.value}):
+        if isinstance(world.graph, Neo4jProvider):
+            pending = await _until_blocked(world.graph, delete, "DETACH DELETE state")
+        else:
+            with contextlib.suppress(ArangoQueryError):
+                assert await delete == 0
+            pending = None
+    if pending is not None:
+        assert await pending == 0
+
+    assert await world.revs_with_states(vrid) == {"r1"}
+
+
+async def test_a_record_moving_onto_an_old_revision_under_its_lease_keeps_it(world: _World) -> None:
+    """The graph re-checks cannot see a ``contentRev`` write that commits while they run: it is
+    another document than the stage states, or the artifact set the record's writer re-uses.
+    A re-index writes it under the record lease, so the sweep, which takes the holders' leases,
+    leaves the virtual record for the next pass."""
+    now = get_epoch_timestamp_in_ms()
+    old = now - 48 * HOUR_MS
+    vrid = world.vrid("v")
+    await world.mapping(vrid, "r3", "r2")
+    record_id = await world.record("back", vrid, "r3")
+    await world.state(vrid, "r1", "classify", old)
+    store = MagicMock()
+    store.list_revisions = AsyncMock(return_value=[{"documentId": "doc-r1", "rev": "r1", "createdAt": old}])
+    store.delete_revision = AsyncMock(return_value=1)
+    leases = _Leases()
+    sweep = RevisionRetentionSweep(world.graph, store, logger, leases=leases)  # type: ignore[arg-type]
+
+    assert await leases.try_acquire(f"record:{record_id}", "indexer", 1, 60)
+    async with _uncommitted(world.graph, CollectionNames.RECORDS.value, record_id, {"contentRev": "r1"}):
+        _, report = await sweep.run_page(world.prefix)
+    await leases.release(f"record:{record_id}", "indexer")
+
+    assert report.skipped_busy == 1
+    store.delete_revision.assert_not_awaited()
+    assert await world.revs_with_states(vrid) == {"r1"}
+    assert leases.owners == {}
+
+    # Once the record is on r1 for good, the next pass keeps both because a record is on it.
+    _, report = await sweep.run_page(world.prefix)
+    assert report.skipped_busy == 0
+    store.delete_revision.assert_not_awaited()
+    assert await world.revs_with_states(vrid) == {"r1"}

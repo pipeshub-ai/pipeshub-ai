@@ -723,6 +723,7 @@ async def recover_in_progress_records(
             graph_provider=graph_provider,
             logger=logger,
             lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+            concurrency_manager=concurrency_manager,
         )
 
         if total_records == 0:
@@ -889,11 +890,13 @@ async def _sweep_retired_revisions(
     graph_provider: IGraphDBProvider,
     logger: logging.Logger,
     lease_held: Callable[[], bool],
+    concurrency_manager: IDistributedLeaseManager | None = None,
 ) -> int:
     """Retire artifact sets and stage states of revisions nothing reads any more.
 
     Under the recovery lease: stops at the next page or delete once it is lost,
-    leaving the cursor on the page it had not finished.
+    leaving the cursor on the page it had not finished. Each virtual record is
+    retired under its holders' record leases, which a re-index holds.
     """
     global _retention_cursor  # noqa: PLW0603 - the cursor is per process by design
 
@@ -912,6 +915,7 @@ async def _sweep_retired_revisions(
         NodeArtifactStore(blob_storage, logger),
         logger,
         grace_ms=int(grace_seconds * 1000),
+        leases=concurrency_manager,
     )
     total = RetentionReport()
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
@@ -933,9 +937,10 @@ async def _sweep_retired_revisions(
     if total.removed or total.failed:
         logger.info(
             "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
-            "%d virtual record(s) left whole for the trash, %d failure(s), of %d scanned",
+            "%d virtual record(s) left whole for the trash, %d left for the next pass while a record "
+            "was busy, %d failure(s), of %d scanned",
             total.revisions_deleted, total.stage_states_deleted, total.revisions_kept,
-            total.skipped_trashed, total.failed, total.scanned,
+            total.skipped_trashed, total.skipped_busy, total.failed, total.scanned,
         )
     return total.removed
 

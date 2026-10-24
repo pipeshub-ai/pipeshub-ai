@@ -96,6 +96,7 @@ class FakeStore:
     fail_list_for: set[str] = field(default_factory=set)
     routes_missing: bool = False
     list_calls: int = 0
+    before_delete: Any = None
 
     def add(self, vrid: str, rev: str, created_at: int | None = OLD) -> None:
         entry: dict[str, Any] = {"documentId": f"{vrid}@{rev}", "rev": rev}
@@ -112,6 +113,8 @@ class FakeStore:
         return [r for r in self.revisions.get(vrid, []) if r["documentId"] not in self.deleted]
 
     async def delete_revision(self, org_id: str, document_id: str) -> int:
+        if self.before_delete is not None:
+            await self.before_delete(document_id)
         self.deleted.append(document_id)
         return 1
 
@@ -126,7 +129,30 @@ def _routes() -> Iterator[None]:
     ARTIFACT_ROUTES.reset()
 
 
-def _sweep(graph: FakeGraph, store: FakeStore, **kwargs: int) -> RevisionRetentionSweep:
+@dataclass
+class FakeLeases:
+    """``record:<id>`` leases as the record consumer and the sweep take them."""
+
+    owners: dict[str, str] = field(default_factory=dict)
+    refuse_renewal: bool = False
+    released: list[str] = field(default_factory=list)
+
+    async def try_acquire(self, pool: str, owner: str, limit: int, lease_seconds: float) -> bool:
+        if self.owners.get(pool, owner) != owner:
+            return False
+        self.owners[pool] = owner
+        return True
+
+    async def renew_many(self, leases: list[tuple[str, str]], lease_seconds: float) -> dict[tuple[str, str], bool]:
+        return {(p, o): not self.refuse_renewal and self.owners.get(p) == o for p, o in leases}
+
+    async def release(self, pool: str, owner: str) -> None:
+        if self.owners.get(pool) == owner:
+            del self.owners[pool]
+            self.released.append(pool)
+
+
+def _sweep(graph: FakeGraph, store: FakeStore, **kwargs: object) -> RevisionRetentionSweep:
     return RevisionRetentionSweep(graph, store, logger, now_ms=lambda: NOW, **kwargs)  # type: ignore[arg-type]
 
 
@@ -326,6 +352,88 @@ async def test_losing_the_lease_stops_the_page_and_keeps_the_cursor() -> None:
 
     assert key == "0" and report.interrupted
     assert len(store.deleted) <= 1
+
+
+async def test_a_re_index_waits_for_the_delete_of_the_set_it_would_reuse() -> None:
+    """A record going back to old bytes re-uses that revision's document. Its re-index holds
+    the record lease from the ``contentRev`` write to the pointer flip, so it cannot run
+    between the sweep's last read and the delete, and points at a document that exists."""
+    graph, store, leases = FakeGraph(), FakeStore(), FakeLeases()
+    graph.map("v", "r3", "r2")
+    graph.records.append(("v", "r3", False))
+    _revs(store, "v", "r1")
+    deferred: list[Any] = []
+
+    async def reindex_onto_r1() -> bool:
+        if not await leases.try_acquire("record:r0", "indexer", 1, 60):
+            return False
+        graph.records[0] = ("v", "r1", False)
+        reused = next((r for r in store.revisions["v"] if r["rev"] == "r1" and r["documentId"] not in store.deleted),
+                      None)
+        if reused is None:
+            store.add("v", "r1", NOW)
+            reused = store.revisions["v"][-1] = {**store.revisions["v"][-1], "documentId": "v@r1#2"}
+        graph.mappings["v"].update(currentRev="r1", previousRev="r3", manifestDocId=reused["documentId"])
+        await leases.release("record:r0", "indexer")
+        return True
+
+    async def between_reads_and_delete(document_id: str) -> None:
+        if not await reindex_onto_r1():
+            deferred.append(reindex_onto_r1)
+
+    store.before_delete = between_reads_and_delete
+    await _sweep(graph, store, leases=leases).run_page(None)
+    for run in deferred:
+        assert await run()
+
+    assert graph.mappings["v"]["manifestDocId"] not in store.deleted
+    assert leases.owners == {}
+
+
+async def test_a_busy_record_leaves_its_virtual_record_for_the_next_pass() -> None:
+    graph, store, leases = FakeGraph(), FakeStore(), FakeLeases()
+    graph.map("v", "r3", "r2")
+    graph.records += [("v", "r3", False), ("v", "r3", False)]
+    _revs(store, "v", "r1")
+    graph.states.append(("v", "r0", OLD))
+    leases.owners["record:r1"] = "indexer"
+    sweep = _sweep(graph, store, leases=leases)
+
+    _, report = await sweep.run_page(None)
+
+    assert store.deleted == [] and graph.states == [("v", "r0", OLD)]
+    assert report.skipped_busy == 1 and report.revisions_kept == 1
+    assert leases.owners == {"record:r1": "indexer"}, "the lease it did take is released"
+
+    del leases.owners["record:r1"]
+    _, report = await sweep.run_page(None)
+    assert store.deleted == ["v@r1"] and graph.states == []
+    assert sorted(leases.released) == ["record:r0", "record:r0", "record:r1"]
+
+
+async def test_a_record_joining_after_the_leases_were_taken_keeps_everything() -> None:
+    graph, store, leases = FakeGraph(), FakeStore(), FakeLeases()
+    graph.map("v", "r3", "r2")
+    graph.records.append(("v", "r3", False))
+    _revs(store, "v", "r1")
+    graph.states.append(("v", "r0", OLD))
+    graph.after_page_read = lambda: graph.records.append(("v", "r3", False))
+
+    _, report = await _sweep(graph, store, leases=leases).run_page(None)
+
+    assert store.deleted == [] and graph.states == [("v", "r0", OLD)]
+    assert report.skipped_busy == 1
+
+
+async def test_a_lease_that_cannot_be_renewed_stops_the_deletes() -> None:
+    graph, store, leases = FakeGraph(), FakeStore(), FakeLeases(refuse_renewal=True)
+    graph.map("v", "r3", "r2")
+    graph.records.append(("v", "r3", False))
+    _revs(store, "v", "r0", "r1")
+
+    _, report = await _sweep(graph, store, leases=leases).run_page(None)
+
+    assert store.deleted == [] and report.revisions_kept == 2
 
 
 def test_a_zero_grace_is_refused() -> None:

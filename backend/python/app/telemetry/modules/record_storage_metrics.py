@@ -68,7 +68,8 @@ def record_artifact_shadow_read(outcome: str, reason: str | None = None) -> None
 
 # kind=revision: artifact-set revisions the retention sweep looked at, outcome
 # deleted, kept or failed; kind=virtual_record, outcome=skipped_trashed: virtual
-# records left whole because a record holding them is in the trash;
+# records left whole because a record holding them is in the trash, or
+# skipped_busy: left for the next pass because a holder's record lease was held;
 # kind=stage_state, outcome=deleted: stage states of revisions no record is on.
 RETENTION = METRICS_BACKEND.counter(
     "pipeshub_record_retention_total",

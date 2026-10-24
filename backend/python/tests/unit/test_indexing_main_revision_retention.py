@@ -33,9 +33,10 @@ class _Pages:
         self.pages = pages
         self.calls: list[str | None] = []
         self.grace_ms: int | None = None
+        self.leases: object = None
 
-    def __call__(self, graph: object, store: object, logger: object, *, grace_ms: int) -> _Pages:
-        self.grace_ms = grace_ms
+    def __call__(self, graph: object, store: object, logger: object, *, grace_ms: int, leases: object) -> _Pages:
+        self.grace_ms, self.leases = grace_ms, leases
         return self
 
     async def run_page(self, after_key: str | None, *, still_leader: Callable[[], bool] | None = None) -> tuple[str | None, RetentionReport]:
@@ -138,6 +139,8 @@ async def test_recovery_runs_it_under_the_recovery_lease() -> None:
     assert held_during_the_sweep == [True]
     # Once the pass has let the lease go, the sweep would see it as lost.
     assert sweep.await_args.kwargs["lease_held"]() is False
+    # Record leases come from the same manager, so a re-index and a delete of its revision never overlap.
+    assert sweep.await_args.kwargs["concurrency_manager"] is container.kafka_consumers[0][1].concurrency_manager
 
 
 async def test_recovery_without_the_lease_does_not_run_it() -> None:
