@@ -7,7 +7,8 @@ One job: after a run, decide whether anyone should be told anything, and say it 
   notice every run, so the platform's notification backoff keeps it to one, then one a day or so later.
 - A run that could not read part of Drive for a passing reason (rate limits, outages) is not reported: the
   next run retries it. Only when that has happened `PERSISTENT_RUNS` runs in a row is one warning sent.
-- Selected folders nobody can open are reported once as a warning: someone has to share or unselect them.
+- Selected folders nobody it syncs can find or open (a wrong ID, a deleted folder, one not shared with anyone
+  synced) are reported as a warning: someone has to fix the ID, share the folder, or unselect it.
 
 Notices never carry error text, ids of requests, or anything else from inside the connector.
 """
@@ -139,9 +140,9 @@ class DriveRunReport:
             await self._send(DriveNotice(
                 NotificationType.CONNECTOR_WARNING, NotificationSeverity.WARNING,
                 "some selected folders cannot be opened",
-                f"{count} folder{'s' if count != 1 else ''} in this connector's folder filter cannot be opened by "
-                "anyone it syncs, so nothing inside is synced. Share the folders with a person who uses PipesHub, "
-                "or remove them from the folder filter."))
+                f"{count} folder{'s' if count != 1 else ''} in this connector's folder filter cannot be found or "
+                "opened by anyone it syncs, so nothing inside is synced. Check that the folder IDs are right, share "
+                "the folders with a person who uses PipesHub, or remove them from the folder filter."))
         stored = await self._sync_point.read_sync_point(RUN_HEALTH_SYNC_POINT_KEY) or {}
         runs = int(stored.get("incompleteRuns") or 0)
         if complete:

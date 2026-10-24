@@ -1532,6 +1532,23 @@ def selected_tree(ws: Workspace) -> None:
     ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["top"]})
 
 
+
+async def test_a_selected_folder_id_no_user_can_find_is_reported_to_the_admins(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await ws.connector_()).notify = notify
+    await ws.sync()
+
+    assert "deep.txt" in ws.names()
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
 async def test_narrowing_the_folder_filter_removes_what_it_leaves_out(ws: Workspace) -> None:
     selected_tree(ws)
     await ws.sync()
