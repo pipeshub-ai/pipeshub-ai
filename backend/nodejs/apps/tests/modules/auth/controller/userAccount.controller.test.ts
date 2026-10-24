@@ -41,6 +41,7 @@ import {
   ForbiddenError,
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -75,6 +76,8 @@ function resetLinkRequest(password: string, token = 'reset-link-token'): any {
 }
 
 describe('UserAccountController', () => {
+  useCommunitySignInLists();
+
   let controller: UserAccountController;
   let mockConfig: any;
   let mockIamService: any;

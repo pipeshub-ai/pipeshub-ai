@@ -20,6 +20,7 @@ import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfig
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { createMockRedisService } from '../../../helpers/mock-redis';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // Serves the real sign-in router over HTTP with the real controller and the
 // real session service, so a request that never gets an answer shows up as a
@@ -30,6 +31,8 @@ const SCOPED_SECRET = 'authenticate-http-scoped-secret';
 const ANSWER_WITHIN_MS = 3000;
 
 describe('POST /userAccount/authenticate over HTTP', () => {
+  useCommunitySignInLists();
+
   const orgId = new mongoose.Types.ObjectId().toHexString();
   let server: Server;
   let baseUrl: string;

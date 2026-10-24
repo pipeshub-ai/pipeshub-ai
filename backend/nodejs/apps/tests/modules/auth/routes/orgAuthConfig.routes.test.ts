@@ -14,6 +14,7 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { ValidationError } from '../../../../src/libs/errors/validation.error';
 import type { Request, Response, NextFunction } from 'express';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 describe('createOrgAuthConfigRouter', () => {
   let container: Container;
@@ -109,6 +110,8 @@ describe('createOrgAuthConfigRouter', () => {
 });
 
 describe('POST /updateAuthMethod policy validation', () => {
+  useCommunitySignInLists();
+
   let container: Container;
   let savedDoc: { orgId: string; authSteps: unknown; save: sinon.SinonStub };
   let findOne: sinon.SinonStub;

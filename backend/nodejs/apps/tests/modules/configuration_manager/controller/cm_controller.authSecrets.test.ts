@@ -12,6 +12,7 @@ import {
   setGoogleAuthConfig,
   setMicrosoftAuthConfig,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists'
 
 // Sign-in provider configs follow HIDE_SECRET_CONFIG on the admin routes, reveal on
 // request, stay readable on the internal route, and keep stored values when a masked
@@ -45,6 +46,8 @@ function written(kvs: any): Record<string, unknown> {
 }
 
 describe('sign-in provider secrets', () => {
+  useCommunitySignInLists()
+
   const env = process.env.HIDE_SECRET_CONFIG
 
   beforeEach(() => {
