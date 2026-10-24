@@ -298,7 +298,7 @@ class TestBuildDirectTransport:
     def test_a_refusal_through_langchain_stops_the_direct_anthropic_markers(self) -> None:
         from app.agents.agent_loop.prompt_cache import forget_cache_params
 
-        forget_cache_params(_anthropic_llm(), "claude-opus-5-5", frozenset({"cache_control"}))
+        forget_cache_params(_anthropic_llm(), "claude-opus-5-5", params={"cache_control"})
         transport = build_direct_transport(_anthropic_llm(), "claude-opus-5-5", cache_settings=ON, cache_scope=SCOPE)
         assert transport._breakpoint is None
 

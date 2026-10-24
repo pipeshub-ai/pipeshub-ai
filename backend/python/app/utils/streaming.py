@@ -20,10 +20,11 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.transport.provider_conflicts import (
-    is_prompt_cache_param_conflict,
+    refused_cache_params,
 )
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
+    NoCacheStrategy,
     forget_cache_params,
     without_cache_markers,
 )
@@ -1135,7 +1136,7 @@ async def invoke_with_structured_output_and_reflection(
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
     prompt_cache: CacheStrategy | None = None,
-    on_cache_rejected: Callable[[], None] | None = None,
+    on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
     raise_unavailable: bool = False,
 ) -> SchemaT | None:
     """
@@ -1161,13 +1162,13 @@ async def invoke_with_structured_output_and_reflection(
         prompt_cache: The cache strategy ``messages`` were built with (its
             ``system`` block); its ``finalize`` is applied here. If the provider
             refuses a cache parameter or marker, that call (the first or a
-            reflection) is resent without any of them, in the kwargs or on the
-            messages, and so is every later call: the cache is off for this
-            model, as ``LangChainTransport`` falls back to no strategy.
-        on_cache_rejected: Called once when the provider refuses a cache
-            parameter. Pass the callback that records the refusal under the
-            identity the cache strategy was chosen with; by default it is
-            recorded for ``llm`` with no model name.
+            reflection) is resent without the ones the error names, in the
+            kwargs or on the messages, and so is every later call, as
+            ``LangChainTransport`` narrows its strategy.
+        on_cache_rejected: Called with the refused names each time the
+            provider refuses some. Pass the callback that records them under
+            the identity the cache strategy was chosen with; by default they
+            are recorded for ``llm`` with no model name.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1177,38 +1178,34 @@ async def invoke_with_structured_output_and_reflection(
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
     invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
-    kwargs: dict[str, Any] = {}
-    cache_params: frozenset[str] = frozenset()
-    if prompt_cache is not None:
-        messages, kwargs = prompt_cache.finalize(list(messages))
-        cache_params = prompt_cache.sent_params | frozenset(kwargs)
-    refused = False
+    cache = prompt_cache or NoCacheStrategy()
+    messages, kwargs = cache.finalize(list(messages))
+    sent = cache.sent_params | frozenset(kwargs)
+    dropped: frozenset[str] = frozenset()
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal refused
-        if refused:
-            return await _ainvoke_throttled(
-                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
-                provider=provider, call_timeout=call_timeout,
-            )
-        try:
-            return await _ainvoke_throttled(
-                llm_with_structured_output, request, config=invoke_config,
-                provider=provider, call_timeout=call_timeout, call_kwargs=kwargs,
-            )
-        except Exception as exc:
-            if not is_prompt_cache_param_conflict(exc, cache_params):
-                raise
-            logger.warning("Prompt-cache parameters rejected; resending without them: %s", exc)
-            if on_cache_rejected is not None:
-                on_cache_rejected()
-            else:
-                forget_cache_params(llm)
-            refused = True
-            return await _ainvoke_throttled(
-                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
-                provider=provider, call_timeout=call_timeout,
-            )
+        nonlocal cache, dropped
+        # Each refusal names a parameter this request still carries, and the
+        # resend drops it, so the loop ends.
+        while True:
+            try:
+                return await _ainvoke_throttled(
+                    llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
+                    config=invoke_config, provider=provider, call_timeout=call_timeout,
+                    call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
+                )
+            except Exception as exc:
+                refused = refused_cache_params(exc, sent - dropped)
+                if not refused:
+                    raise
+                logger.warning("Prompt-cache parameters %s rejected; resending without them: %s", sorted(refused), exc)
+                if on_cache_rejected is not None:
+                    on_cache_rejected(refused)
+                else:
+                    forget_cache_params(llm, params=refused)
+                # The strategy decides what goes with them: Anthropic's and Bedrock's markers stand or fall together.
+                cache = cache.without(refused)
+                dropped = sent - cache.sent_params
 
     try:
         response = await _call(messages)

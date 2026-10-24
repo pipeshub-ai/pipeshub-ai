@@ -27,7 +27,7 @@ from app.agents.agent_loop.prompt_cache.strategies import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from app.agents.agent_loop.prompt_cache.strategies import CacheStrategy
 
@@ -113,10 +113,12 @@ def family_cache_strategy(
 def forget_cache_params(
     chat_model: Any,  # noqa: ANN401 - any LangChain chat model
     model_name: str = "",
-    params: frozenset[str] | None = None,
+    *,
+    params: Iterable[str],
 ) -> None:
-    """Stop sending ``params`` (every cache parameter when None) to this model
-    and endpoint for the life of the process, after the provider refused them."""
+    """Stop sending ``params``, the cache parameters the provider refused, to
+    this model and endpoint for the life of the process. Required, so a
+    refusal of one parameter is never recorded as a refusal of every one."""
     target = cache_target(chat_model, model_name)
     REJECTED_CACHE_PARAMS.record(target.model, target.base_url, params)
 

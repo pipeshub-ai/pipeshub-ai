@@ -510,8 +510,8 @@ class LangChainTransport(LLMTransport):
         llm: BaseChatModel | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> AIMessage:
-        """One `ainvoke`, resent once without cache parameters if the provider
-        rejects one (the second pass has none, so it cannot loop)."""
+        """One `ainvoke`, resent without each cache parameter the provider
+        refuses (every pass sends fewer, so it cannot loop)."""
         while True:
             lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
             bound = self._bind_tools(tools, llm=llm, tool_choice=tool_choice)

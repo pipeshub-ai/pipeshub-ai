@@ -242,7 +242,9 @@ class RejectedCacheParams:
 
     def record(self, model: str | None, base_url: str | None, params: Iterable[str] | None = None) -> None:
         """``params`` names what was refused; None refuses every cache parameter."""
-        names = frozenset(name.lower() for name in params) if params else ALL_CACHE_PARAMS
+        names = ALL_CACHE_PARAMS if params is None else frozenset(name.lower() for name in params)
+        if not names:
+            return
         identity = _identity(model, base_url)
         with self._lock:
             self._refused[identity] = self._refused.get(identity, frozenset()) | names
