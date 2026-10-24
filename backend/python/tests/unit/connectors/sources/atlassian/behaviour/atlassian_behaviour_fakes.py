@@ -251,14 +251,11 @@ class FakeRecordsDb:
         )
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
-    def full_sync_running(self, connector_id: str) -> bool:
-        return self.full_sync
-
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
 
     def full_sync_running(self, connector_id: str) -> bool:
-        return getattr(self, "full_sync_seen", None) is not None
+        return self.full_sync or getattr(self, "full_sync_seen", None) is not None
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         if self.fail_group_listing:
