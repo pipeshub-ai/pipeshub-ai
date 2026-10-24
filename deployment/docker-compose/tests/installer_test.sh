@@ -566,8 +566,13 @@ echo "== In-tree installer: custom CA certificates (real functions + guards) =="
 eval "$(extract_fn collect_ca_certs "$INNER_INSTALLER")"
 eval "$(extract_fn write_ca_compose_file "$INNER_INSTALLER")"
 eval "$(extract_fn build_ca_bundle "$INNER_INSTALLER")"
+eval "$(extract_fn ca_bundle_is_current "$INNER_INSTALLER")"
+eval "$(extract_fn ensure_ca_bundle "$INNER_INSTALLER")"
+eval "$(grep -E '^CA_BUNDLE_PY=' "$INNER_INSTALLER")"
 (
   error() { :; }
+  # The structural checks below use placeholder certificates; parsing is tested apart.
+  pem_certs_parse() { return 0; }
   d="$TMP_ROOT/ca"; mkdir -p "$d"
   printf -- '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\r\n-----BEGIN CERTIFICATE-----\r\nROOT\r\n-----END CERTIFICATE-----\r\n' >"$d/root.pem"
   printf -- '-----BEGIN CERTIFICATE-----\nINTER\n-----END CERTIFICATE-----\n' >"$d/inter.pem"
@@ -595,7 +600,8 @@ eval "$(extract_fn build_ca_bundle "$INNER_INSTALLER")"
   check "compose mounts the certs read-only" "$compose" "./certs:/etc/pipeshub/certs:ro"
 
   cp "$d/out.pem" "$d/custom-ca.pem"
-  docker() { printf -- '-----BEGIN CERTIFICATE-----\nPUBLIC\n-----END CERTIFICATE-----\n'; }
+  # The image prints its public CAs, then the custom ones it was handed on stdin.
+  docker() { printf -- '-----BEGIN CERTIFICATE-----\nPUBLIC\n-----END CERTIFICATE-----\n\n'; cat; }
   if build_ca_bundle img "$d"; then pass "builds the bundle from the image"; else fail "builds the bundle from the image"; fi
   bundle="$(cat "$d/ca-bundle.pem")"
   check "bundle keeps the public CAs" "$bundle" "PUBLIC"
@@ -604,11 +610,38 @@ eval "$(extract_fn build_ca_bundle "$INNER_INSTALLER")"
   if build_ca_bundle img "$d"; then fail "reports an image it cannot read"; else pass "reports an image it cannot read"; fi
   check "a failed rebuild keeps the previous bundle" "$(cat "$d/ca-bundle.pem")" "PUBLIC"
   [[ -e "$d/ca-bundle.pem.tmp" ]] && fail "a failed rebuild leaves no temp file" || pass "a failed rebuild leaves no temp file"
+
+  info() { :; }; success() { :; }; warn() { :; }
+  die() { echo "DIE: $*"; exit 1; }
+  CA_COMPOSE_FILE="$d/compose.ca.yml"; CA_DIR="$d"
+  if ca_bundle_is_current "$d"; then pass "a bundle built from the custom CAs is current"; else fail "a bundle built from the custom CAs is current"; fi
+  if (ensure_ca_bundle img >/dev/null); then pass "an unreadable image keeps a current bundle"; else fail "an unreadable image keeps a current bundle"; fi
+  printf -- '-----BEGIN CERTIFICATE-----\nNEWCA\n-----END CERTIFICATE-----\n' >"$d/custom-ca.pem"
+  if ca_bundle_is_current "$d"; then fail "changed custom CAs make the bundle stale"; else pass "changed custom CAs make the bundle stale"; fi
+  stale="$(ensure_ca_bundle img)" && fail "a stale bundle is not used for changed CAs" || pass "a stale bundle is not used for changed CAs"
+  check "a stale bundle says why it stopped" "$stale" "previous ones"
 )
+
+if command -v openssl >/dev/null 2>&1; then
+  eval "$(extract_fn pem_certs_parse "$INNER_INSTALLER")"
+  (
+    d="$TMP_ROOT/ca-parse"; mkdir -p "$d"
+    openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=parse-ca -days 1 -keyout "$d/k.pem" -out "$d/real.pem" >/dev/null 2>&1
+    printf -- '-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----\n' >"$d/fake.pem"
+    cat "$d/real.pem" "$d/fake.pem" >"$d/mixed.pem"
+    if pem_certs_parse "$d/real.pem"; then pass "a real PEM certificate parses"; else fail "a real PEM certificate parses"; fi
+    if pem_certs_parse "$d/fake.pem"; then fail "a CERTIFICATE block with junk inside is refused"; else pass "a CERTIFICATE block with junk inside is refused"; fi
+    if pem_certs_parse "$d/mixed.pem"; then fail "one bad block among good ones is refused"; else pass "one bad block among good ones is refused"; fi
+  )
+fi
 check "--ca-cert flag is parsed" "$inner" 'CLI_CA_CERTS+=("$2")'
 check "--remove-ca-certs flag is parsed" "$inner" "FLAG_REMOVE_CA_CERTS=true"
 check "CA compose file is included while it exists" "$inner" 'COMPOSE_FILES+=(-f "$CA_COMPOSE_FILE")'
 check "bundle is built before the prebuilt start" "$inner" $'ensure_ca_bundle "$_APP_IMAGE"\n  info "Starting containers..."'
+check "--remove-ca-certs drops only the override before the restart" "$inner" $'elif $FLAG_REMOVE_CA_CERTS; then\n  # The running app still has the certificates mounted; they are deleted once\n  # it has been recreated without the override (remove_ca_files).\n  rm -f "$CA_COMPOSE_FILE"\n  success'
+check "the mounted certificates go once the app is back without them" "$inner" $'fi\nif $FLAG_REMOVE_CA_CERTS; then\n  remove_ca_files\nfi\n\n# ==============================================================================\n# 16. HEALTH WAIT'
+check "--print-env-only builds the bundle only from an image on this host" "$inner" $'if docker image inspect "$_ca_image" >/dev/null 2>&1; then\n      ensure_ca_bundle "$_ca_image"'
+check "--print-env-only prints the bundle step when the image is absent" "$inner" 'printf "\n  ${BOLD}%s${RESET}\n\n" "$_ca_bundle_step"'
 # Every compose call must carry the CA override, or the app starts without the CA.
 if grep -nE 'docker compose .*-f "\$COMPOSE_FILE"|^\s+-f "\$COMPOSE_FILE" \\' "$INNER_INSTALLER" >/dev/null; then
   fail "every compose call uses COMPOSE_FILES"

@@ -466,6 +466,17 @@ compose_app_exec() {
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" exec -T pipeshub-ai "$@"
 }
 
+# True when every CERTIFICATE block in the file parses. Without openssl on the
+# host this cannot be told here; the bundle build checks again inside the image.
+pem_certs_parse() { # args: file
+  command -v openssl >/dev/null 2>&1 || return 0
+  local want got
+  want="$(grep -c -- '-----BEGIN CERTIFICATE-----' "$1")"
+  got="$(openssl crl2pkcs7 -nocrl -certfile "$1" 2>/dev/null \
+    | openssl pkcs7 -print_certs -noout 2>/dev/null | grep -c '^subject=' || true)"
+  [[ "$want" == "$got" ]]
+}
+
 # Write the certificates from each file to out_file as PEM. Only CERTIFICATE
 # blocks are copied, so a key that shares the file never reaches the container.
 collect_ca_certs() { # args: out_file cert_file...
@@ -475,6 +486,10 @@ collect_ca_certs() { # args: out_file cert_file...
   for f in "$@"; do
     [[ -f "$f" && -r "$f" ]] || { error "CA certificate not found or not readable: $f"; return 1; }
     if grep -q -- '-----BEGIN CERTIFICATE-----' "$f"; then
+      if ! pem_certs_parse "$f"; then
+        error "$f has a CERTIFICATE block that is not a valid certificate."
+        return 1
+      fi
       awk '{sub(/\r$/, "")} /-----BEGIN CERTIFICATE-----/{p=1} p{print} /-----END CERTIFICATE-----/{p=0}' "$f" >>"$out"
     elif command -v openssl >/dev/null 2>&1 && openssl x509 -inform der -in "$f" -outform pem >>"$out" 2>/dev/null; then
       :
@@ -503,21 +518,37 @@ services:
 EOF
 }
 
+# Reads the custom CAs on stdin, refuses any the image's TLS stack cannot load,
+# and prints the image's public CA list followed by them.
+CA_BUNDLE_PY='import certifi, ssl, sys; custom = sys.stdin.read(); ssl.create_default_context().load_verify_locations(cadata=custom); sys.stdout.write(open(certifi.where()).read() + "\n" + custom)'
+
 # Rebuild ca_dir/ca-bundle.pem from the image's public CA list plus
 # ca_dir/custom-ca.pem, so an upgraded image's CA list is picked up too.
 build_ca_bundle() { # args: image ca_dir
   local image="$1" dir="$2"
   local tmp="$dir/ca-bundle.pem.tmp"
-  if ! docker run --rm --network none --entrypoint python3 "$image" \
-      -c 'import certifi, sys; sys.stdout.write(open(certifi.where()).read())' >"$tmp" 2>/dev/null \
+  if ! docker run --rm -i --network none --entrypoint python3 "$image" -c "$CA_BUNDLE_PY" \
+      <"$dir/custom-ca.pem" >"$tmp" 2>/dev/null \
       || ! grep -q -- '-----BEGIN CERTIFICATE-----' "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
-  printf '\n' >>"$tmp"
-  cat "$dir/custom-ca.pem" >>"$tmp"
   chmod 644 "$tmp"
   mv "$tmp" "$dir/ca-bundle.pem"
+}
+
+# True when ca_dir/ca-bundle.pem was built from the current custom-ca.pem: the
+# bundle ends with exactly those certificates.
+ca_bundle_is_current() { # args: ca_dir
+  local dir="$1" size
+  [[ -f "$dir/ca-bundle.pem" && -f "$dir/custom-ca.pem" ]] || return 1
+  size="$(wc -c <"$dir/custom-ca.pem" | tr -d ' ')"
+  tail -c "$size" "$dir/ca-bundle.pem" | cmp -s - "$dir/custom-ca.pem"
+}
+
+remove_ca_files() {
+  rm -f "$CA_DIR/custom-ca.pem" "$CA_DIR/ca-bundle.pem"
+  rmdir "$CA_DIR" 2>/dev/null || true
 }
 
 # Make sure the bundle the CA compose file points at exists before the app starts:
@@ -527,8 +558,10 @@ ensure_ca_bundle() { # args: image
   info "Building the CA bundle from $1 and the custom CAs in ${CA_DIR}..."
   if build_ca_bundle "$1" "$CA_DIR"; then
     success "CA bundle ready (${CA_DIR}/ca-bundle.pem)"
-  elif [[ -f "$CA_DIR/ca-bundle.pem" ]]; then
+  elif ca_bundle_is_current "$CA_DIR"; then
     warn "Could not rebuild the CA bundle; keeping the existing ${CA_DIR}/ca-bundle.pem."
+  elif [[ -f "$CA_DIR/ca-bundle.pem" ]]; then
+    die "Could not rebuild the CA bundle for the changed CA certificates, and the existing bundle holds the previous ones. Re-run once $1 is available, or run ./install.sh --remove-ca-certs."
   else
     die "Could not build the CA bundle: $1 is not available locally. Re-run once the image can be pulled, or run ./install.sh --remove-ca-certs."
   fi
@@ -759,9 +792,10 @@ if [[ ${#CLI_CA_CERTS[@]} -gt 0 ]]; then
   write_ca_compose_file "$CA_COMPOSE_FILE"
   success "Trusting $(grep -c -- '-----BEGIN CERTIFICATE-----' "$CA_DIR/custom-ca.pem") custom CA certificate(s) (${CA_DIR}/custom-ca.pem)"
 elif $FLAG_REMOVE_CA_CERTS; then
-  rm -f "$CA_COMPOSE_FILE" "$CA_DIR/custom-ca.pem" "$CA_DIR/ca-bundle.pem"
-  rmdir "$CA_DIR" 2>/dev/null || true
-  success "Removed the custom CA certificates; the app will use the default CA list."
+  # The running app still has the certificates mounted; they are deleted once
+  # it has been recreated without the override (remove_ca_files).
+  rm -f "$CA_COMPOSE_FILE"
+  success "Removed the custom CA certificates from the configuration; the app will use the default CA list."
 fi
 
 [[ -f "$CA_COMPOSE_FILE" ]] && COMPOSE_FILES+=(-f "$CA_COMPOSE_FILE")
@@ -1737,10 +1771,24 @@ fi
 
 # --print-env-only: show the compose command and exit
 if $FLAG_PRINT_ENV_ONLY; then
-  ensure_ca_bundle "${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"
+  _ca_image="${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"
+  _ca_bundle_step=""
+  if [[ -f "$CA_COMPOSE_FILE" ]] && ! ca_bundle_is_current "$CA_DIR"; then
+    if docker image inspect "$_ca_image" >/dev/null 2>&1; then
+      ensure_ca_bundle "$_ca_image"
+    else
+      # This mode starts nothing, so it does not pull either; the bundle is
+      # built by the printed command once the image is on this host.
+      _ca_bundle_step="docker run --rm -i --network none --entrypoint python3 ${_ca_image} -c '${CA_BUNDLE_PY}' <${CA_DIR}/custom-ca.pem >${CA_DIR}/ca-bundle.pem"
+    fi
+  fi
   _build_flag=""
   [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _build_flag=" --build"
   printf "\n"
+  if [[ -n "$_ca_bundle_step" ]]; then
+    warn "${_ca_image} is not on this host, so the CA bundle is not built yet. Once the image is pulled or loaded, build it first:"
+    printf "\n  ${BOLD}%s${RESET}\n\n" "$_ca_bundle_step"
+  fi
   info "Run the following to start PipesHub:"
   printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose %s -p %s up -d%s${RESET}\n\n" \
     "${COMPOSE_PROFILES:-}" "$_COMPOSE_FILES_DISPLAY" "$PROJECT_NAME" "$_build_flag"
@@ -2055,6 +2103,9 @@ elif $_CA_CHANGED; then
       up -d --force-recreate --no-deps pipeshub-ai; then
     die "Failed to recreate pipeshub-ai with the new CA certificates."
   fi
+fi
+if $FLAG_REMOVE_CA_CERTS; then
+  remove_ca_files
 fi
 
 # ==============================================================================
