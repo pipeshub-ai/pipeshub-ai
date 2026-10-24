@@ -42,7 +42,7 @@ from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E40
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]  # noqa: E402
     ConfluenceDataSource,
 )
-from app.config.constants.arangodb import PermissionModel  # noqa: E402
+from app.config.constants.arangodb import MimeTypes, PermissionModel  # noqa: E402
 from helper.assertions import (  # noqa: E402
     ConnectorAssertions,
     RecordAssertion,
@@ -110,7 +110,7 @@ class TestConfluenceValidation:
         expected = RecordAssertion(
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             record_name=page_item.title,
             external_record_group_id=space_id,
         )
@@ -703,17 +703,15 @@ class TestConfluenceStream:
         
         # Verify response
         assert response.status_code == 200
-        assert "text/html" in response.headers.get("content-type", "").lower()
-        
-        # Read some content
+        assert MimeTypes.BLOCKS.value in response.headers.get("content-type", "").lower()
+
+        # Pages stream as a blocks document (JSON), their comments included.
         content_chunk = next(response.iter_content(chunk_size=1024))
-        assert len(content_chunk) > 0, "Should have received content"
-        # Content is now in HTML format
-        assert b"<" in content_chunk or b"<!DOCTYPE" in content_chunk.upper(), (
-            "Content should be HTML format"
+        assert content_chunk.lstrip().startswith(b"{"), (
+            f"Content should be a blocks JSON document, got {content_chunk[:80]!r}"
         )
-        
-        logger.info("✅ TC-CF-052: Page content streamed successfully (HTML format)")
+
+        logger.info("✅ TC-CF-052: Page content streamed successfully (blocks)")
 
 
 @pytest.mark.integration
