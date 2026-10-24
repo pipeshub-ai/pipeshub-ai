@@ -28,6 +28,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 ARANGO_DB = "kb_role_through_team_it"
+# Ranked above OWNER by the hub's record and record-group role maps.
+UNKNOWN_ROLE = "ADMIN"
 MEMBER_ROLES = ("OWNER", "WRITER", "READER")
 
 logger = logging.getLogger("kb-role-through-team-it")
@@ -66,6 +69,9 @@ class _Org:
     shared_folder: str
     granted_folder: str
     legacy_group: str  # a record group a role-less team edge points at
+    odd_member: _Member  # holds a team role the product never writes
+    odd_folder: str  # in shared_kb; a team edge with a role the product never writes points at it
+    odd_roles_stored: bool  # ArangoDB's permissions schema refuses them; Neo4j edges have no schema
 
 
 async def _remove(graph: IGraphDBProvider, ids: dict[str, list[str]]) -> None:
@@ -99,13 +105,14 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         owner = _Member(f"ckey-kbteam-{run}", f"creator-kbteam-{run}")
         members = {role: _Member(f"{role.lower()}key-kbteam-{run}", f"{role.lower()}-kbteam-{run}")
                    for role in MEMBER_ROLES}
+        odd_member = _Member(f"oddkey-kbteam-{run}", f"odd-kbteam-{run}")
         team_key = f"team-kbteam-{run}"
         group_key = f"rg-kbteam-{run}"
         users, teams, apps, groups = (CollectionNames.USERS.value, CollectionNames.TEAMS.value,
                                       CollectionNames.APPS.value, CollectionNames.RECORD_GROUPS.value)
         seeded: dict[str, list[str]] = {
             CollectionNames.ORGS.value: [org_id],
-            users: [owner.key, *(m.key for m in members.values())],
+            users: [owner.key, odd_member.key, *(m.key for m in members.values())],
             teams: [team_key],
             groups: [group_key],
             apps: [],
@@ -119,7 +126,7 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         )
         assert await graph.batch_upsert_nodes(
             [{"_key": m.key, "userId": m.user_id, "orgId": org_id, "email": f"{m.user_id}@example.com",
-              "isActive": True} for m in (owner, *members.values())],
+              "isActive": True} for m in (owner, odd_member, *members.values())],
             users,
         )
         assert await graph.batch_upsert_nodes(
@@ -163,6 +170,10 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
             CollectionNames.PERMISSION.value,
         )
 
+        odd_folder = await service.create_folder_in_kb(kbs["shared"], "odd", owner.user_id, org_id)
+        assert odd_folder and odd_folder.get("success") is not False, odd_folder
+        seeded[CollectionNames.RECORDS.value].append(odd_folder["id"])
+
         # A knowledge base from before the KB apps migration: its team edge points at a record group.
         assert await graph.batch_upsert_nodes(
             [{"_key": group_key, "orgId": org_id, "groupName": "legacy kb", "externalGroupId": group_key,
@@ -176,9 +187,19 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
              _edge(team_key, teams, folders["granted"], CollectionNames.RECORDS.value, now, type="TEAM")],
             CollectionNames.PERMISSION.value,
         )
+        try:
+            odd_roles_stored = bool(await graph.batch_create_edges(
+                [_edge(odd_member.key, users, team_key, teams, now, type="USER", role=UNKNOWN_ROLE),
+                 _edge(team_key, teams, odd_folder["id"], CollectionNames.RECORDS.value, now, type="TEAM",
+                       role=UNKNOWN_ROLE)],
+                CollectionNames.PERMISSION.value,
+            ))
+        except Exception:
+            odd_roles_stored = False
 
         yield _Org(graph, service, org_id, owner, members, kbs["shared"], kbs["granted"],
-                   folders["shared"], folders["granted"], group_key)
+                   folders["shared"], folders["granted"], group_key, odd_member, odd_folder["id"],
+                   odd_roles_stored)
 
 
 # Team role -> the role the team's grant gives them.
@@ -260,4 +281,38 @@ async def test_hub_permissions_read_the_role_the_team_grant_gives(org: _Org) -> 
     assert (on_shared["role"], on_shared["canManagePermissions"]) == ("WRITER", False), on_shared
     assert (on_granted["role"], on_granted["canUpload"]) == ("READER", False), on_granted
     assert (on_group["role"], on_group["canManagePermissions"]) == ("WRITER", False), on_group
+    assert (on_record["role"], on_record["canManagePermissions"]) == ("WRITER", False), on_record
+
+
+async def test_the_kb_list_counts_and_filters_by_the_role_the_team_grant_gives(org: _Org) -> None:
+    team_owner = org.members["OWNER"]
+
+    writable = await org.service.list_user_knowledge_bases(
+        user_id=team_owner.user_id, org_id=org.org_id, page=1, limit=50, search=None, permissions=["WRITER"],
+    )
+    owned = await org.service.list_user_knowledge_bases(
+        user_id=team_owner.user_id, org_id=org.org_id, page=1, limit=50, search=None, permissions=["OWNER"],
+    )
+
+    assert [kb["id"] for kb in writable["knowledgeBases"]] == [org.shared_kb], writable
+    assert writable["pagination"]["totalCount"] == 1, writable["pagination"]
+    assert set(writable["filters"]["available"]["permissions"]) == {"WRITER", "READER"}, writable["filters"]
+    assert owned["knowledgeBases"] == [] and owned["pagination"]["totalCount"] == 0, owned
+
+
+async def test_a_role_the_product_never_writes_gives_no_role(org: _Org) -> None:
+    if not org.odd_roles_stored:
+        assert isinstance(org.graph, ArangoHTTPProvider), "only ArangoDB's schema refuses an unknown role"
+        return
+    assert await org.graph.get_user_kb_permission(org.shared_kb, org.odd_member.key) is None
+    listed = await org.service.list_user_knowledge_bases(
+        user_id=org.odd_member.user_id, org_id=org.org_id, page=1, limit=50, search=None,
+    )
+    # The grant's own role still reaches every member, whatever their team role.
+    assert {kb["id"]: kb["userRole"] for kb in listed["knowledgeBases"]} == {org.granted_kb: "READER"}, listed
+    assert listed["pagination"]["totalCount"] == 1, listed["pagination"]
+    assert listed["filters"]["available"]["permissions"] == ["READER"], listed["filters"]
+
+    on_record = await org.graph.get_knowledge_hub_context_permissions(
+        org.members["OWNER"].key, org.org_id, org.odd_folder, parent_type="folder")
     assert (on_record["role"], on_record["canManagePermissions"]) == ("WRITER", False), on_record

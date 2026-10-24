@@ -14133,12 +14133,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }}
                 )
 
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@count_permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
-                        LET kb = DOCUMENT(kb_team_perm._to)
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@count_permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant.type == "TEAM"
+                        FILTER STARTS_WITH(team_grant._to, "apps/")
+                        LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                        FILTER team_role != null
+                        LET kb = DOCUMENT(team_grant._to)
                         FILTER kb != null
                         FILTER kb.orgId == @count_org_id
                         FILTER kb.type == @count_kb_type
@@ -14146,8 +14148,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                         RETURN {{
                             kb_id: kb._key,
-                            role: team_info.role,
-                            priority: team_info.priority,
+                            role: team_role,
+                            priority: @count_role_priority[team_role] || 0,
                             is_direct: false
                         }}
             )
@@ -14204,21 +14206,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }
                 )
 
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@filters_permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
-                        LET kb = DOCUMENT(kb_team_perm._to)
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@filters_permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant.type == "TEAM"
+                        FILTER STARTS_WITH(team_grant._to, "apps/")
+                        LET team_role = __TEAM_GRANT_ROLE__
+                        FILTER team_role != null
+                        LET kb = DOCUMENT(team_grant._to)
                         FILTER kb != null
                         FILTER kb.orgId == @filters_org_id
                         FILTER kb.type == @filters_kb_type
                         FILTER kb.isHidden != true
                         RETURN {
                             kb_id: kb._key,
-                            permission: team_info.role,
+                            permission: team_role,
                             kb_name: kb.name,
-                            priority: team_info.priority,
+                            priority: @filters_role_priority[team_role] || 0,
                             is_direct: false
                         }
             )
@@ -14237,7 +14241,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     permission: FIRST(sorted_roles),
                     kb_name: FIRST(roles).kb_name
                 }
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_AQL)
 
             main_bind_vars: dict[str, Any] = {
                 "user_from": f"users/{user_id}",

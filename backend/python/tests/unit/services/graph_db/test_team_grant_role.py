@@ -55,6 +55,13 @@ class TestTheRule:
         assert re.search(r'team_grant\.role != null AND team_grant\.role != ""\) \? team_grant\.role '
                          r": team_member\.role", AQL_RULE)
 
+    def test_any_other_role_reads_as_no_role(self) -> None:
+        assert CYPHER_RULE.endswith("IN ['OWNER', 'WRITER', 'READER'] THEN (CASE WHEN team_grant.role IS NOT NULL "
+                                    "AND team_grant.role <> '' THEN team_grant.role ELSE team_member.role END) "
+                                    "ELSE null END)")
+        assert AQL_RULE.endswith('IN ["OWNER", "WRITER", "READER"] ? ((team_grant.role != null AND '
+                                 'team_grant.role != "") ? team_grant.role : team_member.role) : null)))')
+
     def test_a_retired_role_reads_as_reader(self) -> None:
         assert "'COMMENTER'" in CYPHER_RULE and "THEN 'READER'" in CYPHER_RULE
         assert '"COMMENTER"' in AQL_RULE and '? "READER"' in AQL_RULE
@@ -94,12 +101,14 @@ class TestArangoPaths:
         assert "role: team_info.role" not in query
 
     @pytest.mark.asyncio
-    async def test_kb_list(self, arango: ArangoHTTPProvider) -> None:
-        await arango.list_user_knowledge_bases("u1", "o1", 0, 10)
+    async def test_kb_list_page_count_and_filters(self, arango: ArangoHTTPProvider) -> None:
+        await arango.list_user_knowledge_bases("u1", "o1", 0, 10, permissions=["WRITER"])
 
-        query = arango.http_client.execute_aql.await_args_list[0].args[0]
-        assert f"LET team_role = {AQL_RULE}" in query
-        assert "role: team_role," in query
+        queries = [call.args[0] for call in arango.http_client.execute_aql.await_args_list]
+        assert len(queries) == 3
+        for query in queries:
+            assert f"LET team_role = {AQL_RULE}" in query
+            assert "team_info" not in query
 
     @pytest.mark.parametrize("node_type", ["record", "recordGroup", "app"])
     def test_hub_roles(self, arango: ArangoHTTPProvider, node_type: str) -> None:

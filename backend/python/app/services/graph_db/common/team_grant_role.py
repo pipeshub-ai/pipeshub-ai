@@ -6,7 +6,9 @@ The share dialog writes team grants without a role ("teams do not have share rol
 such a grant gives each member their team role. Either way a team never makes anyone an
 owner: a team OWNER (the oldest user of every org owns its "All" team) would otherwise own
 every knowledge base shared with the team and could share it on or delete it, and the
-owner guards count direct grants only.
+owner guards count direct grants only. Any other role reads as no role: the hub's role
+maps rank ADMIN and EDITOR above WRITER, and nothing validates a member role written
+straight to the team edge.
 
 Both backends build the expression here so the rule has one definition.
 """
@@ -14,9 +16,12 @@ Both backends build the expression here so the rule has one definition.
 from app.models.permission import RETIRED_ROLES
 
 TEAM_GRANT_ROLE_CAP = "WRITER"
+TEAM_GRANT_ROLES = ("OWNER", "WRITER", "READER")
 
 _RETIRED_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES)) + "]"
 _RETIRED_AQL = "[" + ", ".join(f'"{r}"' for r in sorted(RETIRED_ROLES)) + "]"
+_GRANT_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in TEAM_GRANT_ROLES) + "]"
+_GRANT_ROLES_AQL = "[" + ", ".join(f'"{r}"' for r in TEAM_GRANT_ROLES) + "]"
 
 
 def cypher_team_grant_role(grant_var: str, member_var: str) -> str:
@@ -31,7 +36,7 @@ def cypher_team_grant_role(grant_var: str, member_var: str) -> str:
     return (
         f"(CASE WHEN {base} = 'OWNER' THEN '{TEAM_GRANT_ROLE_CAP}' "
         f"WHEN {base} IN {_RETIRED_CYPHER} THEN 'READER' "
-        f"WHEN {base} = '' THEN null ELSE {base} END)"
+        f"WHEN {base} IN {_GRANT_ROLES_CYPHER} THEN {base} ELSE null END)"
     )
 
 
@@ -44,5 +49,5 @@ def aql_team_grant_role(grant_var: str, member_var: str) -> str:
     return (
         f'({base} == "OWNER" ? "{TEAM_GRANT_ROLE_CAP}" '
         f': ({base} IN {_RETIRED_AQL} ? "READER" '
-        f': ({base} == "" ? null : {base})))'
+        f": ({base} IN {_GRANT_ROLES_AQL} ? {base} : null)))"
     )
