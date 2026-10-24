@@ -85,6 +85,10 @@ class TestDeploymentRule:
             ("sneaky.example", "168.63.129.16"),
             ("sneaky.example", "0.0.0.0"),
             ("sneaky.example", "::ffff:169.254.169.254"),
+            # Loopback carried inside IPv6: mapped, 6to4, and Teredo (client 127.0.0.1, stored inverted).
+            ("sneaky.example", "::ffff:127.0.0.1"),
+            ("sneaky.example", "2002:7f00:1::1"),
+            ("sneaky.example", "2001:0:808:808::80ff:fffe"),
             ("127.0.0.1", "127.0.0.1"),
             ("169.254.169.254", "169.254.169.254"),
             ("localhost", "127.0.0.1"),
@@ -273,7 +277,9 @@ class TestRequestsAdapter:
             assert session.get("https://gitlab.corp/api/v4/version").status_code == 200
         assert sent == [("10.0.0.7", "gitlab.corp")]
 
-    @pytest.mark.parametrize("address", ["127.0.0.1", "169.254.169.254", "fd00:ec2::254"])
+    @pytest.mark.parametrize(
+        "address", ["127.0.0.1", "169.254.169.254", "fd00:ec2::254", "2002:7f00:1::1", "2001:0:808:808::80ff:fffe"],
+    )
     def test_this_server_and_metadata_are_refused(self, monkeypatch: pytest.MonkeyPatch, address: str) -> None:
         monkeypatch.delenv(PRIVATE_ADDRESS_SWITCH_ENV, raising=False)
         session, sent = self._session()
