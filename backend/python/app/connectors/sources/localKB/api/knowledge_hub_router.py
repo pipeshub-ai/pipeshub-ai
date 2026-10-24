@@ -506,12 +506,15 @@ async def _handle_get_nodes(
             "cursor": cursor,
             "is_org_admin": is_request_admin(request),
         }
-        if parent_id is None and connection_limit(request.state.user) is not None:
+        limit_sources = connection_limit(request.state.user)
+        if parent_id is None and limit_sources is not None:
             result = await _root_inside_connection(
                 request, knowledge_hub_service, query, bounded=bounded, params=listing_params,
             )
         else:
             result = await knowledge_hub_service.get_nodes(**query)
+        if limit_sources is not None:
+            _offer_whole_apps_only(result, limit_sources.get("apps") or [])
 
         if not result.success:
             # The service flags what it wrote for a person with a 4xx code (a node
@@ -646,17 +649,20 @@ async def _root_inside_connection(
     else:
         offset = seen if cursor else (query["page"] - 1) * query["limit"]
         response = await _named_root(request, service, query, whole | partial, offset=offset, params=params)
-    return _offer_whole_apps_only(response, whole)
-
-
-def _offer_whole_apps_only(response: KnowledgeHubNodesResponse, whole: frozenset) -> KnowledgeHubNodesResponse:
-    """The listing is read over every app the limit touches, but an app it
-    covers only in part is not named, here as nowhere else: its filter option
-    carries the app's or collection's own name."""
-    available = response.filters.available if response.filters else None
-    if available is not None:
-        available.connectors = [option for option in available.connectors if option.id in whole]
     return response
+
+
+def _offer_whole_apps_only(response: Any, whole_apps: list[str]) -> None:
+    """A filter option carries its app's or collection's own name, so a
+    connected app with a limit is offered only those its limit covers whole:
+    not one it covers in part, nor one outside it. The root listing is read
+    over every app the limit touches, and a node below it over the user's
+    whole gate."""
+    filters = getattr(response, "filters", None)
+    available = filters.available if filters is not None else None
+    if available is not None:
+        whole = set(whole_apps)
+        available.connectors = [option for option in available.connectors if option.id in whole]
 
 
 def _admits(item: NodeItem, query: dict[str, Any]) -> bool:

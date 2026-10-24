@@ -563,6 +563,20 @@ class TestTheFilterMenu:
     async def test_an_unlimited_token_is_offered_every_source(self, q) -> None:
         assert await self._offered(None, q) == ["kb-big", "kb-other"]
 
+    @staticmethod
+    async def _offered_below(limit: dict | None, parent_id: str, parent_type: str) -> list[str]:
+        result = await _nodes(_graph(), limit, parent_id=parent_id, parent_type=parent_type, include="availableFilters")
+        return [option.id for option in result.filters.available.connectors]
+
+    async def test_a_folder_opened_under_a_folder_limit_offers_no_collection(self) -> None:
+        assert await self._offered_below(FOLDER_LIMIT, FOLDER, "folder") == []
+
+    async def test_a_folder_opened_under_a_whole_app_limit_offers_only_that_app(self) -> None:
+        assert await self._offered_below(APP_LIMIT, FOLDER, "folder") == ["kb-big"]
+
+    async def test_a_folder_opened_without_a_limit_offers_every_source(self) -> None:
+        assert await self._offered_below(None, FOLDER, "folder") == ["kb-big", "kb-other"]
+
 
 class TestTheBoundedCursor:
     def test_it_round_trips(self) -> None:
