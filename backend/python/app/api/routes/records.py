@@ -23,6 +23,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.retrieval.selection_scope import within_connection
+from app.utils.chat_helpers import accessible_node_ids
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
     _fetch_thread_records_impl,
@@ -47,17 +48,17 @@ router = APIRouter()
 _MAX_QUERY_CHARS = 2_000
 
 
-async def _check_access(request: Request, graph_provider: Any, record_id: str) -> None:  # noqa: ANN401
+async def _check_access(request: Request, graph_provider: Any, record_id: str) -> set[str]:  # noqa: ANN401
     """The same gate as the connector service's content route: no access is a
-    403, a switched-off demo record a 404."""
+    403, a switched-off demo record a 404. Returns the accessible ids, for the
+    fetch to reuse."""
     container: QueryAppContainer = request.app.container
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
-        if not await graph_provider.check_record_access_with_details(
-            user_id=user_id, org_id=org_id, record_id=record_id,
-        ):
+        accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
+        if record_id not in accessible:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
@@ -74,6 +75,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
         if hidden:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+        return accessible
     except HTTPException:
         raise
     except Exception as exc:
@@ -127,7 +129,7 @@ async def read_record_content(
     org_id = request.state.user.get("orgId")
     graph_provider = await container.graph_provider()
 
-    await _check_access(request, graph_provider, record_id)
+    accessible = await _check_access(request, graph_provider, record_id)
     blob_store = await container.blob_store()
 
     if mode == "thread":
@@ -221,6 +223,7 @@ async def read_record_content(
             blob_store=blob_store,
             org_id=org_id,
             user_id=user_id,
+            accessible=accessible,
         )
     except Exception as exc:
         logger.error("Error fetching record content for %s: %s", record_id, exc, exc_info=True)

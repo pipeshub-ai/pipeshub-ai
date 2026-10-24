@@ -32,6 +32,7 @@ import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 import { downloadCode } from '../../utils/code-download';
 import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
+import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-label';
 
 /**
  * rehype-sanitize schema.
@@ -1162,21 +1163,24 @@ export function createMarkdownComponents(
     img: ({ src, alt }: { src?: string; alt?: string }) => (
       <MarkdownImage src={src} alt={alt} />
     ),
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-      <a
-        href={href ? withCurrentOrgId(href) : href}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: 'var(--accent-11)',
-          textDecoration: 'underline',
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      // A pasted or autolinked URL reads as its short name (#123 for a pull request); written link text is kept.
+      const raw = href && typeof children === 'string' && isRawUrlText(children, href);
+      return (
+        <a
+          href={href ? withCurrentOrgId(href) : href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={raw ? href : undefined}
           // Inherit so links in headings keep heading size (not body font-size-2).
-          fontSize: 'inherit',
-        }}
-      >
-        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
-      </a>
-    ),
+          style={{ ...CHAT_LINK_STYLE, fontSize: 'inherit' }}
+        >
+          {raw
+            ? shortLinkLabel(href)
+            : processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
+        </a>
+      );
+    },
     table: ({ children, node }: { children?: React.ReactNode; node?: TableNode }) => (
       <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(tableNodeToRows(node))}>
         <Box

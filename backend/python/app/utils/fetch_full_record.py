@@ -375,6 +375,7 @@ async def _fetch_multiple_records_impl(
     blob_store: BlobStorage | None = None,
     org_id: str | None = None,
     user_id: str | None = None,
+    accessible: set[str] | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -388,7 +389,8 @@ async def _fetch_multiple_records_impl(
     3. Enrich with FK relations if SQL_TABLE
 
     Without `user_id` the check cannot run, so the id-resolution path is
-    skipped entirely rather than served unchecked.
+    skipped entirely rather than served unchecked. A caller that already ran
+    the check passes its answer as `accessible`, so it is not asked twice.
 
     Returns:
     {
@@ -414,8 +416,7 @@ async def _fetch_multiple_records_impl(
 
     config_service = graph_provider.config_service if graph_provider else None
 
-    accessible: set[str] | None = None
-    if graph_provider is not None:
+    if accessible is None and graph_provider is not None:
         try:
             accessible = await accessible_node_ids(
                 graph_provider, set(record_ids), user_id or "", org_id or "",

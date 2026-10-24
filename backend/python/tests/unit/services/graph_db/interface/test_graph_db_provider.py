@@ -203,6 +203,8 @@ class TestAbstractMethodInventory:
         "stage_state_compare_and_set",
         "stage_states_stale",
         "stage_states_delete_for_virtual_records",
+        "get_stage_states_with_records",
+        "get_record_content_revs",
         "compare_and_set_record_fields",
         "delete_nodes",
         "update_node",

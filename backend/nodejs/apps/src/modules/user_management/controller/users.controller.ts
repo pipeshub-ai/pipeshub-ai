@@ -683,9 +683,13 @@ export class UserController {
         throw new ForbiddenError(USER_LOOKUP_EMAIL_MISMATCH_MESSAGE);
       }
 
+      const tokenOrgId = (req as { tokenPayload?: { orgId?: string } })
+        .tokenPayload?.orgId;
+
       const users = await Users.find({
         email: tokenEmail.toLowerCase(),
         isDeleted: false,
+        ...(tokenOrgId ? { orgId: tokenOrgId } : {}),
       })
         .select(USER_LOOKUP_FIELDS)
         .lean()

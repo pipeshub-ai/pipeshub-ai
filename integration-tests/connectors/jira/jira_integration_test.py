@@ -281,6 +281,21 @@ def _pk(operator: str, values: list[str]) -> dict[str, Any]:
     return {"operator": operator, "type": "list", "value": values}
 
 
+# No issue on the simulator pack or the IT site was created before 2000-01-01.
+_BEFORE_ANY_ISSUE_MS = 946_684_800_000
+
+
+def _no_issues() -> dict[str, Any]:
+    """A ``created`` filter no issue passes, for tests that assert on projects only.
+
+    ``not_in [primary]`` and an empty key list scope every visible project. On the
+    simulator that is about 25,000 issues: a full sync of over four minutes on Neo4j and
+    longer on ArangoDB, so both tests ran past the 300s wait. A project becomes a
+    RecordGroup before any of its issues is read, so those assertions never needed them.
+    """
+    return {"type": "datetime", "operator": "is_before", "value": {"start": None, "end": _BEFORE_ANY_ISSUE_MS}}
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.jira,
@@ -1146,7 +1161,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("not_in", [primary_key])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("not_in", [primary_key]), created=_no_issues()),
         )
         primary_rg = await graph_provider.get_record_group_by_external_id(
             connector_id, project_id_by_key[primary_key],
@@ -1294,7 +1310,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("in", []), created=_no_issues()),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs >= len(keys), f"empty=all should sync ≥ {len(keys)} RecordGroups, got {rgs}"

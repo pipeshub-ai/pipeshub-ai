@@ -56,7 +56,7 @@ class TestSearchQueryModel:
     def test_valid_query_minimal(self):
         sq = SearchQuery(query="hello world")
         assert sq.query == "hello world"
-        assert sq.limit == 5
+        assert sq.limit == 10
         assert sq.filters == {}
 
     def test_valid_query_with_all_fields(self):
@@ -72,6 +72,11 @@ class TestSearchQueryModel:
     def test_limit_none_uses_default(self):
         sq = SearchQuery(query="q", limit=None)
         assert sq.limit is None
+
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_limit_out_of_range_raises(self, limit) -> None:
+        with pytest.raises(ValidationError):
+            SearchQuery(query="q", limit=limit)
 
     def test_filters_none(self):
         sq = SearchQuery(query="q", filters=None)
@@ -515,7 +520,7 @@ class TestSearchEndpoint:
             return_value={"searchResults": [], "status_code": 200}
         )
         mock_graph = MagicMock()
-        body = SearchQuery(query="q", limit=7, filters={"type": ["file"]})
+        body = SearchQuery(query="q", limit=7, filters={"records": ["file"]})
 
         with patch(
             "app.api.routes.search.setup_query_transformation"
@@ -537,7 +542,7 @@ class TestSearchEndpoint:
         assert call_kwargs["user_id"] == "u42"
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
-        assert call_kwargs["filter_groups"] == {"type": ["file"]}
+        assert call_kwargs["filter_groups"] == {"records": ["file"]}
         assert call_kwargs["time_range"] is None
 
     async def _search_with(self, body: SearchQuery) -> MagicMock:
@@ -646,6 +651,77 @@ def _content_filter_error() -> openai.BadRequestError:
         response=response,
         body={"error": {"code": "invalid_prompt", "message": FILTER_MESSAGE}},
     )
+
+
+def _hits(n_records: int, per_record: int) -> dict:
+    """A retrieval response of ``n_records * per_record`` passages, best first."""
+    hits = [
+        {"content": f"r{r}p{p}", "score": 1.0 - (r * per_record + p) / 1000,
+         "metadata": {"recordId": f"rec{r}"}}
+        for r in range(n_records) for p in range(per_record)
+    ]
+    return {
+        "searchResults": hits,
+        "records": [{"_key": f"rec{r}"} for r in range(n_records)],
+        "virtual_to_record_map": {f"v{r}": {"_key": f"rec{r}"} for r in range(n_records)},
+        "status_code": 200,
+    }
+
+
+class TestSearchHonoursLimit:
+    """`limit` caps `searchResults` however many queries and expansions ran."""
+
+    async def _run(self, body: SearchQuery, response: dict) -> dict:
+        request = MagicMock()
+        request.state.user = {"userId": "u", "orgId": "o"}
+        request.app.container.logger.return_value = MagicMock()
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value=response)
+        chain = lambda v: MagicMock(ainvoke=AsyncMock(return_value=v))  # noqa: E731
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            # Rewrite plus three expansions: four queries, each adding hits.
+            setup.return_value = (chain("rewritten"), chain("e1\ne2\ne3"))
+            res = await search(request=request, body=body, retrieval_service=retrieval, graph_provider=MagicMock())
+        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 4
+        return json.loads(res.body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, 10, 50])
+    async def test_response_never_exceeds_limit(self, limit) -> None:
+        out = await self._run(SearchQuery(query="q", limit=limit), _hits(40, 3))
+        assert len(out["searchResults"]) == min(limit, 120)
+        kept = {h["metadata"]["recordId"] for h in out["searchResults"]}
+        assert {r["_key"] for r in out["records"]} == kept
+        assert {r["_key"] for r in out["virtual_to_record_map"].values()} == kept
+
+    @pytest.mark.asyncio
+    async def test_default_limit_applies_when_omitted(self) -> None:
+        out = await self._run(SearchQuery(query="q"), _hits(40, 3))
+        assert len(out["searchResults"]) == 10
+
+    @pytest.mark.asyncio
+    async def test_ranking_is_kept_and_cut_passages_are_counted(self) -> None:
+        out = await self._run(SearchQuery(query="q", limit=2), _hits(1, 5))
+        assert [h["content"] for h in out["searchResults"]] == ["r0p0", "r0p1"]
+        assert out["omittedPassages"] == {"rec0": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_cut_inside_a_section_keeps_the_match_before_its_context(self) -> None:
+        # One expanded section: equal scores, neighbours listed before the match.
+        hits = [
+            {"content": f"p{i}", "score": 0.5, "distanceFromMatch": d, "metadata": {"recordId": "rec0"}}
+            for i, d in enumerate([2, 1, 0, 1, 2])
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "rec0"}], "status_code": 200}
+        for limit, expected in [(1, ["p2"]), (3, ["p2", "p1", "p3"])]:
+            out = await self._run(SearchQuery(query="q", limit=limit), {**response, "searchResults": list(hits)})
+            assert [h["content"] for h in out["searchResults"]] == expected
+
+    @pytest.mark.asyncio
+    async def test_fewer_hits_than_limit_are_untouched(self) -> None:
+        response = _hits(2, 2)
+        out = await self._run(SearchQuery(query="q", limit=10), response)
+        assert len(out["searchResults"]) == 4 and "omittedPassages" not in out
 
 
 class TestSearchSurvivesQueryTransformationFailure:

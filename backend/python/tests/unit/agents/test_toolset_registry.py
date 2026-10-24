@@ -20,6 +20,19 @@ def _fresh_registry():
     return ToolsetRegistry()
 
 
+@pytest.fixture(autouse=True)
+def _restore_registry_singleton() -> typing.Iterator[None]:
+    """Put the process-wide registry back after each test.
+
+    Otherwise every later test file in the same process sees this file's fake
+    toolsets, e.g. prompt-size checks that render the toolset list.
+    """
+    from app.agents.registry.toolset_registry import ToolsetRegistry
+    original = ToolsetRegistry._instance
+    yield
+    ToolsetRegistry._instance = original
+
+
 # ---------------------------------------------------------------------------
 # Toolset decorator
 # ---------------------------------------------------------------------------

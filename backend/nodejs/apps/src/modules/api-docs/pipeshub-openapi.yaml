@@ -17,7 +17,7 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
-    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator** and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the application's **token identity** — the service account it is pointed at (`tokenIdentityUserId`), or its creator for an application registered before that was required and never bound, and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -74,11 +74,13 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It loads the application by **`client_id`** on every such token and takes the identity from that record.
 
-      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic (which may still equal **`client_id`** for machine tokens).
+      The JWT's **`createdBy`** claim is a cross-check rather than a source: despite its name it carries the identity, not who registered the application, and a token whose claim disagrees with the record is refused with **401**. Pointing an application at a different service account also revokes the tokens it has already issued, so a stale claim should not arrive in the first place.
 
-      **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
+      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic. Where a machine token carries **`userId === client_id`** and a **`createdBy`** claim, Python copies that claim onto **`userId`** first, so both halves of the product agree on the identity.
+
+      **Operational note:** Prefer tokens whose JWT already carries the identity as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
     description: |
       Manage OAuth 2.0 client applications registered with PipesHub.
@@ -94,7 +96,7 @@ tags:
 
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
-      - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
+      - **Client credentials:** Access tokens represent the **service account the app is pointed at**, never the caller. An app that allows this grant must name one at creation, and only an administrator may choose it. Apps created before that rule, and never bound, still represent the **OAuth app creator** — the fallback this rule exists to remove.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -486,7 +488,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
-        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator — see **OAuth Provider** tag.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the application's token identity — the service account it is pointed at, or its creator for an application registered before that was required — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -2726,11 +2728,17 @@ components:
         Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
 
         **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
-        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`,
+        `refreshTokenLifetime`, `tokenIdentityUserId`.
 
         **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
         (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
         at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
+
+        **Service account rule:** If the effective grant list includes `client_credentials`,
+        `tokenIdentityUserId` is **required** and the caller must be an organisation administrator.
+        That grant issues tokens with no person in them, so without a service account the app would act
+        as whoever created it. Omitting it answers `400`; a non-administrator answers `403`.
       properties:
         name:
           type: string
@@ -2738,6 +2746,15 @@ components:
           minLength: 1
           maxLength: 100
           example: "My Integration App"
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own tokens act as. Required when
+            `allowedGrantTypes` includes `client_credentials`, ignored otherwise.
+
+            Must name a service account in the same organisation that is not disabled;
+            an ordinary user's id is refused. Administrators only.
+          example: "65f0c0ffee00000000000000"
         description:
           type: string
           description: App description
@@ -5534,6 +5551,32 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            entityExtractionStatus:
+              type: string
+              pattern: '^[A-Z_]{1,32}$'
+              description: |
+                Where named-entity extraction (people, organizations, dates and
+                other values found in the content) stands for this record:
+                NOT_STARTED, IN_PROGRESS, COMPLETED, PARTIAL, FAILED or SKIPPED.
+                Absent when no status has been stored on the record; read that
+                as not extracted. New values may be added, so treat an unknown
+                one as not finished.
+            lastEntityExtractionTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: When named-entity extraction last ran on the record (epoch milliseconds). Absent until it is written.
+            entityExtractionStrategy:
+              type: string
+              nullable: true
+              description: |
+                How the named entities were found: `deterministic` (pattern
+                recognizers only), `single_call` (one model call) or `agent`.
+                Absent until it is written.
+            entityExtractorVersion:
+              type: string
+              nullable: true
+              description: Version of the named-entity extractor that produced the record's entities, for example `ner-1`. Absent until it is written.
             secretsRedacted:
               type: integer
               description: >-
@@ -5548,6 +5591,17 @@ components:
               type: integer
               format: int64
               nullable: true
+            retryNotBefore:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                Set while the record is QUEUED because its source rate-limited
+                the content fetch: the earliest time (epoch milliseconds)
+                indexing reads it again. `reason` then says when indexing
+                resumes. Null or absent once the source serves the record or
+                indexing ends; a value on a record that is no longer QUEUED is
+                left over from an earlier wait and means nothing.
             parsingStatus:
               type: string
               nullable: true
@@ -5573,6 +5627,15 @@ components:
             deletedByUserId:
               type: string
               nullable: true
+            restoredAtTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                When a restore last brought this knowledge-base file back from
+                the trash and queued it to be indexed again (epoch
+                milliseconds). Absent on records never restored, on folders, and
+                on files restored while their indexing was turned off.
             isDirty:
               type: boolean
               nullable: true
@@ -5897,6 +5960,10 @@ components:
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
         may not read all answer `403` instead.
+
+        An unbudgeted read returns at most 140,000 characters of `content`. A
+        longer record is cut there, the content ends with a marker line, and
+        the response carries `truncated: true` and `totalChars`.
       required:
         - content
       properties:
@@ -5906,7 +5973,17 @@ components:
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
             the record and its indexing status instead (see above). In a
-            budgeted read, the part of the record (or thread) that fit.
+            budgeted read, the part of the record (or thread) that fit. An unbudgeted read
+            returns at most 140,000 characters; a longer record is cut there and the content
+            ends with a truncation marker (see `truncated`).
+        truncated:
+          type: boolean
+          description: >-
+            Present and true only on an unbudgeted read whose content was cut to fit 140,000
+            characters, marker included. `totalChars` is then the length of the whole content.
+        totalChars:
+          type: integer
+          description: Present only with `truncated`. The length of the record's whole content, in characters.
         mode:
           type: string
           enum: [record, thread]
@@ -6991,19 +7068,23 @@ components:
           description: |
             Statuses to reindex. Omitting this reindexes everything for a KB
             connector; other connector types default server-side to `FAILED`.
-            When `stages` is set, these match the stage's own status field
-            instead of `indexingStatus`.
+            When `stages` is set, these match the stage's own status
+            instead of `indexingStatus`; with `stages` they default to `FAILED`
+            for every connector.
         stages:
           type: array
           minItems: 1
           items:
             type: string
-            enum: [classify]
+            enum: [classify, entities]
           description: |
             Re-run only these pipeline stages instead of the full pipeline.
-            Records are selected by the stage's status field (`classify` ->
-            `extractionStatus`) using `statusFilters`, and are not re-parsed
-            or re-embedded. Omit to reindex the full pipeline.
+            Records are selected by the stage's status using `statusFilters`:
+            `classify` by `extractionStatus`, `entities` (named-entity
+            extraction, which has no record field) by its entry in the
+            record's `stageStates`. Selected records are not re-parsed or
+            re-embedded. Stages selected differently cannot be combined in one
+            request (400). Omit to reindex the full pipeline.
 
     ResyncConnectorRequestBody:
       type: object
@@ -7844,8 +7925,8 @@ components:
         nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
         for that; a chat turn is not failed, its search simply finds nothing.
         At most 200 ids may be sent in one request, counted across all keys, and every id must
-        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
-        refused.
+        be a valid UUID. A key this schema does not list is refused with 400; the message names
+        the key and lists the allowed ones. A value of the wrong type is refused with 400 too.
 
         A selection that covers more than the configured number of nodes (50,000 by default),
         or that touches a source still being prepared for folder-level search, is refused:
@@ -8601,6 +8682,12 @@ components:
         original message are reused.
 
         Supported fields:
+        - `attachments` — optional files of the edited question, replacing the
+          stored ones (an empty list removes them all); omitted keeps them.
+          At most 10, each a ref from the attachment upload
+        - `query` — optional edited question. When it differs from the stored
+          question, the answer is regenerated for it and the stored question is
+          replaced once the new answer is saved; a failed run keeps the original
         - `filters` — optional `{ apps?, kb? }` filter object
         - `chatMode` — optional non-empty chat mode string
         - `modelKey`, `modelName`, `modelFriendlyName` —
@@ -8613,6 +8700,34 @@ components:
           be `agui`, which is also the protocol used when the field is omitted
         - `agentCapabilities` — optional per-request agent capability toggles
       properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: |
+            The edited question to answer in place of the stored one. Only the
+            last question of a conversation can be edited, and not one that ran
+            an approved action or is itself a tool-approval or question-card
+            answer. A turn that went through an answered question card can be
+            edited: the question is rewritten and the whole turn, including its
+            card and the card's answers, is replaced by the new answer. A card
+            turn that spans more than 50 saved rows cannot be edited; the
+            request is refused and the stored answer is left as it was. So is
+            an edit of an older question while a newer question has no answer.
+            A run that ends in an error answer, or whose answer cannot be
+            saved, leaves the stored question, its files and the rows of its
+            card turn as they were.
+        attachments:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            The files of the edited question, replacing the stored ones. An
+            empty list removes them all; omitted keeps the stored files. A
+            change of files alone, with the same `query`, also counts as an
+            edit. Files are not deleted when removed from a question: a fork
+            of the chat may still refer to them.
         filters:
           $ref: '#/components/schemas/Filters'
         modelKey:
@@ -9856,6 +9971,11 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
 
     ConversationSharedBy:
       type: object
@@ -9882,6 +10002,11 @@ components:
         `Conversation` but omits `messages` to keep list payloads small.
         Fetch a single conversation to retrieve its messages.
       properties:
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
         _id:
           type: string
           format: objectId
@@ -10483,7 +10608,14 @@ components:
           minimum: 1
           maximum: 100
           default: 10
-          description: Maximum number of results to return
+          description: |
+            For a ranked search, the maximum number of passages (entries of `searchResults`) the
+            response holds, counted after query expansion and section expansion, so it holds at
+            any number of queries. `records` lists only the records those passages come from. A
+            search run as a timeline is not cut to `limit` as a whole: `limit` is what each
+            period's own search asks for, and a period can hold more (see `timeline`). When the
+            timeline was chosen automatically (`timeline` left out), each period asks for at most
+            10, whatever `limit` is.
         createdAfter:
           type: string
           maxLength: 64
@@ -10909,12 +11041,22 @@ components:
         deletedByUserId:
           type: string
           nullable: true
+        restoredAtTimestamp:
+          type: number
+          nullable: true
+          description: When a restore last brought the file back from the trash (epoch milliseconds); see `restoredAtTimestamp` on GET /knowledgeBase/record/{recordId}.
         processingStartedAt:
           type: number
           nullable: true
         queuedAtTimestamp:
           type: number
           nullable: true
+        retryNotBefore:
+          type: number
+          nullable: true
+          description: |
+            Earliest time (epoch milliseconds) indexing reads a record its source
+            rate-limited; see `retryNotBefore` on GET /knowledgeBase/record/{recordId}.
         parsingStatus:
           type: string
           nullable: true
@@ -10938,6 +11080,21 @@ components:
           nullable: true
         lastExtractionTimestamp:
           type: number
+          nullable: true
+        entityExtractionStatus:
+          type: string
+          nullable: true
+          description: |
+            Where named-entity extraction stands for the record; see
+            `entityExtractionStatus` on GET /knowledgeBase/record/{recordId}.
+        lastEntityExtractionTimestamp:
+          type: number
+          nullable: true
+        entityExtractionStrategy:
+          type: string
+          nullable: true
+        entityExtractorVersion:
+          type: string
           nullable: true
         summaryDocumentId:
           type: string
@@ -13646,6 +13803,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -13717,6 +13877,8 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         projectId:
           type: string
           format: objectId
@@ -13989,6 +14151,47 @@ components:
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
+    AgentConversationShareResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Sharing state of an agent conversation after a share or unshare call.
+        Recipients are always read-only.
+      required:
+        - id
+        - isShared
+        - sharedWith
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        isShared:
+          type: boolean
+          description: "`false` once the last recipient is removed."
+        sharedWith:
+          type: array
+          items:
+            type: object
+            required:
+              - userId
+              - accessLevel
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read]
+        unsharedUsers:
+          type: array
+          description: Only on the unshare response. The users that were asked to be removed.
+          items:
+            type: string
+            format: objectId
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
+
     AgentConversationDeleteResponse:
       type: object
       additionalProperties: false
@@ -14203,11 +14406,13 @@ components:
         not the raw `AgentConversation` document shape: fields like `agentKey`,
         `userId`, `orgId`, `conversationSource`, and root-level `messages`
         metadata outside the selected slice are omitted.
+
+        `sharedWith` is the owner's list of recipients, so it is present only for the
+        owner. A recipient gets `sharedBy` (who shared the chat) instead.
       required:
         - id
         - createdAt
         - isShared
-        - sharedWith
         - messages
         - pagination
         - access
@@ -14231,6 +14436,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -14242,6 +14450,8 @@ components:
           enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         messages:
           type: array
           items:
@@ -19626,7 +19836,7 @@ paths:
           the cause is recorded in the delegation log, which only an
           administrator can read.
 
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** loads the application record and resolves the identity from it, treating the **`createdBy`** claim as a cross-check — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:
@@ -20115,7 +20325,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: >-
+            The selected tokenIdentityUserId is malformed, or does not name a service
+            account in this organisation. A disabled account answers 400 instead.
           content:
             application/json:
               schema:
@@ -20251,6 +20469,16 @@ paths:
       description: |
         Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
 
+        **Adding `client_credentials`** to `allowedGrantTypes` requires an organisation administrator, because
+        it settles whose documents the application's tokens reach. A non-administrator answers `403`, and that
+        check runs first — so a member sees `403` whether or not a service account is bound.
+
+        For an administrator, it answers `400` when no service account is bound or the bound account is
+        disabled, and `404` when the bound identity no longer exists or is not a service account — distinct
+        from the `404` for an application this caller cannot see. Point the application at one first with
+        `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
+        service account predates this rule and can still be edited.
+
         Creator-only: even org admins cannot edit apps owned by other users.
 
         When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
@@ -20295,13 +20523,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: >-
+            OAuth app not found or not visible to this caller (each user only sees apps they
+            created), or the service account the application is bound to no longer exists or
+            is not a service account.
           content:
             application/json:
               schema:
@@ -24318,10 +24549,13 @@ paths:
         - OAuth Apps
       summary: Choose whose identity this app's client_credentials tokens carry
       description: |
-        By default a `client_credentials` token acts as the person who created
-        the application, carrying their document access and their role, and it
-        stops working if their account is deleted. Pointing the application at
-        a service account instead means its tokens act as an identity that
+        An application registered before a service account was required, and
+        never pointed at one, has `client_credentials` tokens that act as the
+        person who created it, carrying their document access and their role,
+        and stopping when their account is deleted. Applications that allow
+        this grant must now name a service account, so this endpoint changes
+        which one rather than whether there is one. Pointing the application at
+        a service account means its tokens act as an identity that
         exists for the job, holds only what someone granted it, and survives
         any one person leaving.
 
@@ -24334,7 +24568,10 @@ paths:
         afterwards.
 
         Pass `serviceAccountId: null` to put the application back to acting as
-        its creator. That revokes outstanding tokens too.
+        its creator. That revokes outstanding tokens too. It is **refused with
+        `400` while the application allows `client_credentials`**, because
+        clearing the identity there would undo what creating the application
+        required; point it at a different service account instead.
 
         This does not change who manages the application. The creator still
         owns it in Developer Settings — moving that would leave the
@@ -24365,12 +24602,16 @@ paths:
                   type: string
                   nullable: true
                   pattern: '^[0-9a-fA-F]{24}$'
-                  description: The service account, or null to revert to the creator
+                  description: >-
+                    The service account, or null to revert to the creator. Null is refused
+                    while the application allows client_credentials.
       responses:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled
+          description: >-
+            The service account is disabled, or null was passed for an application that
+            allows client_credentials, where clearing the identity is refused.
         '401':
           description: Not authenticated
         '403':
@@ -30485,6 +30726,9 @@ paths:
         - An item can sit in a folder the limit leaves out, as a file the
           limit names does. Its `parentId` and `parent` are then `null`: the
           item is returned, and the folder above it is not named.
+        - A `nextCursor` or `prevCursor` belongs to the limit it was read
+          under. A token with a different limit that sends it gets a `400`;
+          start that listing again without a cursor.
 
         **Access control**
 
@@ -30916,6 +31160,68 @@ paths:
                 error:
                   code: HTTP_FORBIDDEN
                   message: "Insufficient scope. Required: kb:read"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -31454,6 +31760,68 @@ paths:
                 error:
                   code: HTTP_NOT_FOUND
                   message: "Parent node not found"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -31834,7 +32202,8 @@ paths:
           required: false
           description: |
             `owned` — owner list (`userId` filter only).
-            `shared` — explicit share grant list (`isShared` + `sharedWith`).
+            `shared` — explicit share grant list (`isShared` + `sharedWith`). Includes agent
+            conversations shared with the caller; those rows carry `agentKey`.
             Defaults to `owned` when omitted.
           schema:
             type: string
@@ -34333,6 +34702,12 @@ paths:
         - Only the *last* message of the conversation can be regenerated.
         - The target message must be of type `bot_response`.
 
+        **Editing the question:**
+
+        Send `query` to re-ask the last question with new wording. The answer
+        is regenerated for the edited question, which replaces the stored one
+        once the new answer is saved.
+
         **Use Cases:**
 
         - Response was incomplete or unclear
@@ -35822,7 +36197,10 @@ paths:
           description: |
             Invalid request — `query` is missing, empty, or the request
             body fails validation, including an unusable
-            `filters.entityFilters` or any `filters.where`.
+            `filters.entityFilters`, any `filters.where`, or a `filters` key
+            the `Filters` schema does not list (the message names it and lists the
+            allowed keys). The gateway validates before the search service, so
+            clients always see 400 for these, never 422.
           content:
             application/json:
               schema:
@@ -37479,6 +37857,7 @@ paths:
 
         `chatMode: quick` is required. Other fields are optional and reuse
         the original model/context when omitted. The body supports:
+        - `query` and `attachments` (an edited question and its files, as on the assistant endpoint)
         - `filters`
         - `chatMode`
         - `modelKey`
@@ -38053,6 +38432,172 @@ paths:
           description: |
             Agent conversation not found for the authenticated user, organization,
             and agent scope, or the conversation is soft-deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/share:
+    post:
+      tags:
+        - Agents
+      summary: Share an agent conversation (read-only)
+      description: |
+        Share an agent conversation with other users in the caller's
+        organization. **Owner only** — the caller must be the conversation's
+        initiator.
+
+        Recipients get **read-only** access: they can open the transcript and
+        list it under "shared with me", but cannot continue, regenerate, rename,
+        archive, delete, fork or cancel it, rate its answers, or re-share it.
+        Only `read` is accepted as an access level.
+
+        Sharing is additive (existing recipients are kept) and idempotent. The
+        recipients are also granted read access to the conversation's artifacts
+        and chat attachments. Recipients see the full transcript, including
+        citations and tool output, as the owner sees it.
+      operationId: shareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users in the caller's organization to share with.
+                  example: ["507f1f77bcf86cd799439011"]
+                accessLevel:
+                  type: string
+                  enum: [read]
+                  default: read
+                  description: Only `read` is supported; `write` is rejected with `400`.
+      responses:
+        '200':
+          description: Conversation shared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationShareResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes: malformed or empty `userIds`, more
+            than 50 users, `accessLevel` other than `read`, sharing with
+            yourself, or a user who does not exist in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/unshare:
+    post:
+      tags:
+        - Agents
+      summary: Unshare an agent conversation
+      description: |
+        Remove specific users from an agent conversation's recipient list and
+        revoke their access to its artifacts and attachments. **Owner only.**
+        When the last recipient is removed the conversation becomes private
+        again (`isShared: false`). Removing a user who is not a recipient is a
+        no-op.
+      operationId: unshareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users to remove from the share list.
+                  example: ["507f1f77bcf86cd799439011"]
+      responses:
+        '200':
+          description: Conversation unshared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationShareResponse'
+        '400':
+          description: Malformed, empty or oversized `userIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
           content:
             application/json:
               schema:
@@ -39602,9 +40147,9 @@ paths:
 
         **Reading part of a long record, or a whole Slack thread:**
 
-        With no query parameters the whole record is returned, which for a
-        pull request with its diffs or a long document can run to hundreds of
-        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        With no query parameters the record is returned up to 140,000
+        characters (a longer one is cut and marked `truncated`), which for a
+        pull request with its diffs or a long document is a large response. Pass any of `maxChars`, `startBlock`, `query`
         or `mode` for a budgeted read instead: the response stays within
         `maxChars` and says how to continue (`nextStartBlock`, or
         `nextStartRecord` for a thread). `query` makes a record too large for

@@ -65,7 +65,7 @@ async def test_a_record_that_is_gone_has_nothing_to_retry(record):
 
 
 async def test_the_stored_extraction_is_written_again_without_a_model_call():
-    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1"}
+    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
     sink = MagicMock()
     sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": {"summary": "s"}})
     sink.reproject_named_entities = AsyncMock(return_value="written")
@@ -75,7 +75,24 @@ async def test_the_stored_extraction_is_written_again_without_a_model_call():
         assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
     assert context.call_args.kwargs["record"].semantic_metadata.summary == "s"
     # The write lands only while this retry (due at 100) is still the pending one.
-    sink.reproject_named_entities.assert_awaited_once_with(context.return_value, retry_due=100, retry_attempts=0)
+    sink.reproject_named_entities.assert_awaited_once_with(
+        context.return_value, content_rev="rev-a", retry_due=100, retry_attempts=0
+    )
+
+
+async def test_an_unclassified_record_is_still_reprojected_from_its_kept_extraction() -> None:
+    """The entities stage keeps its extraction outside the stored record, so a record with no
+    classification stored must still reach the reprojection."""
+    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
+    sink = MagicMock()
+    sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": None})
+    sink.reproject_named_entities = AsyncMock(return_value="written")
+    context = MagicMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", context):
+        assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
+    assert context.call_args.kwargs["record"].semantic_metadata is None
+    sink.reproject_named_entities.assert_awaited_once()
 
 
 async def test_without_a_sink_nothing_is_read():

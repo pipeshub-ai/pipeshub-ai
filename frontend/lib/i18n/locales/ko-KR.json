@@ -707,7 +707,9 @@
       "needsMultimodalModel": "멀티모달 모델 필요",
       "skipped": "건너뜀",
       "pending": "보류 중"
-    }
+    },
+    "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
+    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -809,6 +811,7 @@
     "recents": "최근 항목",
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
+    "agentChat": "에이전트 채팅",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -873,6 +876,7 @@
     "backToChatHome": "모든 채팅",
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
+    "sharedAgentChat": "공유된 에이전트 채팅",
     "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",
@@ -977,8 +981,6 @@
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
-      "editComingSoonTitle": "출시 예정",
-      "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
       "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
@@ -1875,7 +1877,15 @@
         "errorOptionalUrlInvalid": "선택 URL을 입력하는 경우 유효한 http(s) 주소여야 합니다.",
         "grantRequiredTitle": "권한 부여 유형 필요",
         "grantRequiredDescription": "하나 이상의 권한 부여 유형이 선택된 상태여야 합니다.",
-        "clientCredentialsWarning": "클라이언트 자격 증명 토큰은 토큰 엔드포인트를 호출하는 사람이 아니라 항상 이 애플리케이션을 생성한 사용자로서 Pipeshub에 접근합니다. 부여한 스코프 범위 안에서 토큰은 그 사용자가 접근할 수 있는 모든 것에 접근할 수 있고 그 사용자의 역할까지 물려받으므로, 관리자가 생성한 애플리케이션은 관리자 권한을 갖게 됩니다. 또한 해당 계정이 삭제되면 토큰은 작동을 멈춥니다. 이 애플리케이션이 Authorization Code 플로우도 지원하는 경우, 사용자는 그 방식으로 직접 인증할 수 있습니다."
+        "serviceAccountHeading": "이 애플리케이션이 대신 작업할 서비스 계정",
+        "clientCredentialsIdentityNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동하며, 지정된 계정이 없으면 이를 만든 사람으로서 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다.",
+        "serviceAccountHelper": "클라이언트 자격 증명 토큰에는 사람이 포함되지 않으므로 이 애플리케이션에는 자체 ID가 필요합니다. 서비스 계정은 항상 구성원이며 관리자가 될 수 없고 로그인할 수 없습니다. 서비스 계정이 없으면 애플리케이션은 이를 만든 사람으로서 작업하게 됩니다.",
+        "serviceAccountPlaceholder": "서비스 계정 선택",
+        "serviceAccountLoading": "서비스 계정을 불러오는 중…",
+        "serviceAccountNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만든 다음 다시 돌아오세요.",
+        "serviceAccountLoadError": "서비스 계정을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "serviceAccountRetry": "다시 시도",
+        "errorServiceAccountRequired": "이 애플리케이션이 대신 작업할 서비스 계정을 선택하세요."
       }
     },
     "personalAccessTokens": {
@@ -4713,6 +4723,7 @@
     "stageParsed": "파싱됨",
     "stageSearchable": "검색 가능",
     "stageClassified": "분류됨",
+    "stageEntities": "엔터티",
     "stageAttempt": "시도 {{n}}회",
     "stageDetailsAria": "단계 세부 정보",
     "tabRecordInformation": "레코드 정보",

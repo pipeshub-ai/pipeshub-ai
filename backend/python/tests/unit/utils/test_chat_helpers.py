@@ -14,6 +14,9 @@ from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelatio
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
 )
+from app.exceptions.storage_exceptions import (
+    StoredRecordTooLargeError,
+)
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -3019,6 +3022,33 @@ class TestGetFlattenedResults:
         assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
 
     @pytest.mark.asyncio
+    async def test_a_record_refused_by_the_decode_guard_is_skipped(self) -> None:
+        """A record too large to decode drops out of this search; the rest still answers."""
+        refusal = StoredRecordTooLargeError("decodes to 300 MiB")
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id: str, **_kwargs: object) -> dict:
+            if virtual_record_id == "vr-huge":
+                raise refusal
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "huge", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-huge", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-huge"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
+
+    @pytest.mark.asyncio
     async def test_image_block_multimodal(self):
         img_block = _make_image_block(index=0, uri="data:image/png;base64,abc")
         record = _make_record_blob()
@@ -5535,7 +5565,7 @@ class TestEnrichRecordsWithGraphContext:
         gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
         gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
 
-        async def _relations_batch(record_ids, relation_types, transaction=None):
+        async def _relations_batch(record_ids, relation_types, transaction=None, limit_per_direction=None):
             return {
                 rid: {
                     "parents": [
@@ -5938,6 +5968,8 @@ class TestEnrichRecordsWithGraphContext:
         from app.utils.chat_helpers import NODE_RELATION_ENRICHMENT_TYPES
         requested = set(gp.get_node_relations_batch.await_args.args[1])
         assert requested == {rel.value for rel in NODE_RELATION_ENRICHMENT_TYPES}
+        from app.utils.chat_helpers import RELATION_FETCH_LIMIT_PER_DIRECTION
+        assert gp.get_node_relations_batch.await_args.kwargs["limit_per_direction"] == RELATION_FETCH_LIMIT_PER_DIRECTION
         assert gp.get_parent_record_ids_by_relation_type.await_count == 0
         assert gp.get_child_record_ids_by_relation_type.await_count == 0
 
@@ -7558,3 +7590,20 @@ class TestAccessibleNodeIds:
                 raise RuntimeError("graph down")
 
         assert await accessible_node_ids_for_enrichment(self._graph(lookup), {"r1"}, "u1", "o1") == set()
+
+
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_is_bounded_like_the_batch() -> None:
+    from app.utils.chat_helpers import (
+        RELATION_FETCH_LIMIT_PER_DIRECTION,
+        _relations_per_record,
+    )
+
+    gp = MagicMock()
+    many = [{"record_id": f"c{i}"} for i in range(RELATION_FETCH_LIMIT_PER_DIRECTION * 4)]
+    gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=many)
+    gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+    out = await _relations_per_record(gp, ["a"], ["PARENT_CHILD", "ATTACHMENT"])
+    assert len(out["a"]["children"]) == RELATION_FETCH_LIMIT_PER_DIRECTION
+    # The reads themselves are bounded, not only what is kept of them.
+    assert gp.get_child_record_ids_by_relation_type.await_args.kwargs["limit"] == RELATION_FETCH_LIMIT_PER_DIRECTION

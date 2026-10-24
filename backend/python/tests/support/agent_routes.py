@@ -333,11 +333,19 @@ class InMemoryGraph:
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return False
 
+    def _real_transaction(self, explicit: bool | None) -> bool:
+        if explicit is None or (explicit and not self.honours_explicit):
+            return self.rollback_undoes_writes
+        return explicit
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return self._real_transaction(explicit)
+
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self._enter("begin_transaction", read, write)
         self.explicit_requests.append(explicit)
         txn = f"txn-{next(self._txn)}"
-        if self.rollback_undoes_writes or (explicit and self.honours_explicit):
+        if self._real_transaction(explicit):
             self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
         return txn
 

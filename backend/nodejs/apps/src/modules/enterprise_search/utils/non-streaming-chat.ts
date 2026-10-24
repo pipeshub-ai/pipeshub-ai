@@ -112,7 +112,7 @@ export const continueConversation = (
     }
     const history = await getMessages(
       conversation._id as mongoose.Types.ObjectId,
-      {},
+      { orgId: conversation.orgId },
       session,
     );
     await appendMessages(

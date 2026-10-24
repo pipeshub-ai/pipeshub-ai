@@ -435,9 +435,10 @@ class NamedNode:
         return self.doc.get("connectorName") == "KB"
 
     def _date(self, source: str, ingest: str) -> int | None:
-        # As the knowledge hub dates a node: a collection item's source date is
-        # the file's own, not when it was added.
-        if self.in_collection:
+        # As the knowledge hub dates a node, an app included: a collection
+        # item's source date is the file's own, not when it was added. The hub
+        # reads ``connectorName`` for this, not the origin rule above.
+        if self.doc.get("connectorName") == "KB":
             return self.doc.get(ingest) or None
         return self.doc.get(source) or self.doc.get(ingest) or None
 
@@ -461,7 +462,7 @@ _NAMED_COLLECTIONS = {
 }
 _DATES = ["createdAtTimestamp", "updatedAtTimestamp", "sourceCreatedAtTimestamp", "sourceLastModifiedTimestamp"]
 _NAMED_FIELDS = {
-    CollectionNames.APPS.value: ["name", "type"],
+    CollectionNames.APPS.value: ["name", "type", "connectorName", *_DATES],
     CollectionNames.RECORD_GROUPS.value: [
         "groupName", "groupType", "connectorName", "connectorId", "webUrl", *_DATES,
     ],

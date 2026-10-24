@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -88,6 +89,7 @@ from app.services.vector_db.rebuild_state import (
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
+from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.indexing_timing import stage
@@ -108,6 +110,7 @@ from app.utils.user_errors import (
     rate_limited_gave_up,
     rate_limited_will_retry,
     to_user_reason,
+    too_large_refusal,
     unsupported_file_type,
 )
 
@@ -1272,7 +1275,7 @@ class RecordEventHandler(BaseEventService):
             await sink.index(ctx)
             # The stored extraction rebuilds the record's named entities and their
             # vector points too, so a re-embed never drops them or calls a model.
-            await sink.reproject_named_entities(ctx)
+            await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1435,7 +1438,9 @@ class RecordEventHandler(BaseEventService):
                 # stay for the purge, which is also what restore needs.
                 virtual_record_ids = payload.get("virtualRecordIds") or []
                 result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids, keep_mapping=True
+                    virtual_record_ids,
+                    org_id=payload.get("orgId") or None,
+                    keep_mapping=True,
                 )
                 if result.get("success") is False:
                     raise IndexingError(
@@ -1605,6 +1610,18 @@ class RecordEventHandler(BaseEventService):
             stage_ingress = self.event_processor.stage_ingress
             if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
                 stage_redrive = True
+                stage_rev = payload.get("stageRev")
+                # A null stageRev is a record selected before it had a revision.
+                if "stageRev" in payload and (record.get("contentRev") or None) != (stage_rev or None):
+                    # Selected on a revision the record has left: the new one runs its own
+                    # stages, and a full reindex here would start a second pipeline beside it.
+                    self.logger.info(
+                        f"Not re-running stages {stages} for record {record_id}: it moved from "
+                        f"revision {stage_rev} to {record.get('contentRev')}"
+                    )
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
                 dispatched = await stage_ingress.redrive(
                     virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
                 )
@@ -1619,7 +1636,9 @@ class RecordEventHandler(BaseEventService):
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
             elif not vector_db_only and event_type in (
                 EventTypes.UPDATE_RECORD.value,
                 EventTypes.REINDEX_RECORD.value,
@@ -2139,6 +2158,10 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception)
+                    if (refusal := too_large_refusal(last_exception)) is not None:
+                        # A metrics fault must not stop the record being marked FAILED.
+                        with contextlib.suppress(Exception):
+                            record_rejected_too_large(refusal.status)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,

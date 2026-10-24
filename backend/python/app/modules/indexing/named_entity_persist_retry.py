@@ -139,14 +139,16 @@ async def _retry_one(
     if not blob:
         raise StoredContentUnreadableError(record_id)
     raw = blob.get("semantic_metadata")
-    if not raw:
-        return None
     record_obj = convert_record_dict_to_record(record)
-    record_obj.semantic_metadata = SemanticMetadata.model_validate(raw)
+    # Only a record indexed before the entities stage keeps its extraction here; the stage
+    # keeps it in its state, which reproject_named_entities reads first.
+    record_obj.semantic_metadata = SemanticMetadata.model_validate(raw) if raw else None
     ctx = TransformContext(record=record_obj, settings={"skip_blob": True})
     # The count goes along: a claim that committed before a failure leaves no
     # marker to count from, and the retry must still stop after its last attempt.
-    return await sink.reproject_named_entities(ctx, retry_due=due, retry_attempts=attempts)
+    return await sink.reproject_named_entities(
+        ctx, content_rev=record.get("contentRev"), retry_due=due, retry_attempts=attempts
+    )
 
 
 async def _count_failure(

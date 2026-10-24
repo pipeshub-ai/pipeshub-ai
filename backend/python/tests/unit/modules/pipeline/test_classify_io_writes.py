@@ -139,28 +139,33 @@ async def test_the_stored_record_is_read_once_per_job_before_writing() -> None:
     blob.get_record_from_storage.assert_awaited_once()
 
 
-@pytest.mark.parametrize("classify_first", [True, False])
 @pytest.mark.asyncio
-async def test_classify_and_entities_keep_each_others_section(classify_first: bool) -> None:
+async def test_entities_never_writes_the_stored_record() -> None:
+    """Classification is the stored record's only stage writer, so the two stages cannot drop
+    each other's work there whichever finishes first."""
     blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}, "semantic_metadata": None})
-    classify, entities = _classify_io(blob), _entities_io(blob)
+    entities = _entities_io(blob)
+    assert await entities.current_record_ids(_job("entities")) == ["rec-1"]
 
-    async def run_classify() -> None:
-        assert await classify.current_record_ids(_job()) == ["rec-1"]
-        await classify.save(_job(), ["rec-1"], SemanticMetadata(summary="s", topics=["VPN"], categories=["Security"]))
+    assert await entities.save(_job("entities"), ["rec-1"], _extraction()) == "written"
 
-    async def run_entities() -> None:
-        assert await entities.current_record_ids(_job("entities")) == ["rec-1"]
-        assert await entities.save(_job("entities"), ["rec-1"], _extraction()) == "written"
+    assert blob.saves == 0
+    assert blob.stored["semantic_metadata"] is None  # type: ignore[index]
 
-    for step in (run_classify, run_entities) if classify_first else (run_entities, run_classify):
-        await step()
+
+@pytest.mark.asyncio
+async def test_classification_keeps_a_legacy_named_entity_section() -> None:
+    """A record indexed before the entities stage keeps its extraction in the stored record;
+    classifying it again must not drop it."""
+    legacy = {"status": "COMPLETED", "entities": []}
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}, "semantic_metadata": {"named_entities": legacy}})
+    classify = _classify_io(blob)
+    assert await classify.current_record_ids(_job()) == ["rec-1"]
+
+    await classify.save(_job(), ["rec-1"], SemanticMetadata(summary="s", topics=["VPN"], categories=["Security"]))
 
     stored = blob.stored["semantic_metadata"]  # type: ignore[index]
-    assert stored["summary"] == "s" and stored["topics"] == ["VPN"]
-    assert stored["named_entities"]["status"] == "COMPLETED"
-    assert await _classify_io(blob).stored_metadata_present(_job())
-    assert await _entities_io(blob).stored_entities_present(_job("entities"))
+    assert stored["summary"] == "s" and stored["named_entities"] == legacy
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ def _graph(rows: list[dict[str, Any]], record: dict[str, Any] | None = None) -> 
     graph.clear_named_entity_persist_retry = AsyncMock(return_value=True)
     graph.schedule_named_entity_persist_retry = AsyncMock(return_value=1)
     graph.get_document = AsyncMock(return_value=record)
+    graph.stage_state_compare_and_set = AsyncMock(return_value=True)
     return graph
 
 
@@ -93,7 +94,7 @@ def _sink(blob: dict[str, Any] | None, extraction: NamedEntityExtraction) -> Mag
     return sink
 
 
-_RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1"}
+_RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
 
 
 def _context(record: Any, settings: dict[str, Any]) -> SimpleNamespace:  # noqa: ANN401
@@ -114,6 +115,55 @@ async def test_the_stored_blocks_are_extracted_again_and_written_under_the_job()
     assert ctx.record.block_containers.blocks[0].data == "Acme hired Bob."
     # The write lands only while this job (due at 100) is still the pending one.
     sink.persist_named_entities.assert_awaited_once_with(ctx, extraction, retry_due=100, retry_attempts=2)
+
+
+async def test_a_written_completion_replaces_the_kept_extraction() -> None:
+    """A later reprojection (a persist retry, a re-embed) must write the completed entities,
+    not the extraction that left text unread."""
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph = _graph([], _RECORD)
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context):
+        assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
+
+    key, expected, new, fields = graph.stage_state_compare_and_set.await_args.args
+    assert (key, expected, new) == ("v1:rev-a:entities", "COMPLETED", "COMPLETED")
+    assert NamedEntityExtraction.model_validate_json(fields["output"]).termination_reason == "single_call"
+
+
+@pytest.mark.parametrize("outcome", ["kept", "failed", "disabled"])
+async def test_nothing_is_kept_unless_the_completion_was_written(outcome: str) -> None:
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph, sink = _graph([], _RECORD), _sink(_BLOB, extraction)
+    sink.persist_named_entities = AsyncMock(return_value=outcome)
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context):
+        assert await completion._complete_one(graph, sink, None, "r1", "o1", 100, 0) == outcome
+    graph.stage_state_compare_and_set.assert_not_awaited()
+
+
+async def test_a_failed_keep_does_not_undo_the_written_completion() -> None:
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph = _graph([], _RECORD)
+    graph.stage_state_compare_and_set = AsyncMock(side_effect=ConnectionError("graph down"))
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context):
+        assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
+
+
+@pytest.mark.parametrize("keep", [AsyncMock(return_value=False), AsyncMock(side_effect=ConnectionError("graph down"))])
+async def test_a_completion_that_is_not_kept_is_not_queued_again(keep: AsyncMock) -> None:
+    """A record indexed before the stage has no state to keep it in: queuing it here would
+    extract it again on every pass. The re-projection that writes the older extraction
+    queues it instead."""
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph = _graph([], _RECORD)
+    graph.stage_state_compare_and_set = keep
+    graph.schedule_named_entity_reextract = AsyncMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context):
+        assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
+    graph.schedule_named_entity_reextract.assert_not_called()
 
 
 async def test_a_failed_extraction_writes_nothing() -> None:
