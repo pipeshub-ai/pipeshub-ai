@@ -59,3 +59,8 @@ class TestRewriteRequestRefs:
         text, expanded, _ = rewrite_request_refs("cite https://ref1.xyz. Or ref12, or (ref1).", _MAP)
         assert text == f"cite {_MAP['ref1']}. Or {_MAP['ref12']}, or ({_MAP['ref1']})."
         assert expanded == 3
+
+    def test_a_tiny_url_inside_a_longer_url_is_left_alone(self) -> None:
+        for text in ("https://example.com/redirect?next=https://ref1.xyz", "https://a.example/#https://ref1.xyz"):
+            assert rewrite_request_refs(text, _MAP) == (text, 0, 0)
+        assert rewrite_request_refs('see "https://ref1.xyz"', _MAP)[0] == f'see "{_MAP["ref1"]}"'
