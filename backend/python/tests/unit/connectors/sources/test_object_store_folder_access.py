@@ -35,11 +35,11 @@ def _sync_filters(folders: list[str] | None) -> FilterCollection:
 
 
 def _data_source() -> MagicMock:
-    async def list_objects_v2(Bucket: str, MaxKeys: int, Prefix: str | None = None) -> S3Response:  # noqa: N803
+    async def list_objects_v2(Bucket: str, MaxKeys: int, Prefix: str | None = None) -> S3Response:
         keys = [k for k in OBJECTS if k.startswith(Prefix or "")][:MaxKeys]
         return S3Response(success=True, data={"Contents": [{"Key": k} for k in keys]})
 
-    async def head_object(Bucket: str, Key: str) -> S3Response:  # noqa: N803
+    async def head_object(Bucket: str, Key: str) -> S3Response:
         if Key.startswith(READABLE):
             return S3Response(success=True, data={})
         return S3Response(success=False, error="403: Forbidden", status_code=403)
