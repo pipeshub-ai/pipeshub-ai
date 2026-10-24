@@ -72,6 +72,7 @@ async def search_page(
     secret: str | bytes | None = None,
     access: dict[str, Any] | None = None,
     max_concurrency: int | None = DEFAULT_MAX_CONCURRENCY,
+    limit_apps: list[str] | None = None,
 ) -> SearchPage:
     """Assemble one page. A bad cursor raises `CursorError`; the caller answers 400.
 
@@ -199,6 +200,7 @@ async def search_page(
                 mode="search",
                 user_id=user_id,
                 org_id=org_id,
+                limit_apps=limit_apps,
             ),
             secret,
         )
