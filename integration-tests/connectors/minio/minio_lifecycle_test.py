@@ -109,13 +109,13 @@ async def synced(minio_storage: MinioStorageHelper, pipeshub_client: PipeshubCli
         for o in page.get("Contents") or []
     }
     started = int(time.time() * 1000)
-    connector = pipeshub_client.create_connector(
-        "MinIO", f"minio-life-{uuid.uuid4().hex[:8]}", scope="team", config=_config_for(prefix),
-    )
-    state: dict[str, Any] = {
-        "connector_id": connector.connector_id, "bucket": bucket, "prefix": prefix, "files": keys, "modified": modified,
-    }
+    state: dict[str, Any] = {"bucket": bucket, "prefix": prefix, "files": keys, "modified": modified}
+    connector = None
     try:
+        connector = pipeshub_client.create_connector(
+            "MinIO", f"minio-life-{uuid.uuid4().hex[:8]}", scope="team", config=_config_for(prefix),
+        )
+        state["connector_id"] = connector.connector_id
         pipeshub_client.toggle_sync(connector.connector_id, enable=True)
         _wait_for_sync(pipeshub_client, connector.connector_id, started)
         state["records"] = await graph_provider.count_records(connector.connector_id)
@@ -125,7 +125,7 @@ async def synced(minio_storage: MinioStorageHelper, pipeshub_client: PipeshubCli
         yield state
     finally:
         try:
-            if not state.get("deleted"):
+            if connector is not None and not state.get("deleted"):
                 pipeshub_client.delete_connector(connector.connector_id)
                 await graph_provider.assert_connector_graph_fully_cleaned(connector.connector_id, timeout=300)
         finally:
