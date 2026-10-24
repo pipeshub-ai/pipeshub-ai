@@ -292,20 +292,22 @@ class TestContentHash:
         # encoded must not change the identity of the image.
         assert content_hash("\ud800abc") == content_hash("abc")
 
-    def test_two_formats_are_two_images(self) -> None:
-        png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
-        jpeg = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ=="
+    def test_the_mime_prefix_is_part_of_the_identity(self) -> None:
+        # The same bytes behind two different MIME types are two images. If the
+        # hash covered only the base64 payload they would collide.
+        png = "data:image/png;base64,QQ=="
+        jpeg = "data:image/jpeg;base64,QQ=="
         assert content_hash(png) != content_hash(jpeg)
 
     def test_the_result_is_sixteen_lowercase_hex_characters(self) -> None:
         for uri in (
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
-            "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ==",
+            "data:image/png;base64,QQ==",
+            "data:image/jpeg;base64,QQ==",
         ):
             assert re.fullmatch(r"[0-9a-f]{16}", content_hash(uri))
 
     def test_the_same_input_hashes_the_same_way_twice(self) -> None:
-        uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        uri = "data:image/png;base64,QQ=="
         assert content_hash(uri) == content_hash(uri)
 
 
