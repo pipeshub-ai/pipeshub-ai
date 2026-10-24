@@ -15,6 +15,7 @@ test that hit it.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import uuid
@@ -530,9 +531,42 @@ def list_issues(s, viewer, p, q) -> Response:
     key = {"created": lambda r: (r.created_at, r.id), "updated": lambda r: (r.updated_at, r.id),
            "comments": lambda r: (len(r.comments), r.id)}[q.get("sort", "created")]
     rows.sort(key=key, reverse=q.get("direction", "desc") == "desc")
-    objs = [pr_as_issue(r) if isinstance(r, PullRequest) else issue_obj(r) for r in rows]
-    page, links = paginate(objs, q, f"/repos/{p['owner']}/{p['repo']}/issues")
-    return 200, page, links
+    chunk, links = _issues_page(s, rows, key, q, f"/repos/{p['owner']}/{p['repo']}/issues")
+    return 200, [pr_as_issue(r) if isinstance(r, PullRequest) else issue_obj(r) for r in chunk], links
+
+
+def _issues_page(s, rows: list[Any], key: Callable[[Any], tuple], q: dict[str, str],
+                 base: str) -> tuple[list[Any], dict[str, str]]:
+    """One page of the issues listing, the way GitHub serves it.
+
+    ``page`` numbers stop at ``issues_page_limit`` items with GitHub's 422. The
+    ``next`` link carries an ``after`` keyset cursor (the last item's sort key) next
+    to the page number, and no ``last`` link; an ``after`` request reads on from
+    that key, so an edit between requests cannot shift what comes next.
+    """
+    per_page = min(100, max(1, int(q.get("per_page", 30))))
+    page = max(1, int(q.get("page", 1)))
+    desc = q.get("direction", "desc") == "desc"
+    if "after" in q:
+        mark = tuple(json.loads(base64.urlsafe_b64decode(q["after"])))
+        rows = [r for r in rows if (key(r) < mark if desc else key(r) > mark)]
+        chunk = rows[:per_page]
+        more = len(rows) > per_page
+    else:
+        if page * per_page >= s.ws.behaviour.issues_page_limit:
+            raise Reply(422, {
+                "message": "Pagination with the page parameter is not supported for large datasets, "
+                           "please use cursor based pagination (after/before)",
+                "documentation_url": "https://docs.github.com/rest/issues/issues#list-repository-issues",
+                "status": "422",
+            })
+        chunk = rows[(page - 1) * per_page:page * per_page]
+        more = len(rows) > page * per_page
+    if not more or not chunk:
+        return chunk, {}
+    cursor = base64.urlsafe_b64encode(json.dumps(list(key(chunk[-1]))).encode()).decode()
+    query = {k: v for k, v in q.items() if k not in ("page", "after")}
+    return chunk, {"Link": f'<{API}{base}?{urlencode({**query, "after": cursor, "page": page + 1})}>; rel="next"'}
 
 
 @route("GET", "/repos/{owner}/{repo}/issues/comments")

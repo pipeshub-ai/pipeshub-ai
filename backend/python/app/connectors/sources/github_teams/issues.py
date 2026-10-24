@@ -244,6 +244,7 @@ class IssuesSync:
         request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
 
         page = 1
+        cursor: str | None = None
         created: set[int] = set()  # issues created since the last sync
         processed = 0
         watermarks: dict[str, int] = {}
@@ -251,7 +252,7 @@ class IssuesSync:
             issues_res = await c.runtime.ds_call(
                 c.data_source.list_issues, owner, repo_name,
                 state="all", since=request_since, sort="updated", direction="desc",
-                per_page=ISSUE_PAGE_SIZE, page=page,
+                per_page=ISSUE_PAGE_SIZE, page=page, after=cursor,
             )
             if not issues_res.success:
                 self.logger.error(
@@ -287,6 +288,11 @@ class IssuesSync:
 
             if len(items) < len(listed) or len(listed) < ISSUE_PAGE_SIZE:
                 break
+            # GitHub refuses page numbers past 10,000 items on this listing, and
+            # pull requests count towards them, so a busy repository could never
+            # be read further back. Follow the cursor GitHub hands out instead;
+            # the page number is the fallback where it offers none.
+            cursor = issues_res.next_cursor
             page += 1
 
         if processed:

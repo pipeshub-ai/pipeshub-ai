@@ -198,6 +198,59 @@ class TestFetchIssuesBatched:
         first_call = c.data_entities_processor.on_new_records.call_args_list[0]
         assert len(first_call.args[0]) == 100
 
+    async def test_follows_the_listing_cursor_past_the_first_page(self) -> None:
+        """GitHub refuses page numbers past 10,000 items on the issues listing, and
+        pull requests count towards them. The sync must read on with the cursor
+        GitHub hands out, not with a page number GitHub would refuse."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        second = ok_response([_issue(number=500)])
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return [first, second][len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        await sync.fetch_issues_batched(repo)
+
+        assert [k.get("after") for k in calls] == [None, "cursor-2"]
+        sync._write_checkpoint.assert_awaited_once()
+
+    async def test_without_a_cursor_the_next_page_number_is_read(self) -> None:
+        """A server that offers no cursor is still read to the end, by page number."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.comments.clean_github_content = AsyncMock(return_value=("", []))
+        c.indexing_filters = None
+        pages = [ok_response([_issue(number=n) for n in range(100)]), ok_response([])]
+        calls: list[dict] = []
+
+        def ds_call(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_issues:
+                calls.append(kwargs)
+                return pages[len(calls) - 1]
+            return ok_response([])
+
+        c.runtime.ds_call.side_effect = ds_call
+        sync = IssuesSync(c)
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
+
+        await sync.fetch_issues_batched(repo)
+
+        assert [(k.get("page"), k.get("after")) for k in calls] == [(1, None), (2, None)]
+
     async def test_page_failure_does_not_advance_the_checkpoint(self) -> None:
         """Committing past a failed page would skip those issues permanently."""
         c = make_mock_connector()

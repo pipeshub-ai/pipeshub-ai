@@ -90,6 +90,14 @@ def query_params(op: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+# Query parameters GitHub accepts although its OpenAPI description leaves them out.
+# Each is live-verified; see README.md.
+UNDOCUMENTED_QUERY: dict[tuple[str, str], frozenset[str]] = {
+    # The issues listing's own 422 asks for ``after``, and its Link header uses it.
+    ("/repos/{owner}/{repo}/issues", "get"): frozenset({"after"}),
+}
+
+
 def check_query(template: str, method: str, query: dict[str, str]) -> tuple[list[str], str | None]:
     """(problems for the gap list, a 422 message if GitHub would refuse the request)."""
     op = operation(template, method)
@@ -101,6 +109,8 @@ def check_query(template: str, method: str, query: dict[str, str]) -> tuple[list
     problems: list[str] = []
     for name, value in query.items():
         prm = declared.get(name)
+        if prm is None and name in UNDOCUMENTED_QUERY.get((template, method.lower()), frozenset()):
+            continue
         if prm is None:
             problems.append(f"{method} {template}: query parameter {name!r} is not defined by GitHub")
             continue
