@@ -38,7 +38,7 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
-from app.models.source_dates import upload_origin
+from app.models.source_dates import epoch_ms, upload_origin
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -1447,7 +1447,10 @@ class KnowledgeBaseService:
                 # Content changed (new blob uploaded): bump revision so the record is
                 # re-persisted, force reindex, and emit updateRecord (Qdrant refresh).
                 record.source_updated_at = file_metadata.get("lastModified", timestamp)
-                record.source_timestamp_origin = upload_origin(record.source_updated_at, timestamp).value
+                # Node stamps receivedAt off the clock its missing-lastModified fallback
+                # reads, before the storage upload; ``timestamp`` comes after that upload.
+                received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
+                record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
                 await processor.on_record_content_update(record)
             else:

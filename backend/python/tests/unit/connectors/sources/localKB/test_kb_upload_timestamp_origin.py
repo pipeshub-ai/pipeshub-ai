@@ -8,6 +8,8 @@ import pytest
 
 UPLOADED = 1792090099000  # 2026-10-15 18:48:19 UTC
 FILE_MTIME = 1741000000000  # 2025-03-03 11:06:40 UTC
+# Node received the new version ten minutes before its storage upload ended.
+RECEIVED = UPLOADED - 600_000
 
 
 def _upload_dicts(source_ms: int) -> tuple[dict, dict]:
@@ -74,6 +76,25 @@ class TestNewVersionStamp:
         ):
             await service.update_record("user1", "rec-1", {}, file_metadata={"lastModified": FILE_MTIME})
         assert stored.source_timestamp_origin == "file"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("last_modified", "origin"),
+        [(RECEIVED - 5, "upload"), (FILE_MTIME, "file")],
+        ids=["node-fallback", "file-time"],
+    )
+    async def test_a_slow_storage_upload_is_judged_by_nodes_clock(
+        self, service, last_modified: int, origin: str,
+    ) -> None:
+        stored = self._editable(service)
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.get_epoch_timestamp_in_ms",
+            return_value=UPLOADED,
+        ):
+            await service.update_record(
+                "user1", "rec-1", {}, file_metadata={"lastModified": last_modified, "receivedAt": RECEIVED},
+            )
+        assert stored.source_timestamp_origin == origin
 
     @pytest.mark.asyncio
     async def test_a_rename_leaves_it_alone(self, service) -> None:

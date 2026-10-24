@@ -3097,6 +3097,32 @@ describe('Knowledge Base Controller', () => {
       expect(response.fileUploaded).to.be.true
     })
 
+    it('tells Python when the new version arrived, read before a slow storage upload', async () => {
+      const clock = sinon.useFakeTimers({ now: 1_000_000, toFake: ['Date'] })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
+      sinon.stub(kbUtils, 'uploadNextVersionToStorage').callsFake(async () => {
+        clock.tick(10 * 60 * 1000)
+        return {} as Awaited<ReturnType<typeof kbUtils.uploadNextVersionToStorage>>
+      })
+
+      const handler = updateRecord(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { recordId: 'r1' },
+        body: UPDATE_RECORD_FILE_BUFFER,
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const sent = JSON.parse(connectorStub.thirdCall.thisValue.body as string)
+      expect(sent.fileMetadata.receivedAt).to.equal(1_000_000)
+      expect(sent.fileMetadata.lastModified).to.equal(
+        UPDATE_RECORD_FILE_BUFFER.fileBuffer.lastModified,
+      )
+    })
+
     it('should use originalname when recordName is not provided', async () => {
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
