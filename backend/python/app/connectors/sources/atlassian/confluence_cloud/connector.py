@@ -3743,11 +3743,13 @@ class ConfluenceConnector(BaseConnector):
                 seen = await self.audit_log_sync_point.read_sync_point(key)
                 before: dict[str, str] = json.loads(seen.get("restricted") or "{}") if seen else {}
                 stored_rule = {r.external_record_id: r.access_rule for r in stored}
+                # A restriction added, changed or removed since the last check, or none now on an
+                # item still stored as restricted (the first check, or one that failed).
                 changed = sorted(
                     item_id for item_id, fingerprint in listed.items()
                     if item_id in stored_rule and (
-                        fingerprint != before.get(item_id) if fingerprint
-                        else stored_rule[item_id] == AccessRule.RESTRICTED
+                        fingerprint != before.get(item_id, "")
+                        or (not fingerprint and stored_rule[item_id] == AccessRule.RESTRICTED)
                     )
                 )
                 by_id = {r.external_record_id: r for r in stored}

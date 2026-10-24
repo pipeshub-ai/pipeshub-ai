@@ -2791,6 +2791,18 @@ class TestRestrictionsWithoutTheAuditLog:
         assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
         assert any("audit log (HTTP 403)" in p for p in connector._sync_problems)
 
+        # The restriction removed again, still without an edit: noticed from the last check, not
+        # only from the stored rule.
+        db.records["10"] = db.records["10"].model_copy(update={"access_rule": AccessRule.OPEN})
+        open_again = self._with_read_restriction(v1_page("10"))
+        search.by_cursor = {None: search_page([open_again])}
+        search.indexed = {"10": open_again}
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to())
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["10"].access_rule == AccessRule.STRICT
+        assert db.record_permissions["10"] == []
+
     async def _refused_audit_log(self, api, connector) -> None:
         await connector._open_audit_window()
         api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
