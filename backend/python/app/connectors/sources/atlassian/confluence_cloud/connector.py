@@ -851,7 +851,7 @@ class ConfluenceConnector(BaseConnector):
         except Exception:
             return "the configured site"
 
-    async def _connection_error_message(self, status: int | None, response: Any) -> str:
+    async def _connection_error_message(self, status: int | None, response: object) -> str:
         """What a failed connection test means, by HTTP status."""
         site = self._site_url_for_messages()
         try:
@@ -1358,7 +1358,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> Any:
+    async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> object:
         """The connector's own includeJiraScope, else the one saved on its OAuth app."""
         value = auth_config.get(INCLUDE_JIRA_SCOPE)
         oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
@@ -2066,7 +2066,8 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
                 await self._save_batch_checkpoint(
-                    sync_point_key, items_data, listing_complete, field="last_sync_time", current=last_sync_time
+                    sync_point_key, items_data, nothing_skipped=listing_complete, field="last_sync_time",
+                    current=last_sync_time,
                 )
 
                 # Extract next page token from _links.next
@@ -2560,7 +2561,7 @@ class ConfluenceConnector(BaseConnector):
                     await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
                 if not within_ids:
                     await self._save_batch_checkpoint(
-                        sync_point_key, items_data, listing_complete,
+                        sync_point_key, items_data, nothing_skipped=listing_complete,
                         field="last_sync_time" if last_sync_time else "full_resume_after",
                         current=last_sync_time or full_resume_after,
                     )
@@ -2755,8 +2756,8 @@ class ConfluenceConnector(BaseConnector):
         return when > since
 
     async def _save_batch_checkpoint(
-        self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool,
-        *, field: str, current: str | None,
+        self, sync_point_key: str, items: list[dict[str, Any]], *, nothing_skipped: bool,
+        field: str, current: str | None,
     ) -> None:
         """Move a listing's checkpoint to the latest change in a batch that was just saved.
 
@@ -4318,7 +4319,7 @@ class ConfluenceConnector(BaseConnector):
         if site.startswith("http") and not self._site_wiki_url:
             self._site_wiki_url = site if site.endswith("/wiki") else f"{site}/wiki"
 
-    def _remember_site_wiki_url(self, response_data: Any) -> None:
+    def _remember_site_wiki_url(self, response_data: object) -> None:
         """Keep the site's wiki URL a response reports in ``_links.base``, for links built later."""
         base = ((response_data or {}).get("_links") or {}).get("base") if isinstance(response_data, dict) else None
         if isinstance(base, str) and base.startswith("http") and urlparse(base).hostname != "api.atlassian.com":

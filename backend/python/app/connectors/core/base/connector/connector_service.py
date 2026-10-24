@@ -653,6 +653,7 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None = None,
         recipient_user_ids: list[str] | None = None,
         recipient_roles: list[NotificationRecipientRole] | None = None,
+        *,
         suppress_repeats: bool = True,
     ) -> NotificationOutcome:
         """Like ``notify``, but waits for the broker and says what happened.
@@ -693,6 +694,7 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None,
         recipient_user_ids: list[str] | None,
         recipient_roles: list[NotificationRecipientRole] | None,
+        *,
         suppress_repeats: bool = True,
     ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service

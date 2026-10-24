@@ -3333,7 +3333,7 @@ class TestParserEdgeCases:
         calls = 0
         original = parser._searchable_text_for_comment_match
 
-        def counting(block):
+        def counting(block: object) -> str:
             nonlocal calls
             calls += 1
             return original(block)
