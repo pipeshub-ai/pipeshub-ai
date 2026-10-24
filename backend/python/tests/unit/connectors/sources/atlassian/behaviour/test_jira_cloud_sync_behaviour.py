@@ -38,7 +38,13 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
-from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
+from app.models.entities import (
+    FileRecord,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+    TicketRecord,
+)
 from app.sources.client.jira.jira import JiraRESTClientViaToken
 from app.sources.external.jira.jira import JiraDataSource
 
@@ -2269,6 +2275,25 @@ class TestProjectsThatLeftTheSync:
         assert "1" not in tickets(site_db) and "10000" not in site_db.record_groups
         assert any(t.endswith("removed projects it no longer syncs") for t in titles(connector))
 
+    async def test_a_removed_projects_epic_takes_no_story_of_a_synced_project_with_it(
+        self, api, site_db, checkpoints, search, fresh_notification_memory
+    ) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        # A story in OPS stored under the ENG epic while both were synced.
+        site_db.records["2"] = site_db.records["1"].model_copy(update={
+            "id": "story-2", "external_record_id": "2", "external_record_group_id": "10001",
+            "parent_external_record_id": "1", "parent_record_type": RecordType.TICKET,
+        })
+
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        api.on("GET", f"{JIRA}/project/10000", json_response({"errorMessages": ["No project could be found"]}, status=404))
+        await connector.run_sync()
+
+        assert "1" not in tickets(site_db) and "2" in tickets(site_db), "the story is in a project still synced"
+
     async def test_a_project_the_filter_leaves_out_is_kept_and_only_unlinked_by_the_full_sync(
         self, api, site_db, checkpoints, search
     ) -> None:
@@ -2423,6 +2448,12 @@ class TestPlaceholderParents:
 
         assert db.records["1"].parent_external_record_id is None
         assert "77" not in db.records, "no placeholder is made for a parent nobody syncs"
+
+    async def test_the_synced_projects_are_forgotten_once_the_sync_ends(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector._synced_project_keys is None, "a reindex afterwards goes by what is stored, not a stale project set"
 
     @pytest.mark.parametrize("parent_key", ["ENG-77", "OPS-77"])
     async def test_a_parent_in_its_own_or_another_synced_project_stays_its_parent(

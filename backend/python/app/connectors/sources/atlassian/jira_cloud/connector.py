@@ -988,6 +988,7 @@ class JiraConnector(BaseConnector):
             raise
         finally:
             self._app_roles_mapping = None
+            self._synced_project_keys = None
 
     # ============================================================================
     # Placeholder Sweep
@@ -1621,8 +1622,10 @@ class JiraConnector(BaseConnector):
             chunk = [i for i in record_ids[start:start + RECORD_DELETE_CHUNK] if i not in deleted]
             if not chunk:
                 continue
+            # Every record of the project is in a chunk; following PARENT_CHILD would also take
+            # stories in other, still-synced projects stored under one of its epics.
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                chunk, self.connector_id, cascade_children=True,
+                chunk, self.connector_id, cascade_children=False,
             )
             if not isinstance(result, dict) or not result.get("success", True) or result.get("failed_count"):
                 self.logger.warning("Could not delete the records of project %s; retrying next sync: %s", project_key, result)

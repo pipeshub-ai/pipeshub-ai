@@ -411,6 +411,8 @@ class JiraCloudPersonalConnector(JiraConnector):
                     ),
                 )
             raise
+        finally:
+            self._synced_project_keys = None
 
     async def _remove_issues_no_longer_visible(
         self,

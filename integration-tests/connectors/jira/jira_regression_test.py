@@ -522,7 +522,8 @@ class TestJiraRemovals:
             await _cleanup(jira_datasource, made, "TC-JIRA-REG-007")
 
     async def test_tc_jira_reg_008_a_project_taken_out_of_the_filter_is_kept_but_unlinked(
-        self, reg_scope: dict[str, Any], pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
+        self, reg_scope: dict[str, Any], jira_datasource: JiraDataSource,
+        pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-JIRA-REG-008: read-only; the dropped project and its issues stay stored, but the
         narrowing full sync unlinks them, so nothing shows them."""
@@ -537,6 +538,12 @@ class TestJiraRemovals:
                 for r in await graph_provider.fetch_records_by_type(cid, "TICKET")
                 if not _doc(r, "isPlaceholder", "is_placeholder")
             }
+            drop_resp = await jira_api_call_with_retry(
+                jira_datasource.get_project, projectIdOrKey=drop, context="TC-JIRA-REG-008 project id",
+            )
+            drop_group_id = str((drop_resp.json() or {}).get("id"))
+            if drop_group_id not in groups.values() or len(set(groups.values())) != 2:
+                pytest.skip("each selected project needs at least one synced issue")
             pipeshub_client.update_connector_filters_sync_safe(cid, filters=_sync_filters(project_keys=_pk("in", [keep])))
             await wait_for_sync_completion(pipeshub_client, graph_provider, cid, timeout=600)
 
@@ -548,9 +555,7 @@ class TestJiraRemovals:
             unlinked = {
                 g for i, g in groups.items() if not await graph_provider.record_belongs_to_external_group(cid, i, g)
             }
-            assert len(unlinked) == 1 and len(set(groups.values())) == 2, (
-                f"only the dropped project's issues should lose their project link: {unlinked}"
-            )
+            assert unlinked == {drop_group_id}, f"only the dropped project's issues should lose their project link: {unlinked}"
 
 
 # =============================================================================
@@ -609,7 +614,7 @@ class TestJiraSiteAndProjectIdentity:
             except PipeshubClientError as e:
                 refused = str(e)
             if refused is not None:
-                assert "atlassian.net" in refused, f"refused for another reason: {refused}"
+                assert "must be your Atlassian site" in refused, f"refused for another reason: {refused}"
             pipeshub_client.wait(20)
             assert await graph_provider.count_records(connector_id) == 0, "the connector synced from that URL"
         finally:
