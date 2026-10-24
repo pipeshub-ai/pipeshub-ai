@@ -28,7 +28,10 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -73,6 +76,7 @@ from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
 from .comments import CommentsHelper
+from .constants import HTTP_UNAUTHORIZED
 from .filters import FiltersHelper
 from .issue_reconciler import IssueReconciler
 from .issues import IssuesSync
@@ -325,7 +329,15 @@ class GitHubTeamsConnector(BaseConnector):
                 self.logger.info("GitHub Teams connection test successful.")
                 return True
             self.logger.error("GitHub Teams connection test failed: %s", response.error)
+            if response.status_code == HTTP_UNAUTHORIZED:
+                # Say why, rather than the generic "verify your credentials".
+                raise ConnectorInitError(
+                    f"GitHub rejected the credentials ({response.api_message or 'Bad credentials'}). "
+                    "Reconnect this connector with a valid token."
+                )
             return False
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error("GitHub Teams connection test failed: %s", e, exc_info=True)
             return False

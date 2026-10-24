@@ -209,15 +209,19 @@ class ProjectsSync:
         org_f = sf.get(SyncFilterKey.ORG_IDS) if sf else None
         full_name = str(getattr(res.data, "full_name", "") or "").lower()
         owner = str(getattr(getattr(res.data, "owner", None), "login", "") or "").lower()
-        if repo_f is not None and not repo_f.is_empty():
-            names = {str(v).lower() for v in repo_f.value}  # type: ignore[union-attr]
-            selected = full_name in names
-            return selected if repo_f.operator_value == FilterOperator.IN else (not selected)
-        if org_f is not None and not org_f.is_empty():
-            orgs = {str(v).lower() for v in org_f.value}  # type: ignore[union-attr]
-            selected = owner in orgs
-            return selected if org_f.operator_value == FilterOperator.IN else (not selected)
-        return None
+        repo_on = repo_f is not None and not repo_f.is_empty()
+        org_on = org_f is not None and not org_f.is_empty()
+        names = {str(v).lower() for v in repo_f.value} if repo_on else set()  # type: ignore[union-attr]
+        orgs = {str(v).lower() for v in org_f.value} if org_on else set()  # type: ignore[union-attr]
+        # In resolve_repo_scope's order: a repository list decides alone; otherwise the
+        # org filter and the repository exclusion must both let the repository through.
+        if repo_on and repo_f.operator_value == FilterOperator.IN:  # type: ignore[union-attr]
+            return full_name in names
+        if repo_on and full_name in names:
+            return False
+        if org_on:
+            return (owner in orgs) == (org_f.operator_value == FilterOperator.IN)  # type: ignore[union-attr]
+        return True if repo_on else None
 
     async def _resolve_repos_with_filters(self) -> list[GhObject]:
         """The repositories in scope (see ``resolve_repo_scope``)."""

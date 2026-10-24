@@ -2506,6 +2506,12 @@ class TestGitHubTeamsFilters:
 # =============================================================================
 
 
+async def _record_live(graph_provider: GraphProviderProtocol, connector_id: str, external_id: str) -> bool:
+    record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+    # With the trash on, a removed record stays, marked deleted, until the purge.
+    return record is not None and not getattr(record, "is_deleted", False)
+
+
 async def _wait_record_gone(
     graph_provider: GraphProviderProtocol, connector_id: str, external_id: str, description: str,
 ) -> None:
@@ -2583,18 +2589,31 @@ class TestGitHubTeamsRemovals:
         github_connector: dict[str, Any],
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
+        github_rest: GitHubAsyncRESTClient,
     ) -> None:
         """TC-DEL-SCOPE-001: after the admin selects another repository, the old one's
         records and record groups are gone (before the fix a full sync left them in the
         graph and the index, unreachable). Read-only on GitHub."""
         state = github_connector
         mutation, public = state["mutation_repo"], state["public_repo"]
+        # A named record of the old repository, so the test checks records and not only groups.
+        mutation_paths = sorted(blob_paths(await get_tree(
+            github_rest, state["org"], mutation["name"], mutation["default_branch"],
+        )))
+        if not mutation_paths:
+            pytest.skip("No file in the mutation repo — seed one (see README.md)")
+        old_file = f"/{mutation['id']}/blob/{mutation_paths[0]}"
         async with dedicated_connector(
             pipeshub_client, graph_provider,
             token=state["token"], name=_connector_name("del-scope"),
             filters=_mutation_filters(state),
         ) as connector_id:
             assert await graph_provider.get_record_group_by_external_id(connector_id, str(mutation["id"])) is not None
+            await wait_until_graph_condition(
+                connector_id,
+                check=lambda: _record_live(graph_provider, connector_id, old_file),
+                timeout=GH_SYNC_WAIT_SEC, description=f"TC-DEL-SCOPE-001 {old_file} synced",
+            )
 
             pipeshub_client.toggle_sync(connector_id, enable=False)
             pipeshub_client.wait(5)
@@ -2608,7 +2627,8 @@ class TestGitHubTeamsRemovals:
             async def _switched() -> bool:
                 old = await graph_provider.get_record_group_by_external_id(connector_id, str(mutation["id"]))
                 new = await graph_provider.get_record_group_by_external_id(connector_id, str(public["id"]))
-                return old is None and new is not None
+                old_record_left = not await _record_live(graph_provider, connector_id, old_file)
+                return old is None and new is not None and old_record_left
 
             await wait_until_graph_condition(
                 connector_id, check=_switched, timeout=GH_SYNC_WAIT_SEC,

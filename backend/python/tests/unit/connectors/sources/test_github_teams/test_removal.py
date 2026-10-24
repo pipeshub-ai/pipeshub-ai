@@ -437,6 +437,28 @@ class TestScopeResolution:
         c.runtime.ds_call = AsyncMock(return_value=ok_response(make_repo(repo_id=7, name="widgets")))
         assert await ProjectsSync(c)._still_in_scope(7) is False
 
+    @pytest.mark.parametrize(("filters", "kept"), [
+        # The org filter still applies when a repository is excluded.
+        ({"org_ids": ("in", ["acme"]), "repo_ids": ("not_in", ["acme/x"])}, False),
+        ({"org_ids": ("not_in", ["beta"]), "repo_ids": ("not_in", ["acme/x"])}, False),
+        ({"org_ids": ("in", ["beta"]), "repo_ids": ("not_in", ["acme/x"])}, True),
+        ({"org_ids": ("in", ["beta"]), "repo_ids": ("not_in", ["beta/foo"])}, False),
+        ({"repo_ids": ("not_in", ["acme/x"])}, True),
+    ])
+    async def test_both_filters_decide_whether_a_repository_is_still_in_scope(
+        self, filters: dict[str, tuple[str, list[str]]], kept: bool,
+    ) -> None:
+        c = make_mock_connector()
+        # An exclusion needs a list type; older configurations carry one.
+        types = {"org_ids": "multiselect", "repo_ids": "list"}
+        c.sync_filters = FilterCollection.from_dict(
+            {k: {"operator": op, "type": types[k], "value": v} for k, (op, v) in filters.items()})
+        assert len(c.sync_filters.filters) == len(filters)
+        foo = make_repo(repo_id=7, name="foo")
+        foo.full_name, foo.owner.login = "beta/foo", "beta"
+        c.runtime.ds_call = AsyncMock(return_value=ok_response(foo))
+        assert await ProjectsSync(c)._still_in_scope(7) is kept
+
     async def test_no_answer_is_not_a_removal(self) -> None:
         c = make_mock_connector()
         c.sync_filters = _filters(repo_ids=["acme/widgets"])

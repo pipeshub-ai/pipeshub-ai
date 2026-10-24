@@ -6,6 +6,7 @@ GitHub in ``sim/``; see README.md.
 
 import pytest
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from tests.integration.github_teams.helpers import fail
 from tests.integration.github_teams.sim.model import Review, ReviewComment, next_id
 
@@ -101,7 +102,8 @@ async def test_connection_test(world, org) -> None:
     await world.start()
     assert await world.connector.test_connection_and_access() is True
     world.gh.sync_token.revoked = True
-    assert await world.connector.test_connection_and_access() is False
+    with pytest.raises(ConnectorInitError, match="Bad credentials"):
+        await world.connector.test_connection_and_access()
 
 
 async def test_repo_filter_options(world, org) -> None:

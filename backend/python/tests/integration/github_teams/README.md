@@ -29,7 +29,7 @@ To use other servers, set `NEO4J_IT_URI`, `NEO4J_IT_PASSWORD`, `ARANGO_IT_URL` a
 - The `backend-matrix` workflow runs them on every pull request that touches the connector, its GitHub clients, the data processor or the graph stores.
 - Without a graph store they skip. When the workflow configured one, they fail instead.
 - Each test deletes only what it wrote: its org, its connector and everything carrying their ids.
-- Users are looked up by email, so a run that was killed can leave users that confuse the next one on the same database. Clear that database before rerunning.
+- Users are looked up by email. A killed run can leave users in the database, and they confuse the next run. Clear that database before rerunning.
 
 ## Layout
 

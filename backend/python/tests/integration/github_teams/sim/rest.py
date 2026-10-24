@@ -149,6 +149,7 @@ class ApiServer:
         self.ws = ws
         self.runner: web.AppRunner | None = None
         self.port = 0
+        self._signed: dict[str, Any] = {}  # per server: one test's signed URLs (and bytes) end with it
 
     async def start(self) -> None:
         app = web.Application(client_max_size=64 * 1024 * 1024)
@@ -311,8 +312,6 @@ class ApiServer:
         key = uuid.uuid4().hex
         self._signed[key] = upload
         return 302, None, {"Location": f"https://private-user-images.githubusercontent.com/{key}?jwt=signed-{key}"}
-
-    _signed: dict[str, Any] = {}
 
     def _signed_download(self, path: str, query: dict[str, str]) -> tuple[int, Any, dict[str, str]]:
         upload = self._signed.get(path.strip("/"))
