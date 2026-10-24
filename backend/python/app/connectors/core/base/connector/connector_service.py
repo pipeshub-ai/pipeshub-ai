@@ -231,7 +231,7 @@ class BaseConnector(ABC):
         """Called when ``init`` failed while starting a sync in the background, where no
         one sees the error (the API shows its own). ``error`` is what ``init`` raised, or
         None when it returned False. Does nothing by default; must not raise."""
-        return None
+        return
 
     @abstractmethod
     def test_connection_and_access(self) -> bool:

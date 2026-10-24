@@ -38,25 +38,37 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
+from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+    IconPaths,
+    OAuthConfigKeys,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
-from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -78,6 +90,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
     ConfluenceBlockParser,
 )
@@ -145,17 +158,10 @@ from app.services.notification.types import (
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
-from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.client.http.http_retry import is_retryable_status
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_downloadable,
-    not_found_at_source,
-    to_stream_error,
-)
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"

@@ -11,7 +11,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.connectors.sources.atlassian.confluence_cloud.connector import CommentsUnreadable, GoneAtSource
+from app.connectors.sources.atlassian.confluence_cloud.connector import GoneAtSource
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus

@@ -202,7 +202,7 @@ class TestSyncUsers:
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_paginates_until_an_empty_page(self):
+    async def test_paginates_until_an_empty_page(self) -> None:
         connector = _make_connector()
 
         call_count = 0

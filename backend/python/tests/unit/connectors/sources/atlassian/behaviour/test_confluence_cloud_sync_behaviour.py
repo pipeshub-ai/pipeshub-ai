@@ -49,7 +49,10 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
-from app.connectors.sources.atlassian.core.quota import AtlassianQuotaExhausted, QuotaAwarePolicy
+from app.connectors.sources.atlassian.core.quota import (
+    AtlassianQuotaExhausted,
+    QuotaAwarePolicy,
+)
 from app.models.entities import (
     AppUser,
     CommentRecord,
@@ -2408,7 +2411,9 @@ class TestNoRawErrorTextForUsers:
 
 class TestSpentQuotaEdges:
     async def test_a_response_the_policy_refuses_to_wait_for_is_closed(self, monkeypatch) -> None:
-        from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
+        from app.sources.client.http.http_resilient_transport import (
+            ResilientHTTPTransport,
+        )
 
         closed: list[bool] = []
 
@@ -2652,7 +2657,9 @@ class TestWebLinksThroughTheGateway:
 
 class TestUserSearchCap:
     async def test_reaching_the_user_search_cap_is_reported(self, api, db, checkpoints, monkeypatch) -> None:
-        from app.connectors.sources.atlassian.confluence_cloud import connector as module
+        from app.connectors.sources.atlassian.confluence_cloud import (
+            connector as module,
+        )
 
         monkeypatch.setattr(module, "USER_SEARCH_CAP", 150)
 
@@ -2761,9 +2768,8 @@ class TestRestrictionsWithoutTheAuditLog:
 
     def _with_read_restriction(self, page: dict[str, Any], *account_ids: str) -> dict[str, Any]:
         users = [{"accountId": a} for a in account_ids]
-        page = {**page, "restrictions": {"read": {"restrictions": {
+        return {**page, "restrictions": {"read": {"restrictions": {
             "user": {"results": users, "size": len(users)}, "group": {"results": [], "size": 0}}}}}
-        return page
 
     async def test_a_restriction_added_without_an_edit_is_applied(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")

@@ -3251,7 +3251,7 @@ class ConfluenceDataSource:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
-        headers: Optional[Dict[str, Any]] = None,
+        headers: Optional[dict[str, Any]] = None,
         content_type: str = "comment",
     ) -> HTTPResponse:
         """Comments (or attachments) of a space changed after a time, with the page or blog post each is on.
@@ -3267,7 +3267,7 @@ class ConfluenceDataSource:
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')
-        _query: Dict[str, Any] = {"cql": " AND ".join(cql_parts), "expand": "container,version"}
+        _query: dict[str, Any] = {"cql": " AND ".join(cql_parts), "expand": "container,version"}
         if limit is not None:
             _query["limit"] = limit
         if cursor is not None:
@@ -3288,7 +3288,7 @@ class ConfluenceDataSource:
         self,
         page_id: str,
         expand: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None,
+        headers: Optional[dict[str, Any]] = None,
         start: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> HTTPResponse:

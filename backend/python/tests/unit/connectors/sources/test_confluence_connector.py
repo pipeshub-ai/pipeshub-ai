@@ -9,7 +9,8 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.connectors.sources.atlassian.confluence_cloud.connector import CommentsUnreadable, GoneAtSource
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     AccessRule,
     Connectors,
@@ -28,15 +29,18 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     CONTENT_EXPAND_PARAMS,
     FOLDER_EXPAND_PARAMS,
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
+    CommentsUnreadable,
     ConfluenceConnector,
+    GoneAtSource,
     extract_media_from_adf,
 )
+from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
+from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -49,9 +53,7 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
-from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.models.permission import EntityType, Permission, PermissionType
-from fastapi import HTTPException
 
 # ===========================================================================
 # Helpers
@@ -2065,7 +2067,7 @@ class TestCreatePermissionFromPrincipal:
         assert perm is None
 
     @pytest.mark.asyncio
-    async def test_a_failed_lookup_raises(self):
+    async def test_a_failed_lookup_raises(self) -> None:
         """Not "not found": a caller keeps what is stored instead of dropping the grant."""
         c = _conn()
         c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
@@ -2167,7 +2169,7 @@ class TestTransformAccessClassSpacePermission:
         assert result.type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_licensed_users_with_no_synced_group_grant_nothing(self):
+    async def test_licensed_users_with_no_synced_group_grant_nothing(self) -> None:
         """Never the whole org: an unmatched class grants no one."""
         c = _conn()
         self._mock_groups(c, [])
@@ -2189,7 +2191,7 @@ class TestTransformAccessClassSpacePermission:
         assert result.type == PermissionType.OWNER
 
     @pytest.mark.asyncio
-    async def test_product_admins_with_no_synced_group_grant_nothing(self):
+    async def test_product_admins_with_no_synced_group_grant_nothing(self) -> None:
         c = _conn()
         self._mock_groups(c, [])
         result = await c._transform_space_permission(
@@ -2198,7 +2200,7 @@ class TestTransformAccessClassSpacePermission:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_site_named_groups_and_the_new_spelling_are_matched(self):
+    async def test_site_named_groups_and_the_new_spelling_are_matched(self) -> None:
         c = _conn()
         self._mock_groups(c, [
             self._group("confluence-users-acme", "grp-1"),
@@ -2212,7 +2214,7 @@ class TestTransformAccessClassSpacePermission:
         assert {p.entity_type for p in granted} == {EntityType.GROUP}
 
     @pytest.mark.asyncio
-    async def test_anonymous_access_opens_a_public_space_to_the_org(self):
+    async def test_anonymous_access_opens_a_public_space_to_the_org(self) -> None:
         c = _conn()
         self._mock_groups(c, [])
         row = {"principal": {"type": "ACCESS_CLASS", "id": "anonymous-users"},
@@ -7927,7 +7929,7 @@ class TestFetchConfluenceMediaAsBase64:
             "page-1", "media-id", "alt.png", "page", attachments=attachments
         )
 
-    def test_images_left_out_of_the_body_are_decided_from_the_list(self):
+    def test_images_left_out_of_the_body_are_decided_from_the_list(self) -> None:
         from app.connectors.sources.atlassian.confluence_cloud.connector import (
             MAX_INLINE_IMAGE_BYTES,
             images_not_inlined,
@@ -7944,8 +7946,10 @@ class TestFetchConfluenceMediaAsBase64:
         assert images_not_inlined(attachments) == {"big", "i4"}
 
     @pytest.mark.asyncio
-    async def test_an_image_left_out_of_the_body_is_not_downloaded(self):
-        from app.connectors.sources.atlassian.confluence_cloud.connector import MAX_INLINE_IMAGE_BYTES
+    async def test_an_image_left_out_of_the_body_is_not_downloaded(self) -> None:
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            MAX_INLINE_IMAGE_BYTES,
+        )
 
         c = _mk_connector()
         ds = MagicMock()
@@ -8182,7 +8186,7 @@ class TestProcessPageAttachmentsForChildren:
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_new_attachment_is_left_to_the_sync(self):
+    async def test_a_new_attachment_is_left_to_the_sync(self) -> None:
         c = _mk_connector()
         mock_tx = c.data_store_provider.transaction.return_value
         mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
@@ -8666,7 +8670,7 @@ class TestFixLegacyMimeTypes:
 
 class TestTransformSpacePermissionException:
     @pytest.mark.asyncio
-    async def test_exception_is_raised_so_the_space_keeps_its_stored_access(self):
+    async def test_exception_is_raised_so_the_space_keeps_its_stored_access(self) -> None:
         c = _mk_connector()
         c._create_permission_from_principal = AsyncMock(side_effect=RuntimeError("boom"))
         perm_data = {
@@ -9437,7 +9441,7 @@ class TestSweepPlaceholderRecords:
         assert submitted["F"].is_placeholder is False  # folder synced as a real record
 
     @pytest.mark.asyncio
-    async def test_fetch_failure_keeps_the_stub_and_walks_up(self):
+    async def test_fetch_failure_keeps_the_stub_and_walks_up(self) -> None:
         """When the source fetch fails (or the stub did not change), the stored stub is kept as
         it is, noted as seen so a full sync keeps its edges, and its parent is still walked."""
         c = _make_connector()
@@ -9535,7 +9539,7 @@ class TestFindUserAccountIdByEmail:
         assert await ds.find_user_account_id_by_email("a@t.com") == expected
 
 
-def test_a_jira_match_that_could_be_by_display_name_or_another_email_is_not_trusted():
+def test_a_jira_match_that_could_be_by_display_name_or_another_email_is_not_trusted() -> None:
     from app.sources.external.confluence.confluence import _matched_by_something_else
 
     assert _matched_by_something_else({"displayName": "bob@acme.com (not Bob)"}, "bob@acme.com")
