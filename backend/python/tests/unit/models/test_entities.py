@@ -1831,6 +1831,31 @@ class TestAppUser:
         assert arango["fullName"] == "App User"
         assert arango["userId"] == "src-1"
 
+    def test_title_round_trips_through_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", title="Staff Engineer")
+        doc = au.to_arango_base_user()
+        assert doc["designation"] == "Staff Engineer"
+        assert AppUser.from_arango_user(doc).title == "Staff Engineer"
+
+    def test_missing_title_is_omitted_from_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U")
+        assert "designation" not in au.to_arango_base_user()
+
+    def test_title_falls_back_to_legacy_field(self) -> None:
+        from app.models.entities import AppUser
+        doc = {"_key": "k", "email": "u@test.com", "fullName": "U", "userId": "s", "title": "Analyst"}
+        assert AppUser.from_arango_user(doc).title == "Analyst"
+
+    def test_source_role_is_not_stored_as_title(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.DROPBOX, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", source_role="team_admin")
+        assert "designation" not in au.to_arango_base_user()
+
     def test_from_arango_user(self):
         from app.models.entities import AppUser
         data = {

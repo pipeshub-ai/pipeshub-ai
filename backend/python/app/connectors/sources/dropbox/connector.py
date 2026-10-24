@@ -1583,7 +1583,7 @@ class DropboxConnector(BaseConnector):
                     full_name=profile.name.display_name,
                     email=profile.email,
                     is_active=(profile.status._tag == "active"),
-                    title=member.role._tag,
+                    source_role=member.role._tag,
                 )
             )
         return app_users
@@ -2673,7 +2673,7 @@ class DropboxConnector(BaseConnector):
         # Find a team admin user
         team_admin_user = None
         for user in users:
-            if user.title == "team_admin":
+            if user.source_role == "team_admin":
                 team_admin_user = user
                 break
 
@@ -2860,7 +2860,7 @@ class DropboxConnector(BaseConnector):
         # Find team admin user
         team_admin_user = None
         for user in users:
-            if hasattr(user, 'title') and user.title == "team_admin":
+            if user.source_role == "team_admin":
                 team_admin_user = user
                 break
 
