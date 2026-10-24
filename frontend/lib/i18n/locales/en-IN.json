@@ -2268,7 +2268,8 @@
       "enterprise": {
         "userActionsTitle": "People's own actions",
         "userActionsDescription": "Review and remove the actions people in your organization add for themselves."
-      }
+      },
+      "appsHeading": "App actions"
     },
     "archivedChats": {
       "title": "Archived Chats",
@@ -4257,6 +4258,176 @@
         "outcomeRevoked": "Permission removed",
         "byAdmin": "by {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API actions",
+      "subtitle": "Internal APIs your admin made available to agents. Connect your own credential where one is asked for.",
+      "subtitleAdmin": "Turn an internal REST API into actions from its OpenAPI spec. Choose which operations agents may call and how PipesHub signs in.",
+      "emptyTitle": "Add your first API action",
+      "emptyAdmin": "Upload the OpenAPI 3.0 or 3.1 spec of any internal REST API.",
+      "card": {
+        "fallbackDescription": "An internal REST API, added from its OpenAPI spec."
+      },
+      "operationCount_one": "{{count}} operation",
+      "operationCount_other": "{{count}} operations",
+      "kind": {
+        "read": "Read",
+        "write": "Write",
+        "destructive": "Delete"
+      },
+      "authType": {
+        "none": "No authentication",
+        "api_key": "API key",
+        "http_bearer": "Bearer token",
+        "http_basic": "Username and password",
+        "oauth2_client_credentials": "OAuth 2.0 client credentials",
+        "oauth2_authorization_code": "OAuth 2.0 sign-in"
+      },
+      "status": {
+        "connected": "Connected",
+        "notConnected": "Not connected",
+        "open": "No sign-in needed",
+        "shared": "Shared credential"
+      },
+      "cta": {
+        "add": "Add API action",
+        "connect": "Connect",
+        "manageConnection": "Manage connection",
+        "details": "Details",
+        "edit": "Edit",
+        "delete": "Delete",
+        "more": "More options for {{name}}"
+      },
+      "toasts": {
+        "loadError": "Couldn't load API actions",
+        "created": "API action added",
+        "updated": "API action updated",
+        "saveError": "Couldn't save the API action",
+        "deleted": "API action deleted",
+        "deleteError": "Couldn't delete the API action",
+        "connected": "Connected",
+        "disconnected": "Disconnected"
+      },
+      "deleteDialog": {
+        "title": "Delete API action",
+        "body": "Delete {{name}}? Every saved credential for it is removed. An API action an agent uses can't be deleted."
+      },
+      "editor": {
+        "addTitle": "Add API action",
+        "editTitle": "Edit API action",
+        "spec": "OpenAPI spec",
+        "specHint": "Upload or paste the API's OpenAPI 3.0 or 3.1 spec in JSON or YAML. PipesHub reads its operations and sign-in methods.",
+        "specEditHint": "Leave empty to keep the current spec. Upload a new one to pick from its operations and auth schemes.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "Read spec",
+        "previewing": "Reading spec…",
+        "validateError": "Couldn't read the spec",
+        "warnings": "Some parts of the spec were skipped:",
+        "operations": "Operations ({{selected}} of {{total}} selected)",
+        "operationsHint": "Agents can call only the operations you select.",
+        "name": "Name",
+        "description": "Description",
+        "baseUrl": "Base URL",
+        "baseUrlHint": "Where PipesHub sends requests. Operation paths are added to it.",
+        "loopbackHint": "localhost means the PipesHub server itself. Use the address PipesHub reaches the API at, such as its host name on your network.",
+        "authScheme": "Authentication",
+        "authSchemeLocked": "Upload the spec again to change how PipesHub authenticates.",
+        "scopes": "Scopes",
+        "oauthClientId": "OAuth app client ID",
+        "oauthClientSecret": "OAuth app client secret",
+        "keepSecret": "Leave blank to keep the saved secret",
+        "sharedCredential": "One shared credential",
+        "sharedCredentialHint": "You set the credential once and every member uses it. When off, each member connects their own.",
+        "sharedCredentialForced": "Client credentials sign in as the app, not as a person, so everyone shares the one you set.",
+        "timeout": "Timeout (seconds)",
+        "timeoutHint": "How long to wait for the API, from 1 to {{max}} seconds.",
+        "problems": {
+          "name": "Enter a name.",
+          "baseUrl": "Enter the base URL.",
+          "operations": "Select at least one operation.",
+          "timeout": "Enter a timeout from 1 to 120 seconds.",
+          "oauthClientId": "Enter the OAuth app's client ID."
+        },
+        "create": "Add API action",
+        "specLoadedHint": "The spec this API action is built from. Replace it to pick from a newer version.",
+        "replaceSpec": "Replace spec",
+        "specUnread": "Read the new spec first, or cancel replacing it.",
+        "specSummary_one": "Version {{version}} · OpenAPI {{openapi}} · {{count}} operation",
+        "specSummary_other": "Version {{version}} · OpenAPI {{openapi}} · {{count}} operations",
+        "dropFile": "Drop a spec file here, or click to choose one",
+        "dropFileHint": "JSON or YAML. You can also paste the spec below.",
+        "sampleHint": "No spec at hand? Start from the sample, a helpdesk API with every sign-in type.",
+        "sample": {
+          "yaml": "Sample YAML",
+          "json": "Sample JSON"
+        },
+        "detailsHeading": "Details",
+        "descriptionHint": "Agents read this to decide when to use the API.",
+        "authSchemeHint": "How PipesHub signs in when an agent calls the API.",
+        "redirectUrl": "Redirect URL",
+        "redirectUrlHint": "Register this URL with the OAuth app as an allowed redirect.",
+        "noAuthHint": "PipesHub calls the API without credentials, so only operations the spec marks as public work.",
+        "selectReads": "Reads only",
+        "selectAll": "All",
+        "selectNone": "None",
+        "unreachableWarning_one": "{{count}} selected operation needs credentials, so it fails without authentication.",
+        "unreachableWarning_other": "{{count}} selected operations need credentials, so they fail without authentication.",
+        "deselectUnreachable": "Deselect them",
+        "needsCredentials": "Needs credentials",
+        "needsCredentialsHint": "The spec says this operation needs credentials. Without authentication the API refuses it.",
+        "advancedHeading": "Advanced"
+      },
+      "connect": {
+        "mode": {
+          "none": "This API needs no credential.",
+          "own": "Agents call this API with your own credential.",
+          "shared": "Every member uses the credential you set here.",
+          "managed": "Your admin manages the credential for this API action."
+        },
+        "status": "Status",
+        "signIn": "Sign in",
+        "signInAgain": "Sign in again",
+        "signingIn": "Signing in…",
+        "fields": {
+          "apiKey": "API key",
+          "token": "Token",
+          "username": "Username",
+          "password": "Password",
+          "clientId": "Client ID",
+          "clientSecret": "Client secret"
+        },
+        "replaceHint": "Saved. Enter a new value to replace it.",
+        "error": "That didn't work. Try again.",
+        "test": "Test connection",
+        "testing": "Testing…",
+        "testOk": "The API answered.",
+        "testFailed": "The API answered with an error.",
+        "testTruncated": "Only the start of the response is shown.",
+        "disconnect": "Disconnect",
+        "disconnecting": "Disconnecting…",
+        "panelTitle": "API action",
+        "connectionHeading": "Connection",
+        "testHeading": "Test connection",
+        "testHint": "Calls one read operation that needs no input.",
+        "testIdle": "Run a test call to see what the API returns.",
+        "testNeedsConnection": "Connect first, then run a test call.",
+        "operationsHeading_one": "{{count}} operation agents can call",
+        "operationsHeading_other": "{{count}} operations agents can call"
+      },
+      "sectionTitle": "API actions",
+      "kindCount": {
+        "read_one": "{{count}} read",
+        "read_other": "{{count}} reads",
+        "write_one": "{{count}} write",
+        "write_other": "{{count}} writes",
+        "destructive_one": "{{count}} delete",
+        "destructive_other": "{{count}} deletes"
+      },
+      "kindPolicy": {
+        "read": "runs right away",
+        "write": "asks the user first",
+        "destructive": "blocked unless the agent's action rules allow it"
+      }
     }
   },
   "filePreview": {
@@ -4619,7 +4790,12 @@
     "limitSource": "Choose what {{name}} searches",
     "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
     "limitSourceCount": "Limited to {{count}} selected",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account.",
+    "apiToolsets": {
+      "section": "API actions",
+      "connectTooltip": "Connect it under Actions",
+      "serviceAccountBlocked": "Service-account agents can only use API actions with a shared credential or no sign-in."
+    }
   },
   "recordView": {
     "sections": {

@@ -7812,6 +7812,32 @@ class TestDeleteNodesByConnectorId:
 
 
 # ---------------------------------------------------------------------------
+# check_api_toolset_in_use
+# ---------------------------------------------------------------------------
+
+
+class TestCheckApiToolsetInUse:
+    @pytest.mark.asyncio
+    async def test_returns_agents_with_an_operation_of_the_toolset(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"agentId": "agents/a1", "agentName": "Support bot"}],
+        )
+
+        assert await connected_provider.check_api_toolset_in_use("t9") == ["Support bot"]
+
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "apiToolsetTools" in call.args[0] and "STARTS_WITH" in call.args[0] and "isDeleted != true" in call.args[0]
+        # The trailing ":" keeps toolset "t9" from matching "t90".
+        assert call.kwargs["bind_vars"] == {"prefix": "t9:"}
+
+    @pytest.mark.asyncio
+    async def test_raises_on_query_error(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("arango down"))
+        with pytest.raises(RuntimeError, match="arango down"):
+            await connected_provider.check_api_toolset_in_use("t1")
+
+
+# ---------------------------------------------------------------------------
 # check_mcp_instance_in_use
 # ---------------------------------------------------------------------------
 

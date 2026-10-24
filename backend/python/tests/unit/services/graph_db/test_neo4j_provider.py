@@ -378,6 +378,28 @@ class TestCheckMcpInstanceInUse:
             await neo4j_provider.check_mcp_instance_in_use("inst-1")
 
 
+class TestCheckApiToolsetInUse:
+    @pytest.mark.asyncio
+    async def test_returns_agent_names_deduped_by_id(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"agentId": "a1", "agentName": "Support bot"}, {"agentId": "a1", "agentName": "Support bot"}]
+        )
+        assert await neo4j_provider.check_api_toolset_in_use("t1") == ["Support bot"]
+
+    @pytest.mark.asyncio
+    async def test_matches_the_toolsets_entries_and_skips_deleted_agents(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.check_api_toolset_in_use("t9", transaction="txn-1")
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert "apiToolsetTools" in query and "STARTS WITH $prefix" in query and "isDeleted" in query
+        # The trailing ":" keeps toolset "t9" from matching "t90".
+        assert kwargs["parameters"] == {"prefix": "t9:"}
+        assert kwargs["txn_id"] == "txn-1"
+
+
 class TestCheckConnectorInUse:
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_agents(self, neo4j_provider: Neo4jProvider):

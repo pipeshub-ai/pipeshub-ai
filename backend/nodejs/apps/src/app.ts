@@ -120,6 +120,8 @@ import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes'
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { ApiToolsetsContainer } from './modules/api_toolsets/container/api_toolsets.container';
+import { createApiToolsetsRouter } from './modules/api_toolsets/routes/api_toolsets.routes';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import {
   createMcpClientMetadataHandler,
@@ -175,6 +177,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private apiToolsetsContainer!: Container;
   private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -299,6 +302,9 @@ export class Application {
         configurationManagerConfig,
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.apiToolsetsContainer = await ApiToolsetsContainer.initialize(
         configurationManagerConfig,
       );
       this.projectsContainer = await ProjectsContainer.initialize(
@@ -742,6 +748,12 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
+    this.app.use(
+      '/api/v1/api-toolsets',
+      createApiToolsetsRouter(this.apiToolsetsContainer),
     );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.

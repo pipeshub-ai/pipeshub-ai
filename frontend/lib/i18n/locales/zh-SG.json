@@ -2410,7 +2410,8 @@
       "enterprise": {
         "userActionsTitle": "成员自己的操作",
         "userActionsDescription": "查看并移除组织成员为自己添加的操作。"
-      }
+      },
+      "appsHeading": "应用操作"
     },
     "rightPanel": {
       "primaryDisabledHint": "请向上滚动并填写必填字段（标有 * 号）以继续。",
@@ -4331,6 +4332,169 @@
         "outcomeRevoked": "已移除权限",
         "byAdmin": "由 {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 操作",
+      "subtitle": "管理员为智能体提供的内部 API。需要时，请连接您自己的凭据。",
+      "subtitleAdmin": "通过 OpenAPI 规范将内部 REST API 转换为操作。选择智能体可以调用的操作，以及 PipesHub 的登录方式。",
+      "emptyTitle": "添加您的第一个 API 操作",
+      "emptyAdmin": "上传任意内部 REST API 的 OpenAPI 3.0 或 3.1 规范。",
+      "card": {
+        "fallbackDescription": "根据 OpenAPI 规范添加的内部 REST API。"
+      },
+      "operationCount_other": "{{count}} 个操作",
+      "kind": {
+        "read": "读取",
+        "write": "写入",
+        "destructive": "删除"
+      },
+      "authType": {
+        "none": "无需身份验证",
+        "api_key": "API 密钥",
+        "http_bearer": "Bearer 令牌",
+        "http_basic": "用户名和密码",
+        "oauth2_client_credentials": "OAuth 2.0 客户端凭据",
+        "oauth2_authorization_code": "OAuth 2.0 登录"
+      },
+      "status": {
+        "connected": "已连接",
+        "notConnected": "未连接",
+        "open": "无需登录",
+        "shared": "共享凭据"
+      },
+      "cta": {
+        "add": "添加 API 操作",
+        "connect": "连接",
+        "manageConnection": "管理连接",
+        "details": "详情",
+        "edit": "编辑",
+        "delete": "删除",
+        "more": "{{name}} 的更多选项"
+      },
+      "toasts": {
+        "loadError": "无法加载 API 操作",
+        "created": "已添加 API 操作",
+        "updated": "已更新 API 操作",
+        "saveError": "无法保存 API 操作",
+        "deleted": "已删除 API 操作",
+        "deleteError": "无法删除 API 操作",
+        "connected": "已连接",
+        "disconnected": "已断开连接"
+      },
+      "deleteDialog": {
+        "title": "删除 API 操作",
+        "body": "删除 {{name}}？为它保存的所有凭据都会被移除。智能体正在使用的 API 操作无法删除。"
+      },
+      "editor": {
+        "addTitle": "添加 API 操作",
+        "editTitle": "编辑 API 操作",
+        "spec": "OpenAPI 规范",
+        "specHint": "上传或粘贴该 API 的 OpenAPI 3.0 或 3.1 规范（JSON 或 YAML 格式）。PipesHub 会读取其中的操作和登录方式。",
+        "specEditHint": "留空则保留当前规范。上传新规范后可从其操作和身份验证方式中选择。",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "读取规范",
+        "previewing": "正在读取规范…",
+        "validateError": "无法读取规范",
+        "warnings": "已跳过规范中的部分内容：",
+        "operations": "操作（已选 {{selected}} / {{total}}）",
+        "operationsHint": "智能体只能调用您选择的操作。",
+        "name": "名称",
+        "description": "描述",
+        "baseUrl": "基础 URL",
+        "baseUrlHint": "PipesHub 发送请求的地址，操作路径会追加在其后。",
+        "loopbackHint": "localhost 指 PipesHub 服务器本身。请使用 PipesHub 访问该 API 的地址，例如它在你网络中的主机名。",
+        "authScheme": "身份验证",
+        "authSchemeLocked": "重新上传规范才能更改 PipesHub 的身份验证方式。",
+        "scopes": "权限范围",
+        "oauthClientId": "OAuth 应用客户端 ID",
+        "oauthClientSecret": "OAuth 应用客户端密钥",
+        "keepSecret": "留空则保留已保存的密钥",
+        "sharedCredential": "使用一个共享凭据",
+        "sharedCredentialHint": "您只需设置一次凭据，所有成员都会使用它。关闭后，每位成员连接自己的凭据。",
+        "sharedCredentialForced": "客户端凭据以应用而非个人身份登录，因此所有人共享您设置的凭据。",
+        "timeout": "超时（秒）",
+        "timeoutHint": "等待 API 响应的时间，1 到 {{max}} 秒。",
+        "problems": {
+          "name": "请输入名称。",
+          "baseUrl": "请输入基础 URL。",
+          "operations": "请至少选择一个操作。",
+          "timeout": "请输入 1 到 120 秒之间的超时时间。",
+          "oauthClientId": "请输入 OAuth 应用的客户端 ID。"
+        },
+        "create": "添加 API 操作",
+        "specLoadedHint": "此 API 操作所依据的规范。替换规范即可从较新版本中选择。",
+        "replaceSpec": "替换规范",
+        "specUnread": "请先读取新规范，或取消替换。",
+        "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 个操作",
+        "dropFile": "将规范文件拖放到此处，或点击选择文件",
+        "dropFileHint": "JSON 或 YAML。您也可以在下方粘贴规范。",
+        "sampleHint": "手头没有规范？从示例开始：一个支持所有登录方式的帮助台 API。",
+        "sample": {
+          "yaml": "示例 YAML",
+          "json": "示例 JSON"
+        },
+        "detailsHeading": "详情",
+        "descriptionHint": "智能体会读取此内容来决定何时使用该 API。",
+        "authSchemeHint": "智能体调用 API 时 PipesHub 的登录方式。",
+        "redirectUrl": "重定向 URL",
+        "redirectUrlHint": "在 OAuth 应用中将此 URL 注册为允许的重定向地址。",
+        "noAuthHint": "PipesHub 不带凭据调用该 API，因此只有规范中标记为公开的操作才能正常工作。",
+        "selectReads": "仅读取",
+        "selectAll": "全部",
+        "selectNone": "全不选",
+        "unreachableWarning_other": "已选的 {{count}} 个操作需要凭据，未经身份验证将会失败。",
+        "deselectUnreachable": "取消选择这些操作",
+        "needsCredentials": "需要凭据",
+        "needsCredentialsHint": "规范显示此操作需要凭据。未经身份验证，API 会拒绝该请求。",
+        "advancedHeading": "高级"
+      },
+      "connect": {
+        "mode": {
+          "none": "此 API 无需凭据。",
+          "own": "智能体使用您自己的凭据调用此 API。",
+          "shared": "所有成员都使用您在此处设置的凭据。",
+          "managed": "此 API 操作的凭据由管理员管理。"
+        },
+        "status": "状态",
+        "signIn": "登录",
+        "signInAgain": "重新登录",
+        "signingIn": "正在登录…",
+        "fields": {
+          "apiKey": "API 密钥",
+          "token": "令牌",
+          "username": "用户名",
+          "password": "密码",
+          "clientId": "客户端 ID",
+          "clientSecret": "客户端密钥"
+        },
+        "replaceHint": "已保存。输入新值即可替换。",
+        "error": "操作未成功，请重试。",
+        "test": "测试连接",
+        "testing": "正在测试…",
+        "testOk": "API 已响应。",
+        "testFailed": "API 返回了错误。",
+        "testTruncated": "仅显示响应的开头部分。",
+        "disconnect": "断开连接",
+        "disconnecting": "正在断开连接…",
+        "panelTitle": "API 操作",
+        "connectionHeading": "连接",
+        "testHeading": "测试连接",
+        "testHint": "调用一个无需输入的读取操作。",
+        "testIdle": "运行测试调用，查看 API 返回的内容。",
+        "testNeedsConnection": "请先连接，再运行测试调用。",
+        "operationsHeading_other": "智能体可以调用的 {{count}} 个操作"
+      },
+      "sectionTitle": "API 操作",
+      "kindCount": {
+        "read_other": "{{count}} 个读取",
+        "write_other": "{{count}} 个写入",
+        "destructive_other": "{{count}} 个删除"
+      },
+      "kindPolicy": {
+        "read": "立即运行",
+        "write": "先询问用户",
+        "destructive": "除非智能体的操作规则允许，否则会被阻止"
+      }
     }
   },
   "filePreview": {
@@ -4691,7 +4855,12 @@
     "limitSource": "选择 {{name}} 的搜索范围",
     "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
     "limitSourceCount": "仅限所选的 {{count}} 项",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。"
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。",
+    "apiToolsets": {
+      "section": "API 操作",
+      "connectTooltip": "请在“操作”中连接",
+      "serviceAccountBlocked": "服务账号智能体只能使用具有共享凭据或无需登录的 API 操作。"
+    }
   },
   "recordView": {
     "sections": {

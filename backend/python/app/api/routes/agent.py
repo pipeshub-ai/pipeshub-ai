@@ -25,6 +25,9 @@ from app.agents.agent_loop.protocol.stream_collector import collect_stream_outco
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.openapi import attachments as api_toolset_attachments
+from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
+from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.api.middlewares.token_policy import is_service_token
@@ -1161,6 +1164,21 @@ _MAX_MCP_DISPLAY_NAME_CHARS = 200
 
 def _has_control_chars(text: str) -> bool:
     return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
+async def _checked_api_toolset_tools(
+    raw: object, services: dict[str, Any], org_id: str, *, service_account: bool,
+) -> list[str]:
+    """The API toolset operations to store on an agent, each one checked to exist in the org."""
+    if raw == []:
+        return []
+    config_service: ConfigurationService = services["config_service"]
+    try:
+        return await api_toolset_attachments.checked_attachments(
+            ApiToolsetStore(config_service), org_id, raw, service_account=service_account,
+        )
+    except ApiToolsetError as e:
+        raise InvalidRequestError(str(e)) from e
 
 
 def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
@@ -2516,6 +2534,9 @@ async def create_agent(request: Request) -> JSONResponse:
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        api_toolset_tools = await _checked_api_toolset_tools(
+            body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
+        )
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -2530,6 +2551,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "tags": body.get("tags", []) or [],
             "webSearch": web_search_attachment,
             "defaultReasoningEffort": default_reasoning_effort,
+            "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
             "sendUserContext": bool(body.get("sendUserContext", True)),
@@ -3222,6 +3244,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
                 raise _toolset_attachments_unreadable() from e
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+        if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
+            # Becoming a service account re-checks what is already attached.
+            body["apiToolsetTools"] = await _checked_api_toolset_tools(
+                body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
+                org_key, service_account=final_service_account,
+            )
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -4535,6 +4563,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsets": agent_toolsets,
                     "mcpServers": agent_mcp_servers,
                     "mcpServerConfigs": mcp_server_configs,
+                    "apiToolsetTools": _api_toolset_tools_for_chat(agent.get("apiToolsetTools") or [], chat_query.tools),
                     "knowledge": agent_knowledge,
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
@@ -4654,6 +4683,29 @@ def _stream_error_frame(
         evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code, **extra)
         return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
     return f"event: error\ndata: {json.dumps({'message': message, 'type': code, **extra})}\n\n"
+
+
+def _api_toolset_tools_for_chat(attached: list[str], chat_tools: list[str] | None) -> list[str]:
+    """`chat_tools` narrows the attached operations the same way it narrows toolsets; None keeps all."""
+    if chat_tools is None:
+        return attached
+    wanted = set(chat_tools)
+    return [ref for ref in attached if ref in wanted]
+
+
+async def _assistant_api_toolset_tools(
+    config_service: ConfigurationService, org_id: str, user_id: str, logger: Logger,
+) -> list[str]:
+    from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+
+    if not await is_api_toolsets_enabled(config_service):
+        return []
+    try:
+        return await connected_tool_refs(ApiToolsetStore(config_service), org_id, user_id)
+    except Exception as e:
+        # The assistant still answers without them, like it does without toolsets above.
+        logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
+        return []
 
 
 async def get_assistant_agent(
@@ -4822,5 +4874,6 @@ async def get_assistant_agent(
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
         "mcpServers": authenticated_mcp_servers_list,
+        "apiToolsetTools": await _assistant_api_toolset_tools(config_service, org_id, user_id, logger),
         "knowledge": knowledge_sources,
     }, toolset_auth_by_instance

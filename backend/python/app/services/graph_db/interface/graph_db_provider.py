@@ -6020,6 +6020,21 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_api_toolset_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that may call an operation of the API toolset
+        (an `apiToolsetTools` entry starting with `"<instance_id>:"`).
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the toolset.
+        """
+        pass
+
+    @abstractmethod
     async def check_mcp_instance_in_use(
         self,
         instance_id: str,

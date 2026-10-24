@@ -783,6 +783,15 @@ const agentMcpServerSchema = z.object({
  * duplicate-type rejection — instances with no `typeId` (custom/unregistered
  * servers) are exempt, same as the Python side.
  */
+/**
+ * API toolset operations an agent may call, each `"<toolsetId>:<operation>"`.
+ * Python checks that every one exists in the organization.
+ */
+const agentApiToolsetToolsSchema = z
+  .array(z.string().regex(/^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$/))
+  .max(500)
+  .optional();
+
 const agentMcpServersSchema = z
   .array(agentMcpServerSchema)
   .max(50)
@@ -972,7 +981,9 @@ const createAgentBodySchema = z
   });
 
 export const createAgentSchema = z.object({
-  body: createAgentBodySchema,
+  body: createAgentBodySchema.extend({
+    apiToolsetTools: agentApiToolsetToolsSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -1010,7 +1021,9 @@ const updateAgentBodySchema = z
 
 export const updateAgentSchema = z.object({
   params: z.object(agentKeyParam),
-  body: updateAgentBodySchema,
+  body: updateAgentBodySchema.extend({
+    apiToolsetTools: agentApiToolsetToolsSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------

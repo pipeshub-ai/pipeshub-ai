@@ -18,6 +18,7 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, type ScopedRowSource } from '@/chat/store';
+import { bareToolFullName } from '@/chat/tool-groups';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
@@ -384,6 +385,8 @@ interface ChatToolGroupRow {
   label: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
+  /** Display name per `fullNames` entry, where the full name doesn't read as one (MCP, API actions). */
+  toolLabels?: Record<string, string>;
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
@@ -677,7 +680,8 @@ export function AgentScopedResourcesPanel({
           fullNames: g.fullNames.filter((fn) => {
             if (!search.trim()) return true;
             const q = search.toLowerCase();
-            const desc = (g.toolDescriptions?.[fn] ?? '').toLowerCase();
+            // The row shows `toolLabels` (an API action's operation summary), so search it too.
+            const desc = `${g.toolDescriptions?.[fn] ?? ''} ${g.toolLabels?.[fn] ?? ''}`.toLowerCase();
             return (
               fn.toLowerCase().includes(q) ||
               g.label.toLowerCase().includes(q) ||
@@ -848,9 +852,10 @@ export function AgentScopedResourcesPanel({
 
               {expanded &&
                 group.fullNames.map((fullName) => {
-                  const shortRaw = fullName.includes('.')
-                    ? fullName.slice(fullName.indexOf('.') + 1)
-                    : fullName;
+                  // Project keys carry an instance prefix; show the name the server knows.
+                  const fn = bareToolFullName(fullName);
+                  const shortRaw =
+                    group.toolLabels?.[fullName] ?? (fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn);
                   const short = humanizeUnderscores(shortRaw);
                   return (
                     <Flex
@@ -873,13 +878,13 @@ export function AgentScopedResourcesPanel({
                           onClick={(e) => e.stopPropagation()}
                         />
                       </span>
-                      {renderToolIcon(fullName)}
+                      {renderToolIcon(fn)}
                       <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
                         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {short}
                         </Text>
                         <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
-                          {fullName}
+                          {fn}
                         </Text>
                       </Flex>
                     </Flex>

@@ -106,6 +106,13 @@ async def _platform_flag(
         return default
 
 
+async def is_api_toolsets_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+    """Org-level gate for API Toolsets: their routes, UI and agent tools. Source of truth is
+    the ``ENABLE_API_TOOLSETS`` platform feature flag. Defaults to DISABLED: agents call
+    org-internal APIs only once an admin opts in from Labs."""
+    return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS, default=False)
+
+
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the

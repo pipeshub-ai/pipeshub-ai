@@ -221,6 +221,8 @@ def _py(method: str, path: str, handler: str, **kw: Any) -> AdminRoute:
 
 
 _MCP = "/api/v1/mcp-servers"
+_API_TOOLSETS = "/api/v1/api-toolsets"
+_API_TOOLSET_BODY = {"name": "it-admin-probe", "baseUrl": "https://it-admin-probe.invalid", "operations": []}
 _TOOLSETS = "/api/v1/toolsets"
 _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"},
                "baseUrl": "http://localhost"}
@@ -242,6 +244,21 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"enabled": False}, refusal_words="Only admins",
         admin=None, why_no_admin="turns the sample workspace on or off for the whole org"),
     _py("GET", f"{_MCP}/instances", "api/routes/mcp_servers.py::list_instances"),
+    # An admin's request carries no usable spec, so the compiler stops it and nothing is saved.
+    _py("POST", f"{_API_TOOLSETS}/validate", "api/routes/api_toolsets.py::validate_api_toolset_spec",
+        member_body={"spec": "not a spec"}, admin="admin_body"),
+    _py("POST", f"{_API_TOOLSETS}/instances", "api/routes/api_toolsets.py::create_api_toolset",
+        member_body=_API_TOOLSET_BODY, admin="admin_body"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/config", "api/routes/api_toolsets.py::get_api_toolset_config"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::update_api_toolset",
+        member_body=_API_TOOLSET_BODY),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId", "api/routes/api_toolsets.py::delete_api_toolset"),
+    _py("PUT", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::save_api_toolset_shared_credentials", member_body={"apiKey": "it-admin-probe"}),
+    _py("DELETE", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials",
+        "api/routes/api_toolsets.py::delete_api_toolset_shared_credentials"),
+    _py("GET", f"{_API_TOOLSETS}/instances/:instanceId/shared-credentials/oauth/authorize",
+        "api/routes/api_toolsets.py::start_api_toolset_shared_oauth"),
     _py("PUT", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::update_toolset_oauth_config",
         member_body={"clientId": "x"}),
@@ -255,6 +272,8 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
     ("POST", "/api/v1/oauth/:connectorType"): {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
+    ("POST", f"{_API_TOOLSETS}/validate"): {"spec": "not a spec"},
+    ("POST", f"{_API_TOOLSETS}/instances"): _API_TOOLSET_BODY,
 }
 
 # Python handlers that reach an admin check but sit behind Node's

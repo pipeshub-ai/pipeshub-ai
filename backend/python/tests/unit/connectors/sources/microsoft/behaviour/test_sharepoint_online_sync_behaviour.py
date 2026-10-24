@@ -384,9 +384,6 @@ class TestDeltaCheckpoints:
 
 
 class TestRetries:
-    @pytest.mark.xfail(strict=True, reason=(
-        "The connector's own retry awaits the same finished request again, which can never succeed, so one "
-        "transient server error drops the site's document libraries for the run (sharepoint_online/connector.py:867-912)"))
     async def test_a_transient_server_error_listing_libraries_is_retried(self, connector, api, db) -> None:
         api.on("GET", drive_path(), [graph_error(500, "generalException"), page([drive_payload()])])
         delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})

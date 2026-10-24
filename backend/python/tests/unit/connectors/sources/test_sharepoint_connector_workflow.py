@@ -450,7 +450,7 @@ class TestSafeApiCall:
         connector, *_ = _make_connector()
         async def _return_ok():
             return "ok"
-        result = await connector._safe_api_call(_return_ok())
+        result = await connector._safe_api_call(_return_ok)
         assert result == "ok"
 
     @pytest.mark.asyncio
@@ -460,7 +460,7 @@ class TestSafeApiCall:
         async def raise_forbidden():
             raise Exception("403 forbidden accessdenied")
 
-        result = await connector._safe_api_call(raise_forbidden(), max_retries=0)
+        result = await connector._safe_api_call(raise_forbidden, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -470,7 +470,7 @@ class TestSafeApiCall:
         async def raise_notfound():
             raise Exception("404 notfound")
 
-        result = await connector._safe_api_call(raise_notfound(), max_retries=0)
+        result = await connector._safe_api_call(raise_notfound, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -480,7 +480,7 @@ class TestSafeApiCall:
         async def raise_bad_request():
             raise Exception("400 badrequest invalid")
 
-        result = await connector._safe_api_call(raise_bad_request(), max_retries=0)
+        result = await connector._safe_api_call(raise_bad_request, max_retries=0)
         assert result is None
 
     @pytest.mark.asyncio
@@ -491,7 +491,7 @@ class TestSafeApiCall:
             raise Exception("403 forbidden accessdenied")
 
         # Permission error should immediately return None without retry
-        result = await connector._safe_api_call(raise_general(), max_retries=0, retry_delay=0)
+        result = await connector._safe_api_call(raise_general, max_retries=0, retry_delay=0)
         assert result is None
 
 

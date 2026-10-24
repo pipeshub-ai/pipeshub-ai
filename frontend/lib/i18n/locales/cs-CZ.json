@@ -2497,7 +2497,8 @@
       "enterprise": {
         "userActionsTitle": "Vlastní akce uživatelů",
         "userActionsDescription": "Zkontrolujte a odeberte akce, které si lidé ve vaší organizaci přidali sami."
-      }
+      },
+      "appsHeading": "Akce aplikací"
     },
     "rightPanel": {
       "primaryDisabledHint": "Pro pokračování posuňte stránku nahoru a vyplňte povinná pole (označená *).",
@@ -4436,6 +4437,190 @@
         "outcomeRevoked": "Oprávnění odebráno",
         "byAdmin": "uživatelem {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API akce",
+      "subtitle": "Interní API, která váš správce zpřístupnil agentům. Tam, kde je to vyžadováno, připojte vlastní přihlašovací údaje.",
+      "subtitleAdmin": "Vytvořte z interního REST API akce podle jeho specifikace OpenAPI. Vyberte, které operace smějí agenti volat a jak se PipesHub přihlásí.",
+      "emptyTitle": "Přidejte svou první API akci",
+      "emptyAdmin": "Nahrajte specifikaci OpenAPI 3.0 nebo 3.1 libovolného interního REST API.",
+      "card": {
+        "fallbackDescription": "Interní REST API přidané ze specifikace OpenAPI."
+      },
+      "operationCount_one": "{{count}} operace",
+      "operationCount_few": "{{count}} operace",
+      "operationCount_many": "{{count}} operace",
+      "operationCount_other": "{{count}} operací",
+      "kind": {
+        "read": "Čtení",
+        "write": "Zápis",
+        "destructive": "Mazání"
+      },
+      "authType": {
+        "none": "Bez ověření",
+        "api_key": "API klíč",
+        "http_bearer": "Bearer token",
+        "http_basic": "Uživatelské jméno a heslo",
+        "oauth2_client_credentials": "OAuth 2.0 přihlašovací údaje klienta",
+        "oauth2_authorization_code": "Přihlášení OAuth 2.0"
+      },
+      "status": {
+        "connected": "Připojeno",
+        "notConnected": "Nepřipojeno",
+        "open": "Bez přihlášení",
+        "shared": "Sdílené přihlašovací údaje"
+      },
+      "cta": {
+        "add": "Přidat API akci",
+        "connect": "Připojit",
+        "manageConnection": "Spravovat připojení",
+        "details": "Podrobnosti",
+        "edit": "Upravit",
+        "delete": "Smazat",
+        "more": "Další možnosti pro {{name}}"
+      },
+      "toasts": {
+        "loadError": "API akce se nepodařilo načíst",
+        "created": "API akce byla přidána",
+        "updated": "API akce byla aktualizována",
+        "saveError": "API akci se nepodařilo uložit",
+        "deleted": "API akce byla smazána",
+        "deleteError": "API akci se nepodařilo smazat",
+        "connected": "Připojeno",
+        "disconnected": "Odpojeno"
+      },
+      "deleteDialog": {
+        "title": "Smazat API akci",
+        "body": "Smazat {{name}}? Všechny uložené přihlašovací údaje k ní budou odstraněny. API akci, kterou používá agent, nelze smazat."
+      },
+      "editor": {
+        "addTitle": "Přidat API akci",
+        "editTitle": "Upravit API akci",
+        "spec": "Specifikace OpenAPI",
+        "specHint": "Nahrajte nebo vložte specifikaci OpenAPI 3.0 nebo 3.1 daného API ve formátu JSON nebo YAML. PipesHub z ní načte operace a způsoby přihlášení.",
+        "specEditHint": "Ponechte prázdné, chcete-li zachovat současnou specifikaci. Nahrajte novou, chcete-li vybírat z jejích operací a způsobů ověření.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "Načíst specifikaci",
+        "previewing": "Čtení specifikace…",
+        "validateError": "Specifikaci se nepodařilo přečíst",
+        "warnings": "Některé části specifikace byly přeskočeny:",
+        "operations": "Operace (vybráno {{selected}} z {{total}})",
+        "operationsHint": "Agenti mohou volat jen operace, které vyberete.",
+        "name": "Název",
+        "description": "Popis",
+        "baseUrl": "Základní URL",
+        "baseUrlHint": "Kam PipesHub posílá požadavky. Cesty operací se připojují za ni.",
+        "loopbackHint": "localhost je samotný server PipesHub. Použijte adresu, na které PipesHub API dosáhne, například jeho název hostitele ve vaší síti.",
+        "authScheme": "Ověření",
+        "authSchemeLocked": "Chcete-li změnit, jak se PipesHub ověřuje, nahrajte specifikaci znovu.",
+        "scopes": "Rozsahy",
+        "oauthClientId": "ID klienta aplikace OAuth",
+        "oauthClientSecret": "Tajný klíč klienta aplikace OAuth",
+        "keepSecret": "Ponechte prázdné, chcete-li zachovat uložený tajný klíč",
+        "sharedCredential": "Jedny sdílené přihlašovací údaje",
+        "sharedCredentialHint": "Přihlašovací údaje nastavíte jednou a používají je všichni členové. Když je vypnuto, každý člen připojí své vlastní.",
+        "sharedCredentialForced": "Přihlašovací údaje klienta přihlašují aplikaci, ne člověka, proto všichni sdílejí ty, které nastavíte.",
+        "timeout": "Časový limit (sekundy)",
+        "timeoutHint": "Jak dlouho čekat na API, od 1 do {{max}} sekund.",
+        "problems": {
+          "name": "Zadejte název.",
+          "baseUrl": "Zadejte základní URL.",
+          "operations": "Vyberte alespoň jednu operaci.",
+          "timeout": "Zadejte časový limit od 1 do 120 sekund.",
+          "oauthClientId": "Zadejte ID klienta aplikace OAuth."
+        },
+        "create": "Přidat API akci",
+        "specLoadedHint": "Specifikace, ze které tato API akce vychází. Nahraďte ji, chcete-li vybírat z novější verze.",
+        "replaceSpec": "Nahradit specifikaci",
+        "specUnread": "Nejdřív načtěte novou specifikaci, nebo nahrazení zrušte.",
+        "specSummary_one": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_few": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_many": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_other": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operací",
+        "dropFile": "Přetáhněte sem soubor se specifikací, nebo klikněte a vyberte ho",
+        "dropFileHint": "JSON nebo YAML. Specifikaci můžete také vložit níže.",
+        "sampleHint": "Nemáte specifikaci po ruce? Začněte ukázkou, API helpdesku se všemi typy přihlášení.",
+        "sample": {
+          "yaml": "Ukázka YAML",
+          "json": "Ukázka JSON"
+        },
+        "detailsHeading": "Podrobnosti",
+        "descriptionHint": "Agenti podle tohoto textu rozhodují, kdy API použít.",
+        "authSchemeHint": "Jak se PipesHub přihlásí, když agent volá API.",
+        "redirectUrl": "Adresa přesměrování",
+        "redirectUrlHint": "Zaregistrujte tuto adresu v aplikaci OAuth jako povolené přesměrování.",
+        "noAuthHint": "PipesHub volá API bez přihlašovacích údajů, takže fungují jen operace, které specifikace označuje jako veřejné.",
+        "selectReads": "Jen čtení",
+        "selectAll": "Vše",
+        "selectNone": "Nic",
+        "unreachableWarning_one": "{{count}} vybraná operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_few": "{{count}} vybrané operace vyžadují přihlašovací údaje, takže bez ověření selžou.",
+        "unreachableWarning_many": "{{count}} vybrané operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_other": "{{count}} vybraných operací vyžaduje přihlašovací údaje, takže bez ověření selžou.",
+        "deselectUnreachable": "Zrušit jejich výběr",
+        "needsCredentials": "Vyžaduje přihlašovací údaje",
+        "needsCredentialsHint": "Podle specifikace tato operace vyžaduje přihlašovací údaje. Bez ověření ji API odmítne.",
+        "advancedHeading": "Pokročilé"
+      },
+      "connect": {
+        "mode": {
+          "none": "Toto API nepotřebuje žádné přihlašovací údaje.",
+          "own": "Agenti volají toto API s vašimi vlastními přihlašovacími údaji.",
+          "shared": "Všichni členové používají přihlašovací údaje, které zde nastavíte.",
+          "managed": "Přihlašovací údaje k této API akci spravuje váš správce."
+        },
+        "status": "Stav",
+        "signIn": "Přihlásit se",
+        "signInAgain": "Přihlásit se znovu",
+        "signingIn": "Přihlašování…",
+        "fields": {
+          "apiKey": "API klíč",
+          "token": "Token",
+          "username": "Uživatelské jméno",
+          "password": "Heslo",
+          "clientId": "ID klienta",
+          "clientSecret": "Tajný klíč klienta"
+        },
+        "replaceHint": "Uloženo. Chcete-li hodnotu nahradit, zadejte novou.",
+        "error": "Nepovedlo se. Zkuste to znovu.",
+        "test": "Otestovat připojení",
+        "testing": "Testování…",
+        "testOk": "API odpovědělo.",
+        "testFailed": "API odpovědělo chybou.",
+        "testTruncated": "Zobrazuje se jen začátek odpovědi.",
+        "disconnect": "Odpojit",
+        "disconnecting": "Odpojování…",
+        "panelTitle": "API akce",
+        "connectionHeading": "Připojení",
+        "testHeading": "Otestovat připojení",
+        "testHint": "Zavolá jednu operaci pro čtení, která nevyžaduje žádný vstup.",
+        "testIdle": "Spusťte testovací volání a podívejte se, co API vrátí.",
+        "testNeedsConnection": "Nejprve se připojte, pak spusťte testovací volání.",
+        "operationsHeading_one": "{{count}} operace, kterou mohou agenti volat",
+        "operationsHeading_few": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_many": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_other": "{{count}} operací, které mohou agenti volat"
+      },
+      "sectionTitle": "API akce",
+      "kindCount": {
+        "read_one": "{{count}} čtení",
+        "read_few": "{{count}} čtení",
+        "read_many": "{{count}} čtení",
+        "read_other": "{{count}} čtení",
+        "write_one": "{{count}} zápis",
+        "write_few": "{{count}} zápisy",
+        "write_many": "{{count}} zápisu",
+        "write_other": "{{count}} zápisů",
+        "destructive_one": "{{count}} smazání",
+        "destructive_few": "{{count}} smazání",
+        "destructive_many": "{{count}} smazání",
+        "destructive_other": "{{count}} smazání"
+      },
+      "kindPolicy": {
+        "read": "spustí se hned",
+        "write": "nejprve se zeptá uživatele",
+        "destructive": "blokováno, pokud to pravidla akcí agenta nepovolí"
+      }
     }
   },
   "filePreview": {
@@ -4802,7 +4987,12 @@
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
     "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
+    "apiToolsets": {
+      "section": "API akce",
+      "connectTooltip": "Připojte ji v části Akce",
+      "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen API akce se sdílenými přihlašovacími údaji nebo bez přihlášení."
+    }
   },
   "recordView": {
     "sections": {

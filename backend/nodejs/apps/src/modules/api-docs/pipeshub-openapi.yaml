@@ -307,6 +307,17 @@ tags:
   - name: MCP Servers for Agents
     description: MCP credentials that belong to a service-account agent rather than a user
 
+  - name: API Toolsets
+    description: |
+      Tools compiled from the OpenAPI spec of an organization's own REST API. An administrator
+      uploads the spec, picks the operations agents may call and how PipesHub authenticates;
+      each user then connects their own credentials, unless the administrator shares one.
+      Available when the `ENABLE_API_TOOLSETS` Labs flag is on.
+
+      Base URLs may point to the deployment's private network unless the operator sets
+      `API_TOOLSETS_ALLOW_PRIVATE_NETWORK_URLS=false`. Loopback, link-local and cloud metadata
+      addresses are always refused, and redirects are never followed.
+
   - name: MCP Servers
     description: |
       Catalog and org-scoped instances of external MCP servers that agents can call.
@@ -423,6 +434,20 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
+    ApiToolsetInstanceId:
+      name: instanceId
+      in: path
+      required: true
+      description: The API toolset's id.
+      schema:
+        type: string
+    ApiToolsetDesktopSignIn:
+      name: desktop
+      in: query
+      required: false
+      description: Set by the desktop app. The callback page then hands the result back to the app.
+      schema:
+        type: boolean
     McpInstanceId:
       name: instanceId
       in: path
@@ -1778,6 +1803,179 @@ components:
           maximum: 600
           nullable: true
           description: Blank uses the default, 60.
+    ApiToolsetOperation:
+      type: object
+      description: One spec operation offered to agents as a tool.
+      properties:
+        toolName:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        summary:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, destructive]
+        requiresAuth:
+          type: boolean
+          description: 'False when the spec lets anyone call it (`security: []`).'
+        inputSchema:
+          type: object
+          description: The JSON Schema agents fill (single toolset reads only).
+    ApiToolsetAuthScheme:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [none, api_key, http_bearer, http_basic, oauth2_client_credentials, oauth2_authorization_code]
+        description:
+          type: string
+        location:
+          type: string
+          enum: [header, query, cookie]
+        paramName:
+          type: string
+        tokenUrl:
+          type: string
+        authorizationUrl:
+          type: string
+        scopes:
+          type: object
+          additionalProperties:
+            type: string
+    ApiToolsetCompiledSpec:
+      type: object
+      properties:
+        title:
+          type: string
+        version:
+          type: string
+        openapiVersion:
+          type: string
+        description:
+          type: string
+        servers:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+              description:
+                type: string
+        authSchemes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        warnings:
+          type: array
+          items:
+            type: string
+        specHash:
+          type: string
+    ApiToolsetPayload:
+      type: object
+      required: [name, baseUrl, operations]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        spec:
+          type: string
+          description: The OpenAPI spec's text. Required when creating.
+        baseUrl:
+          type: string
+        authSchemeName:
+          type: string
+          description: A security scheme from the spec, or `none`.
+        operations:
+          type: array
+          description: Tool names from the compiled spec, at most 200.
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        useSharedCredential:
+          type: boolean
+          description: One credential, stored by an administrator, for every user. Always on for OAuth client credentials.
+        timeoutSeconds:
+          type: number
+          minimum: 1
+          maximum: 120
+        oauthClientId:
+          type: string
+          description: OAuth sign-in toolsets only.
+        oauthClientSecret:
+          type: string
+          description: OAuth sign-in toolsets only. Left blank on a change, the stored one is kept.
+    ApiToolset:
+      type: object
+      description: An API toolset. Never carries credentials or the OAuth app's secret.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        specTitle:
+          type: string
+        authType:
+          type: string
+        useSharedCredential:
+          type: boolean
+        isConnected:
+          type: boolean
+          description: Whether the caller (or the shared credential) is connected.
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiToolsetOperation'
+        updatedAt:
+          type: integer
+        baseUrl:
+          type: string
+          description: Settings route only, like every field below.
+        authScheme:
+          $ref: '#/components/schemas/ApiToolsetAuthScheme'
+        scopes:
+          type: array
+          items:
+            type: string
+        timeoutSeconds:
+          type: number
+        oauthClientId:
+          type: string
+          nullable: true
+        hasOauthClientSecret:
+          type: boolean
+    ApiToolsetCredentials:
+      type: object
+      description: Only the fields the toolset's auth scheme uses are stored.
+      properties:
+        apiKey:
+          type: string
+        token:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        clientId:
+          type: string
+        clientSecret:
+          type: string
     McpServerInstance:
       type: object
       description: A stored MCP server instance. Never carries credentials.
@@ -12697,6 +12895,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -12882,6 +13090,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13265,6 +13483,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           default: true
@@ -13450,6 +13678,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13595,6 +13833,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -44508,6 +44756,465 @@ paths:
           description: Agent or instance not found
         '409':
           description: No OAuth app is configured and the provider doesn't support dynamic registration
+
+  # -------------------- API Toolsets --------------------
+  /api-toolsets/validate:
+    post:
+      tags:
+        - API Toolsets
+      summary: Preview an OpenAPI spec (administrators)
+      description: |
+        Compiles an OpenAPI 3.0 or 3.1 spec (JSON or YAML) without saving anything, and returns
+        the operations it offers as tools, its security schemes, its servers and any warnings
+        about operations that can't be used.
+      operationId: validateApiToolsetSpec
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The spec to compile
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spec]
+              properties:
+                spec:
+                  type: string
+                  description: The spec's text, at most 5 MB.
+      responses:
+        '200':
+          description: The compiled spec
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolsetCompiledSpec'
+        '400':
+          description: The spec can't be used; the detail says why
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances:
+    get:
+      tags:
+        - API Toolsets
+      summary: List API toolsets
+      description: |
+        Every API toolset of the organization, with whether the caller has connected it.
+        How each one is reached and authenticated is on the settings route, for administrators.
+      operationId: listApiToolsets
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: API toolsets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: API Toolsets are disabled
+    post:
+      tags:
+        - API Toolsets
+      summary: Add an API toolset (administrators)
+      description: |
+        Compiles the spec again on the server and stores only the selected operations, never the
+        spec itself. OAuth client-credentials toolsets always use one shared credential.
+      operationId: createApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset to add
+        required: true
+        content:
+          application/json:
+            schema:
+              # The spec is required here; an edit may leave it out to keep the stored one.
+              allOf:
+                - $ref: '#/components/schemas/ApiToolsetPayload'
+                - type: object
+                  required: [spec]
+      responses:
+        '200':
+          description: The new toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid spec, operation, auth scheme, scope, timeout or base URL
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator, or API Toolsets are disabled
+  /api-toolsets/instances/{instanceId}:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset
+      description: The toolset with each selected operation's input schema.
+      operationId: getApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    put:
+      tags:
+        - API Toolsets
+      summary: Change an API toolset (administrators)
+      description: |
+        Same body as creating one. Without `spec`, operations are picked from those already
+        stored and the auth scheme stays. Choosing another auth scheme removes every
+        credential stored for the old one.
+      operationId: updateApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The toolset's new settings
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetPayload'
+      responses:
+        '200':
+          description: The changed toolset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: Invalid change
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Delete an API toolset (administrators)
+      description: |
+        Deletes the toolset with every credential and its OAuth app. Refused while an agent
+        uses one of its operations.
+      operationId: deleteApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Deleted
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+        '409':
+          description: An agent uses the toolset; the detail names it
+        '503':
+          description: Which agents use the toolset couldn't be checked, so nothing was deleted
+  /api-toolsets/instances/{instanceId}/config:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    get:
+      tags:
+        - API Toolsets
+      summary: Get an API toolset's settings (administrators)
+      description: |
+        The toolset with its base URL, auth scheme, scopes, timeout and OAuth app client ID.
+        Never the OAuth app's secret.
+      operationId: getApiToolsetConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: The toolset's settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiToolset'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Connect your credentials
+      description: |
+        Stores the fields the toolset's auth scheme uses; any other field is ignored. OAuth
+        sign-in toolsets use the sign-in flow instead, and a toolset with a shared credential
+        takes it from the shared-credentials route.
+      operationId: saveApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field the auth scheme needs is missing, or the toolset uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Disconnect your credentials
+      description: Removes the caller's own credential.
+      operationId: deleteApiToolsetCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Disconnected
+        '401':
+          description: Unauthorized
+        '400':
+          description: The toolset uses a shared credential
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    put:
+      tags:
+        - API Toolsets
+      summary: Set the shared credential (administrators)
+      description: The one credential every member's calls use, for a toolset set up to share one.
+      operationId: saveApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The credential fields for the toolset's auth scheme
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiToolsetCredentials'
+      responses:
+        '200':
+          description: Connected
+        '400':
+          description: A field is missing, or the toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+    delete:
+      tags:
+        - API Toolsets
+      summary: Remove the shared credential (administrators)
+      description: Every member's calls fail until an administrator sets a new one.
+      operationId: deleteApiToolsetSharedCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:delete]
+      responses:
+        '200':
+          description: Removed
+        '400':
+          description: The toolset has no shared credential
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start the shared OAuth sign-in (administrators)
+      description: Signs in once for everyone; finished on the same callback as a member's sign-in.
+      operationId: getApiToolsetSharedOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset has no shared credential or doesn't use OAuth sign-in
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/instances/{instanceId}/test:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+    post:
+      tags:
+        - API Toolsets
+      summary: Test the connection
+      description: |
+        Calls one operation with the caller's credentials: the one named, or else the first
+        read that needs no arguments. Returns the API's status and the start of its answer.
+      operationId: testApiToolset
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        description: The operation to call and its arguments; both optional
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toolName:
+                  type: string
+                arguments:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The API answered (with any status)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: integer
+                  body:
+                    type: string
+                  truncated:
+                    type: boolean
+        '400':
+          description: Not connected, an unknown operation, or invalid arguments
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+        '502':
+          description: The API could not be reached or did not answer in time
+  /api-toolsets/instances/{instanceId}/oauth/authorize:
+    parameters:
+      - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
+    get:
+      tags:
+        - API Toolsets
+      summary: Start an OAuth sign-in
+      description: Returns the URL to open; the sign-in can be finished within 10 minutes.
+      operationId: getApiToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '400':
+          description: The toolset doesn't use OAuth sign-in, has no OAuth app, or uses a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such toolset in the organization
+  /api-toolsets/oauth/callback:
+    get:
+      tags:
+        - API Toolsets
+      summary: Finish an OAuth sign-in
+      description: Only the person who started the sign-in can finish it, once.
+      operationId: handleApiToolsetOAuthCallback
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  instanceId:
+                    type: string
+                  name:
+                    type: string
+        '400':
+          description: The sign-in expired, was already used, or was refused by the API
+        '401':
+          description: Unauthorized
 
   # -------------------- Skills --------------------
   /skills:

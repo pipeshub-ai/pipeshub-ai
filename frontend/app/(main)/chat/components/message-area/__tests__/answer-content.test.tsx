@@ -130,3 +130,19 @@ describe('AnswerContent — link labels', () => {
     expect(link.getAttribute('title')).toBeNull();
   });
 });
+
+describe('AnswerContent — link URLs with parentheses', () => {
+  it('keeps escaped brackets in link text out of math when the URL has parentheses', () => {
+    const { container } = render(
+      h(Theme, null, h(AnswerContent, {
+        content: 'Read [the \\[draft\\] notes](https://x.test/wiki/A_(b)) first.',
+        citationMaps: makeCitationMaps(),
+        isStreaming: false,
+      })),
+    );
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://x.test/wiki/A_(b)');
+    expect(link.textContent).toBe('the [draft] notes');
+    expect(container.querySelector('.katex')).toBeNull();
+  });
+});

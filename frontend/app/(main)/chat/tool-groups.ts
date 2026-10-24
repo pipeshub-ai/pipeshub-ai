@@ -1,5 +1,6 @@
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
+import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
 import type { ScopedToolGroupRow } from './store';
 
 /** Toolset / MCP group row built from the caller's own catalog (my-toolsets, my-mcp-servers). */
@@ -96,6 +97,52 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
       toolLabels,
       isAuthenticated: Boolean(entry.isAuthenticated),
+    });
+  }
+  return groups;
+}
+
+/**
+ * Selection key of an API action operation. Its wire name `<instanceId>:<toolName>` already holds a
+ * colon, so the instance id goes in front once more for `bareToolFullName` to strip.
+ */
+export function apiActionToolKey(instanceId: string, toolName: string): string {
+  return `${instanceId}:${instanceId}:${toolName}`;
+}
+
+/**
+ * One group per API action, its operations labelled by their summary. `attached` (an agent's
+ * `apiToolsetTools`, wire names) limits the operations listed; without it every operation is.
+ */
+export function buildApiActionGroups(
+  instances: ApiToolset[],
+  attached?: readonly string[]
+): CatalogToolGroupRow[] {
+  const keep = attached ? new Set(attached) : null;
+  const groups: CatalogToolGroupRow[] = [];
+  for (const instance of instances) {
+    const operations = (instance.operations || []).filter(
+      (op) => !keep || keep.has(`${instance.id}:${op.toolName}`)
+    );
+    if (operations.length === 0) continue;
+
+    const toolDescriptions: Record<string, string> = {};
+    const toolLabels: Record<string, string> = {};
+    for (const op of operations) {
+      const key = apiActionToolKey(instance.id, op.toolName);
+      toolDescriptions[key] = `${op.method.toUpperCase()} ${op.path}`;
+      toolLabels[key] = op.summary?.trim() || op.toolName;
+    }
+
+    groups.push({
+      label: instance.name,
+      // One slug per action: the composer refuses two selected instances sharing a slug.
+      toolsetSlug: `api_action:${instance.id}`,
+      instanceId: instance.id,
+      fullNames: Object.keys(toolLabels),
+      toolDescriptions,
+      toolLabels,
+      isAuthenticated: Boolean(instance.isConnected),
     });
   }
   return groups;

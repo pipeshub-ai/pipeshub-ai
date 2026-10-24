@@ -2410,7 +2410,8 @@
       "enterprise": {
         "userActionsTitle": "구성원의 개인 액션",
         "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
-      }
+      },
+      "appsHeading": "앱 액션"
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",
@@ -4331,6 +4332,169 @@
         "outcomeRevoked": "권한 제거됨",
         "byAdmin": "{{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 액션",
+      "subtitle": "관리자가 에이전트에 제공한 내부 API입니다. 요청되는 경우 내 자격 증명을 연결하세요.",
+      "subtitleAdmin": "OpenAPI 명세로 내부 REST API를 액션으로 만드세요. 에이전트가 호출할 수 있는 작업과 PipesHub의 로그인 방식을 선택합니다.",
+      "emptyTitle": "첫 API 액션 추가",
+      "emptyAdmin": "내부 REST API의 OpenAPI 3.0 또는 3.1 명세를 업로드하세요.",
+      "card": {
+        "fallbackDescription": "OpenAPI 명세로 추가한 내부 REST API입니다."
+      },
+      "operationCount_other": "작업 {{count}}개",
+      "kind": {
+        "read": "읽기",
+        "write": "쓰기",
+        "destructive": "삭제"
+      },
+      "authType": {
+        "none": "인증 없음",
+        "api_key": "API 키",
+        "http_bearer": "Bearer 토큰",
+        "http_basic": "사용자 이름과 비밀번호",
+        "oauth2_client_credentials": "OAuth 2.0 클라이언트 자격 증명",
+        "oauth2_authorization_code": "OAuth 2.0 로그인"
+      },
+      "status": {
+        "connected": "연결됨",
+        "notConnected": "연결 안 됨",
+        "open": "로그인 필요 없음",
+        "shared": "공유 자격 증명"
+      },
+      "cta": {
+        "add": "API 액션 추가",
+        "connect": "연결",
+        "manageConnection": "연결 관리",
+        "details": "세부 정보",
+        "edit": "편집",
+        "delete": "삭제",
+        "more": "{{name}} 옵션 더 보기"
+      },
+      "toasts": {
+        "loadError": "API 액션을 불러오지 못했습니다",
+        "created": "API 액션을 추가했습니다",
+        "updated": "API 액션을 업데이트했습니다",
+        "saveError": "API 액션을 저장하지 못했습니다",
+        "deleted": "API 액션을 삭제했습니다",
+        "deleteError": "API 액션을 삭제하지 못했습니다",
+        "connected": "연결되었습니다",
+        "disconnected": "연결이 해제되었습니다"
+      },
+      "deleteDialog": {
+        "title": "API 액션 삭제",
+        "body": "{{name}}을(를) 삭제할까요? 저장된 모든 자격 증명이 삭제됩니다. 에이전트가 사용하는 API 액션은 삭제할 수 없습니다."
+      },
+      "editor": {
+        "addTitle": "API 액션 추가",
+        "editTitle": "API 액션 편집",
+        "spec": "OpenAPI 명세",
+        "specHint": "API의 OpenAPI 3.0/3.1 명세를 JSON 또는 YAML 형식으로 업로드하거나 붙여 넣으세요. PipesHub가 작업과 로그인 방식을 읽어 옵니다.",
+        "specEditHint": "현재 명세를 유지하려면 비워 두세요. 새 명세를 올리면 그 작업과 인증 방식 중에서 고를 수 있습니다.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "명세 읽기",
+        "previewing": "명세를 읽는 중…",
+        "validateError": "명세를 읽지 못했습니다",
+        "warnings": "명세의 일부를 건너뛰었습니다:",
+        "operations": "작업 ({{total}}개 중 {{selected}}개 선택됨)",
+        "operationsHint": "에이전트는 선택한 작업만 호출할 수 있습니다.",
+        "name": "이름",
+        "description": "설명",
+        "baseUrl": "기본 URL",
+        "baseUrlHint": "PipesHub가 요청을 보내는 주소입니다. 작업 경로가 뒤에 붙습니다.",
+        "loopbackHint": "localhost는 PipesHub 서버 자체를 뜻합니다. 네트워크의 호스트 이름처럼 PipesHub가 API에 접근하는 주소를 사용하세요.",
+        "authScheme": "인증",
+        "authSchemeLocked": "인증 방식을 바꾸려면 명세를 다시 올리세요.",
+        "scopes": "범위",
+        "oauthClientId": "OAuth 앱 클라이언트 ID",
+        "oauthClientSecret": "OAuth 앱 클라이언트 시크릿",
+        "keepSecret": "저장된 시크릿을 유지하려면 비워 두세요",
+        "sharedCredential": "공유 자격 증명 하나 사용",
+        "sharedCredentialHint": "자격 증명을 한 번 설정하면 모든 멤버가 사용합니다. 끄면 멤버마다 자신의 자격 증명을 연결합니다.",
+        "sharedCredentialForced": "클라이언트 자격 증명은 사람이 아닌 앱으로 로그인하므로 모두가 설정한 자격 증명을 공유합니다.",
+        "timeout": "시간 제한(초)",
+        "timeoutHint": "API 응답을 기다리는 시간으로, 1~{{max}}초입니다.",
+        "problems": {
+          "name": "이름을 입력하세요.",
+          "baseUrl": "기본 URL을 입력하세요.",
+          "operations": "작업을 하나 이상 선택하세요.",
+          "timeout": "1~120초 사이의 시간 제한을 입력하세요.",
+          "oauthClientId": "OAuth 앱의 클라이언트 ID를 입력하세요."
+        },
+        "create": "API 액션 추가",
+        "specLoadedHint": "이 API 액션의 기반이 되는 명세입니다. 최신 버전에서 고르려면 명세를 교체하세요.",
+        "replaceSpec": "명세 교체",
+        "specUnread": "먼저 새 명세를 읽거나 교체를 취소하세요.",
+        "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
+        "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
+        "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",
+        "sampleHint": "명세가 없나요? 모든 로그인 방식을 갖춘 헬프데스크 API 샘플로 시작하세요.",
+        "sample": {
+          "yaml": "샘플 YAML",
+          "json": "샘플 JSON"
+        },
+        "detailsHeading": "세부 정보",
+        "descriptionHint": "에이전트는 이 내용을 읽고 API를 언제 사용할지 결정합니다.",
+        "authSchemeHint": "에이전트가 API를 호출할 때 PipesHub가 로그인하는 방식입니다.",
+        "redirectUrl": "리디렉션 URL",
+        "redirectUrlHint": "이 URL을 OAuth 앱에 허용된 리디렉션으로 등록하세요.",
+        "noAuthHint": "PipesHub는 자격 증명 없이 API를 호출하므로 명세에서 공개로 표시한 작업만 작동합니다.",
+        "selectReads": "읽기만",
+        "selectAll": "전체",
+        "selectNone": "없음",
+        "unreachableWarning_other": "선택한 작업 {{count}}개에 자격 증명이 필요하므로 인증 없이는 실패합니다.",
+        "deselectUnreachable": "선택 해제",
+        "needsCredentials": "자격 증명 필요",
+        "needsCredentialsHint": "명세에 따르면 이 작업에는 자격 증명이 필요합니다. 인증하지 않으면 API가 요청을 거부합니다.",
+        "advancedHeading": "고급"
+      },
+      "connect": {
+        "mode": {
+          "none": "이 API에는 자격 증명이 필요 없습니다.",
+          "own": "에이전트가 내 자격 증명으로 이 API를 호출합니다.",
+          "shared": "모든 멤버가 여기에서 설정한 자격 증명을 사용합니다.",
+          "managed": "이 API 액션의 자격 증명은 관리자가 관리합니다."
+        },
+        "status": "상태",
+        "signIn": "로그인",
+        "signInAgain": "다시 로그인",
+        "signingIn": "로그인 중…",
+        "fields": {
+          "apiKey": "API 키",
+          "token": "토큰",
+          "username": "사용자 이름",
+          "password": "비밀번호",
+          "clientId": "클라이언트 ID",
+          "clientSecret": "클라이언트 시크릿"
+        },
+        "replaceHint": "저장되었습니다. 바꾸려면 새 값을 입력하세요.",
+        "error": "작업에 실패했습니다. 다시 시도하세요.",
+        "test": "연결 테스트",
+        "testing": "테스트 중…",
+        "testOk": "API가 응답했습니다.",
+        "testFailed": "API가 오류로 응답했습니다.",
+        "testTruncated": "응답의 앞부분만 표시됩니다.",
+        "disconnect": "연결 해제",
+        "disconnecting": "연결 해제 중…",
+        "panelTitle": "API 액션",
+        "connectionHeading": "연결",
+        "testHeading": "연결 테스트",
+        "testHint": "입력이 필요 없는 읽기 작업 하나를 호출합니다.",
+        "testIdle": "테스트 호출을 실행해 API가 무엇을 반환하는지 확인하세요.",
+        "testNeedsConnection": "먼저 연결한 다음 테스트 호출을 실행하세요.",
+        "operationsHeading_other": "에이전트가 호출할 수 있는 작업 {{count}}개"
+      },
+      "sectionTitle": "API 액션",
+      "kindCount": {
+        "read_other": "읽기 {{count}}개",
+        "write_other": "쓰기 {{count}}개",
+        "destructive_other": "삭제 {{count}}개"
+      },
+      "kindPolicy": {
+        "read": "즉시 실행",
+        "write": "먼저 사용자에게 확인",
+        "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
     }
   },
   "filePreview": {
@@ -4691,7 +4855,12 @@
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
     "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "apiToolsets": {
+      "section": "API 액션",
+      "connectTooltip": "액션에서 연결하세요",
+      "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
+    }
   },
   "recordView": {
     "sections": {

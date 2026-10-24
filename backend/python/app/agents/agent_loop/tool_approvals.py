@@ -183,6 +183,9 @@ class ApprovalTarget:
     title: Optional[str] = None
     # A personal toolset instance: its rules are the person's own, as an MCP server's are.
     personal: bool = False
+    # Whose starting rules apply where nobody set one, when not its source's own. An API action's
+    # operation is any REST call an admin picked from a spec, so it starts like an MCP tool.
+    defaults: Source | None = None
 
     @property
     def own_rules(self) -> bool:
@@ -485,9 +488,12 @@ def _blocked_message(reason: str, target: ApprovalTarget) -> str:
             + (", and that an admin can pre-approve it." if can_pre_approve else ".")
         )
     if reason == "default":
+        # Without organization rules nobody can change an org instance's rule (an API action's).
+        can_change = target.own_rules or organization_toolset_tool_rules()
         return (
             f"{tool} on {owner} can delete data, so it's denied unless {whose} tool approval rules allow it. "
-            f"It wasn't run. Tell the user {who} can change its rule to run it."
+            + (f"It wasn't run. Tell the user {who} can change its rule to run it." if can_change
+               else f"It wasn't run. Tell the user to do it in {owner} itself.")
         )
     return f"{tool} on {owner} is blocked in {whose} tool approval rules, so it wasn't run."
 
@@ -520,7 +526,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         verdict = decide(
             own=rules.rules.tools.get(target.tool_name),
             kind=target.kind,
-            source=target.source,
+            source=target.defaults or target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
         )

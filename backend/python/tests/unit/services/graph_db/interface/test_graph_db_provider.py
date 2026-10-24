@@ -443,6 +443,7 @@ class TestAbstractMethodInventory:
         "check_edge_exists",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_api_toolset_in_use",
         "check_mcp_instance_in_use",
         "check_connector_in_use",
         # Knowledge hub operations. The three inventory tests below fail if one

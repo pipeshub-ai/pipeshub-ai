@@ -131,6 +131,7 @@ class ChatState(TypedDict):
     # assistant/placeholder agent (`get_authenticated_mcp_servers`). Consumed by the
     # agent-loop runtime's `MCPToolProvider`/`MCPAccessResolver` (`app/agents/agent_loop/`).
     mcp_servers: list[dict] | None  # Attached MCP server metadata (instanceId, name, tools) - NO secrets stored
+    api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
 
@@ -689,6 +690,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # MCP servers (resolved by agent.py's chat handler; see ChatState field comments)
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
+        "api_toolset_tools": chat_query.get("apiToolsetTools", []),
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object

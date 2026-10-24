@@ -16,11 +16,14 @@ import type { AgentToolsListRow, KnowledgeBaseForBuilder, SkillForBuilder } from
 import { SkillsApi } from '../../../workspace/skills/personal/api';
 import { McpServersApi } from '../../../workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import { ApiToolsetsApi } from '../../../workspace/api-toolsets/api';
+import type { ApiToolset } from '../../../workspace/api-toolsets/types';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
   selectSkillsEnabled,
+  selectApiToolsetsEnabled,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 
@@ -44,6 +47,13 @@ function isSkillsEnabledNow(): boolean {
 async function ensureFeatureFlagsLoaded(): Promise<void> {
   if (selectFeatureFlagsLoaded(useFeatureFlagsStore.getState())) return;
   await useFeatureFlagsStore.getState().fetchFlags();
+}
+
+/** Members can list API toolsets too; an error (e.g. the labs flag is off server-side) means none. */
+async function loadApiToolsets(): Promise<ApiToolset[]> {
+  await ensureFeatureFlagsLoaded();
+  if (!selectApiToolsetsEnabled(useFeatureFlagsStore.getState())) return [];
+  return ApiToolsetsApi.listInstances().catch(() => []);
 }
 
 async function loadSkillsCatalog(): Promise<
@@ -91,9 +101,9 @@ function mapNodesToConnectors(nodes: KnowledgeHubAppNode[]): Connector[] {
   });
 }
 
-/** Models, KB, knowledge-hub nodes, and the skills catalog — fetched once per hook mount (route remount resets the ref). */
+/** Models, KB, knowledge-hub nodes, the skills catalog and API toolsets — fetched once per hook mount (route remount resets the ref). */
 async function fetchStaticBuilderResources() {
-  const [models, kbResult, appNodes, skills] = await Promise.all([
+  const [models, kbResult, appNodes, skills, apiToolsets] = await Promise.all([
     ChatApi.fetchAvailableLlms(),
     AgentsApi.getAllKnowledgeBasesForBuilder(),
     AgentsApi.getAllKnowledgeHubAppNodes().catch((err) => {
@@ -101,6 +111,7 @@ async function fetchStaticBuilderResources() {
       return [] as KnowledgeHubAppNode[];
     }),
     loadSkillsCatalog(),
+    loadApiToolsets(),
   ]);
 
   const configuredConnectors = mapNodesToConnectors(appNodes);
@@ -115,6 +126,7 @@ async function fetchStaticBuilderResources() {
       category: s.category,
       isBuiltin: s.source === 'builtin',
     })),
+    apiToolsets,
   };
 }
 
@@ -175,6 +187,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   );
   const [availableSkills, setAvailableSkills] = useState<SkillForBuilder[]>([]);
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
+  const [apiToolsets, setApiToolsets] = useState<ApiToolset[]>([]);
   const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
   const [mcpServers, setMcpServers] = useState<McpMyServerEntry[]>([]);
   // False until a list arrives, and after a failed load: an empty list isn't "no servers" then.
@@ -185,6 +198,17 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
   const toolsetsSearchRef = useRef('');
   const staticResourcesLoadedRef = useRef(false);
+
+  // A row's connect shortcut opens Your actions in another tab: pick up what was connected
+  // there when the builder gets focus back. A failed request keeps the list it has.
+  useEffect(() => {
+    const refresh = () => {
+      if (!selectApiToolsetsEnabled(useFeatureFlagsStore.getState())) return;
+      ApiToolsetsApi.listInstances().then(setApiToolsets, () => {});
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
 
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
@@ -272,6 +296,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
           setAvailableKnowledgeBases(staticRes.knowledgeBases);
           setAvailableSkills(staticRes.skills);
           setConfiguredConnectors(staticRes.configuredConnectors);
+          setApiToolsets(staticRes.apiToolsets);
 
           toolsetsSearchRef.current = '';
 
@@ -335,6 +360,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     activeAgentConnectors: configuredConnectors,
     configuredConnectors,
     toolsets,
+    apiToolsets,
     mcpServers,
     mcpServersLoaded,
     loading,

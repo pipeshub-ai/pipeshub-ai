@@ -2294,7 +2294,8 @@
       "enterprise": {
         "userActionsTitle": "Acciones propias de las personas",
         "userActionsDescription": "Revise y elimine las acciones que las personas de su organización añaden para sí mismas."
-      }
+      },
+      "appsHeading": "Acciones de aplicaciones"
     },
     "rightPanel": {
       "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",
@@ -4292,6 +4293,183 @@
         "outcomeRevoked": "Permiso quitado",
         "byAdmin": "por {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "Acciones de API",
+      "subtitle": "API internas que tu administrador puso a disposición de los agentes. Conecta tu propia credencial cuando se te pida.",
+      "subtitleAdmin": "Convierte una API REST interna en acciones a partir de su especificación OpenAPI. Elige qué operaciones pueden llamar los agentes y cómo inicia sesión PipesHub.",
+      "emptyTitle": "Añade tu primera acción de API",
+      "emptyAdmin": "Sube la especificación OpenAPI 3.0 o 3.1 de cualquier API REST interna.",
+      "card": {
+        "fallbackDescription": "Una API REST interna, añadida desde su especificación OpenAPI."
+      },
+      "operationCount_one": "{{count}} operación",
+      "operationCount_many": "{{count}} operaciones",
+      "operationCount_other": "{{count}} operaciones",
+      "kind": {
+        "read": "Lectura",
+        "write": "Escritura",
+        "destructive": "Eliminación"
+      },
+      "authType": {
+        "none": "Sin autenticación",
+        "api_key": "Clave de API",
+        "http_bearer": "Token bearer",
+        "http_basic": "Usuario y contraseña",
+        "oauth2_client_credentials": "Credenciales de cliente OAuth 2.0",
+        "oauth2_authorization_code": "Inicio de sesión OAuth 2.0"
+      },
+      "status": {
+        "connected": "Conectado",
+        "notConnected": "No conectado",
+        "open": "No requiere inicio de sesión",
+        "shared": "Credencial compartida"
+      },
+      "cta": {
+        "add": "Añadir acción de API",
+        "connect": "Conectar",
+        "manageConnection": "Gestionar conexión",
+        "details": "Detalles",
+        "edit": "Editar",
+        "delete": "Eliminar",
+        "more": "Más opciones para {{name}}"
+      },
+      "toasts": {
+        "loadError": "No se pudieron cargar las acciones de API",
+        "created": "Acción de API añadida",
+        "updated": "Acción de API actualizada",
+        "saveError": "No se pudo guardar la acción de API",
+        "deleted": "Acción de API eliminada",
+        "deleteError": "No se pudo eliminar la acción de API",
+        "connected": "Conectado",
+        "disconnected": "Desconectado"
+      },
+      "deleteDialog": {
+        "title": "Eliminar acción de API",
+        "body": "¿Eliminar {{name}}? Se eliminan todas sus credenciales guardadas. No se puede eliminar una acción de API que usa un agente."
+      },
+      "editor": {
+        "addTitle": "Añadir acción de API",
+        "editTitle": "Editar acción de API",
+        "spec": "Especificación OpenAPI",
+        "specHint": "Sube o pega la especificación OpenAPI 3.0 o 3.1 de la API en JSON o YAML. PipesHub lee sus operaciones y métodos de inicio de sesión.",
+        "specEditHint": "Déjalo vacío para conservar la especificación actual. Sube una nueva para elegir entre sus operaciones y esquemas de autenticación.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "Leer especificación",
+        "previewing": "Leyendo la especificación…",
+        "validateError": "No se pudo leer la especificación",
+        "warnings": "Se omitieron algunas partes de la especificación:",
+        "operations": "Operaciones ({{selected}} de {{total}} seleccionadas)",
+        "operationsHint": "Los agentes solo pueden llamar a las operaciones que selecciones.",
+        "name": "Nombre",
+        "description": "Descripción",
+        "baseUrl": "URL base",
+        "baseUrlHint": "Adónde envía PipesHub las solicitudes. Se le añaden las rutas de las operaciones.",
+        "loopbackHint": "localhost es el propio servidor de PipesHub. Usa la dirección con la que PipesHub llega a la API, como su nombre de host en tu red.",
+        "authScheme": "Autenticación",
+        "authSchemeLocked": "Vuelve a subir la especificación para cambiar cómo se autentica PipesHub.",
+        "scopes": "Ámbitos",
+        "oauthClientId": "ID de cliente de la app OAuth",
+        "oauthClientSecret": "Secreto de cliente de la app OAuth",
+        "keepSecret": "Déjalo vacío para conservar el secreto guardado",
+        "sharedCredential": "Una credencial compartida",
+        "sharedCredentialHint": "Configuras la credencial una vez y todos los miembros la usan. Si está desactivado, cada miembro conecta la suya.",
+        "sharedCredentialForced": "Las credenciales de cliente inician sesión como la app, no como una persona, así que todos comparten la que configures.",
+        "timeout": "Tiempo de espera (segundos)",
+        "timeoutHint": "Cuánto esperar a la API, de 1 a {{max}} segundos.",
+        "problems": {
+          "name": "Introduce un nombre.",
+          "baseUrl": "Introduce la URL base.",
+          "operations": "Selecciona al menos una operación.",
+          "timeout": "Introduce un tiempo de espera de 1 a 120 segundos.",
+          "oauthClientId": "Introduce el ID de cliente de la app OAuth."
+        },
+        "create": "Añadir acción de API",
+        "specLoadedHint": "La especificación en la que se basa esta acción de API. Reemplázala para elegir entre las operaciones de una versión más reciente.",
+        "replaceSpec": "Reemplazar especificación",
+        "specUnread": "Lee primero la nueva especificación o cancela el reemplazo.",
+        "specSummary_one": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operación",
+        "specSummary_many": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operaciones",
+        "specSummary_other": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operaciones",
+        "dropFile": "Suelta aquí un archivo de especificación o haz clic para elegir uno",
+        "dropFileHint": "JSON o YAML. También puedes pegar la especificación abajo.",
+        "sampleHint": "¿No tienes una especificación a mano? Empieza con el ejemplo, una API de soporte con todos los tipos de inicio de sesión.",
+        "sample": {
+          "yaml": "Ejemplo en YAML",
+          "json": "Ejemplo en JSON"
+        },
+        "detailsHeading": "Detalles",
+        "descriptionHint": "Los agentes leen esto para decidir cuándo usar la API.",
+        "authSchemeHint": "Cómo inicia sesión PipesHub cuando un agente llama a la API.",
+        "redirectUrl": "URL de redirección",
+        "redirectUrlHint": "Registra esta URL en la app OAuth como redirección permitida.",
+        "noAuthHint": "PipesHub llama a la API sin credenciales, así que solo funcionan las operaciones que la especificación marca como públicas.",
+        "selectReads": "Solo lectura",
+        "selectAll": "Todas",
+        "selectNone": "Ninguna",
+        "unreachableWarning_one": "{{count}} operación seleccionada necesita credenciales, así que falla sin autenticación.",
+        "unreachableWarning_many": "{{count}} operaciones seleccionadas necesitan credenciales, así que fallan sin autenticación.",
+        "unreachableWarning_other": "{{count}} operaciones seleccionadas necesitan credenciales, así que fallan sin autenticación.",
+        "deselectUnreachable": "Deseleccionarlas",
+        "needsCredentials": "Necesita credenciales",
+        "needsCredentialsHint": "La especificación indica que esta operación necesita credenciales. Sin autenticación, la API la rechaza.",
+        "advancedHeading": "Avanzado"
+      },
+      "connect": {
+        "mode": {
+          "none": "Esta API no necesita credenciales.",
+          "own": "Los agentes llaman a esta API con tu propia credencial.",
+          "shared": "Todos los miembros usan la credencial que configures aquí.",
+          "managed": "Tu administrador gestiona la credencial de esta acción de API."
+        },
+        "status": "Estado",
+        "signIn": "Iniciar sesión",
+        "signInAgain": "Volver a iniciar sesión",
+        "signingIn": "Iniciando sesión…",
+        "fields": {
+          "apiKey": "Clave de API",
+          "token": "Token",
+          "username": "Usuario",
+          "password": "Contraseña",
+          "clientId": "ID de cliente",
+          "clientSecret": "Secreto de cliente"
+        },
+        "replaceHint": "Guardada. Introduce un valor nuevo para reemplazarla.",
+        "error": "No funcionó. Inténtalo de nuevo.",
+        "test": "Probar conexión",
+        "testing": "Probando…",
+        "testOk": "La API respondió.",
+        "testFailed": "La API respondió con un error.",
+        "testTruncated": "Solo se muestra el inicio de la respuesta.",
+        "disconnect": "Desconectar",
+        "disconnecting": "Desconectando…",
+        "panelTitle": "Acción de API",
+        "connectionHeading": "Conexión",
+        "testHeading": "Probar conexión",
+        "testHint": "Llama a una operación de lectura que no necesita datos de entrada.",
+        "testIdle": "Haz una llamada de prueba para ver qué devuelve la API.",
+        "testNeedsConnection": "Conéctate primero y luego haz una llamada de prueba.",
+        "operationsHeading_one": "{{count}} operación que los agentes pueden llamar",
+        "operationsHeading_many": "{{count}} operaciones que los agentes pueden llamar",
+        "operationsHeading_other": "{{count}} operaciones que los agentes pueden llamar"
+      },
+      "sectionTitle": "Acciones de API",
+      "kindCount": {
+        "read_one": "{{count}} lectura",
+        "read_many": "{{count}} lecturas",
+        "read_other": "{{count}} lecturas",
+        "write_one": "{{count}} escritura",
+        "write_many": "{{count}} escrituras",
+        "write_other": "{{count}} escrituras",
+        "destructive_one": "{{count}} eliminación",
+        "destructive_many": "{{count}} eliminaciones",
+        "destructive_other": "{{count}} eliminaciones"
+      },
+      "kindPolicy": {
+        "read": "se ejecuta de inmediato",
+        "write": "pide confirmación al usuario primero",
+        "destructive": "bloqueada salvo que las reglas de acción del agente lo permitan"
+      }
     }
   },
   "filePreview": {
@@ -4656,7 +4834,12 @@
     "limitSource": "Elegir qué busca {{name}}",
     "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
     "limitSourceCount": "Limitado a {{count}} seleccionados",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio.",
+    "apiToolsets": {
+      "section": "Acciones de API",
+      "connectTooltip": "Conéctala en Acciones",
+      "serviceAccountBlocked": "Los agentes de cuenta de servicio solo pueden usar acciones de API con credencial compartida o sin inicio de sesión."
+    }
   },
   "recordView": {
     "sections": {
