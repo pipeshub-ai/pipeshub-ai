@@ -61,3 +61,24 @@ async def test_placeholder_is_refused_before_the_connector(monkeypatch, convert_
         await _resolve(_page(placeholder=True), graph, request, convert_to, is_admin)
     assert exc.value.status_code == 422
     connector.stream_record.assert_not_awaited()
+
+
+@pytest.mark.parametrize("placeholder,refused", [(True, True), (False, False)])
+async def test_internal_stream_refuses_a_placeholder(monkeypatch, placeholder: bool, refused: bool) -> None:
+    connector, graph, request = _wire(monkeypatch)
+    record = _page(placeholder=placeholder)
+    graph.get_record_by_id = AsyncMock(return_value=record)
+    monkeypatch.setattr(router, "get_org_or_503", AsyncMock(return_value={"_key": "org-1"}))
+    invoke = AsyncMock(return_value=Response(b"body"))
+    monkeypatch.setattr(router, "_invoke_connector_stream", invoke)
+    call = router.stream_record_internal(
+        request=request, record_id="r1", graph_provider=graph, config_service=MagicMock(),
+        claims={"orgId": "org-1", "userId": "u"},
+    )
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            await call
+        assert exc.value.status_code == 422
+        invoke.assert_not_awaited()
+    else:
+        assert (await call).body == b"body"
