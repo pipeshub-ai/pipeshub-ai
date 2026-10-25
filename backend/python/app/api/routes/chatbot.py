@@ -38,6 +38,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -83,6 +84,7 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
+from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
@@ -1251,6 +1253,31 @@ async def _org_user_keys(
             continue
         keys.append(user_key)
     return keys
+
+
+class RecordAccessRequest(BaseModel):
+    recordIds: list[str] = Field(max_length=500)
+
+
+@router.post("/chat/records/access")
+@inject
+async def check_viewer_record_access(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Which of these records the viewer named in the service token may read, by
+    the same `check_access` as search and `fetch_record`. Node signs the viewer's
+    own ids after authenticating them, so a shared chat is rendered for the person
+    looking at it. An access check that cannot answer is a 503, never a guess."""
+    org_id, viewer_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, RecordAccessRequest)
+    ids = list(dict.fromkeys(r for r in payload.recordIds if r))
+    try:
+        readable = await accessible_node_ids(graph_provider, set(ids), viewer_id, org_id)
+    except PermissionVerificationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+    return {"accessible": [r for r in ids if r in readable]}
 
 
 @router.post("/chat/attachments/permissions")
