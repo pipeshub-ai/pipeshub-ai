@@ -22,6 +22,8 @@ from app.agents.actions.knowledge_graph.ops.search import (
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from app.utils.pattern_match import PatternMatchCoverage
 
 # ---------------------------------------------------------------------------
@@ -657,6 +659,234 @@ class TestExecuteSearchFullPath:
 
         assert state["virtual_record_id_to_result"] is live
         assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
+
+
+class TestRecordsTheResultDoesNotShow:
+    """``UNSHOWN_MATCHES_LIST``: matched records the result leaves out are named
+    for fetching, and only ones the permission-checked map holds."""
+
+    _SEARCH = "app.agents.actions.knowledge_graph.ops.search"
+
+    @staticmethod
+    def _record(vrid: str) -> dict[str, Any]:
+        return {"id": f"r-{vrid}", "virtual_record_id": vrid, "record_name": f"Doc {vrid}",
+                "context_metadata": f"Record ID: r-{vrid}", "frontend_url": "",
+                "block_containers": {"blocks": [], "block_groups": []}}
+
+    @staticmethod
+    def _unit(vrid: str) -> dict[str, Any]:
+        return {"virtual_record_id": vrid, "block_index": 0, "block_type": "text",
+                "content": f"Block of {vrid}", "metadata": {}, "score": 0.5}
+
+    async def _search(
+        self, ranked: list[str], matched: list[str], *, permitted: tuple[str, ...],
+        held: tuple[str, ...] = (), loaded: tuple[str, ...] = (),
+        **state_extra: Any,  # noqa: ANN401
+    ) -> tuple[str, dict[str, Any]]:
+        from app.modules.retrieval.context.builder import KnowledgeContext
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [{"metadata": {"virtualRecordId": vrid}} for vrid in ranked],
+            "virtual_to_record_map": {
+                vrid: {"_key": f"r-{vrid}", "recordName": f"Doc {vrid}"} for vrid in permitted
+            },
+        }
+        builder = MagicMock()
+        builder.return_value.build = AsyncMock(return_value=KnowledgeContext(
+            ranked=[self._unit(vrid) for vrid in ranked],
+            virtual_record_id_to_result={vrid: self._record(vrid) for vrid in ranked},
+            matched_record_ids=matched,
+        ))
+        state = {
+            **_state(retrieval),
+            "filters": {"apps": ["app-1"], "kb": []},
+            # Held: shown by an earlier search. Loaded: in the map but never
+            # rendered, as prefetch leaves the records its fit dropped.
+            "virtual_record_id_to_result": {vrid: self._record(vrid) for vrid in (*held, *loaded)},
+            "final_results": [self._unit(vrid) for vrid in held],
+            **state_extra,
+        }
+        with patch(f"{self._SEARCH}.KnowledgeContextBuilder", builder), \
+                patch(f"{self._SEARCH}.BlobStorage"), \
+                patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range",
+                      return_value=({}, None)):
+            result = await execute_search(state, "test query")
+        assert isinstance(result, str)
+        return result, state
+
+    @pytest.mark.asyncio
+    async def test_are_listed_best_first_and_remembered_but_not_held(self, monkeypatch) -> None:
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, state = await self._search(
+            ["vr1"], ["vr1", "vr2", "vr-held", "vr-denied", "vr3"],
+            permitted=("vr1", "vr2", "vr3", "vr-held"), held=("vr-held",),
+        )
+
+        listed = result.split("Also matched, not shown", 1)[1]
+        assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in listed
+        assert "r-vr-held" not in listed, "shown by an earlier search"
+        assert "vr-denied" not in result, "not in the permission-checked map"
+        assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
+        assert "r-vr-denied" not in state["known_record_ids"]
+        assert state["known_record_names"]["r-vr2"] == "Doc vr2"
+        # Named, not loaded: nothing of theirs reaches the records the answer cites.
+        assert set(state["virtual_record_id_to_result"]) == {"vr-held", "vr1"}
+
+    @pytest.mark.asyncio
+    async def test_a_record_loaded_earlier_but_never_shown_is_listed(self, monkeypatch) -> None:
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, _ = await self._search(["vr1"], ["vr1", "vr2"], permitted=("vr1", "vr2"), loaded=("vr2",))
+
+        assert "- Record ID: r-vr2 | Doc vr2" in result
+
+    @pytest.mark.asyncio
+    async def test_a_record_whose_id_the_model_already_holds_is_not_listed(self, monkeypatch) -> None:
+        """Read by a fetch, or listed by an earlier search of the request."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, _ = await self._search(
+            ["vr1"], ["vr1", "vr2", "vr3"], permitted=("vr1", "vr2", "vr3"), known_record_ids={"r-vr2"},
+        )
+
+        listed = result.split("Also matched, not shown", 1)[1]
+        assert "r-vr2" not in listed
+        assert "- Record ID: r-vr3 | Doc vr3" in listed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("env", [{}, {"HIGH_ACCURACY_MODE": "true", "UNSHOWN_MATCHES_LIST": "false"}])
+    async def test_off_the_result_is_unchanged(self, monkeypatch, env: dict[str, str]) -> None:
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        monkeypatch.delenv("UNSHOWN_MATCHES_LIST", raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+
+        result, state = await self._search(["vr1"], ["vr1", "vr2"], permitted=("vr1", "vr2"))
+
+        assert "Also matched" not in result
+        assert "r-vr2" not in result
+        assert "r-vr2" not in state["known_record_ids"]
+
+    @pytest.mark.asyncio
+    async def test_on_under_high_accuracy_mode(self, monkeypatch) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        monkeypatch.delenv("UNSHOWN_MATCHES_LIST", raising=False)
+
+        result, _ = await self._search(["vr1"], ["vr1", "vr2"], permitted=("vr1", "vr2"))
+
+        assert "- Record ID: r-vr2 | Doc vr2" in result
+
+    @pytest.mark.asyncio
+    async def test_a_record_the_size_fit_leaves_out_is_listed(self, monkeypatch) -> None:
+        """The common case: the result had room for the first record only."""
+        from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        select = KnowledgeRenderer.select
+
+        def keep_first_record(renderer: KnowledgeRenderer, ranked: list, max_chars: int) -> Selection:
+            chosen = select(renderer, ranked[:1], max_chars)
+            return Selection(ranked=chosen.ranked, omitted_records=1, chars=chosen.chars,
+                             record_id_shortener=chosen.record_id_shortener)
+
+        with patch.object(KnowledgeRenderer, "select", keep_first_record):
+            result, state = await self._search(["vr1", "vr2"], ["vr1", "vr2"], permitted=("vr1", "vr2"))
+
+        assert "1 lower-ranked record left out to fit the result size" in result
+        assert "Block of vr2" not in result
+        assert "- Record ID: r-vr2 | Doc vr2" in result
+        assert set(state["virtual_record_id_to_result"]) == {"vr1"}
+
+    @staticmethod
+    def _first_record_only() -> AbstractContextManager[Any]:
+        """A fit that keeps the first record whatever the budget, as one
+        oversized unit is kept."""
+        from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+
+        select = KnowledgeRenderer.select
+
+        def first_record_only(renderer: KnowledgeRenderer, ranked: list, _max_chars: int) -> Selection:
+            chosen = select(renderer, ranked[:1], 10**6)
+            return Selection(ranked=chosen.ranked, omitted_records=len(ranked) - 1, chars=chosen.chars,
+                             record_id_shortener=chosen.record_id_shortener)
+
+        return patch.object(KnowledgeRenderer, "select", first_record_only)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("targeted", [False, True])
+    @pytest.mark.parametrize("outside_dates", ["", "\n\nMatches written outside the dates: " + "x" * 80])
+    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(
+        self, monkeypatch, targeted: bool, outside_dates: str,
+    ) -> None:
+        """Each record the fit drops adds a row, so the passes can end over the
+        size: the lowest-ranked rows go, and only the ids still shown are
+        remembered. The matches outside the dates close the result and count
+        toward its size too."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        monkeypatch.setenv("TARGETED_RETRIEVAL", str(targeted).lower())
+
+        vrids = ["vr1", "vr2", "vr3", "vr4", "vr5", "vr6"]
+        with self._first_record_only(), \
+                patch(f"{self._SEARCH}.outside_dates_for_model", return_value=outside_dates):
+            full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
+            row = len("\n- Record ID: r-vr6 | Doc vr6")
+            budget = len(full) - 2 * row - 5
+            fit_budget = (
+                patch(f"{self._SEARCH}.search_max_chars", return_value=budget) if targeted
+                else patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget)
+            )
+            with fit_budget:
+                result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
+
+        assert "- Record ID: r-vr6 | Doc vr6" in full
+        assert result.endswith(outside_dates)
+        assert len(result) <= budget
+        assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in result
+        for dropped in ("r-vr4", "r-vr5", "r-vr6"):
+            assert dropped not in result
+            assert dropped not in state["known_record_ids"]
+        assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("targeted", [False, True])
+    async def test_a_list_that_cannot_close_the_gap_is_kept_whole(self, monkeypatch, targeted: bool) -> None:
+        """One record alone is over the size: dropping rows would not make the
+        result fit, only lose names. The ids count as known only where no cap
+        cuts the result: the shared cap's middle cut may take the list, while
+        under TARGETED_RETRIEVAL the fit budget sits below that cap."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        monkeypatch.setenv("TARGETED_RETRIEVAL", str(targeted).lower())
+
+        vrids = ["vr1", "vr2", "vr3"]
+        with self._first_record_only():
+            full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
+            budget = len(full) - len(full[full.index("\n\nAlso matched, not shown"):]) - 10
+            over_budget = (
+                patch(f"{self._SEARCH}.search_max_chars", return_value=budget) if targeted
+                else patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget)
+            )
+            with over_budget:
+                result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
+
+        assert result == full
+        assert ({"r-vr2", "r-vr3"} <= state["known_record_ids"]) is targeted
+
+    @pytest.mark.asyncio
+    async def test_listed_ids_are_shortened_like_every_other_id(self, monkeypatch) -> None:
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, state = await self._search(
+            ["vr1"], ["vr1", "vr2"], permitted=("vr1", "vr2"), enable_record_id_shortening=True,
+        )
+
+        shortener = state["record_id_shortener"]
+        short = shortener.shorten_if_known("r-vr2")
+        assert short != "r-vr2"
+        assert f"- Record ID: {short} | Doc vr2" in result
+        assert shortener.resolve(short) == "r-vr2"
 
 
 class TestExecuteSearchException:

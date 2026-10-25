@@ -327,6 +327,51 @@ class TestAdjudication:
         }
         assert "v-denied" not in returned
 
+    @pytest.mark.parametrize("container_scoping", [True, False], ids=["containers", "record-ids"])
+    @pytest.mark.asyncio
+    async def test_a_denied_record_is_not_in_the_record_map(
+        self, retrieval_service, mock_graph_provider, container_scoping: bool,
+    ) -> None:
+        """A knowledge search names matched records it does not show from
+        ``virtual_to_record_map`` (UNSHOWN_MATCHES_LIST), so the map must hold
+        only records the user may read, whatever the graph would return."""
+        if container_scoping:
+            mock_graph_provider.get_accessible_containers = AsyncMock(
+                return_value=_containers(record_group_ids_verify=frozenset({"rg"}))
+            )
+            mock_graph_provider.check_access = AsyncMock(
+                return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"})
+            )
+        else:
+            mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(
+                return_value={"v-allowed": "r-allowed"}
+            )
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            return_value=[_hit("v-allowed"), _hit("v-denied", score=0.95)]
+        )
+
+        async def every_record_asked_for(record_ids: list[str], org_id: str) -> list[dict]:
+            return [{
+                "_key": rid, "virtualRecordId": rid.replace("r-", "v-"),
+                "origin": "CONNECTOR", "recordName": rid, "mimeType": "text/plain",
+                "connectorName": "X", "webUrl": "http://x",
+            } for rid in record_ids]
+
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(side_effect=every_record_asked_for)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.location.resolve_ancestor_locations",
+            AsyncMock(return_value={}),
+        ):
+            result = await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1"
+            )
+
+        assert set(result["virtual_to_record_map"]) == {"v-allowed"}
+        asked = {rid for call in mock_graph_provider.get_records_by_record_ids.await_args_list
+                 for rid in call.args[0]}
+        assert asked == {"r-allowed"}
+
     @pytest.mark.asyncio
     async def test_the_adjudicated_map_is_what_gates_records(
         self, retrieval_service, mock_graph_provider

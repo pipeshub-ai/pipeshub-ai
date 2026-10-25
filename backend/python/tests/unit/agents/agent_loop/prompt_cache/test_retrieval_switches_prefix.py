@@ -21,10 +21,11 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.actions.retrieval.retrieval import Retrieval
 from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.modules.retrieval.context.unshown import UNSHOWN_MATCHES_LIST_ENV_VAR
 from app.modules.retrieval.record_cut import FUSION_RECORD_CUT_ENV_VAR
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
-_RETRIEVAL_SWITCHES = (FUSION_RECORD_CUT_ENV_VAR,)
+_RETRIEVAL_SWITCHES = (FUSION_RECORD_CUT_ENV_VAR, UNSHOWN_MATCHES_LIST_ENV_VAR)
 _MODES = ("quick", "react", "planExecute", "deep")
 _QUESTIONS = (
     Goal(description="Who owns HarborBank?"),
