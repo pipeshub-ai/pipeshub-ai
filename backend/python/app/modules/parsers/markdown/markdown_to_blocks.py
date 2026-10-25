@@ -26,6 +26,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers.link_text import link_destination_end
 from app.modules.parsers.text_splitting import split_long_text
+from app.modules.transformers.block_container_validator import strip_base64_images
 
 _MD_IMAGE_RE = re.compile(
     r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
@@ -591,7 +592,7 @@ class _TokenWalker:
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.CODE,
                 format=DataFormat.CODE,
-                data=content,
+                data=strip_base64_images(content),
                 parent_index=self._current_parent_index(),
                 code_metadata=CodeMetadata(language=language),
             )
@@ -728,11 +729,16 @@ class _TokenWalker:
         format: DataFormat,
         parent_block_index: int | None = None,
     ) -> Block | None:
-        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        """Emit one or more TEXT blocks, splitting oversized content at parse time.
+
+        An image payload that reached text (it sits in code, a table cell or an
+        unclosed fence, so it never became an IMAGE block) is replaced first:
+        before the split, so no chunk keeps the tail of one.
+        """
         if not text or not text.strip():
             return None
 
-        chunks = split_long_text(text)
+        chunks = split_long_text(strip_base64_images(text))
         if parent_block_index is not None:
             last: Block | None = None
             for chunk in chunks:

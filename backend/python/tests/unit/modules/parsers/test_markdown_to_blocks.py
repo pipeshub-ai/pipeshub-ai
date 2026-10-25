@@ -1596,3 +1596,86 @@ class TestLongTextSplitting:
         assert containers
         assert len(fragments) >= 2
         assert all(len(block.data) <= 500_000 for block in fragments)
+
+
+class TestImagePayloadsLeftInText:
+    """An image that markdown cannot lift into an IMAGE block (it sits in code,
+    or after a code fence the author never closed) used to stay in a TEXT block,
+    and the validator then failed the whole record. Its payload is now replaced
+    and the record's text kept."""
+
+    @staticmethod
+    def _png_b64() -> str:
+        import base64
+
+        return base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+
+    @staticmethod
+    def _validate(container: BlocksContainer) -> None:
+        from app.modules.transformers.block_container_validator import (
+            BlockContainerValidator,
+        )
+
+        BlockContainerValidator().validate(container)
+
+    @staticmethod
+    def _text(container: BlocksContainer) -> str:
+        return "\n".join(
+            b.data for b in container.blocks if b.type == BlockType.TEXT and isinstance(b.data, str)
+        )
+
+    def test_an_image_after_an_unclosed_code_fence(self, converter: MarkdownToBlocksConverter) -> None:
+        # The shape of a real GitHub issue: a ```bash fence never closed, then screenshots.
+        md = (
+            "When running a CLI command with JSON output, logs come first.\n\n"
+            "```bash\nairflow dags list -o json\n\n##Screenshots\n\n"
+            f"![Image](data:image/png;base64,{self._png_b64()})\n\n"
+            "### What you think should happen instead?\nOnly JSON on stdout."
+        )
+        container = converter.convert(md)
+        self._validate(container)
+        text = self._text(container)
+        assert "airflow dags list -o json" in text
+        assert "![Image](data:image/png;base64,[image data omitted])" in text
+        assert "Only JSON on stdout." in text
+
+    def test_an_image_in_a_diff(self, converter: MarkdownToBlocksConverter) -> None:
+        md = (
+            "[added file]\n\nDiff:\n@@ -0,0 +1 @@\n"
+            f'+export default "data:image/png;base64,{self._png_b64()}"'
+        )
+        container = converter.convert(md)
+        self._validate(container)
+        assert '+export default "data:image/png;base64,[image data omitted]"' in self._text(container)
+
+    def test_an_image_in_a_fenced_code_block(self, converter: MarkdownToBlocksConverter) -> None:
+        md = f"Style:\n\n```css\n.icon{{background:url(data:image/png;base64,{self._png_b64()})}}\n```\n"
+        container = converter.convert(md)
+        self._validate(container)
+        code = [b for b in container.blocks if b.sub_type == BlockSubType.CODE]
+        assert len(code) == 1
+        assert code[0].data == ".icon{background:url(data:image/png;base64,[image data omitted])}"
+
+    def test_a_payload_longer_than_one_text_block(self, converter: MarkdownToBlocksConverter) -> None:
+        import base64
+
+        from app.modules.parsers.text_splitting import MAX_TEXT_BLOCK_CHARS
+
+        big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 300).decode()
+        assert len(big) > MAX_TEXT_BLOCK_CHARS
+        container = converter.convert(f"Before the fixture.\n{big}\nAfter the fixture.")
+        self._validate(container)
+        text = self._text(container)
+        assert big[1000:1100] not in text  # no chunk keeps the payload's tail
+        assert "Before the fixture." in text and "After the fixture." in text
+
+    def test_an_image_on_its_own_still_becomes_an_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ) -> None:
+        uri = f"data:image/png;base64,{self._png_b64()}"
+        container = converter.convert(
+            f"Intro\n\n![Image_1]({uri})\n\nOutro", caption_map={"Image_1": uri}
+        )
+        self._validate(container)
+        images = _blocks_by_type(container, BlockType.IMAGE)
+        assert [b.data["uri"] for b in images] == [uri]

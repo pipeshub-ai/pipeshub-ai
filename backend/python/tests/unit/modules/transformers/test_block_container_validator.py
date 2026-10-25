@@ -24,6 +24,7 @@ from app.modules.transformers.block_container_validator import (
     _decode_b64_prefix,
     _is_image_data,
     contains_base64_image,
+    strip_base64_images,
 )
 
 
@@ -1151,3 +1152,92 @@ class TestTableGroupOutOfBoundsChildRangeContinue:
         codes = _error_codes(exc_info.value)
         assert "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE" in codes
         assert "TABLE_CHILD_NOT_TABLE_ROW" not in codes
+
+
+class TestStripBase64Images:
+    """Text that kept an image payload loses the payload and nothing else."""
+
+    @staticmethod
+    def _png_b64() -> str:
+        import base64
+
+        return base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+
+    def test_an_image_in_code_keeps_the_code(self) -> None:
+        text = f'+export default "data:image/png;base64,{self._png_b64()}"'
+        stripped = strip_base64_images(text)
+        assert stripped == '+export default "data:image/png;base64,[image data omitted]"'
+        assert contains_base64_image(stripped) is False
+
+    def test_markdown_image_syntax_keeps_its_alt_text(self) -> None:
+        text = f"See ![Login screen](data:image/png;base64,{self._png_b64()}) for the error."
+        assert strip_base64_images(text) == (
+            "See ![Login screen](data:image/png;base64,[image data omitted]) for the error."
+        )
+
+    def test_a_wrapped_raw_payload_is_replaced_and_the_prose_around_it_kept(self) -> None:
+        import textwrap
+
+        text = "Logo:\n" + "\n".join(textwrap.wrap(self._png_b64(), 76)) + "\nThanks"
+        assert strip_base64_images(text) == "Logo:\n[image data omitted]\nThanks"
+
+    def test_a_column_wrapped_data_uri_is_replaced(self) -> None:
+        import textwrap
+
+        wrapped = "\n".join(
+            textwrap.wrap("data:image/png;base64," + self._png_b64(), 76, break_long_words=True)
+        )
+        stripped = strip_base64_images(f"Attached screenshot:\n{wrapped}\nDone")
+        assert stripped == "Attached screenshot:\ndata:image/png;base64,[image data omitted]\nDone"
+
+    def test_several_images_are_all_replaced(self) -> None:
+        png = self._png_b64()
+        text = f"a data:image/png;base64,{png} b\n\n{png}\n\nc"
+        stripped = strip_base64_images(text)
+        assert stripped == (
+            "a data:image/png;base64,[image data omitted] b\n\n[image data omitted]\n\nc"
+        )
+
+    def test_an_image_past_the_detection_cap_is_replaced_too(self) -> None:
+        # Commas end each run, so every identifier is a candidate of its own.
+        identifiers = ", ".join(f"identifier_number_{i:04d}" for i in range(_MAX_CANDIDATES + 5))
+        text = f"{identifiers}\n{self._png_b64()}\nend"
+        assert contains_base64_image(text) is False  # the validator stops at its cap
+        stripped = strip_base64_images(text)
+        assert stripped == f"{identifiers}\n[image data omitted]\nend"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "Plain prose with no payload in it at all.",
+            'request body: {"image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."}',
+            "Every PNG starts with iVBORw0KGgoAAAANSUhEUg and the rest follows the IHDR chunk",
+            # SVG is text, not a raster image the validator looks for.
+            "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCI+PC9zdmc+",
+            "sha256:" + "a" * 64 + " and AKIAIOSFODNN7EXAMPLE_and_a_long_identifier_name_here",
+        ],
+    )
+    def test_text_without_an_image_is_unchanged(self, text: str) -> None:
+        assert strip_base64_images(text) == text
+
+    def test_every_shape_the_validator_flags_is_cleared(self) -> None:
+        import textwrap
+
+        png = self._png_b64()
+        one_pixel = TestQuotedBase64IsNotAnImage._ONE_PIXEL_PNG
+        shapes = [
+            f"see data:image/png;base64,{png}",
+            png,
+            "\n".join(textwrap.wrap(png, 76)),
+            "data:image/png;base64," + "\r\n".join(textwrap.wrap(png, 64)),
+            f"see data:image/png;base64,{one_pixel}",
+            "Logo:\n" + "\n".join(textwrap.wrap(one_pixel, 76)) + "\nThanks",
+            "PNG payloads start iVBORw0KGgoAAAANSUhEUg and look like\n" + "\n".join(textwrap.wrap(png, 76)),
+        ]
+        for text in shapes:
+            assert contains_base64_image(text), text[:40]
+            stripped = strip_base64_images(text)
+            assert contains_base64_image(stripped) is False, text[:40]
+            assert "[image data omitted]" in stripped
+            BlockContainerValidator().validate(_container(blocks=[_text_block(0, data=stripped)]))

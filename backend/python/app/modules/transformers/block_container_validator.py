@@ -195,8 +195,97 @@ def contains_base64_image(text: str) -> bool:
             decoded = _decode_b64_prefix(prefix)
             if decoded and _is_image_data(decoded):
                 return True
- 
+
     return False
+
+
+# What a TEXT block keeps where an image payload was.
+BASE64_IMAGE_PLACEHOLDER = "[image data omitted]"
+
+
+def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
+    """Yield ``(start, end)`` in *raw* of each base64 run that holds an image.
+
+    A run is read exactly as ``_image_payload_prefixes`` reads it, so a span is
+    found for every run that check reports: full lines, maybe led by one short
+    segment and closed by a padded short line. The short lead belongs to the
+    span only when the image is found by reading from it; otherwise it is a
+    prose word that happens to precede the payload.
+    """
+    lead: re.Match[str] | None = None
+    run_lead: re.Match[str] | None = None
+    first: int | None = None
+    first_end = 0
+    first_full = False
+    end = 0
+    length = 0
+
+    def image_start() -> int | None:
+        if first is None or length < _MIN_IMAGE_PAYLOAD_CHARS:
+            return None
+        if run_lead is not None:
+            decoded = _decode_b64_prefix(run_lead.group() + raw[first:first_end])
+            if decoded and _is_image_data(decoded):
+                return run_lead.start()
+        if first_full:
+            decoded = _decode_b64_prefix(raw[first:first_end])
+            if decoded and _is_image_data(decoded):
+                return first
+        return None
+
+    for m in _SEGMENT_RE.finditer(raw):
+        segment = m.group()
+        chars = len(segment.rstrip("="))
+        full = chars >= _MIN_WRAPPED_LINE_CHARS
+        tail = not full and segment.endswith("=") and (first is not None or lead is not None)
+        if full or tail:
+            if first is None:
+                run_lead, first, first_end, first_full = lead, m.start(), m.end(), full
+                length = len(lead.group().rstrip("=")) if lead else 0
+            length += chars
+            end = m.end()
+            if full:
+                lead = None
+                continue
+        start = image_start()
+        if start is not None:
+            yield start, end
+        run_lead, first, length = None, None, 0
+        lead = None if segment.endswith("=") else m
+    start = image_start()
+    if start is not None:
+        yield start, end
+
+
+def _strip_image_runs(raw: str) -> str:
+    spans = list(_image_payload_spans(raw))
+    for start, end in reversed(spans):
+        raw = raw[:start] + BASE64_IMAGE_PLACEHOLDER + raw[end:]
+    return raw
+
+
+def strip_base64_images(text: str) -> str:
+    """*text* with every base64 image payload replaced by a short placeholder.
+
+    For text that cannot become an IMAGE block: an image inside code, a table
+    cell, or a code fence the author never closed. Without this the block fails
+    TEXT_DATA_CONTAINS_BASE64_IMAGE and takes the whole record with it. A data
+    URI keeps its ``data:image/<type>;base64,`` header, and markdown image syntax
+    keeps its alt text, so the text still says an image was there.
+
+    Unlike ``contains_base64_image`` this reads the whole text, so a payload past
+    that check's candidate cap is removed too. Text without an image comes back
+    unchanged.
+    """
+    if not text:
+        return text
+
+    def strip_data_uri(m: re.Match[str]) -> str:
+        return m.group()[: m.start(1) - m.start()] + _strip_image_runs(m.group(1))
+
+    text = _DATA_URI_RE.sub(strip_data_uri, text)
+    return _RAW_B64_RE.sub(lambda m: _strip_image_runs(m.group()), text)
+
 
 class Severity(str, Enum):
     ERROR = "error"
