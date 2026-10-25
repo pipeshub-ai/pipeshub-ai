@@ -276,7 +276,7 @@ export class PatService {
     // still show up (with ownerDeleted: true) rather than silently drop
     // the owner's name/email from the response.
     const owners = await Users.find({
-      _id: { $in: tokens.map((t) => t.userId) },
+      _id: { $in: tokens.map((t) => t.userId) as unknown as Types.ObjectId[] },
     })
       .select('email fullName isDeleted')
       .lean()

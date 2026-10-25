@@ -49,6 +49,9 @@ from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
+    pdf_raster_pool_size,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
@@ -69,6 +72,10 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.probe import (
+    effective_cpu_count,
+    effective_cpu_source,
+)
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
@@ -347,6 +354,11 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "cpu": {
+            "effective_cpus": effective_cpu_count(),
+            "source": effective_cpu_source(),
+            "pdf_raster_workers": pdf_raster_pool_size(),
+        },
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     if governor is not None:

@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { OAuthGrantType } from '../schema/oauth.app.schema';
+import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
+import {
+  guidCheck,
+  integerCheck,
+  urlCheck,
+} from '../../../libs/utils/zod-formats';
 
 // OAuth Provider Validators
 
@@ -29,9 +35,9 @@ const uniqueIds = (ids: string[]): string[] => [
  * means everything the user can see; sent, it must name something. */
 export const knowledgeLimitSchema = z
   .object({
-    apps: z.array(z.string().uuid()).default([]),
-    recordGroups: z.array(z.string().uuid()).default([]),
-    records: z.array(z.string().uuid()).default([]),
+    apps: z.array(z.string().check(guidCheck())).default([]),
+    recordGroups: z.array(z.string().check(guidCheck())).default([]),
+    records: z.array(z.string().check(guidCheck())).default([]),
   })
   .strict()
   .transform((limit) => ({
@@ -55,9 +61,12 @@ const codeChallengePattern = /^[A-Za-z0-9\-_]{43,128}$/;
 
 export const authorizeQuerySchema = z.object({
   query: z.object({
-    response_type: z.enum(['code']),
+    response_type: z.enum(
+      ['code'],
+      messageForUnknownOption('Response type must be one of: code.'),
+    ),
     client_id: z.string().min(1),
-    redirect_uri: z.string().url(),
+    redirect_uri: z.string().check(urlCheck()),
     scope: z.string().min(1),
     state: z.string().min(1),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
@@ -66,7 +75,12 @@ export const authorizeQuerySchema = z.object({
       .regex(codeChallengePattern, 'Invalid code_challenge format')
       .optional(),
     // RFC 9700: only S256; `plain` exposes the verifier on the wire
-    code_challenge_method: z.enum(['S256']).optional(),
+    code_challenge_method: z
+      .enum(
+        ['S256'],
+        messageForUnknownOption('Code challenge method must be one of: S256.'),
+      )
+      .optional(),
     nonce: z.string().optional(),
   }),
 });
@@ -74,7 +88,7 @@ export const authorizeQuerySchema = z.object({
 export const authorizeConsentSchema = z.object({
   body: z.object({
     client_id: z.string().min(1),
-    redirect_uri: z.string().url(),
+    redirect_uri: z.string().check(urlCheck()),
     scope: z.string().min(1),
     state: z.string().min(1),
     consent: z.enum(['granted', 'denied']),
@@ -84,7 +98,12 @@ export const authorizeConsentSchema = z.object({
       .regex(codeChallengePattern, 'Invalid code_challenge format')
       .optional(),
     // RFC 9700: only S256; `plain` exposes the verifier on the wire
-    code_challenge_method: z.enum(['S256']).optional(),
+    code_challenge_method: z
+      .enum(
+        ['S256'],
+        messageForUnknownOption('Code challenge method must be one of: S256.'),
+      )
+      .optional(),
   }),
 });
 
@@ -98,7 +117,7 @@ export const tokenSchema = z.object({
       OAuthGrantType.TOKEN_EXCHANGE,
     ]),
     code: z.string().optional(),
-    redirect_uri: z.string().url().optional(),
+    redirect_uri: z.string().check(urlCheck()).optional(),
     // RFC 6749: client_id is required but can also come from Authorization header
     client_id: z.string().min(1).optional(),
     client_secret: z.string().optional(),
@@ -128,12 +147,12 @@ export const dcrRequestSchema = z.object({
     grant_types: z.array(z.string()).optional(),
     response_types: z.array(z.string()).optional(),
     client_name: z.string().min(1).max(100).optional(),
-    client_uri: z.string().url().optional(),
-    logo_uri: z.string().url().optional(),
+    client_uri: z.string().check(urlCheck()).optional(),
+    logo_uri: z.string().check(urlCheck()).optional(),
     scope: z.string().optional(),
     contacts: z.array(z.string()).optional(),
-    tos_uri: z.string().url().optional(),
-    policy_uri: z.string().url().optional(),
+    tos_uri: z.string().check(urlCheck()).optional(),
+    policy_uri: z.string().check(urlCheck()).optional(),
     software_id: z.string().optional(),
     software_version: z.string().optional(),
   }),
@@ -209,7 +228,7 @@ export const createAppSchema = z.object({
     .object({
       name: z.string().min(1).max(100),
       description: z.string().max(500).optional(),
-      redirectUris: z.array(z.string().url()).max(10).optional(),
+      redirectUris: z.array(z.string().check(urlCheck())).max(10).optional(),
       allowedGrantTypes: z
         .array(
           z.enum([
@@ -223,12 +242,22 @@ export const createAppSchema = z.object({
       // Checked for real in the service, which can look the account up.
       // Shape only here.
       tokenIdentityUserId: z.string().min(1).optional(),
-      homepageUrl: z.string().url().optional(),
-      privacyPolicyUrl: z.string().url().optional(),
-      termsOfServiceUrl: z.string().url().optional(),
+      homepageUrl: z.string().check(urlCheck()).optional(),
+      privacyPolicyUrl: z.string().check(urlCheck()).optional(),
+      termsOfServiceUrl: z.string().check(urlCheck()).optional(),
       isConfidential: z.boolean().optional(),
-      accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
-      refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      accessTokenLifetime: z
+        .number()
+        .check(integerCheck())
+        .min(300)
+        .max(86400)
+        .optional(),
+      refreshTokenLifetime: z
+        .number()
+        .check(integerCheck())
+        .min(3600)
+        .max(31536000)
+        .optional(),
       knowledgeLimit: knowledgeLimitSchema.optional(),
     })
     .refine(
@@ -258,7 +287,7 @@ export const updateAppSchema = z.object({
     .object({
       name: z.string().min(1).max(100).optional(),
       description: z.string().max(500).optional(),
-      redirectUris: z.array(z.string().url()).max(10).optional(),
+      redirectUris: z.array(z.string().check(urlCheck())).max(10).optional(),
       allowedGrantTypes: z
         .array(
           z.enum([
@@ -269,11 +298,21 @@ export const updateAppSchema = z.object({
         )
         .optional(),
       allowedScopes: z.array(z.string()).min(1).optional(),
-      homepageUrl: z.string().url().optional().nullable(),
-      privacyPolicyUrl: z.string().url().optional().nullable(),
-      termsOfServiceUrl: z.string().url().optional().nullable(),
-      accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
-      refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      homepageUrl: z.string().check(urlCheck()).optional().nullable(),
+      privacyPolicyUrl: z.string().check(urlCheck()).optional().nullable(),
+      termsOfServiceUrl: z.string().check(urlCheck()).optional().nullable(),
+      accessTokenLifetime: z
+        .number()
+        .check(integerCheck())
+        .min(300)
+        .max(86400)
+        .optional(),
+      refreshTokenLifetime: z
+        .number()
+        .check(integerCheck())
+        .min(3600)
+        .max(31536000)
+        .optional(),
       // null puts the app back to everything each user can see.
       knowledgeLimit: knowledgeLimitSchema.nullable().optional(),
     })
@@ -300,13 +339,13 @@ export const listAppsQuerySchema = z.object({
     page: z
       .preprocess(
         (arg) => (arg === '' || arg === undefined ? 1 : Number(arg)),
-        z.number().int().min(1),
+        z.number().check(integerCheck()).min(1),
       )
       .optional(),
     limit: z
       .preprocess(
         (arg) => (arg === '' || arg === undefined ? 20 : Number(arg)),
-        z.number().int().min(1).max(100),
+        z.number().check(integerCheck()).min(1).max(100),
       )
       .optional(),
     status: z.enum(['active', 'suspended', 'revoked']).optional(),

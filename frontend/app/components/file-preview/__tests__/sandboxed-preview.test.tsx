@@ -302,18 +302,25 @@ describe('DOCX preview isolation', () => {
     expect((window as unknown as { __docxXss?: number }).__docxXss).toBeUndefined();
   });
 
-  it('neutralizes the w:sym injection in a real parsed document before docx-preview renders it', async () => {
+  it('does not render the w:sym injection from a real parsed document, with or without neutralizing', async () => {
     const docxPreview = await import('docx-preview');
     const options = { inWrapper: true, renderAltChunks: false, useBase64URL: true };
     const parsed = await docxPreview.parseAsync(await buildDocx(MALICIOUS_BODY, MALICIOUS_RELS), options);
+    // docx-preview 0.4 returns the rendered nodes; the production renderer appends them to a container.
+    const renderInto = async (target: HTMLElement) => {
+      for (const node of await docxPreview.renderDocument(parsed, options)) target.appendChild(node);
+    };
 
-    const unsafe = document.createElement('div');
-    await docxPreview.renderDocument(parsed, unsafe, undefined, options);
-    expect(unsafe.querySelector('img[onerror]')).not.toBeNull();
+    // docx-preview >= 0.4.1 converts the symbol code to a character itself, so the
+    // payload is inert even before our own neutralizing pass (kept as defence in depth).
+    const raw = document.createElement('div');
+    await renderInto(raw);
+    expect(raw.querySelector('img')).toBeNull();
+    expect(raw.innerHTML).not.toContain('onerror');
 
     neutralizeDocxSymbols((parsed as unknown as { parts: unknown[] }).parts);
     const safe = document.createElement('div');
-    await docxPreview.renderDocument(parsed, safe, undefined, options);
+    await renderInto(safe);
     expect(safe.querySelector('img')).toBeNull();
     expect(safe.innerHTML).not.toContain('onerror');
     expect(safe.textContent).toContain('Board minutes');

@@ -1,3 +1,4 @@
+import type { QueryFilter } from 'mongoose';
 import { Logger } from '../logger.service';
 import { IMessageProducer, StreamMessage } from '../../types/messaging.types';
 import { IOutboxEvent, OutboxEvent } from './outbox.schema';
@@ -155,7 +156,7 @@ export class OutboxDispatcher {
    */
   private async claimNext(): Promise<IOutboxEvent | null> {
     const now = new Date();
-    const due = {
+    const due: QueryFilter<IOutboxEvent> = {
       $or: [
         { status: 'pending', nextAttemptAt: { $lte: now } },
         {
@@ -191,7 +192,7 @@ export class OutboxDispatcher {
         const claimed = await OutboxEvent.findOneAndUpdate(
           { _id: candidate._id, ...due },
           { $set: { status: 'publishing', claimedAt: now } },
-          { new: true },
+          { returnDocument: 'after' },
         ).exec();
         if (claimed) return claimed;
       }

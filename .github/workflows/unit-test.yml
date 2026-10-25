@@ -117,6 +117,10 @@ jobs:
     name: python-unit (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # One fixed place for the fastembed model files, so the cache step, the
+      # pre-download step and test_bm25_golden.py all use the same directory.
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
 
     strategy:
       fail-fast: false
@@ -155,6 +159,39 @@ jobs:
           # run here. It also brings pytest-xdist and pytest-cov.
           uv pip install --system -e ".[dev]"
 
+      - name: Check whether this shard runs the BM25 golden test
+        id: bm25
+        working-directory: backend/python
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          owns=$(python3 ../../scripts/unit_shards.py owns "$SHARD" tests/unit/services/vector_db/test_bm25_golden.py)
+          echo "needs_bm25=$owns" >> "$GITHUB_OUTPUT"
+
+      # The Qdrant/bm25 files are a few KB; caching them and fetching with
+      # retries keeps test_bm25_golden.py (REQUIRE_BM25_MODEL=1 below) off a
+      # single anonymous Hub request. The key follows the dependency manifest,
+      # which pins fastembed.
+      - name: Cache fastembed model
+        if: steps.bm25.outputs.needs_bm25 == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.FASTEMBED_CACHE_PATH }}
+          key: fastembed-bm25-${{ hashFiles('backend/python/pyproject.toml') }}
+
+      - name: Pre-download fastembed model
+        if: steps.bm25.outputs.needs_bm25 == 'true'
+        run: |
+          for attempt in 1 2 3 4; do
+            if python3 -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"; then
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 10))
+          done
+          echo "Could not download Qdrant/bm25; test_bm25_golden.py will fail" >&2
+          exit 1
+
       # -n logical: one worker per vCPU (`auto` counts physical cores). --dist
       # loadfile keeps each file's tests on one worker, so tests in a file that
       # share module state still run together and in order. pytest-cov merges
@@ -166,6 +203,10 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           COVERAGE_FILE: .coverage.${{ matrix.shard }}
+          # test_bm25_golden.py downloads the small Qdrant/bm25 model from the
+          # Hub here; fail instead of skipping if it cannot be loaded. Set only
+          # in the shard that runs it (the others never fetch the model).
+          REQUIRE_BM25_MODEL: ${{ steps.bm25.outputs.needs_bm25 == 'true' && '1' || '' }}
         # Captured first so a failing script stops the step: with no paths
         # pytest falls back to testpaths and runs the whole suite here.
         run: |

@@ -142,9 +142,12 @@ class TestAzureBlobHelpers:
 
     def test_parent_weburl(self):
         url = get_parent_weburl_for_azure_blob("container/folder/", "https://testacc.blob.core.windows.net")
-        assert "testacc.blob.core.windows.net" in url
+        assert urlparse(url).hostname == "testacc.blob.core.windows.net"
+        assert urlparse(url).path == "/container/folder/"
         url = get_parent_weburl_for_azure_blob("container", "https://testacc.blob.core.windows.net")
-        assert "testacc.blob.core.windows.net/container" in url
+        parsed = urlparse(url)
+        assert parsed.hostname == "testacc.blob.core.windows.net"
+        assert parsed.path == "/container"
 
     def test_parent_path(self):
         assert get_parent_path_for_azure_blob("container/folder") == "folder/"

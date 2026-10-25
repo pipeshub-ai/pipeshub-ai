@@ -1559,10 +1559,10 @@ export const createGoogleWorkspaceCredentials =
               googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
 
             if (!validationResult.success) {
-              const formattedErrors = validationResult.error.errors
+              const formattedErrors = validationResult.error.issues
                 .map((err) => {
                   const fieldName = err.path[0] || 'Unknown field';
-                  return `  • ${fieldName}: ${err.message}  `;
+                  return `  • ${String(fieldName)}: ${err.message}  `;
                 })
                 .join('');
 
@@ -3397,6 +3397,27 @@ export const updateAIModelProvider =
         res.status(400).json({
           status: 'error',
           message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      // A deployment serves one model: carrying the stored one to a new model
+      // saves a label that disagrees with the traffic, and the health check
+      // passes on the old deployment.
+      const incoming = configuration as Record<string, unknown>;
+      const stored = targetModel.configuration as
+        Record<string, unknown> | undefined;
+      const trimmed = (value: unknown): string =>
+        typeof value === 'string' ? value.trim() : '';
+      if (
+        trimmed(stored?.deploymentName) !== '' &&
+        'model' in incoming &&
+        trimmed(incoming.model) !== trimmed(stored?.model) &&
+        trimmed(incoming.deploymentName) === ''
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Changing the model needs its deployment name.',
         });
         return;
       }

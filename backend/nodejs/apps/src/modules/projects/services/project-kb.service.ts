@@ -135,7 +135,7 @@ export class ProjectKnowledgeBaseService {
     const won = await Project.findOneAndUpdate(
       { _id: projectId, linkedKnowledgeBaseId: previousKbId },
       { $set: { linkedKnowledgeBaseId: kbId } },
-      { new: true },
+      { returnDocument: 'after' },
     );
 
     if (!won) {

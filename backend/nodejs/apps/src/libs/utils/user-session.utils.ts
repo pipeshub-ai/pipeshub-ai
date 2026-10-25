@@ -88,7 +88,7 @@ export async function findSessionRefusal(
   // authenticated request instead of two.
   const [user, latestActivity] = await Promise.all([
     Users.findOne({
-      _id: userId,
+      _id: userId as Types.ObjectId | string,
       isDeleted: false,
     })
       .lean()

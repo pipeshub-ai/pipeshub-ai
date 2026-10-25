@@ -28,7 +28,7 @@ function open(tools: McpRuleTool[] = TOOLS) {
 }
 
 function ruleRow(name: string) {
-  return within(screen.getByRole('group', { name }));
+  return within(screen.getByRole('radiogroup', { name }));
 }
 
 /** The segment that is on (Radix draws each label twice, so it's found by its accessible name). */
@@ -54,7 +54,7 @@ describe('McpToolRulesDialog', () => {
     api.getMyToolRules.mockResolvedValue({ tools: { search: 'block' } });
     open();
 
-    await screen.findByRole('group', { name: 'search' });
+    await screen.findByRole('radiogroup', { name: 'search' });
     expect(api.getMyToolRules).toHaveBeenCalledWith('inst-1');
     expect(chosen('search')).toBe('Deny');
     expect(chosen('create_issue')).toBe('Allow on approval');
@@ -64,7 +64,7 @@ describe('McpToolRulesDialog', () => {
   it('groups the tools by what they do to data, deleting ones first', async () => {
     open();
 
-    await screen.findByRole('group', { name: 'search' });
+    await screen.findByRole('radiogroup', { name: 'search' });
     const groups = screen.getAllByTestId(/^tool-group-/).map((group) => group.dataset.testid);
     expect(groups).toEqual(['tool-group-destructive', 'tool-group-write', 'tool-group-read']);
     expect(within(screen.getByTestId('tool-group-destructive')).getByText('Review these first')).toBeTruthy();
@@ -73,7 +73,7 @@ describe('McpToolRulesDialog', () => {
   it('saves only what differs from the starting rules, then closes', async () => {
     const onOpenChange = open();
 
-    await screen.findByRole('group', { name: 'create_issue' });
+    await screen.findByRole('radiogroup', { name: 'create_issue' });
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(ruleRow('create_issue').getByRole('radio', { name: 'Pre-approved' }));
     fireEvent.click(ruleRow('delete_issue').getByRole('radio', { name: 'Allow on approval' }));
@@ -89,7 +89,7 @@ describe('McpToolRulesDialog', () => {
     api.updateMyToolRules.mockRejectedValue(new Error('boom'));
     const onOpenChange = open();
 
-    fireEvent.click(ruleRow((await screen.findByRole('group', { name: 'search' })).getAttribute('aria-label')!).getByRole('radio', { name: 'Deny' }));
+    fireEvent.click(ruleRow((await screen.findByRole('radiogroup', { name: 'search' })).getAttribute('aria-label')!).getByRole('radio', { name: 'Deny' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(toasts.error).toHaveBeenCalled());
@@ -111,12 +111,12 @@ describe('McpToolRulesDialog', () => {
     fireEvent.change(await screen.findByPlaceholderText('Search by name or ID'), { target: { value: 'zzz' } });
     expect(screen.getByText('No tools match your search.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
-    expect(screen.getByRole('group', { name: 'tool_11' })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'tool_11' })).toBeTruthy();
   });
 
   it('has no search for a short list', async () => {
     open();
-    await screen.findByRole('group', { name: 'search' });
+    await screen.findByRole('radiogroup', { name: 'search' });
     expect(screen.queryByPlaceholderText('Search by name or ID')).toBeNull();
   });
 
@@ -124,7 +124,7 @@ describe('McpToolRulesDialog', () => {
     api.getMyToolRules.mockResolvedValue({ tools: { archive_issue: 'block' } });
     open([]);
 
-    expect(await screen.findByRole('group', { name: 'archive_issue' })).toBeTruthy();
+    expect(await screen.findByRole('radiogroup', { name: 'archive_issue' })).toBeTruthy();
     expect(screen.getByTestId('tool-group-notOffered')).toBeTruthy();
   });
 });

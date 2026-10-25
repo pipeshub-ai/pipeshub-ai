@@ -1885,7 +1885,7 @@ def _make_dropbox_response(success=True, data=None, error=None):
 
 
 def _make_app_user(email="user@test.com", source_user_id="dbmid:AAuser1",
-                   full_name="Test User", title="member", is_active=True):
+                   full_name="Test User", title="member", is_active=True, source_role=None):
     return AppUser(
         app_name=Connectors.DROPBOX,
         connector_id="conn-123",
@@ -1894,6 +1894,7 @@ def _make_app_user(email="user@test.com", source_user_id="dbmid:AAuser1",
         email=email,
         is_active=is_active,
         title=title,
+        source_role=source_role,
     )
 
 
@@ -3687,7 +3688,7 @@ class TestSyncRecordGroups:
         await connector.sync_record_groups(users)
 
     async def test_team_folders_success(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         folder = MagicMock()
         folder.team_folder_id = "tf:1"
         folder.name = "TeamFolder"
@@ -3703,14 +3704,14 @@ class TestSyncRecordGroups:
         connector._create_and_sync_single_record_group.assert_called_once()
 
     async def test_team_folders_fail(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         resp = _make_dropbox_response(success=False, error="denied")
         connector.data_source.team_team_folder_list = AsyncMock(return_value=resp)
 
         await connector.sync_record_groups([admin])
 
     async def test_inactive_folder_skipped(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         folder = MagicMock()
         folder.team_folder_id = "tf:1"
         folder.name = "Archived"
@@ -3726,7 +3727,7 @@ class TestSyncRecordGroups:
         connector._create_and_sync_single_record_group.assert_not_called()
 
     async def test_folder_sync_exception(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         folder = MagicMock()
         folder.team_folder_id = "tf:1"
         folder.name = "Folder"
@@ -3743,7 +3744,7 @@ class TestSyncRecordGroups:
         await connector.sync_record_groups([admin])
 
     async def test_pagination(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         f1 = MagicMock(team_folder_id="tf:1", name="F1", status=MagicMock(_tag="active"))
         f2 = MagicMock(team_folder_id="tf:2", name="F2", status=MagicMock(_tag="active"))
 
@@ -3761,7 +3762,7 @@ class TestSyncRecordGroups:
         assert connector._create_and_sync_single_record_group.call_count == 2
 
     async def test_pagination_error(self, connector):
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         f1 = MagicMock(team_folder_id="tf:1", name="F1", status=MagicMock(_tag="active"))
 
         page1 = _make_dropbox_response(success=True, data=MagicMock(
@@ -3819,7 +3820,7 @@ class TestCreateAndSyncSingleRecordGroup:
             return_value=_make_dropbox_response(success=True, data=members_data)
         )
 
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
         connector.data_entities_processor.on_new_record_groups.assert_called_once()
 
@@ -3827,7 +3828,7 @@ class TestCreateAndSyncSingleRecordGroup:
         connector.data_source.sharing_list_folder_members = AsyncMock(
             return_value=_make_dropbox_response(success=False, error="access denied")
         )
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
         connector.data_entities_processor.on_new_record_groups.assert_not_called()
 
@@ -3859,14 +3860,14 @@ class TestCreateAndSyncSingleRecordGroup:
             return_value=_make_dropbox_response(success=True, data=page2_data)
         )
 
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
 
     async def test_exception(self, connector):
         connector.data_source.sharing_list_folder_members = AsyncMock(
             side_effect=Exception("fatal")
         )
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         with pytest.raises(Exception):
             await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
 
@@ -3886,7 +3887,7 @@ class TestCreateAndSyncSingleRecordGroup:
             return_value=page2
         )
 
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         await connector._create_and_sync_single_record_group("tf:1", "Folder", admin)
 
 
@@ -4000,7 +4001,7 @@ class TestRecordGroupEventHandlers:
     async def test_created_with_admin(self, connector):
         asset = _make_folder_asset("NewFolder", "ns:1")
         event = _make_event("team_folder_create", assets=[asset])
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         connector._create_and_sync_single_record_group = AsyncMock()
 
         await connector._handle_record_group_created_event(event, [admin])
@@ -4020,7 +4021,7 @@ class TestRecordGroupEventHandlers:
     async def test_created_exception(self, connector):
         asset = _make_folder_asset("NewFolder", "ns:1")
         event = _make_event("team_folder_create", assets=[asset])
-        admin = _make_app_user(title="team_admin")
+        admin = _make_app_user(source_role="team_admin")
         connector._create_and_sync_single_record_group = AsyncMock(
             side_effect=Exception("sync error")
         )

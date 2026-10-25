@@ -216,7 +216,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process value for key {key}: {str(e)}"
+                        "❌ Failed to process value for key %s: %s", key, type(e).__name__
                     )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
@@ -228,8 +228,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
-            self.logger.exception("Detailed error:")
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             return None

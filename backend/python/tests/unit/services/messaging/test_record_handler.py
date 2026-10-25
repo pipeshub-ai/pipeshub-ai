@@ -5571,6 +5571,32 @@ class TestOnMessageAbandoned:
         gp.compare_and_set_indexing_status.assert_not_awaited()
         gp.update_node.assert_not_awaited()
 
+    @pytest.mark.parametrize(("bound", "held", "marked"), [(True, False, True), (True, True, False), (False, False, False)])
+    @pytest.mark.asyncio
+    async def test_an_in_progress_record_nobody_holds_is_failed_once_its_delivery_is_exhausted(self, bound, held, marked) -> None:
+        """The consumer that was processing it died on every delivery. With no live holder of the record's lease the record is
+        FAILED, else the stale scan hands it out again with a fresh retry budget for ever. A live holder, or no way to tell
+        (leases not bound), keeps the record untouched."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        handler.record_leases = MagicMock(
+            bound=bound, claim=AsyncMock(return_value=None if held else "holder-1"), release=AsyncMock()
+        )
+
+        await handler.on_message_abandoned(self._message(), reason="delivered 10 times", attempts=10)
+
+        assert gp.compare_and_set_indexing_status.await_count == int(marked)
+        assert handler._trigger_next_queued_duplicate.await_count == int(marked)
+        if marked:
+            assert gp.update_node.await_args.args[2]["indexingStatus"] == ProgressStatus.FAILED.value
+            handler.record_leases.release.assert_awaited_once_with("r1", "holder-1")
+        else:
+            handler.record_leases.release.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_tolerates_a_deleted_record(self):
         """A record can be deleted between the event and the abandonment."""

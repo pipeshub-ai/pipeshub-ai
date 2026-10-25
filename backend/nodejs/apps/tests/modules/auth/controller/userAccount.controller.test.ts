@@ -557,7 +557,7 @@ describe('UserAccountController', () => {
           wrongCredentialCount: { $lt: 5 },
         },
         { $inc: { wrongCredentialCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       ]);
     });
   });

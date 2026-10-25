@@ -88,10 +88,29 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _spawn_sleeper() -> tuple:
+    """A job that leaves a child process running in the worker, as the PDF
+    rasteriser's process pool does, and returns its pid. It closes the worker's
+    pipes it inherited, as a multiprocessing child does, or a crash would never
+    read as one."""
+    code = "import os, time; os.closerange(3, 4096); time.sleep(600)"
+    return os.posix_spawn, sys.executable, [sys.executable, "-c", code], {}
+
+
+def _is_zombie(pid: int) -> bool:
+    """Dead but not yet reaped, as an orphan stays where nothing reaps it (a
+    container without an init)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except OSError:
+        return False
+
+
 async def _wait_until_gone(pid: int, seconds: float = 10.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if not _process_exists(pid):
+        if not _process_exists(pid) or _is_zombie(pid):
             return True
         await asyncio.sleep(0.05)
     return False
@@ -304,6 +323,16 @@ class TestWorkerCrash:
         assert container.blocks[0].data == "Still working"
         assert await parse_pool.submit(os.getpid) != crashed_pid
 
+    async def test_a_crashed_workers_processes_do_not_outlive_it(
+        self, governor: MagicMock
+    ) -> None:
+        child_pid = await parse_pool.submit(*_spawn_sleeper())
+
+        with pytest.raises(parse_pool.ParseWorkerError):
+            await parse_pool.submit(os._exit, 137)
+
+        assert await _wait_until_gone(child_pid)
+
     async def test_a_crash_is_reported_to_the_governor_as_a_memory_incident(
         self, governor: MagicMock
     ) -> None:
@@ -466,6 +495,16 @@ class TestLifecycle:
             await task
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
         assert await _wait_until_gone(busy_pid)
+
+    async def test_an_idle_worker_takes_the_processes_it_started_with_it(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The PDF rasteriser's pool outlived a killed worker and held up to
+        0.7 GB each until the container ran out of memory."""
+        monkeypatch.setattr(parse_pool, "IDLE_SECONDS", 0.3)
+        child_pid = await parse_pool.submit(*_spawn_sleeper())
+
+        assert await _wait_until_gone(child_pid)
 
     async def test_an_idle_worker_exits_and_the_next_job_gets_a_new_one(
         self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch

@@ -310,7 +310,7 @@ export async function copySessionUpToMessage(
         batch.map((row) =>
           pointMessageAtCopies(
             withExpiredApprovals(
-              stripMessageForCopy(row as Record<string, unknown>),
+              stripMessageForCopy(row as unknown as Record<string, unknown>),
             ),
             copies,
           ),

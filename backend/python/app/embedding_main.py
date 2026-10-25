@@ -33,6 +33,7 @@ from app.config.constants.ai_models import (
     EMBEDDING_SERVER_PORT,
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
+from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -50,10 +51,17 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
     "yes",
 )
 _ENV_MAX_CONCURRENT_EMBEDDINGS = (os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY") or "").strip()
+
+
+def _default_max_concurrent_embeddings() -> int:
+    """Encode slots when not set explicitly: the container's CPUs, at least 2."""
+    return max(2, effective_cpu_count())
+
+
 MAX_CONCURRENT_EMBEDDINGS = (
     int(_ENV_MAX_CONCURRENT_EMBEDDINGS)
     if _ENV_MAX_CONCURRENT_EMBEDDINGS
-    else max(2, os.cpu_count() or 2)
+    else _default_max_concurrent_embeddings()
 )
 if MAX_CONCURRENT_EMBEDDINGS < 1:
     raise ValueError(
@@ -771,6 +779,11 @@ async def health_check() -> JSONResponse:
                 "status": status,
                 "loaded_models": loaded,
                 "default_model": DEFAULT_EMBEDDING_MODEL,
+                "cpu": {
+                    "effective_cpus": effective_cpu_count(),
+                    "source": effective_cpu_source(),
+                    "max_concurrent_embeddings": MAX_CONCURRENT_EMBEDDINGS,
+                },
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

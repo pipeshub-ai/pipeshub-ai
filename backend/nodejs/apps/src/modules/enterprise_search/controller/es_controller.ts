@@ -27,7 +27,7 @@ import {
 } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -2604,7 +2604,7 @@ const deleteConversation = async (
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           session,
           runValidators: true,
         },
@@ -2633,7 +2633,7 @@ const deleteConversation = async (
       if (citationIds.length > 0) {
         await Citation.updateMany(
           {
-            _id: { $in: citationIds },
+            _id: { $in: citationIds as Types.ObjectId[] },
             orgId,
             isDeleted: false,
           },
@@ -2850,7 +2850,7 @@ const createShareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3037,7 +3037,7 @@ const createUnshareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3205,7 +3205,7 @@ export const setConversationProject = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       update,
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation project link');
@@ -3268,7 +3268,7 @@ export const setConversationProjectVisibility = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       { $set: { projectVisibility: visibility } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation visibility');
@@ -3585,7 +3585,7 @@ async function regenerateAnswersInternal(
         orgId as string | undefined,
         userId as string | undefined,
         agentKey,
-      ) as FilterQuery<IChatSessionDocument>,
+      ) as QueryFilter<IChatSessionDocument>,
     );
 
     // Validate conversation and message
@@ -4634,7 +4634,7 @@ export const forkConversation =
             conversationId,
             true,
             false,
-          ) as FilterQuery<IChatSessionDocument>),
+          ) as QueryFilter<IChatSessionDocument>),
           ...EXCLUDE_AGENT,
         }),
     });
@@ -4666,7 +4666,7 @@ export const forkAgentConversation =
             userId,
             agentKey,
             conversationId,
-          ) as FilterQuery<IChatSessionDocument>,
+          ) as QueryFilter<IChatSessionDocument>,
         ),
     });
   };
@@ -4874,7 +4874,7 @@ export const archiveConversation = async (
             $unset: { isPinned: 1 },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -4986,7 +4986,7 @@ export const unarchiveConversation = async (
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -5078,7 +5078,7 @@ const setConversationPinned =
         // Unpinning removes the field rather than storing `false`; see the schema.
         pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
         // Pinning is not an edit of the chat, so it must not change `updatedAt`.
-        { new: true, timestamps: false },
+        { returnDocument: 'after', timestamps: false },
       ).exec();
 
       if (!updated) {
@@ -8508,7 +8508,7 @@ export const archiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {
@@ -8613,7 +8613,7 @@ export const unarchiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {

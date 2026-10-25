@@ -323,6 +323,8 @@ export function ModelConfigDialog({
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
   const touchedFieldsRef = useRef<Set<string>>(new Set());
+  /** The deployment name filled in from the picked model; any edit by the user makes it theirs. */
+  const autoDeploymentRef = useRef<string | null>(null);
   /** Ids typed before the provider described them; they take its metadata once it does. */
   const provisionalIdsRef = useRef<Set<string>>(new Set());
   const [revealState, setRevealState] = useState<'hidden' | 'loading' | 'shown'>('hidden');
@@ -339,6 +341,7 @@ export function ModelConfigDialog({
       resetDiscoveryState();
       resetBatch();
       touchedFieldsRef.current = new Set();
+      autoDeploymentRef.current = null;
       provisionalIdsRef.current = new Set();
       return;
     }
@@ -354,6 +357,7 @@ export function ModelConfigDialog({
     resetDiscoveryState();
     resetBatch();
     touchedFieldsRef.current = new Set();
+    autoDeploymentRef.current = null;
     provisionalIdsRef.current = new Set();
 
     if (mode === 'edit' && editModel) {
@@ -417,6 +421,7 @@ export function ModelConfigDialog({
           ? sanitizeAzureOpenAiCommaFreeValue(value)
           : value;
       touchedFieldsRef.current.add(name);
+      if (name === 'deploymentName') autoDeploymentRef.current = null;
       // Editing the single model's own settings makes them the user's, not the provider's.
       if (PER_MODEL_FIELD_NAMES.has(name) && name !== 'model') provisionalIdsRef.current.clear();
       setValues((prev) => ({ ...prev, [name]: next }));
@@ -787,19 +792,26 @@ export function ModelConfigDialog({
       setDefaultModelId(settled[0]?.id ?? null);
     }
     // Deployments are usually named after their model; follow it until the user types their own.
-    // Edit already has a stored deployment — do not overwrite it when the model chip changes.
+    // A stored deployment belongs to the stored model, so edit follows too and keeps it only for that model.
+    const deployment = String(values.deploymentName ?? '').trim();
     const deploymentFollowsModel =
-      mode === 'add' &&
       fields.some((f) => f.name === 'deploymentName') &&
-      (!touchedFieldsRef.current.has('deploymentName') || String(values.deploymentName ?? '').trim() === '');
+      (!touchedFieldsRef.current.has('deploymentName') || deployment === '' || deployment === autoDeploymentRef.current);
     if (settled.length === 1 && (picked.length !== 1 || picked[0].id !== settled[0].id)) {
       const only = settled[0];
       const typedName = String(values.modelFriendlyName ?? '').trim();
-      if (deploymentFollowsModel) touchedFieldsRef.current.delete('deploymentName');
+      const storedModel = String(sanitizeAzureOpenAiCommaFreeValue(editModel?.configuration?.model) ?? '').trim();
+      const keepStored = mode === 'edit' && only.id === storedModel;
+      if (deploymentFollowsModel) {
+        autoDeploymentRef.current = keepStored ? null : only.id;
+        // Edit omits an untouched saved field on save; mark it so the new deployment is sent.
+        if (mode === 'edit' && !keepStored) touchedFieldsRef.current.add('deploymentName');
+        else touchedFieldsRef.current.delete('deploymentName');
+      }
       setValues((prev) => ({
         ...prev,
         ...singleModelFormValues(only),
-        ...(deploymentFollowsModel ? { deploymentName: only.id } : {}),
+        ...(deploymentFollowsModel ? { deploymentName: keepStored ? '' : only.id } : {}),
         modelFriendlyName: picked.length === 0 && typedName ? typedName : (only.modelFriendlyName ?? ''),
       }));
     } else if (settled.length === 0) {
