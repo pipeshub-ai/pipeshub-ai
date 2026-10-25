@@ -203,58 +203,92 @@ def contains_base64_image(text: str) -> bool:
 BASE64_IMAGE_PLACEHOLDER = "[image data omitted]"
 
 
+# The widest line a wrapped payload uses (MIME); a longer line is a whole payload.
+_MAX_WRAPPED_LINE_CHARS = 76
+
+
+def _one_line_break(gap: str) -> bool:
+    """Whether *gap* between two segments is a single line break: the next
+    line of a wrap. A blank line, or a space on the same line, ends it."""
+    return gap.count("\n") == 1 and not gap.strip()
+
+
 def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
     """Yield ``(start, end)`` in *raw* of each base64 run that holds an image.
 
-    A run is read exactly as ``_image_payload_prefixes`` reads it, so a span is
-    found for every run that check reports: full lines, maybe led by one short
-    segment and closed by a padded short line. The short lead belongs to the
-    span only when the image is found by reading from it; otherwise it is a
-    prose word that happens to precede the payload.
+    A run starts as ``_image_payload_prefixes`` reads it: a full line, maybe led
+    by one short segment, which belongs to the span only when the image is found
+    by reading from it (otherwise it is a prose word before the payload). Unlike
+    that check, which only has to find an image, the span has to stop where the
+    payload does, or it takes the next line of text with it. So a run goes on
+    only through the lines of a wrap:
+
+    - A line longer than any wrap, or one that ends in padding, is the whole of
+      what is left: the run ends with it.
+    - Each next line is one line break further on. The second line sets the
+      wrap's width; the first can be shorter (the rest of a ``base64,`` line).
+      Every later full line has that width.
+    - A shorter last line belongs to the run only when it is padded and brings
+      the run to a whole number of base64 quads. An unpadded short line is left
+      as text: it can't be told apart from a word, and under 76 characters of
+      it is no image.
     """
-    lead: re.Match[str] | None = None
-    run_lead: re.Match[str] | None = None
-    first: int | None = None
-    first_end = 0
-    first_full = False
-    end = 0
-    length = 0
-
-    def image_start() -> int | None:
-        if first is None or length < _MIN_IMAGE_PAYLOAD_CHARS:
-            return None
-        if run_lead is not None:
-            decoded = _decode_b64_prefix(run_lead.group() + raw[first:first_end])
-            if decoded and _is_image_data(decoded):
-                return run_lead.start()
-        if first_full:
-            decoded = _decode_b64_prefix(raw[first:first_end])
-            if decoded and _is_image_data(decoded):
-                return first
-        return None
-
-    for m in _SEGMENT_RE.finditer(raw):
+    segments = list(_SEGMENT_RE.finditer(raw))
+    i = 0
+    while i < len(segments):
+        m = segments[i]
         segment = m.group()
-        chars = len(segment.rstrip("="))
-        full = chars >= _MIN_WRAPPED_LINE_CHARS
-        tail = not full and segment.endswith("=") and (first is not None or lead is not None)
-        if full or tail:
-            if first is None:
-                run_lead, first, first_end, first_full = lead, m.start(), m.end(), full
-                length = len(lead.group().rstrip("=")) if lead else 0
-            length += chars
-            end = m.end()
-            if full:
-                lead = None
-                continue
-        start = image_start()
-        if start is not None:
+        if len(segment.rstrip("=")) < _MIN_WRAPPED_LINE_CHARS:
+            i += 1
+            continue
+        previous = segments[i - 1] if i else None
+        lead = (
+            previous
+            if previous is not None
+            and len(previous.group().rstrip("=")) < _MIN_WRAPPED_LINE_CHARS
+            and not previous.group().endswith("=")
+            else None
+        )
+        start = None
+        if lead is not None:
+            decoded = _decode_b64_prefix(lead.group() + segment)
+            if decoded and _is_image_data(decoded):
+                start = lead.start()
+        if start is None:
+            decoded = _decode_b64_prefix(segment)
+            if decoded and _is_image_data(decoded):
+                start = m.start()
+
+        end = m.end()
+        total = len(re.sub(r"\s", "", raw[start if start is not None else m.start():end]))
+        last = i
+        if len(segment) <= _MAX_WRAPPED_LINE_CHARS and not segment.endswith("="):
+            width = None
+            for j in range(i + 1, len(segments)):
+                line = segments[j]
+                text = line.group()
+                if not _one_line_break(raw[segments[j - 1].end():line.start()]):
+                    break
+                limit = width or _MAX_WRAPPED_LINE_CHARS
+                if text.endswith("=") and len(text) <= limit:
+                    if (total + len(text)) % 4 == 0:
+                        end, last = line.end(), j
+                    break
+                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit:
+                    break
+                if width is None:
+                    if len(text) < len(segment):
+                        break
+                    width = len(text)
+                elif len(text) != width:
+                    break
+                total += len(text)
+                end, last = line.end(), j
+
+        chars = len(re.sub(r"[\s=]", "", raw[start:end])) if start is not None else 0
+        if start is not None and chars >= _MIN_IMAGE_PAYLOAD_CHARS:
             yield start, end
-        run_lead, first, length = None, None, 0
-        lead = None if segment.endswith("=") else m
-    start = image_start()
-    if start is not None:
-        yield start, end
+        i = last + 1
 
 
 def _strip_image_runs(raw: str) -> str:

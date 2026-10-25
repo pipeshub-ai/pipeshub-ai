@@ -1639,6 +1639,14 @@ class TestImagePayloadsLeftInText:
         assert "![Image](data:image/png;base64,[image data omitted])" in text
         assert "Only JSON on stdout." in text
 
+    def test_the_lines_after_an_image_in_a_code_block_are_kept(
+        self, converter: MarkdownToBlocksConverter
+    ) -> None:
+        after = "a" * 64 + "\nwidth=\nkeep"
+        container = converter.convert(f"```\n{self._png_b64()}\n{after}\n```")
+        self._validate(container)
+        assert f"[image data omitted]\n{after}" in self._text(container)
+
     def test_an_image_in_a_diff(self, converter: MarkdownToBlocksConverter) -> None:
         md = (
             "[added file]\n\nDiff:\n@@ -0,0 +1 @@\n"

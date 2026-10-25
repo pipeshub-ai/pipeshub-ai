@@ -1198,6 +1198,34 @@ class TestStripBase64Images:
             "a data:image/png;base64,[image data omitted] b\n\n[image data omitted]\n\nc"
         )
 
+    def test_the_lines_after_a_one_line_payload_are_kept(self) -> None:
+        # A hash is 64 base64-alphabet characters and "width=" ends in padding;
+        # neither is part of the image before them.
+        after = "\n" + "a" * 64 + "\nwidth=\nkeep"
+        stripped = strip_base64_images(self._png_b64() + after)
+        assert stripped == "[image data omitted]" + after
+        assert contains_base64_image(stripped) is False
+
+    def test_the_line_after_a_data_uri_is_kept(self) -> None:
+        stripped = strip_base64_images(f"data:image/png;base64,{self._png_b64()}\n" + "a" * 64)
+        assert stripped == "data:image/png;base64,[image data omitted]\n" + "a" * 64
+
+    def test_a_wrapped_payload_stops_at_its_padded_last_line(self) -> None:
+        import textwrap
+
+        wrapped = "\n".join(textwrap.wrap(self._png_b64(), 76))
+        assert wrapped.endswith("=")
+        stripped = strip_base64_images(wrapped + "\nwidth=\n" + "b" * 76 + "\nkeep")
+        assert stripped == "[image data omitted]\nwidth=\n" + "b" * 76 + "\nkeep"
+
+    def test_a_blank_line_ends_a_wrapped_payload(self) -> None:
+        import textwrap
+
+        lines = textwrap.wrap(self._png_b64(), 76)
+        body = "\n".join(lines[:-1])  # no padded last line, so only the gap can end it
+        stripped = strip_base64_images(body + "\n\n" + "c" * 76)
+        assert stripped == "[image data omitted]\n\n" + "c" * 76
+
     def test_an_image_past_the_detection_cap_is_replaced_too(self) -> None:
         # Commas end each run, so every identifier is a candidate of its own.
         identifiers = ", ".join(f"identifier_number_{i:04d}" for i in range(_MAX_CANDIDATES + 5))
