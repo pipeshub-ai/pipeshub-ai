@@ -245,11 +245,21 @@ _REVIEWED_STEP_KEYS = frozenset(
      "continue-on-error", "working-directory"}
 )
 _REVIEWED_DEFAULTS_RUN_KEYS = frozenset({"shell", "working-directory"})
-# GitHub-hosted images only, by their documented labels. Any other suffix is a label
-# a self-hosted runner can register, such as `ubuntu-22.04-selfhosted`.
-_GITHUB_HOSTED_RUNNER = re.compile(
-    r"^(?:ubuntu|windows|macos)-(?:latest|\d+(?:\.\d+)?)(?:-(?:arm|large|xlarge|intel))?$"
-)
+# GitHub-hosted images only, by the exact labels in the runner-images README table
+# (https://github.com/actions/runner-images#available-images). A self-hosted runner can
+# register any other string, `ubuntu-22.04-selfhosted` or `ubuntu-24.04-large` alike, so a
+# label GitHub adds later fails here until it is listed.
+_GITHUB_HOSTED_RUNNERS = frozenset({
+    "ubuntu-latest", "ubuntu-slim",
+    "ubuntu-26.04", "ubuntu-24.04", "ubuntu-22.04",
+    "ubuntu-26.04-arm", "ubuntu-24.04-arm", "ubuntu-22.04-arm",
+    "windows-latest", "windows-2025", "windows-2025-vs2026", "windows-2022",
+    "windows-11-arm", "windows-11-vs2026-arm",
+    "macos-latest", "macos-26", "macos-15", "macos-14",
+    "macos-26-xlarge", "macos-15-xlarge", "macos-14-xlarge",
+    "macos-latest-large", "macos-26-large", "macos-15-large", "macos-14-large",
+    "macos-26-intel", "macos-15-intel",
+})
 
 # The inputs each reviewed action may be given. Absent from checkout: `repository`,
 # `ref`, `token`, `ssh-key` and `submodules`, which pick the code a reviewed body
@@ -328,7 +338,7 @@ def _unreviewed_parts(workflow: Any) -> list[str]:
             continue
         found += [f"{where}: {k}" for k in job if k not in _REVIEWED_JOB_KEYS]
         runs_on = job.get("runs-on")
-        if runs_on is not None and not (isinstance(runs_on, str) and _GITHUB_HOSTED_RUNNER.match(runs_on)):
+        if runs_on is not None and not (isinstance(runs_on, str) and runs_on in _GITHUB_HOSTED_RUNNERS):
             found.append(f"{where}: runs-on {runs_on!r}")
         found += _unreviewed_env(where, job.get("env"))
         found += _unreviewed_defaults(where, job.get("defaults"))
@@ -1034,7 +1044,9 @@ class TestPrivilegedWorkflowsFailClosed(unittest.TestCase):
                 self.assertTrue(self.flagged(text))
 
     def test_a_hosted_name_with_a_label_github_does_not_reserve_is_flagged(self) -> None:
-        for runs_on in ("ubuntu-22.04-selfhosted", "ubuntu-0owned", "windows-2022.evil", "macos-14-arm64-mine"):
+        for runs_on in ("ubuntu-22.04-selfhosted", "ubuntu-0owned", "windows-2022.evil", "macos-14-arm64-mine",
+                        "ubuntu-0", "ubuntu-99", "ubuntu-024.04", "ubuntu-24.04-large", "ubuntu-latest-arm",
+                        "windows-11", "macos-latest-xlarge", "macos-14-intel", "ubuntu-latest-8-cores"):
             with self.subTest(runs_on=runs_on):
                 text = self.workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runs_on}")
                 self.assertTrue(self.flagged(text))
