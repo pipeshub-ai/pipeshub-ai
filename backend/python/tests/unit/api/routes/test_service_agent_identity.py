@@ -92,6 +92,25 @@ async def test_binding_refuses_a_deleted_service_account() -> None:
 
 
 @pytest.mark.asyncio
+async def test_binding_refuses_a_disabled_service_account() -> None:
+    """Switched off is its own field, because a rename sets isActive back on."""
+    off = {**ACCOUNT, "isDisabled": True}
+    graph = FakeGraph(by_user_id={off["userId"]: off})
+    with pytest.raises(InvalidRequestError):
+        await _resolve_service_account_binding(off["userId"], graph, ORG)
+
+
+@pytest.mark.asyncio
+async def test_binding_accepts_an_account_that_was_switched_back_on() -> None:
+    back_on = {**ACCOUNT, "isDisabled": False}
+    graph = FakeGraph(by_user_id={back_on["userId"]: back_on})
+    assert (
+        await _resolve_service_account_binding(back_on["userId"], graph, ORG)
+        == back_on["userId"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_binding_accepts_a_node_that_predates_is_active() -> None:
     """Absence is read as live; treating it as deleted would refuse accounts
     that work today."""
@@ -241,3 +260,43 @@ async def test_unbound_agent_in_another_org_is_still_refused() -> None:
         await _enrich_user_info_for_service_account_agent_chat(
             agent(), graph, LOG, ORG,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_binding_to_a_disabled_account_is_refused_on_every_chat() -> None:
+    """An account can be switched off long after an administrator bound it,
+    and an agent is shared org-wide, so this is checked on every run."""
+    off = {**ACCOUNT, "isDisabled": True}
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={off["userId"]: off},
+    )
+    with pytest.raises(HTTPException) as caught:
+        await _enrich_user_info_for_service_account_agent_chat(
+            agent(serviceAccountUserId=off["userId"]), graph, LOG, ORG,
+        )
+    assert caught.value.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_binding_does_not_fall_back_to_the_creator() -> None:
+    """Falling back would widen the agent's reach at the very moment the
+    narrower identity stopped being allowed."""
+    off = {**ACCOUNT, "isDisabled": True}
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={off["userId"]: off},
+    )
+    with pytest.raises(HTTPException):
+        await _enrich_user_info_for_service_account_agent_chat(
+            agent(serviceAccountUserId=off["userId"]), graph, LOG, ORG,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_agent_is_unaffected_by_the_disabled_field() -> None:
+    """A person never carries it, and an agent that searches as its creator
+    must not start failing because of a field that is not about them."""
+    graph = FakeGraph(by_key={CREATOR["_key"]: CREATOR})
+    info = await _enrich_user_info_for_service_account_agent_chat(
+        agent(), graph, LOG, ORG,
+    )
+    assert info["userId"] == CREATOR["userId"]

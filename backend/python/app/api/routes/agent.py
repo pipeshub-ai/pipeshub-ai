@@ -492,15 +492,23 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
 
 
 def _is_live_identity(node: dict[str, Any]) -> bool:
-    """False once an account has been removed.
+    """False once an account has been removed or switched off.
 
+    Two separate signals, because they are written by different things.
     Soft-delete leaves the user node and clears `isActive`
-    (`entity.py` `_handle_user_deleted`), so this is the only signal on the
-    graph that an account is gone. Absence is read as live: nodes written
-    before the field was always set carry no `isActive`, and treating those as
-    deleted would cut off agents that work today.
+    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
+    from user management on the update event, and deliberately not stored in
+    `isActive` — a rename sets that one back to true, so a disable kept there
+    would not survive one.
+
+    Absence is read as live for both. Nodes written before these fields
+    existed carry neither, and treating those as dead would cut off agents
+    that work today.
     """
-    return node.get("isActive", True) is not False
+    return (
+        node.get("isActive", True) is not False
+        and node.get("isDisabled", False) is not True
+    )
 
 
 async def _resolve_service_account_binding(
