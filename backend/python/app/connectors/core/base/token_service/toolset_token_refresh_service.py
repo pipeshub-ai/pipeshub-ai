@@ -47,6 +47,7 @@ class ToolsetTokenRefreshService:
         self.configuration_service = configuration_service
         self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._background_tasks: list[asyncio.Task] = []
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_toolsets: set = set()  # Track toolsets currently being processed to prevent recursion
@@ -98,17 +99,27 @@ class ToolsetTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            self._background_tasks.append(asyncio.create_task(self._refresh_all_tokens()))
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        self._background_tasks.append(asyncio.create_task(self._periodic_refresh_check()))
 
         # Start periodic lock cleanup
-        asyncio.create_task(self._cleanup_old_locks())
+        self._background_tasks.append(asyncio.create_task(self._cleanup_old_locks()))
 
     async def stop(self) -> None:
         """Stop the toolset token refresh service"""
         self._running = False
+
+        # Cancel the initial-scan/periodic loop tasks too, not just per-toolset
+        # refreshes. Without this, an in-flight initial scan (or a periodic loop
+        # mid-sleep) keeps running after stop() returns, since `_running = False`
+        # alone is only checked at the loops' next iteration. Holding the
+        # references also keeps the tasks from being garbage collected while
+        # they run, as the event loop only keeps weak references to them.
+        for task in self._background_tasks:
+            task.cancel()
+        self._background_tasks.clear()
 
         # Cancel all refresh tasks
         for task in self._refresh_tasks.values():
