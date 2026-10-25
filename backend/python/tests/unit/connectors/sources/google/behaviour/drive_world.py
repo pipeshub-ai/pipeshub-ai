@@ -36,6 +36,9 @@ from google_behaviour_fakes import (
 
 FOLDER = "application/vnd.google-apps.folder"
 GDOC = "application/vnd.google-apps.document"
+GSHEET = "application/vnd.google-apps.spreadsheet"
+GSLIDES = "application/vnd.google-apps.presentation"
+NATIVE = (GDOC, GSHEET, GSLIDES)
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -217,7 +220,7 @@ class DriveWorld:
             "shared": bool(perms),
             "capabilities": {"canListChildren": mime == FOLDER},
         }
-        if mime not in (FOLDER, GDOC):
+        if mime != FOLDER and mime not in NATIVE:
             meta["headRevisionId"] = f"{file_id}-rev1"
             meta["size"] = str(len(content))
             if "." in name:
@@ -228,7 +231,7 @@ class DriveWorld:
         else:
             meta["owners"] = [{"emailAddress": owner}]
         state = FileState(meta, [dict(p) for p in (perms or [])], content)
-        if mime == GDOC:
+        if mime in NATIVE:
             state.revised = meta["modifiedTime"]
         return self._mutate(file_id, lambda: self.files.__setitem__(file_id, state)) or state
 
