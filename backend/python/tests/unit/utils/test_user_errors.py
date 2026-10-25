@@ -12,7 +12,9 @@ import httpx
 import openai
 import pytest
 
+from app.config.constants.arangodb import OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    BlockContainerValidationError,
     DocumentProcessingError,
     EmbeddingError,
     EmbeddingModelUnavailableError,
@@ -20,6 +22,7 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     VectorStoreError,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.utils import user_errors as ue
 from app.utils.llm import LLMNotConfiguredError
 
@@ -319,6 +322,61 @@ class TestHelpers:
     def test_duplicate_failure_carries_the_primary_reason(self) -> None:
         assert ue.duplicate_failed(ue.FILE_TOO_LARGE).endswith(ue.FILE_TOO_LARGE)
         assert ue.duplicate_failed(None).startswith("An identical file failed to index")
+
+
+_UPLOAD_ONLY = (ue.UNREADABLE_FILE, ue.FILE_TOO_LARGE, ue.PASSWORD_PROTECTED, ue.PROCESSING_TIMED_OUT)
+
+
+def _synced(record_type: str) -> dict:
+    return {"origin": OriginTypes.CONNECTOR.value, "recordType": record_type}
+
+
+class TestSyncedItems:
+    """A connector's items were never uploaded, so their reasons can't say to upload them again."""
+
+    def test_a_pull_request_with_content_that_cannot_be_processed(self) -> None:
+        reason = ue.to_user_reason(
+            BlockContainerValidationError([], record_id="r1"),
+            record=_synced(RecordTypes.PULL_REQUEST.value), source="GitHub Apache",
+        )
+        assert reason.startswith("We couldn't read this pull request from GitHub Apache:")
+        assert "upload" not in reason.lower()
+
+    def test_a_pull_request_the_storage_service_refuses_for_its_size(self) -> None:
+        refused = StorageRequestRejectedError("One of the files is larger than the 100 MB limit.", 400, too_large=True)
+        reason = ue.to_user_reason(refused, record=_synced(RecordTypes.PULL_REQUEST.value), source="GitHub Apache")
+        assert reason.startswith("This pull request from GitHub Apache is larger than PipesHub can index")
+        assert "upload" not in reason.lower()
+
+    def test_a_synced_file_is_fixed_in_its_source(self) -> None:
+        reason = ue.to_user_reason(
+            _wrapped(DocumentProcessingError("x"), MemoryError()),
+            record=_synced(RecordTypes.FILE.value), source="Google Drive",
+        )
+        assert reason.startswith("This file from Google Drive is too large to index.")
+        assert "smaller files in Google Drive" in reason
+
+    @pytest.mark.parametrize("record_type", [*sorted(ue._SYNCED_FILE_TYPES), *sorted(ue._SYNCED_ITEM_KINDS), "SOMETHING_NEW", None])
+    @pytest.mark.parametrize("reason", _UPLOAD_ONLY)
+    def test_no_synced_item_is_told_to_upload(self, reason: str, record_type: str | None) -> None:
+        synced = ue.for_synced_item(reason, record_type, "Jira")
+        assert synced != reason
+        assert "upload" not in synced.lower()
+        assert "from Jira" in synced
+        assert not _JARGON.search(synced), synced
+
+    def test_an_unknown_source_still_reads_as_a_sentence(self) -> None:
+        assert ue.for_synced_item(ue.UNREADABLE_FILE, RecordTypes.TICKET.value, None).startswith(
+            "We couldn't read this ticket from the source:"
+        )
+
+    def test_other_reasons_are_unchanged(self) -> None:
+        for reason in (ue.TEMPORARY_PROBLEM, ue.GENERIC_FAILURE, ue.EMBEDDING_NOT_CONFIGURED):
+            assert ue.for_synced_item(reason, RecordTypes.PULL_REQUEST.value, "GitHub") == reason
+
+    @pytest.mark.parametrize("record", [None, {"origin": OriginTypes.UPLOAD.value, "recordType": RecordTypes.FILE.value}, {}])
+    def test_uploads_keep_todays_wording(self, record: dict | None) -> None:
+        assert ue.to_user_reason(_wrapped(DocumentProcessingError("x"), MemoryError()), record=record) == ue.FILE_TOO_LARGE
 
 
 _JARGON = re.compile(

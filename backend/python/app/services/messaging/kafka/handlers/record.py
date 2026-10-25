@@ -2186,7 +2186,7 @@ class RecordEventHandler(BaseEventService):
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
-                    user_reason = to_user_reason(last_exception)
+                    user_reason = to_user_reason(last_exception, record=record, source=source_name)
                     if (refusal := too_large_refusal(last_exception)) is not None:
                         # A metrics fault must not stop the record being marked FAILED.
                         with contextlib.suppress(Exception):

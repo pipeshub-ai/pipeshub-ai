@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
+from app.config.constants.arangodb import OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -31,7 +32,7 @@ from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
 # "Reindex" is the action's label in the knowledge base.
 GENERIC_FAILURE = (
@@ -158,6 +159,77 @@ def unsupported_file_type(extension: str | None) -> str:
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} files" if ext and ext not in {"unknown", "none"} else "this type of file"
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
+
+
+# What a synced item is called in a reason. Files can be fixed in their source;
+# other items (a pull request, an email, a ticket) usually can't, so their
+# reasons don't ask anyone to change them.
+_SYNCED_FILE_TYPES = frozenset({RecordTypes.FILE.value, RecordTypes.CODE_FILE.value})
+_SYNCED_ITEM_KINDS = {
+    RecordTypes.ATTACHMENT.value: "attachment",
+    RecordTypes.MAIL.value: "email",
+    RecordTypes.GROUP_MAIL.value: "email",
+    RecordTypes.MESSAGE.value: "message",
+    RecordTypes.TICKET.value: "ticket",
+    RecordTypes.PULL_REQUEST.value: "pull request",
+    RecordTypes.WEBPAGE.value: "page",
+    RecordTypes.SHAREPOINT_PAGE.value: "page",
+    RecordTypes.COMMENT.value: "comment",
+    RecordTypes.WEBPAGE_COMMENT.value: "comment",
+    RecordTypes.MEETING.value: "meeting",
+    RecordTypes.CASE.value: "case",
+    RecordTypes.TASK.value: "task",
+}
+
+
+def for_synced_item(reason: str, record_type: str | None, source: str | None) -> str:
+    """``reason`` for an item a connector synced from ``source``.
+
+    The reasons below tell someone to upload the file again, which they never
+    did and can't do for a synced item. Any other reason is returned as it is.
+    """
+    src = source or "the source"
+    if record_type in _SYNCED_FILE_TYPES:
+        return {
+            UNREADABLE_FILE: (
+                f"We couldn't read this file from {src}. It may be damaged or in a format we "
+                f"can't open. Save a fresh copy (or export it as PDF) in {src}, and PipesHub "
+                "indexes it on the next sync."
+            ),
+            FILE_TOO_LARGE: (
+                f"This file from {src} is too large to index. Split it into smaller files in "
+                f"{src}, and PipesHub indexes them on the next sync."
+            ),
+            PASSWORD_PROTECTED: (
+                f"This file from {src} is password-protected, so we can't read it. Remove the "
+                f"password in {src}, and PipesHub indexes it on the next sync."
+            ),
+            PROCESSING_TIMED_OUT: (
+                f"This file from {src} took too long to process. Try Reindex; if it keeps "
+                f"failing, split it into smaller files in {src}."
+            ),
+        }.get(reason, reason)
+    kind = _SYNCED_ITEM_KINDS.get(record_type or "", "item")
+    return {
+        UNREADABLE_FILE: (
+            f"We couldn't read this {kind} from {src}: part of its content is in a form "
+            f"PipesHub can't process, so it isn't searchable. Try Reindex after it changes "
+            f"in {src}; if it keeps failing, ask your admin for help."
+        ),
+        FILE_TOO_LARGE: (
+            f"This {kind} from {src} is larger than PipesHub can index, so it isn't "
+            f"searchable. Nothing is wrong with it in {src}; if you need it in search, "
+            "ask your admin for help."
+        ),
+        PASSWORD_PROTECTED: (
+            f"This {kind} from {src} is password-protected, so we can't read it. Remove "
+            f"the password in {src}, then Reindex it."
+        ),
+        PROCESSING_TIMED_OUT: (
+            f"This {kind} from {src} took too long to process. Try Reindex; if it keeps "
+            "failing, ask your admin for help."
+        ),
+    }.get(reason, reason)
 
 
 def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
@@ -533,13 +605,30 @@ def too_large_refusal(exc: BaseException | None) -> StorageRequestRejectedError 
     )
 
 
-def to_user_reason(exc: BaseException | None) -> str:
+def to_user_reason(
+    exc: BaseException | None,
+    *,
+    record: Mapping[str, object] | None = None,
+    source: str | None = None,
+) -> str:
     """The reason to store on a record that failed to index because of ``exc``.
 
     The outermost PipesHub error says what was being done (embedding, storing,
     reading the file); the errors under it say why. Checked in that order, so a
     processing timeout reads as a slow file and a storage timeout as an outage.
+
+    Several reasons tell someone to upload the file again. For a ``record``
+    synced by a connector they say what to do in ``source`` (the connector's
+    name) instead, see ``for_synced_item``.
     """
+    reason = _reason(exc)
+    if record is not None and record.get("origin") == OriginTypes.CONNECTOR.value:
+        record_type = record.get("recordType")
+        return for_synced_item(reason, record_type if isinstance(record_type, str) else None, source)
+    return reason
+
+
+def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
