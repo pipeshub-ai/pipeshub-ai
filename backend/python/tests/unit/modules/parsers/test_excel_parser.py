@@ -385,9 +385,9 @@ class TestBuiltinDateFormats:
         expected_codes = {14, 15, 16, 17, 18, 19, 20, 21, 22}
         assert set(BUILTIN_DATE_FORMATS.keys()) == expected_codes
 
-    def test_values_are_strings(self):
-        for code, fmt in BUILTIN_DATE_FORMATS.items():
-            assert isinstance(fmt, str), f"Code {code} has non-string format"
+    @pytest.mark.parametrize("code, fmt", BUILTIN_DATE_FORMATS.items())
+    def test_values_are_strings(self, code, fmt):
+        assert isinstance(fmt, str), f"Code {code} has non-string format"
 
 
 # ---------------------------------------------------------------------------
