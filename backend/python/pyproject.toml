@@ -280,7 +280,7 @@ dependencies = [
     # (attachment contentBytes); older ones return the base64 text as bytes.
     "microsoft-kiota-serialization-json>=1.11.7",
     "nats-py==2.16.0",
-    "notion-client==2.2.1",
+    "notion-client==3.1.0",
     "nltk==3.10.4",
     "numpy==2.5.4",
     "onnxruntime==1.31.0",
