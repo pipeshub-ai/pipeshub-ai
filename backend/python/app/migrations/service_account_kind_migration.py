@@ -35,7 +35,11 @@ class ServiceAccountKindMigrationService:
     Idempotent, and retried on the next startup when it fails. A staged id with
     no node yet usually means that account's own ``userAdded`` has not been
     consumed: the accounts that do have nodes are still stamped, and only
-    ``done`` is withheld, so the next startup stamps the straggler and finishes.
+    ``done`` is withheld, so the next startup stamps the straggler and
+    finishes. What has already been written is recorded alongside the staged
+    list, so that next startup writes only the straggler rather than every
+    node again — the upsert merges, so a repeat would still move
+    ``updatedAtTimestamp`` on nodes that are already correct.
     """
 
     MIGRATION_FLAG_KEY = "/migrations/service_account_kind_v1"
@@ -128,6 +132,25 @@ class ServiceAccountKindMigrationService:
                 f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
             )
 
+    async def _record_progress(self, state: dict, stamped_ids: set[str]) -> None:
+        """Remember what has been written, so an unfinished pass is not redone.
+
+        Only ever written beside the staged list it belongs to. If user
+        management stages a different list the whole document is replaced, and
+        this goes with it — which is right, because a changed list means the
+        answer may have changed too.
+        """
+        try:
+            await self.config_service.set_config(
+                self.MIGRATION_FLAG_KEY,
+                {**state, "stampedUserIds": sorted(stamped_ids)},
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Could not record service-account kind progress: {e}; "
+                "the next startup repeats work that changes nothing"
+            )
+
     async def migrate(self) -> dict[str, Any]:
         try:
             state = await self._read_state()
@@ -148,6 +171,9 @@ class ServiceAccountKindMigrationService:
         # disabled, and an account disabled before any of this shipped emits
         # no event of its own, so this is its only chance to be marked.
         disabled = {str(user_id) for user_id in (state.get("disabledUserIds") or [])}
+        # Written by an earlier pass that could not finish. The staged list is
+        # unchanged, so these nodes already hold what this would write.
+        already = {str(user_id) for user_id in (state.get("stampedUserIds") or [])}
         if not processed:
             # Staged explicitly as empty: this deployment has no service
             # accounts, so there is nothing to mark and the backfill is done.
@@ -158,11 +184,12 @@ class ServiceAccountKindMigrationService:
         try:
             found, missing = await self._resolve_nodes(processed)
 
-            node_keys = [found[user_id] for user_id in processed if user_id in found]
+            resolved = [user_id for user_id in processed if user_id in found]
+            node_keys = [
+                found[user_id] for user_id in resolved if user_id not in already
+            ]
             disabled_keys = {
-                found[user_id]: user_id in disabled
-                for user_id in processed
-                if user_id in found
+                found[user_id]: user_id in disabled for user_id in resolved
             }
             for start in range(0, len(node_keys), _BATCH):
                 batch = [
@@ -191,13 +218,14 @@ class ServiceAccountKindMigrationService:
             return {"success": False, "stamped": stamped, "error": str(e)}
 
         if missing:
-            # Marked what we could. `done` is withheld so the next startup
-            # stamps these once their own userAdded has been applied; the
-            # accounts already marked are skipped by the upsert being a no-op.
+            # Marked what we could, and recorded it so the next startup writes
+            # only the stragglers. `done` is withheld until none are left.
             self.logger.warning(
                 f"⚠️ {len(missing)} staged service account(s) have no user node yet; "
                 "marked the rest and will finish on a later startup"
             )
+            if resolved:
+                await self._record_progress(state, already | set(resolved))
             return {"success": True, "stamped": stamped, "missing": len(missing)}
 
         await self._record_done(processed, stamped)
