@@ -155,6 +155,33 @@ async def test_a_restored_classification_puts_its_summary_point_back() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_summary_point_is_written_before_the_classification_goes_back() -> None:
+    """Once the stored record holds the classification the job counts as done, so a summary
+    point that failed after that write would stay missing. Written first, a failure leaves the
+    classification out and the next delivery restores both."""
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    sink = _sink()
+    saves_when_written: list[int] = []
+
+    async def fail_once(ctx: TransformContext) -> None:
+        saves_when_written.append(blob.saves)
+        if len(saves_when_written) == 1:
+            raise RuntimeError("embedding model not loaded")
+
+    sink.write_summary_point = AsyncMock(side_effect=fail_once)
+    io = _classify_io(blob, sink=sink)
+
+    with pytest.raises(RuntimeError):
+        await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+    assert blob.saves == 0
+    assert not await _classify_io(blob).stored_metadata_present(_job())
+
+    await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+    assert saves_when_written == [0, 0]
+    assert blob.saves == 1
+
+
+@pytest.mark.asyncio
 async def test_no_stored_record_is_reported_as_missing() -> None:
     with pytest.raises(StoredRecordMissing):
         await _classify_io(_Blob(None)).restore_stored_metadata(_job(), SemanticMetadata(summary="s"))

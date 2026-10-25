@@ -114,8 +114,10 @@ class GraphClassifyIO(RecordStageIO):
             owner,
             lambda current: with_classification(current, classification),
             still_current=still_current,
+            # Before the classification goes back: once the stored record has it, the job counts
+            # as done, so a summary point that failed after that would stay missing.
+            before=lambda: self._restore_summary_point(owner, metadata),
             written=lambda: self._write_sidecar(job, metadata),
-            then=lambda: self._restore_summary_point(owner, metadata),
         )
 
     async def _restore_summary_point(self, record_id: str, metadata: SemanticMetadata) -> None:
