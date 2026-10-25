@@ -36,6 +36,7 @@ from helper.admin_route_table import (
     OLD_NODE_REFUSAL_MESSAGE,
     ORG_TOOL_RULES_OFF,
     PYTHON_ADMIN_ROUTES,
+    SWITCHED_OFF,
     TOOL_RULES_HANDLERS,
     AdminRoute,
 )
@@ -115,6 +116,12 @@ def _member_body(route: AdminRoute) -> Any:
     return body
 
 
+def _skip_if_switched_off(route: AdminRoute, status: int, text: str) -> None:
+    for rule in SWITCHED_OFF:
+        if rule.applies(route, status, text):
+            pytest.skip(rule.why)
+
+
 def _admin_request(route: AdminRoute) -> tuple[str, Any]:
     if route.admin == "invalid":
         return INVALID_ID, []
@@ -148,6 +155,7 @@ class TestMembersAreRefused:
             path_value=ABSENT_ID, body=_member_body(route), timeout=member.timeout,
         )
         _skip_if_feature_is_off(route, status, text)
+        _skip_if_switched_off(route, status, text)
         assert status == route.refusal_status and route.refusal_words.lower() in text.lower(), (
             f"A member calling {route.id} got HTTP {status}, not the admin refusal "
             f"({route.refusal_status} mentioning {route.refusal_words!r}). "
@@ -166,6 +174,7 @@ class TestTheAdminGetsThrough:
             path_value=path_value, body=body, timeout=user_session_client.timeout_seconds,
         )
         _skip_if_feature_is_off(route, status, text)
+        _skip_if_switched_off(route, status, text)
         lowered = text.lower()
         refused = (
             status in (401, 403)

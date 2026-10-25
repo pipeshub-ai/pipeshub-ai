@@ -492,6 +492,42 @@ describe('MCP Controller — handleMCPRequest', () => {
   // createMCPServer arguments
   // =========================================================================
   describe('createMCPServer configuration', () => {
+    // A token that cannot create or upload is not shown the write tools, so an
+    // agent does not pick a tool that would only answer 403.
+    describe('tool scopes', () => {
+      const scopesFor = async (user: Record<string, unknown> | undefined) => {
+        const createStub = sinon.stub().returns({
+          server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} },
+        })
+        mcpServerExports.createMCPServer = createStub
+        await handleMCPRequest(appConfig)(
+          createMockRequest({ headers: {}, body: {}, ...(user ? { user } : {}) }),
+          createMockResponse() as any,
+          createMockNext(),
+        )
+        return createStub.firstCall.args[0].scopes
+      }
+
+      it('mounts read tools only for a token without kb:write and kb:upload', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:read', 'semantic:write'] }))
+          .to.deep.equal(['read'])
+      })
+
+      it('needs both write scopes: kb:write alone cannot upload', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:read', 'kb:write'] }))
+          .to.deep.equal(['read'])
+      })
+
+      it('mounts every tool for a token with both write scopes', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:read', 'kb:write', 'kb:upload'] }))
+          .to.equal(undefined)
+      })
+
+      it('mounts every tool for a session user, as requireScopes lets them through', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o' })).to.equal(undefined)
+      })
+    })
+
     it('should call createMCPServer with dynamic: false', async () => {
       const createStub = sinon.stub().returns({
         server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} },

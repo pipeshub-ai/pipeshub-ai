@@ -46,7 +46,13 @@ export class MigrationService {
   async runMigration(deps: MigrationDependencies): Promise<void> {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
-    // First: until it runs, a policy may still name a removed sign-in method.
+    // Before the two below, which wait on the connector service. This one has
+    // nothing to wait for — it reads Mongo and writes one key — and the
+    // connector service reads that key during its own startup, so staging
+    // after a wait that the connector service itself has to finish would
+    // always miss the boot that introduced it.
+    await this.serviceAccountKindBackfillMigration();
+    // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
@@ -54,7 +60,6 @@ export class MigrationService {
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.delegationLogRetentionMigration();
-    await this.serviceAccountKindBackfillMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }

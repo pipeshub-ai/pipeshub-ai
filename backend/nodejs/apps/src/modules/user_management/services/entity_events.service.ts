@@ -70,6 +70,16 @@ export interface UserAddedEvent {
    * its absence as `human`, so an older producer stays correct.
    */
   kind?: 'human' | 'service';
+  /**
+   * Whether an administrator has switched this account off. Carried because
+   * the permission graph has no other way to learn it: it lives in this
+   * collection, and the services that read the graph cannot reach it.
+   *
+   * Optional, and only ever sent for a service account. The consumer leaves
+   * the stored value alone when it is absent, so an event that says nothing
+   * about this — a rename, say — cannot switch an account back on.
+   */
+  isDisabled?: boolean;
 }
 
 export interface UserDeletedEvent {
@@ -87,6 +97,16 @@ export interface UserUpdatedEvent {
   fullName?: string;
   designation?: string;
   email: string;
+  /**
+   * Whether an administrator has switched this account off. Carried because
+   * the permission graph has no other way to learn it: it lives in this
+   * collection, and the services that read the graph cannot reach it.
+   *
+   * Optional, and only ever sent for a service account. The consumer leaves
+   * the stored value alone when it is absent, so an event that says nothing
+   * about this — a rename, say — cannot switch an account back on.
+   */
+  isDisabled?: boolean;
 }
 
 /**

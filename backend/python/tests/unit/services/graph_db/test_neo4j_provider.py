@@ -7,6 +7,7 @@ from app.config.constants.arangodb import Connectors, OriginTypes
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     MoveDestinationMissing,
@@ -4752,7 +4753,7 @@ class TestGetAppPermissionRoleCypher:
         assert "PERMISSION {type: 'USER'}" in cypher
         assert "PERMISSION {type: 'TEAM'}" in cypher
         assert 'team:Teams' in cypher
-        assert 'ut.role' in cypher or 'ut:PERMISSION' in cypher
+        assert cypher_team_grant_role("team_grant", "team_member") in cypher
         
         # Check for team KB role variable
         assert 'team_kb_role' in cypher

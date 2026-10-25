@@ -80,6 +80,7 @@ describe('MigrationService', () => {
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
       expect(signInStub.calledOnce).to.be.true
       expect(signInStub.calledBefore(connectorStub)).to.be.true
+      expect(serviceAccountKindStub.calledBefore(connectorStub)).to.be.true
       expect(connectorStub.calledOnce).to.be.true
       expect(chatStub.calledOnce).to.be.true
       expect(chatSessionsStub.calledOnce).to.be.true

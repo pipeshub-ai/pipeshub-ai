@@ -17,7 +17,11 @@ from app.models.entities import Record, RecordGroupType
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
-from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, BlobStorage
+from app.modules.transformers.blob_storage import (
+    STORED_RECORD_FIELDS,
+    STORED_REV,
+    BlobStorage,
+)
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.image_description import (
@@ -186,12 +190,6 @@ class SinkOrchestrator(Transformer):
             ctx.settings.get("sink_only")
         )
 
-        if not skip_blob:
-            with stage("images.describe"):
-                await self._describe_images(ctx)
-            with stage("blob.write"):
-                await self.write_blob(ctx)
-
         record_id = record.id
         with stage("graph.read"):
             record_doc = await self.graph_provider.get_document(
@@ -200,6 +198,13 @@ class SinkOrchestrator(Transformer):
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
+
+        if not skip_blob:
+            ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
+            with stage("images.describe"):
+                await self._describe_images(ctx)
+            with stage("blob.write"):
+                await self.write_blob(ctx)
 
         written: WrittenRevision | None = None
         if not skip_blob and not skip_vector_store:
@@ -680,6 +685,21 @@ class SinkOrchestrator(Transformer):
         for name in unknown:
             setattr(metadata, name, None)
 
+    async def write_summary_point(self, ctx: TransformContext) -> None:
+        """The summary point of ``ctx.record``'s classification; nothing when it has no summary."""
+        record = ctx.record
+        metadata = record.semantic_metadata
+        if metadata is None or not (metadata.summary or "").strip():
+            return
+        # Not wrapped in a stage: it times its own steps.
+        await self.vector_store.index_record_summary(
+            record.id,
+            record.virtual_record_id,
+            record.org_id,
+            metadata,
+            record,
+        )
+
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
         """The summary point, graph taxonomy and the entity points it touches, of a
         prepared classification (``prepare_enrichment``), for ``ctx.record``.
@@ -693,15 +713,8 @@ class SinkOrchestrator(Transformer):
         metadata = record.semantic_metadata
         if metadata is None:
             return
-        if index_summary and (metadata.summary or "").strip():
-            # Not wrapped in a stage: it times its own steps.
-            await self.vector_store.index_record_summary(
-                record.id,
-                record.virtual_record_id,
-                record.org_id,
-                metadata,
-                record,
-            )
+        if index_summary:
+            await self.write_summary_point(ctx)
         with stage("graph.enrich"):
             touched_entities = await self.graphdb.write_taxonomy(
                 record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
