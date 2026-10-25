@@ -506,7 +506,7 @@ schemaacl platform pipeshub_restore USAGE grantable=false
 schemaacl platform pipeshub_vetted_kernel USAGE grantable=false
 schemaacl platform pipeshub_vetted_platform USAGE grantable=false
 schemaacl public PUBLIC USAGE grantable=false
-settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
+settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin,pg_search,pg_stat_statements services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
 sysfuncs@17 count=3330 md5=4ffc20628a8498ed9cac0aa6b3560b9e
 sysfuncs@18 count=3413 md5=e1d09e84fd442d7baa0c82daf2e7df8a
 sysrelacl information_schema.administrable_role_authorizations PUBLIC SELECT

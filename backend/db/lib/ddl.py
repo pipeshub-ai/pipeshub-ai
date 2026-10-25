@@ -1,5 +1,6 @@
 """DDL helpers for revisions and the maintenance job. Each takes a SQLAlchemy Connection that is
-OUTSIDE a transaction (autocommit): CREATE INDEX CONCURRENTLY cannot run inside one. In a revision:
+OUTSIDE a transaction (autocommit): CREATE INDEX CONCURRENTLY cannot run inside one. In a revision of a database that is
+upgraded and verified in one transaction (see env.py) ``autocommit_block`` is refused; the maintenance job uses these helpers. In a revision:
 
     with op.get_context().autocommit_block():
         ensure_index(op.get_bind(), "app.ix", "CREATE INDEX CONCURRENTLY ix ON app.t (org_id, k)")
@@ -12,6 +13,14 @@ from typing import Any
 
 from sqlalchemy import Connection
 from sqlalchemy.exc import OperationalError
+
+
+def refuse_autocommit() -> None:
+    """Stands in for ``autocommit_block`` during an upgrade that is checked and rolled back as one transaction: leaving the
+    block would commit the revisions applied so far before the checks have run."""
+    raise RuntimeError("autocommit_block is not allowed in an upgrade that is verified as one transaction: it would commit "
+                       "earlier revisions before the checks run. Build the index outside the upgrade, or in its own release.")
+
 
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$")
 _LOCK_NOT_AVAILABLE = "55P03"

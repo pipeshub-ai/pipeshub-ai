@@ -56,6 +56,7 @@ class _Stub(Exception):
     ("28000", "FATAL: no pg_hba.conf entry", True),
     ("3D000", 'FATAL: database "x" does not exist', True),
     ("42501", "permission denied for table schema_epoch", True),
+    ("42501", "permission denied for schema kernel", False),
     (None, "FATAL: SASL authentication failed", True),
     (None, "connection failed: Connection refused", False),
     ("57P03", "the database system is starting up", False),

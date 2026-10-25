@@ -44,6 +44,8 @@ _PERMANENT_TEXT = re.compile(r'authentication failed|no pg_hba\.conf entry|(data
 
 
 def permanent(exc: psycopg.Error) -> bool:
+    if "permission denied for schema kernel" in reason(exc):
+        return False        # the schema exists but the first revision has not granted its USAGE yet: not ready, not wrong
     state = getattr(exc, "sqlstate", None) or ""
     return state.startswith(_PERMANENT_STATES[0]) or state in _PERMANENT_STATES[1:] or bool(_PERMANENT_TEXT.search(reason(exc)))
 

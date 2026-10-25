@@ -87,8 +87,10 @@ def open_window(admin: psycopg.Connection, migrate: psycopg.Connection, backup: 
         for (rel,) in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal') ORDER BY 1").fetchall():
             if backup.execute(sql.SQL("SELECT 1 FROM {} WHERE org_id = %s LIMIT 1").format(sql.SQL(rel)), (org,)).fetchone():
                 raise Refused(f"{rel} already has rows for {org}: a restore needs an empty org")
+        # the server sees (and may log) a SCRAM verifier, never the password
+        verifier = admin.pgconn.encrypt_password(password.encode(), s["restore"].encode(), b"scram-sha-256").decode()
         admin.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {} VALID UNTIL {}").format(
-            sql.Identifier(s["restore"]), sql.Literal(password),
+            sql.Identifier(s["restore"]), sql.Literal(verifier),
             sql.Literal(migrate.execute("SELECT until::text FROM kernel.restore_window").fetchone()[0])))
     except BaseException:
         migrate.execute("DELETE FROM kernel.restore_window")
@@ -204,15 +206,16 @@ def main(argv: list[str]) -> int:
                 with _connect("PG_MIGRATE_URL") as migrate, _connect("PG_BACKUP_URL") as backup:
                     print(f"exported {len(export_org(migrate, backup, args[1], Path(args[3])))} table(s) of {args[1]}")
             else:
-                url = os.environ.get("PG_RESTORE_URL", "").replace("postgresql+psycopg://", "postgresql://")
                 with _connect("PG_MIGRATE_URL") as migrate:
                     registered = {r[0] for r in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal')")}
-                with psycopg.connect(url, autocommit=True) as restore:
+                with _connect("PG_RESTORE_URL") as restore:
                     counts = load_org(restore, args[1], Path(args[3]), registered)
                 print("loaded " + ", ".join(f"{t}={n}" for t, n in counts.items()))
             return 0
         with _connect("PG_ADMIN_URL") as admin, _connect("PG_MIGRATE_URL") as migrate:
             if cmd == "open" and args[:1] == ["--org"] and (len(args) == 2 or (len(args) == 4 and args[2] == "--hours")):
+                if not os.environ.get("PG_RESTORE_PASSWORD"):
+                    raise Refused("PG_RESTORE_PASSWORD is not set")
                 with _connect("PG_BACKUP_URL") as backup:
                     open_window(admin, migrate, backup, args[1], os.environ["PG_RESTORE_PASSWORD"],
                                 float(args[3]) if len(args) == 4 else 4)

@@ -6,6 +6,7 @@ The suite is driven by the manifests: kernel/vetted and platform/vetted (shipped
 import dataclasses
 import os
 import re
+import shutil
 import statistics
 import time
 from datetime import datetime, timezone
@@ -63,7 +64,7 @@ def install(admin: psycopg.Connection, sql: str) -> None:
 
 @pytest.fixture(scope="module")
 def vdb(cluster, tmp_path_factory):
-    pgb = os.environ.get("MIGRATE_TEST_PGBOUNCER")
+    pgb = os.environ.get("MIGRATE_TEST_PGBOUNCER") or shutil.which("pgbouncer")
     if not pgb:
         pytest.skip("no pgbouncer (set MIGRATE_TEST_PGBOUNCER)")
     with cluster.admin() as admin:

@@ -46,7 +46,7 @@ CREATE TABLE kernel.settings (
 INSERT INTO kernel.settings VALUES (true, 'pipeshub_owner', 'pipeshub_migrate', 'pipeshub_app', 'pipeshub_jobs',
   'pipeshub_', 'pipeshub_vetted_', 'pipeshub_backup', 'pipeshub_restore', 'pipeshub_ro',
   ARRAY['pipeshub_node', 'pipeshub_connectors', 'pipeshub_indexing', 'pipeshub_query'], '{}',
-  ARRAY['plpgsql', 'vector', 'pg_trgm', 'pg_textsearch', 'btree_gin'], '^[0-9a-f]{24}$');
+  ARRAY['plpgsql', 'vector', 'pg_trgm', 'pg_textsearch', 'btree_gin', 'pg_search', 'pg_stat_statements'], '^[0-9a-f]{24}$');
 
 -- Every relation that holds org data, with its class. An unregistered table with an org_id column is a violation.
 CREATE TABLE kernel.rls_registry (

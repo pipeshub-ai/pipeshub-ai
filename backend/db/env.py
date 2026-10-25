@@ -15,6 +15,7 @@ from alembic import context
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.pool import NullPool
 
+from db.lib.ddl import refuse_autocommit
 from db.migrate import KEEPALIVES
 
 OWNER_ROLE = "pipeshub_owner"
@@ -71,6 +72,8 @@ def run() -> None:
         # shared lock table out of memory.
         context.configure(connection=connection, target_metadata=None, version_table_schema="kernel",
                           transaction_per_migration=verify is None, on_version_apply=record_epoch)
+        if verify:
+            context.get_context().autocommit_block = refuse_autocommit
         with context.begin_transaction():
             context.run_migrations()
             if verify:

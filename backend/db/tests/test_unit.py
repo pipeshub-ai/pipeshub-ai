@@ -420,3 +420,21 @@ def test_a_full_lock_table_names_the_setting_to_raise(monkeypatch, capsys, exist
     assert migrate.main(["upgrade"]) == migrate.EXIT_FAILED
     out = capsys.readouterr().out
     assert "max_locks_per_transaction" in out and said in out and not_said not in out
+
+
+def test_every_extension_the_capabilities_file_names_may_be_installed():
+    """The catalog check refuses an installed extension that is not in the allowlist, so a named one must be in it."""
+    import re
+
+    import yaml
+
+    named = set(yaml.safe_load((Path(migrate.__file__).parent / "capabilities.yaml").read_text())["extensions"])
+    allowed = re.search(r"ARRAY\[('plpgsql'.*?)\]", (Path(migrate.__file__).parent / "versions/kernel/0003_rls.sql").read_text(), re.S)
+    assert named <= set(re.findall(r"'([a-z_0-9]+)'", allowed[1]))
+
+
+def test_autocommit_block_is_refused_in_a_verified_upgrade():
+    from db.lib.ddl import refuse_autocommit
+
+    with pytest.raises(RuntimeError, match="autocommit_block"):
+        refuse_autocommit()
