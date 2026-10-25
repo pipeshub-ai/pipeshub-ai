@@ -93,24 +93,47 @@ class ServiceAccountKindMigrationService:
 
         return found, missing
 
-    async def _record_done(self, processed: list[str], stamped: int) -> None:
-        """Write `done`, unless the staged list moved while we were working.
+    async def _unchanged(
+        self, processed: list[str], disabled: set[str]
+    ) -> dict | None:
+        """The stored document, when it is still the one this pass applied.
 
-        The store has no compare-and-set, so this re-reads instead. A list that
-        has changed means the user management service staged an account after
-        we read: writing `done` over it would leave that one unmarked for good,
-        and leaving the key alone costs one more pass on the next startup.
+        Both lists are the answer, so both have to match. A different
+        `disabledUserIds` with the same `userIds` is still a different answer,
+        and writing over it would strand an account whose disable has no other
+        event to correct it.
+
+        None means "leave the key alone": this pass stamped what the old
+        document said, so whatever it now says has to be applied again.
         """
         try:
             current = await self._read_state()
         except Exception as e:
             self.logger.warning(
                 f"⚠️ Could not re-read the service-account kind state ({e}); "
-                "leaving it unset, which repeats harmlessly next startup"
+                "leaving it alone, which repeats harmlessly next startup"
             )
-            return
+            return None
 
         if current is None or list(current.get("userIds") or []) != processed:
+            return None
+        stored_disabled = {
+            str(user_id) for user_id in (current.get("disabledUserIds") or [])
+        }
+        return current if stored_disabled == disabled else None
+
+    async def _record_done(
+        self, processed: list[str], disabled: set[str], stamped: int
+    ) -> None:
+        """Write `done`, unless the staged lists moved while we were working.
+
+        The store has no compare-and-set, so this re-reads instead. Lists that
+        have changed mean the user management service staged something after
+        we read: writing `done` over that would leave it unapplied for good,
+        since staging stops once `done` is set. Leaving the key alone costs one
+        more pass on the next startup.
+        """
+        if await self._unchanged(processed, disabled) is None:
             self.logger.info(
                 "ℹ️ The staged service-account list changed while it was being "
                 "applied; finishing on the next startup"
@@ -132,18 +155,25 @@ class ServiceAccountKindMigrationService:
                 f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
             )
 
-    async def _record_progress(self, state: dict, stamped_ids: set[str]) -> None:
+    async def _record_progress(
+        self, processed: list[str], disabled: set[str], stamped_ids: set[str]
+    ) -> None:
         """Remember what has been written, so an unfinished pass is not redone.
 
-        Only ever written beside the staged list it belongs to. If user
-        management stages a different list the whole document is replaced, and
-        this goes with it — which is right, because a changed list means the
-        answer may have changed too.
+        Built on the document as it is now rather than the one read at the
+        start, and written only while that is still the document this pass
+        applied. Writing the old snapshot back would undo a list the user
+        management service staged meanwhile and then mark its ids stamped, so
+        the next startup would skip exactly the accounts it needed to write.
         """
+        current = await self._unchanged(processed, disabled)
+        if current is None:
+            return
+
         try:
             await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,
-                {**state, "stampedUserIds": sorted(stamped_ids)},
+                {**current, "stampedUserIds": sorted(stamped_ids)},
             )
         except Exception as e:
             self.logger.warning(
@@ -177,7 +207,7 @@ class ServiceAccountKindMigrationService:
         if not processed:
             # Staged explicitly as empty: this deployment has no service
             # accounts, so there is nothing to mark and the backfill is done.
-            await self._record_done(processed, 0)
+            await self._record_done(processed, set(), 0)
             return {"success": True, "stamped": 0, "skipped": True}
 
         stamped = 0
@@ -225,10 +255,10 @@ class ServiceAccountKindMigrationService:
                 "marked the rest and will finish on a later startup"
             )
             if resolved:
-                await self._record_progress(state, already | set(resolved))
+                await self._record_progress(processed, disabled, already | set(resolved))
             return {"success": True, "stamped": stamped, "missing": len(missing)}
 
-        await self._record_done(processed, stamped)
+        await self._record_done(processed, disabled, stamped)
         return {"success": True, "stamped": stamped, "missing": 0}
 
 
