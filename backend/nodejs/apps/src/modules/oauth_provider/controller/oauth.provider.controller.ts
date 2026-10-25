@@ -430,7 +430,8 @@ export class OAuthProviderController {
         token: string;
         token_type_hint?: 'refresh_token' | 'access_token';
         client_id: string;
-        client_secret?: string;
+        // A JSON body can carry any type here, null included.
+        client_secret?: unknown;
       };
 
       // RFC 7009: authenticate the client. A public client (the first-party
@@ -439,7 +440,7 @@ export class OAuthProviderController {
       // and the catch below answered 200 without revoking anything.
       const app = await this.oauthAppService.getAppByClientId(client_id);
       if (app.isConfidential) {
-        if (client_secret === undefined || client_secret === '') {
+        if (typeof client_secret !== 'string' || client_secret === '') {
           throw new InvalidClientError(
             'client_secret required for confidential clients',
           );

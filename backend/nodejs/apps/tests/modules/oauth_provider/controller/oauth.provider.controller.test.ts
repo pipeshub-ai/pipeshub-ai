@@ -664,6 +664,15 @@ describe('OAuthProviderController', () => {
       expect(mockRes.status.calledWith(401)).to.be.true
     })
 
+    it('refuses a confidential client whose secret is not a string', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid', client_secret: null } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
     it('refuses an unknown client', async () => {
       mockOAuthAppService.getAppByClientId.rejects(new InvalidClientError('Invalid client_id'))
       const req = { body: { token: 'tok', client_id: 'nope' } } as any
