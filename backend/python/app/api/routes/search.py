@@ -580,6 +580,10 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
             continue
         per_record[record_id] = per_record.get(record_id, 0) + 1
         doc = records.get(record_id) or {}
+        # Object-store records (S3, Azure Blob/Files, GCS) store a console URL
+        # naming bucket and key; search links to the record page instead.
+        hidden = bool(md.get("hideWeburl") or doc.get("hideWeburl"))
+        record_page = f"/record/{record_id}"
         chunks.append({
             # Stable across calls for the same indexed block, so callers can dedupe and cache.
             "id": f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{hit.get('block_index')}",
@@ -594,8 +598,8 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
             },
             "citation": {
                 # Built by app/utils/text_fragments; never rebuilt here.
-                "url": md.get("webUrl"),
-                "recordUrl": doc.get("webUrl") or md.get("webUrl"),
+                "url": record_page if hidden else md.get("webUrl"),
+                "recordUrl": record_page if hidden else (doc.get("webUrl") or md.get("webUrl")),
                 "pageNum": md.get("pageNum"),
                 "blockIndex": hit.get("block_index"),
             },
@@ -655,7 +659,10 @@ async def retrieve(
                 # answer. A failure (index or permission check down, bad filter) is not.
                 if status_code == 200 or results.get("status") in _EMPTY_RETRIEVAL_STATUSES:
                     return JSONResponse(status_code=200, content={
-                        "chunks": [], "incomplete": False, "message": results.get("message"),
+                        "chunks": [],
+                        # A source that did not run makes "nothing found" unreliable.
+                        "incomplete": bool(results.get("searchIncomplete")),
+                        "message": results.get("message"),
                     })
                 return JSONResponse(status_code=status_code, content={"message": results.get("message")})
             return JSONResponse(status_code=200, content={

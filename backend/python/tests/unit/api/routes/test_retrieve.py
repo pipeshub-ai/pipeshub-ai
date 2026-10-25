@@ -144,6 +144,32 @@ class TestRetrieve:
         assert body == {"message": "index unreachable"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("where", ["hit", "record"])
+    async def test_a_hidden_source_url_is_never_returned(self, where: str) -> None:
+        hit = _hit("r1", 0, "x")
+        results = _results(hit)
+        console = "https://console.aws.amazon.com/s3/object/bucket?prefix=secret/key"
+        hit["metadata"]["webUrl"] = console
+        results["records"][0]["webUrl"] = console
+        if where == "hit":
+            hit["metadata"]["hideWeburl"] = True
+        else:
+            results["records"][0]["hideWeburl"] = True
+        _, body, _, _ = await _retrieve(RetrieveQuery(query="q"), results)
+        citation = body["chunks"][0]["citation"]
+        assert citation["url"] == citation["recordUrl"] == "/record/r1"
+        assert console not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_answer_from_a_partial_search_says_it_is_incomplete(self) -> None:
+        _, body, _, _ = await _retrieve(
+            RetrieveQuery(query="q"),
+            {"searchResults": [], "records": [], "status": Status.EMPTY_RESPONSE.value, "status_code": 200,
+             "message": "nothing where the search ran", "searchIncomplete": "a source did not run"},
+        )
+        assert (body["chunks"], body["incomplete"]) == ([], True)
+
+    @pytest.mark.asyncio
     async def test_reports_an_incomplete_search(self) -> None:
         _, body, _, _ = await _retrieve(
             RetrieveQuery(query="q"), _results(_hit("r1", 0, "x"), searchIncomplete="some sources timed out"),
