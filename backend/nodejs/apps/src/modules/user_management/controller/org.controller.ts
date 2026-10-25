@@ -458,7 +458,7 @@ export class OrgController {
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        new: true,
+        returnDocument: 'after',
       });
 
       await this.eventService.start();
@@ -578,7 +578,7 @@ export class OrgController {
           orgId,
         },
         { orgId, logo: base64Logo, mimeType },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability

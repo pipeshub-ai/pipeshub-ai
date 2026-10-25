@@ -190,7 +190,7 @@ export class OAuthAppService {
       createdBy: new Types.ObjectId(createdBy),
       tokenIdentityUserId,
       redirectUris,
-      allowedGrantTypes: allowedGrantTypes as OAuthGrantType[],
+      allowedGrantTypes,
       allowedScopes: data.allowedScopes,
       homepageUrl: data.homepageUrl,
       privacyPolicyUrl: data.privacyPolicyUrl,
@@ -202,7 +202,7 @@ export class OAuthAppService {
     })
 
     this.logger.info('OAuth app created', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       clientId,
       orgId,
       name: data.name,
@@ -905,7 +905,9 @@ export class OAuthAppService {
     }
   }
 
-  private validateGrantTypes(grantTypes: string[]): void {
+  private validateGrantTypes(
+    grantTypes: string[],
+  ): asserts grantTypes is OAuthGrantType[] {
     const validGrantTypes = Object.values(OAuthGrantType)
     for (const grantType of grantTypes) {
       if (!validGrantTypes.includes(grantType as OAuthGrantType)) {

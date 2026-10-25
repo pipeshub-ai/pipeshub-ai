@@ -557,7 +557,7 @@ export class UserController {
             blockExpiresAt: null,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       );
 
       if (!credential) {
@@ -1730,7 +1730,7 @@ export class UserController {
           pic: compressedPic,
           mimeType: compressedPicMimeType,
         },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
       res.setHeader('Content-Type', compressedPicMimeType);
       res.status(201).send(compressedImageBuffer);

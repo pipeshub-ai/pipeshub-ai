@@ -411,7 +411,7 @@ export class UserAccountController {
     const claimed = await UserCredentials.findOneAndUpdate(
       { userId, orgId, isDeleted: false, hashedOTP: attempt.hashedOTP },
       { $unset: { hashedOTP: '', otpValidity: '' } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!claimed) {
       throw new UnauthorizedError(OTP_ALREADY_USED);
@@ -443,7 +443,7 @@ export class UserAccountController {
         wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
       },
       { $inc: { wrongCredentialCount: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
   }
 
@@ -472,7 +472,7 @@ export class UserAccountController {
     const userCredentials = await UserCredentials.findOneAndUpdate(
       { userId, orgId, isDeleted: false },
       { $inc: { wrongCredentialCount: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     );
 
     return userCredentials;
@@ -1301,7 +1301,7 @@ export class UserAccountController {
           lastLogin: Date.now(),
           ipAddress: req.ip,
         },
-      }, { new: true, upsert: true });
+      }, { returnDocument: 'after', upsert: true });
 
       if (!userCredential) {
         throw new NotFoundError(SESSION_NO_LONGER_VALID);
@@ -1912,7 +1912,7 @@ export class UserAccountController {
       const user = await Users.findByIdAndUpdate(
         userId,
         { email },
-        { new: true },
+        { returnDocument: 'after' },
       );
       if (!user) {
         throw new NotFoundError('User not found');

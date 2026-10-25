@@ -309,7 +309,7 @@ export class ServiceAccountsService {
           ...(input.description === undefined ? { description: '' } : {}),
         },
       },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     if (!restored) {
@@ -346,7 +346,7 @@ export class ServiceAccountsService {
     const finished = await Users.findOneAndUpdate(
       { _id: restored._id, restoreOpId, isDeleted: false },
       { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     // Nothing matched, so something else has moved this account on while the
@@ -436,7 +436,7 @@ export class ServiceAccountsService {
           restoreOpId: { $exists: false },
         },
         { $set: { isDisabled: false } },
-        { new: true },
+        { returnDocument: 'after' },
       ).exec();
 
       if (!enabled) {

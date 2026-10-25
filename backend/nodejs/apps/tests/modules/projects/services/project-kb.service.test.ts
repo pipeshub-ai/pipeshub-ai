@@ -176,7 +176,7 @@ describe('ProjectKnowledgeBaseService', () => {
       expect(linkStub.firstCall.args).to.deep.equal([
         { _id: PROJECT_ID, linkedKnowledgeBaseId: null },
         { $set: { linkedKnowledgeBaseId: 'kb-new' } },
-        { new: true },
+        { returnDocument: 'after' },
       ]);
     });
 

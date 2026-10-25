@@ -212,7 +212,7 @@ export const allocateSeq = async (
     { _id: sessionId },
     { $inc: { nextSeq: n } },
     {
-      new: true,
+      returnDocument: 'after',
       projection: { nextSeq: 1 }, // overrides the schema's `select: false` for this one read
       session: mongoSession || undefined,
     },
@@ -286,7 +286,7 @@ export const updateMessageById = async (
       orgId: existing.orgId,
       seq: existing.seq,
     },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    { returnDocument: 'after', session: mongoSession || undefined, runValidators: true },
   );
 };
 
@@ -307,7 +307,7 @@ export const updateUserQueryContent = async (
   ChatSessionMessage.findOneAndUpdate(
     { _id: messageId, sessionId, messageType: 'user_query' },
     { $set: { content, ...(attachments ? { attachments } : {}) } },
-    { new: true, session: mongoSession || undefined },
+    { returnDocument: 'after', session: mongoSession || undefined },
   );
 
 export const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
@@ -375,7 +375,7 @@ export const appendMessageFeedback = async (
   return ChatSessionMessage.findOneAndUpdate(
     { _id: messageId, orgId },
     { $push: { feedback: feedbackEntry } },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    { returnDocument: 'after', session: mongoSession || undefined, runValidators: true },
   );
 };
 
@@ -1798,7 +1798,7 @@ export const reserveRun = async (
           activeRunId: runId,
         },
       },
-      { new: false },
+      { returnDocument: 'before' },
     )
       .select('status')
       .lean();

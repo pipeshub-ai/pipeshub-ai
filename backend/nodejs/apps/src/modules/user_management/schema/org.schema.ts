@@ -28,10 +28,10 @@ const orgSchema = new Schema<IOrg>(
       type: String,
       validate: {
         // `this` is the document on save and the Query for update validators.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        validator: function (this: any, value: string) {
+        validator: function (this: unknown, value: string) {
+          const { accountType } = this as { accountType?: string };
           // Required only when accountType is 'business'
-          return this.accountType === 'business' ? !!value : true;
+          return accountType === 'business' ? !!value : true;
         },
         message: 'Registered Name is required for business accounts',
       },

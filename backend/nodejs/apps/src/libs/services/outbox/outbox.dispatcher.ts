@@ -192,7 +192,7 @@ export class OutboxDispatcher {
         const claimed = await OutboxEvent.findOneAndUpdate(
           { _id: candidate._id, ...due },
           { $set: { status: 'publishing', claimedAt: now } },
-          { new: true },
+          { returnDocument: 'after' },
         ).exec();
         if (claimed) return claimed;
       }

@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema';
+import { Users, User } from '../schema/users.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -8,7 +8,8 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
-import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { groupTypes, UserGroup, UserGroups } from '../schema/userGroup.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -157,12 +158,12 @@ export class UserGroupController {
     }
 
     const [groups, totalCount] = await Promise.all([
-      UserGroups.find(filter as mongoose.QueryFilter<any>)
+      UserGroups.find(asQueryFilter<UserGroup>(filter))
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      UserGroups.countDocuments(filter as mongoose.QueryFilter<any>),
+      UserGroups.countDocuments(asQueryFilter<UserGroup>(filter)),
     ]);
 
     // Return userCount instead of the full users array
@@ -380,13 +381,13 @@ export class UserGroupController {
     }
 
     const [userDocs, totalCount] = await Promise.all([
-      Users.find(userFilter as mongoose.QueryFilter<any>)
+      Users.find(asQueryFilter<User>(userFilter))
         .select('fullName firstName lastName email')
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      Users.countDocuments(userFilter as mongoose.QueryFilter<any>),
+      Users.countDocuments(asQueryFilter<User>(userFilter)),
     ]);
 
     // Bulk-fetch DPs for this page of users
@@ -427,11 +428,13 @@ export class UserGroupController {
     const { userId } = req.params;
     const orgId = req.user?.orgId;
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    } as mongoose.QueryFilter<any>).select('name type');
+    const groups = await UserGroups.find(
+      asQueryFilter<UserGroup>({
+        orgId,
+        users: { $in: [userId] },
+        isDeleted: false,
+      }),
+    ).select('name type');
 
     res.status(200).json(groups);
   }

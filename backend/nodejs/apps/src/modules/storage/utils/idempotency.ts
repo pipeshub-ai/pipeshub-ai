@@ -175,7 +175,7 @@ export async function claimUpload(
         uploadLeaseExpiresAt: now + UPLOAD_LEASE_MS,
       },
     },
-    { new: true },
+    { returnDocument: 'after' },
   );
 }
 
