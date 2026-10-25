@@ -66,7 +66,9 @@ async def wait_until_record_indexing_completed(
 
     Raises:
         AssertionError: If a terminal non-COMPLETED status is observed.
-        TimeoutError: If COMPLETED is not reached within ``timeout`` seconds.
+        TimeoutError: If COMPLETED is not reached within ``timeout`` seconds. With
+            ``queue_progress``: if ``timeout`` seconds pass with no progress, or the
+            ``max_wait`` cap (default ``5 * timeout``) is reached.
     """
     start = time.time()
     hard_deadline = start + (max_wait if max_wait is not None else 5 * timeout)
