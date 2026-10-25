@@ -438,6 +438,21 @@ jobs:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
 
+      # The runner shares ~15.7 GB with the Docker stack. When memory runs out the kernel
+      # kills the process with the highest score, and when that is the runner the job ends
+      # with no steps, no log and no reports. Shielded, the runner outlives a killed
+      # container, the tests fail with their logs, and the dump steps print the kernel's
+      # out-of-memory lines. Steps inherit the shield; the Docker services do not.
+      - name: Keep the runner alive when memory runs out
+        run: |
+          for pid in $(pgrep -f 'Runner\.(Listener|Worker)'); do
+            echo -1000 | sudo -n tee "/proc/$pid/oom_score_adj" > /dev/null \
+              || echo "::warning::Could not shield runner process $pid from the out-of-memory killer"
+          done
+          mkdir -p integration-tests/reports
+          nohup sh -c 'while :; do date -u +%FT%TZ; free -m | sed -n 2,3p; sleep 60; done' \
+            > integration-tests/reports/memory.log 2>&1 &
+
       - name: Set up Node.js
         if: env.RUN_PLAYWRIGHT == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -748,6 +763,13 @@ jobs:
             docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill.
+          sudo -n dmesg -T 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' \
+            > ../../integration-tests/reports/docker-logs/neo4j/_oom.txt || true
+          if [ -s ../../integration-tests/reports/docker-logs/neo4j/_oom.txt ]; then
+            echo "::warning::The runner ran out of memory; the kernel killed these processes:"
+            cat ../../integration-tests/reports/docker-logs/neo4j/_oom.txt
+          fi
 
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
@@ -908,6 +930,13 @@ jobs:
             docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill.
+          sudo -n dmesg -T 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' \
+            > ../../integration-tests/reports/docker-logs/arango/_oom.txt || true
+          if [ -s ../../integration-tests/reports/docker-logs/arango/_oom.txt ]; then
+            echo "::warning::The runner ran out of memory; the kernel killed these processes:"
+            cat ../../integration-tests/reports/docker-logs/arango/_oom.txt
+          fi
 
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
