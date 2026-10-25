@@ -36862,6 +36862,15 @@ paths:
           description: Missing or invalid bearer token.
         '403':
           description: Bearer token lacks the `semantic:write` scope.
+        '404':
+          description: |
+            A referenced app or collection filter could not be resolved, or
+            nothing selected below app level exists or is readable by the
+            caller (as for `POST /search`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: |
             The selection cannot be searched as asked (as for `POST /search`);

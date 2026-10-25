@@ -571,7 +571,14 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
     records = {r.get("_key"): r for r in results.get("records") or [] if isinstance(r, dict)}
     per_record: dict[str, int] = {}
     chunks: list[dict[str, Any]] = []
-    for hit in results.get("searchResults") or []:
+    # Ordered by score only, an expanded section's passages share its score in
+    # document order; the passage that matched (distanceFromMatch 0) goes first
+    # so a per-record cap keeps it over its neighbours.
+    hits = sorted(
+        results.get("searchResults") or [],
+        key=lambda h: (-(h.get("score") or 0.0), h.get("distanceFromMatch") or 0),
+    )
+    for hit in hits:
         md = hit.get("metadata") or {}
         record_id = md.get("recordId")
         if not record_id or not hit.get("content"):
