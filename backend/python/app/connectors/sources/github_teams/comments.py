@@ -50,6 +50,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import (
     ATTACHMENT_MAX_SIZE_BYTES,
+    PR_DIFF_TEXT_MAX_BYTES,
     PR_FILE_INLINE_CONTENT_MAX_BYTES,
     PR_FILE_INLINE_MAX_FILES,
 )
@@ -687,7 +688,10 @@ class CommentsHelper:
         that changed but that GitHub returns without a diff (too large, or
         binary) and that still exists has its text at the PR head inlined,
         within ``PR_FILE_INLINE_CONTENT_MAX_BYTES``. A rename or copy names
-        its source path.
+        its source path. All diff and inlined text together stays within
+        ``PR_DIFF_TEXT_MAX_BYTES``: a file that doesn't fit in what is left
+        keeps its group, status and review comments, with its text replaced by
+        a note, and later smaller files still fit.
 
         Review comments are grouped by real GitHub review thread
         (``in_reply_to_id`` chain), matching ``BlockGroup.comments``'s documented
@@ -860,6 +864,13 @@ class CommentsHelper:
 
         changed_files = list(files_res.data or [])
         fetched = 0
+        text_left = PR_DIFF_TEXT_MAX_BYTES
+        omitted = 0
+        over_budget_note = (
+            f"this pull request's changes exceed the "
+            f"{PR_DIFF_TEXT_MAX_BYTES // (1024 * 1024)} MB of diff text indexed per pull "
+            f"request; the full change is at {changes_url}"
+        )
         for file in changed_files:
             filename = getattr(file, "filename", None)
             if not filename:
@@ -882,7 +893,13 @@ class CommentsHelper:
             # stops inlining after PR_FILE_INLINE_MAX_FILES of them.
             needs_content = not diff and changed and status != "removed" and head_sha
             beyond_inline_limit = bool(needs_content) and fetched >= PR_FILE_INLINE_MAX_FILES
-            if needs_content and not beyond_inline_limit:
+            # Not fetched when what's left couldn't hold a file at the inline
+            # cap, so the call isn't spent on text that may not fit.
+            content_over_budget = (
+                bool(needs_content) and not beyond_inline_limit
+                and text_left < PR_FILE_INLINE_CONTENT_MAX_BYTES
+            )
+            if needs_content and not beyond_inline_limit and not content_over_budget:
                 fetched += 1
                 content_res = await c.runtime.ds_call(
                     c.data_source.get_file_contents, owner, repo, filename, head_sha,
@@ -891,6 +908,18 @@ class CommentsHelper:
                     file_content, oversized, content_bytes = self._inline_file_content(
                         content_res.data,
                     )
+            if file_content:
+                file_content = redact_secrets(file_content).text
+                text_left -= len(file_content.encode("utf-8"))
+            diff_over_budget = False
+            if diff:
+                diff_bytes = len(patch.encode("utf-8"))
+                if diff_bytes > text_left:
+                    diff_over_budget = True
+                else:
+                    text_left -= diff_bytes
+            if content_over_budget or diff_over_budget:
+                omitted += 1
 
             data_parts = [f"[{status} file]"]
             # Name the old path whenever GitHub gives one, so a search for it
@@ -903,18 +932,25 @@ class CommentsHelper:
                     f"Full File Content: omitted (the pull request has more than "
                     f"{PR_FILE_INLINE_MAX_FILES} changed files without a diff)"
                 )
+            elif content_over_budget:
+                data_parts.append(f"Full File Content: omitted ({over_budget_note})")
             elif oversized:
                 data_parts.append(
                     f"Full File Content: omitted ({content_bytes} bytes exceeds the "
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full File Content:\n{redact_secrets(file_content).text}")
+                data_parts.append(f"Full File Content:\n{file_content}")
             # No diff and nothing fetched: say only what the listing shows.
             # GitHub counts a binary's lines as 0/0 even when its bytes
             # changed, so "no changes" is never claimed for a rename or copy.
             if not diff and not changed and status == "changed":
                 data_parts.append("File mode or type changed.")
+            elif diff_over_budget:
+                data_parts.append(
+                    f"Diff: omitted ({getattr(file, 'additions', 0) or 0} lines added, "
+                    f"{getattr(file, 'deletions', 0) or 0} removed; {over_budget_note})"
+                )
             elif diff or changed or status not in ("renamed", "copied"):
                 data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
@@ -938,6 +974,12 @@ class CommentsHelper:
             block_groups.append(bg)
             block_group_number += 1
 
+        if omitted:
+            self.logger.info(
+                "Pull request #%s in %s/%s: left out the text of %s of %s changed files, "
+                "past the %s-byte diff limit",
+                pr_number, owner, repo, omitted, len(changed_files), PR_DIFF_TEXT_MAX_BYTES,
+            )
         return block_groups, remaining
 
     def _inline_file_content(
