@@ -81,7 +81,7 @@
     "express": "^4.22.1",
     "express-rate-limit": "^8.7.1",
     "form-data": "^4.0.6",
-    "google-auth-library": "^10.9.1",
+    "google-auth-library": "^11.3.1",
     "handlebars": "^4.7.10",
     "helmet": "^8.3.0",
     "inversify": "^6.2.1",
