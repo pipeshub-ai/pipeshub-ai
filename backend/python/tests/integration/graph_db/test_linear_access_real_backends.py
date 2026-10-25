@@ -199,6 +199,28 @@ class _Env:
         start = ((values.get("created") or {}).get("value") or {}).get("start")
         return not (start and item.created_at < start)
 
+    def synced_team_ids(self) -> set[str]:
+        """The teams the sync files records under: those the syncing account sees that the
+        team filter keeps."""
+        team_filter = self.config["filters"]["sync"]["values"].get("team_ids") or {}
+        team_ids = set(team_filter.get("value") or [])
+        excluding = team_filter.get("operator") == "not_in"
+        return {t.id for t in self.ws.teams if self.ws.can_see_team(self.ws.sync_user, t)
+                and (not team_ids or ((t.id not in team_ids) if excluding else (t.id in team_ids)))}
+
+    def readers(self, item: Issue | Project) -> set[str]:
+        """Emails of the users PipesHub shows an issue or project to. Linear shows a project
+        in several teams to the readers of any of them; PipesHub, by choice, only to those of
+        its home team: the lead team, else the first synced team by id."""
+        if not isinstance(item, Project):
+            return self.ws.readers(item)
+        synced = self.synced_team_ids()
+        teams = [t for t in item.teams if t.id in synced]
+        home = item.lead if item.lead in teams else min(teams, key=lambda t: t.id, default=None)
+        if item.trashed or home is None:
+            return set()
+        return {u.email for u in self.ws.users if self.ws.can_see_team(u, home)}
+
     def owners(self, doc: dict[str, Any]) -> list[Issue | Project]:
         """The Linear issues or projects a record's content comes from."""
         external_id = str(doc.get("externalRecordId") or "")
@@ -229,9 +251,9 @@ class _Env:
             covered = [o for o in owners if self.in_scope(o)]
             if doc.get("recordType") == "FILE":
                 # A file is one record per issue that links it, or one record for all of them.
-                expected[doc["id"]] = set().union(*(self.ws.readers(o) for o in covered)) if covered else set()
+                expected[doc["id"]] = set().union(*(self.readers(o) for o in covered)) if covered else set()
             else:
-                expected[doc["id"]] = self.ws.readers(owners[0]) if owners and owners[0] in covered else set()
+                expected[doc["id"]] = self.readers(owners[0]) if owners and owners[0] in covered else set()
         for email in self.user_ids:
             checked, searched, listed = await self.access(email)
             for doc in docs:
@@ -576,17 +598,18 @@ async def test_membership_and_visibility_changes_reach_access(env: _Env) -> None
 
 # ---------------------------------------------------------------------- projects in several teams
 
-async def test_a_project_is_readable_through_any_of_its_teams(env: _Env) -> None:
-    """Linear shows a project, with its documents, links and files, to anyone who can
-    see one of its teams, whatever order the teams are listed in."""
+async def test_a_project_is_readable_through_its_home_team_only(env: _Env) -> None:
+    """A project in several teams, with its documents, links and files, is filed under its
+    lead team, else its first team by id, whatever order the teams are listed in."""
     p = await _people(env, "alice", "bob", "carol", "gail", guests=("gail",))
     ws = env.ws
     eng = ws.team("ENG", members=[p["sync"], p["carol"], p["gail"]])
     sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
     legal = ws.team("LEGAL", visibility="private", members=[p["sync"], p["bob"]])
     plan = ws.upload("plan.pdf", b"%PDF plan")
-    for name, teams in (("Launch", [sec, eng]), ("Launch again", [eng, sec]), ("Audit", [legal, sec])):
-        ws.project(name, teams, content=f"[plan.pdf]({plan})",
+    for name, teams, lead in (("Launch", [sec, eng], None), ("Launch again", [eng, sec], None),
+                              ("Audit", [legal, sec], None), ("Review", [sec, legal], legal)):
+        ws.project(name, teams, lead=lead, content=f"[plan.pdf]({plan})",
                    documents=[Document(f"{name} doc", "text")], links=[Link(f"{name} deck", "https://deck.example/x")])
 
     await env.sync()
