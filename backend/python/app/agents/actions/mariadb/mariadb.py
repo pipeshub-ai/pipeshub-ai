@@ -18,6 +18,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
 from app.utils.conversation_tasks import register_task
+from app.agents.actions.util.read_only_sql import read_only_statement
 from app.connectors.core.constants import IconPaths
 from app.services.artifact_registry.models import artifact_owner_id
 logger = logging.getLogger(__name__)
@@ -392,6 +393,7 @@ class MariaDB:
         short_description="Execute a SQL query",
         description=(
             "Execute a SQL query against the default auth-configured MariaDB database. "
+            "A read (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN) runs at once; any other statement waits for the user's approval. "
             "Use `list_tables`, `get_table_ddl`, or `fetch_db_schema` first to understand "
             "the schema before querying."
         ),
@@ -431,7 +433,12 @@ class MariaDB:
                     "message": use_resp.message,
                 })
 
-            query_resp = await self.client.execute_query(query=query)
+            # A plain read runs in a read-only transaction with a timeout. Anything else only gets
+            # here once the user approved it (tool_approvals._CALL_CHECKS), and runs as written.
+            statement, _ = read_only_statement(query)
+            query_resp = await self.client.execute_query(
+                query=statement or query, read_only=statement is not None,
+            )
 
             if not query_resp.success:
                 return self._result(False, {

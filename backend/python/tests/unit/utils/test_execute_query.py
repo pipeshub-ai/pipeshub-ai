@@ -1408,3 +1408,32 @@ class TestAgentKnowledgeHasSqlConnector:
 
     def test_dict_without_type_key(self):
         assert agent_knowledge_has_sql_connector([{"name": "x"}]) is False
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT LOAD_FILE('/etc/hostname')",
+    "SELECT pg_terminate_backend(1)",
+    "SELECT set_config('search_path', 'x', false)",
+    "SELECT pg_sleep /* x */ (60)",
+    "SELECT SLEEP(60)",
+    "SELECT nextval('s')",
+    "SELECT 1 /* a /* b */ ' */ , pg_sleep(1) AS x -- '",
+    "SELECT 1 -- note\r, pg_sleep(1) AS x",
+    "SELECT 'a\\' , ' , SLEEP(1) -- '",
+    "SELECT 1 # note\r, pg_sleep(1) AS x",
+    "SELECT " + "1, " * 4000 + "pg_sleep(1)",
+    "SELECT pg_terminate_backend--x\n(1)",
+    "SELECT SLEEP#x\n(1)",
+    "SELECT SLEEP/* x */(1)",
+    "SELECT U&\"pg_s\\006Ceep\"(1)",
+    "SELECT query_to_xml('select pg_terminate_backend(1)', true, true, '')",
+    "SELECT cursor_to_xml('c', 1, true, true, '')",
+    "SELECT exec_sql('DROP TABLE t')",
+])
+def test_functions_that_do_more_than_read_are_blocked(sql: str) -> None:
+    assert _is_query_safe(sql)[0] is False
+
+
+@pytest.mark.parametrize("sql", ["SET @x = 1", "USE other_db", "DECLARE x INT"])
+def test_session_statements_are_not_reads(sql: str) -> None:
+    assert _is_query_safe(sql)[0] is False
