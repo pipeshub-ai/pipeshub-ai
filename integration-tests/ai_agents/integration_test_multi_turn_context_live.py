@@ -5,7 +5,7 @@ used to protect the conversation's first question instead of the current one,
 so when the current turn's tool results filled the window the follow-up was
 summarised away and the model answered the first question again.
 
-The suite adds its own model with a 24K ``contextLength`` so that reading one
+The suite adds its own model with a 48K ``contextLength`` so that reading one
 long manual is enough to make compaction fire, uploads six ~120K-character
 manuals in which the two answers sit in different chapters of different
 volumes, and asks A (reminders) then B (choosing a practice) in one
@@ -49,7 +49,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
 logger = logging.getLogger("ai-agents-it")
 
-_CONTEXT_LENGTH = 24_000
+# The system prompt and tool schemas take about 16K of the window and the reply
+# reserve 8K, so at 24K the messages got ~4K and every search result was cut to a
+# third of itself: neither manual's notes reached an answer. 48K leaves one
+# 32K-character search result whole, and a few searches or one manual still
+# overflow it, so compaction fires.
+_CONTEXT_LENGTH = 48_000
 _MANUAL_CHARS = 120_000
 _QUESTION_A = "How do I set up automated appointment reminders by SMS and email, and can patients confirm or cancel?"
 _QUESTION_B = "I have access to more than one practice. How do I pick which practice to log into and set a default?"
@@ -138,7 +143,7 @@ class Exchange:
 def small_window_model(pipeshub_client: PipeshubClient, ai_provider) -> Iterator[SmallWindowModel]:
     """The suite's provider again, with a context length small enough that compaction must fire."""
     provider, model_name, configuration = ai_provider
-    configuration = {**configuration, "modelFriendlyName": f"IT 24K {uuid.uuid4().hex[:6]}"}
+    configuration = {**configuration, "modelFriendlyName": f"IT 48K {uuid.uuid4().hex[:6]}"}
 
     def add(is_reasoning: bool):
         return pipeshub_client.request("POST", f"{AI_MODELS}/providers", json={

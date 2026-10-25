@@ -134,7 +134,7 @@ At 8K with 4K-char results the summariser ran 26 times before and 16 after.
 | History | `test_history_window.py`, `test_bounded_history.py`, `test_attachment_images.py`, `test_history_seeding.py` |
 | Wire format | `tests/unit/agents/agent_loop/transports/test_provider_payloads.py` (every provider) |
 | Route end-to-end (scripted model) | `tests/integration/test_multi_turn_context_e2e.py` |
-| Live | `integration-tests/ai_agents/integration_test_multi_turn_context_live.py` (24K window, long manuals, Agent Builder and universal assistant) |
+| Live | `integration-tests/ai_agents/integration_test_multi_turn_context_live.py` (48K window, long manuals, Agent Builder and universal assistant) |
 
 A change to a layer must keep `test_protected_messages.py` and the scenario properties green. A new layer must be added in `build_context_pipeline` and in `OPTIONAL_LAYERS`, not wired by hand.
 
