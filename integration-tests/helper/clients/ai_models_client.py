@@ -6,6 +6,12 @@ import requests
 
 from helper.http.api_client import APIClient
 
+# Adding or updating a provider waits on a live health check of the model. Node gives that
+# call 620 s (AI_SERVICE_TIMEOUT_MS in ai.service.command.ts): an LLM is probed for text,
+# streaming and tool calls, up to 420 s in all. The client's 60 s default gave up first
+# on a slow Azure OpenAI deployment the server would have accepted.
+PROVIDER_HEALTH_CHECK_TIMEOUT_S = 630
+
 
 class AIModelsClient(APIClient):
     """Client for /api/v1/configurationManager/ai-models endpoints.
@@ -41,7 +47,7 @@ class AIModelsClient(APIClient):
         Args:
             **kwargs: Provider fields (providerId, modelType, configuration, etc.)
         """
-        return self.post("/providers", json=kwargs)
+        return self.post("/providers", json=kwargs, timeout=PROVIDER_HEALTH_CHECK_TIMEOUT_S)
 
     def update_provider(
         self,
@@ -56,7 +62,9 @@ class AIModelsClient(APIClient):
             model_key: Model key
             **kwargs: Fields to update
         """
-        return self.put(f"/providers/{model_type}/{model_key}", json=kwargs)
+        return self.put(
+            f"/providers/{model_type}/{model_key}", json=kwargs, timeout=PROVIDER_HEALTH_CHECK_TIMEOUT_S,
+        )
 
     def delete_provider(
         self,
