@@ -99,7 +99,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/coverage-v8": "^5.0.5",
     "dotenv": "^17.4.2",
     "electron": "^42.11.16",
     "electron-builder": "^26.18.0",
