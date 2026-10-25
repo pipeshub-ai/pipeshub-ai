@@ -394,10 +394,10 @@ class TestBuiltinDateFormats:
 # COMMON_FORMAT_WHITELIST constant
 # ---------------------------------------------------------------------------
 class TestCommonFormatWhitelist:
-    def test_all_entries_are_tuples(self):
-        for key, val in COMMON_FORMAT_WHITELIST.items():
-            assert isinstance(val, tuple), f"Key {key} is not a tuple"
-            assert len(val) == 2, f"Key {key} does not have exactly 2 elements"
+    @pytest.mark.parametrize("key, val", COMMON_FORMAT_WHITELIST.items())
+    def test_all_entries_are_tuples(self, key, val):
+        assert isinstance(val, tuple), f"Key {key} is not a tuple"
+        assert len(val) == 2, f"Key {key} does not have exactly 2 elements"
 
     def test_python_formats_start_with_percent(self):
         for key, (python_fmt, _) in COMMON_FORMAT_WHITELIST.items():
