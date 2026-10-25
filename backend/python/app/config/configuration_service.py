@@ -127,7 +127,7 @@ class ConfigurationService:
                     self.cache[key] = value
             return value
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             # Try environment variable fallback on error

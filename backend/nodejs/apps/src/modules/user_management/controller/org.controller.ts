@@ -48,6 +48,14 @@ import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
 
+const ADDRESS_FIELDS = [
+  'addressLine1',
+  'city',
+  'state',
+  'country',
+  'postCode',
+] as const;
+
 @injectable()
 export class OrgController {
   constructor(
@@ -366,20 +374,53 @@ export class OrgController {
     }
   }
 
+  /** A request-body field that, when present, must be a string. */
+  private optionalString(field: string, value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') {
+      throw new BadRequestError(`${field} must be a string`);
+    }
+    return value;
+  }
+
+  /**
+   * The address fields of a request body, each a string. Anything else (an
+   * operator object, an array, a number) is refused rather than stored.
+   */
+  private pickAddress(value: unknown): Record<string, string> | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestError('permanentAddress must be an object');
+    }
+    const address: Record<string, string> = {};
+    for (const field of ADDRESS_FIELDS) {
+      const part = (value as Record<string, unknown>)[field];
+      if (part === undefined) continue;
+      if (typeof part !== 'string') {
+        throw new BadRequestError(`permanentAddress.${field} must be a string`);
+      }
+      address[field] = part;
+    }
+    return address;
+  }
+
   async updateOrganizationDetails(
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     const { contactEmail, registeredName, shortName, permanentAddress } =
-      req.body as {
-        contactEmail?: string;
-        registeredName?: string;
-        shortName?: string;
-        permanentAddress?: string;
-      };
+      req.body as Record<string, unknown>;
 
     try {
+      // The route schema already forces these shapes. Checked again here so a
+      // query operator ({ "$ne": null }, { "$where": ... }) can never be spread
+      // into the update, whatever route reaches this method.
+      const email = this.optionalString('contactEmail', contactEmail);
+      const regName = this.optionalString('registeredName', registeredName);
+      const short = this.optionalString('shortName', shortName);
+      const address = this.pickAddress(permanentAddress);
+
       const orgId = req.user?.orgId;
 
       const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
@@ -393,13 +434,13 @@ export class OrgController {
         contactEmail: string;
         registeredName: string;
         shortName: string;
-        permanentAddress: string;
+        permanentAddress: Record<string, string>;
       }> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (email) updateData.contactEmail = email;
+      if (regName) updateData.registeredName = regName;
+      if (short) updateData.shortName = short;
+      if (address) updateData.permanentAddress = address;
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {

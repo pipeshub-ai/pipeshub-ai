@@ -9,7 +9,8 @@ on the root logger would see nothing and pass vacuously.
 import contextlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any, NoReturn
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -217,3 +218,72 @@ async def test_configuration_service(captured, monkeypatch) -> None:
     with patch.object(store, "create_key", AsyncMock(side_effect=RuntimeError("boom"))):
         assert await svc.set_config(SECRET_PATH, VALUE) is False
     _assert_clean(captured, SECRET_PATH)
+
+
+# A decode that fails with a message carrying part of the value. Library errors
+# can do this (a parser quoting the text it choked on), and the store must not
+# pass that message on to a log, whether the caller asked for the error or not.
+class _LeakyDecodeError(Exception):
+    pass
+
+
+@pytest.fixture
+def leaky_decode(monkeypatch) -> Callable[..., NoReturn]:
+    def _boom(*_args, **_kwargs) -> NoReturn:
+        raise _LeakyDecodeError(f"bad value near '{SENTINEL}'")
+
+    return _boom
+
+
+def _encrypted_store(kind, monkeypatch) -> tuple[Any, Any]:
+    monkeypatch.setenv("KV_STORE_TYPE", kind)
+    if kind == "etcd3":
+        backend = FakeEtcdClient()
+        # The client is built lazily, so the patch must outlive construction.
+        monkeypatch.setattr(ETCD3_CLIENT, lambda *_a, **_k: backend)
+        return Etcd3EncryptedKeyValueStore(STORE_LOGGER), backend
+    backend = FakeRedisServer()
+    with patch(REDIS_PROVIDER, return_value=FakeRedisProvider(backend)):
+        return EncryptedKeyValueStore(STORE_LOGGER), backend
+
+
+@pytest.mark.parametrize("kind", ["redis", "etcd3"])
+@pytest.mark.parametrize("raise_on_error", [False, True])
+async def test_decode_failure_logs_exception_type_not_message(
+    kind, raise_on_error, captured, monkeypatch, leaky_decode
+) -> None:
+    store, _ = _encrypted_store(kind, monkeypatch)
+    assert await store.create_key(SECRET_PATH, VALUE) is True
+    monkeypatch.setattr(store, "_decode_value", leaky_decode)
+    if raise_on_error:
+        with pytest.raises(_LeakyDecodeError):
+            await store.get_key(SECRET_PATH, raise_on_error=True)
+    else:
+        assert await store.get_key(SECRET_PATH) is None
+    _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")
+
+
+@pytest.mark.parametrize("kind", ["redis", "etcd3"])
+async def test_inner_store_failure_logs_exception_type_not_message(
+    kind, captured, monkeypatch
+) -> None:
+    store, _ = _encrypted_store(kind, monkeypatch)
+    failing = AsyncMock(side_effect=_LeakyDecodeError(f"bad value near '{SENTINEL}'"))
+    with patch.object(store.store, "get_key", failing):
+        assert await store.get_key(SECRET_PATH) is None
+        with pytest.raises(_LeakyDecodeError):
+            await store.get_key(SECRET_PATH, raise_on_error=True)
+    _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")
+
+
+async def test_configuration_service_get_failure_logs_type_not_message(
+    captured, monkeypatch
+) -> None:
+    store = AsyncMock()
+    store.get_key = AsyncMock(side_effect=_LeakyDecodeError(f"bad value near '{SENTINEL}'"))
+    svc = _build_service(store=store)
+    svc.logger = STORE_LOGGER
+    assert await svc.get_config(SECRET_PATH, use_cache=False) is None
+    with pytest.raises(_LeakyDecodeError):
+        await svc.get_config(SECRET_PATH, use_cache=False, raise_on_error=True)
+    _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")

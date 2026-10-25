@@ -84,6 +84,31 @@ describe('UserGroupController', () => {
       }
     });
 
+    const operatorBodies: Array<[string, Record<string, unknown>]> = [
+      ['name as an operator', { name: { $ne: null }, type: 'custom' }],
+      ['type as an operator', { name: 'Engineering', type: { $ne: null } }],
+      ['name as an array', { name: ['a'], type: 'custom' }],
+      ['name as a number', { name: 1, type: 'custom' }],
+    ];
+
+    for (const [label, body] of operatorBodies) {
+      it(`rejects ${label} with a 400 before any Mongo call`, async () => {
+        req.body = body;
+        const findOne = sinon.stub(UserGroups, 'findOne').resolves(null);
+        const save = sinon.stub(UserGroups.prototype, 'save').resolves({} as any);
+
+        try {
+          await controller.createUserGroup(req, res);
+          expect.fail('Should have thrown an error');
+        } catch (error: any) {
+          expect(error).to.be.instanceOf(BadRequestError);
+          expect(error.statusCode).to.equal(400);
+        }
+        expect(findOne.called).to.be.false;
+        expect(save.called).to.be.false;
+      });
+    }
+
     it('should throw BadRequestError when type is missing', async () => {
       req.body = { name: 'Engineering' };
 
