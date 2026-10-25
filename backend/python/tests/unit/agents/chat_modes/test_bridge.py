@@ -11,11 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
-from typing import Any, Never
-
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

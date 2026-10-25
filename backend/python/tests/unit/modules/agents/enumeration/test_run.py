@@ -159,11 +159,23 @@ class TestAScopedQuestionIsLeftToTheAgent:
             # The read scopes by both, so this bound matches the read exactly.
             {"apps": [], "kb": ["kb-1"], "allowedApps": ["kb-1"],
              "allowedRecordGroups": [], "allowedRecords": []},
+            # A group on the same bound as the Collection does not take
+            # anything out of it — `admits` keeps every record of a bound app
+            # whatever else the bound names. The group is reach outside what
+            # was asked for, which the read does not count either way.
+            {"apps": [], "kb": ["kb-1"], "allowedApps": ["kb-1"],
+             "allowedRecordGroups": ["proj-a"], "allowedRecords": []},
+            # Same for a connected app that names a whole Collection and a
+            # folder somewhere else. The turn asks for the Collection.
+            {"apps": ["kb-whole"], "connectionApps": ["kb-whole"],
+             "connectionRecordGroups": [], "connectionRecords": ["folder-in-legal"]},
         ],
         ids=[
             "agent-on-whole-apps",
             "agent-allows-more-than-is-asked",
             "collection-agent-named-under-kb",
+            "group-on-the-bound-only-widens-it",
+            "connection-file-outside-what-was-asked",
         ],
     )
     async def test_a_saved_agent_bound_only_to_apps_is_still_counted(self, filters: dict) -> None:
@@ -200,11 +212,21 @@ class TestAScopedQuestionIsLeftToTheAgent:
             # about documents this connection is not allowed to see.
             {"apps": ["conn-1"], "kb": ["kb-outside"], "connectionApps": ["conn-1"],
              "connectionRecordGroups": [], "connectionRecords": []},
+            # A bound that names no app admits no app, however many nodes it
+            # names: `within_connection({"apps": ["A"]}, {"records": ["R"]})`
+            # is this shape, and the read would count the whole of A.
+            {"apps": ["conn-1"], "connectionApps": [],
+             "connectionRecordGroups": [], "connectionRecords": ["file-1"]},
+            # The agent equivalent: an allow-list of groups only.
+            {"apps": ["conn-1"], "allowedApps": [],
+             "allowedRecordGroups": ["group-1"], "allowedRecords": []},
         ],
         ids=[
             "bound-narrower-than-asked",
             "bound-with-nothing-asked",
             "collection-under-kb-outside-the-bound",
+            "connection-names-only-a-file",
+            "allow-list-of-groups-only",
         ],
     )
     async def test_a_bound_the_read_would_overshoot_still_defers(self, filters: dict) -> None:

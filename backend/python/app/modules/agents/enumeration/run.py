@@ -161,11 +161,21 @@ def _bound_the_read_would_miss(filters: dict[str, Any] | None) -> bool:
     no app — it is how an agent says it has no Collection, not a Collection the
     bound has to admit.
 
-    Three bounds are not reflected and must decline: one that names particular
-    record groups or records, since the read counts whole apps; one that lists
-    nothing at all, which admits nothing rather than everything; and one that
-    admits fewer apps than the read is about to count, the unscoped read
-    included, since the read would then count outside it.
+    Two bounds are not reflected and must decline: one that lists nothing at
+    all, which admits nothing rather than everything; and one that admits
+    fewer apps than the read is about to count, the unscoped read included,
+    since the read would then count outside it.
+
+    Record groups and records on a bound are not a third. They widen a bound,
+    they never narrow one of its apps: `SelectionScope.admits`
+    (`selection_scope.py:144`) takes any record whose `connectorId` is one of
+    the bound's apps, whatever else the bound names. And a source that really
+    is limited to some nodes is not in `apps` at all —
+    `resolve_agent_filters` puts it in one place or the other
+    (`knowledge_scope.py:198-206`) and copies the limit onto the turn, so
+    `has_selection` declines before this is asked. What is left over is reach
+    outside what was asked for, which the read does not count and the answer
+    does not claim.
     """
     asked = {
         app
@@ -173,8 +183,6 @@ def _bound_the_read_would_miss(filters: dict[str, Any] | None) -> bool:
         if app != NO_KB_SELECTED_FILTER
     }
     for bound in allowed_filters(filters):
-        if bound.get("recordGroups") or bound.get("records"):
-            return True
         bound_apps = {app for app in (bound.get("apps") or []) if app}
         if not bound_apps or not asked or not asked <= bound_apps:
             return True
