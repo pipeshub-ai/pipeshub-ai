@@ -5,8 +5,8 @@ from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-# How many nodes are stamped per round trip.
-_UPSERT_BATCH = 100
+# How many ids one lookup or one write asks about.
+_BATCH = 100
 
 
 class ServiceAccountKindMigrationService:
@@ -26,12 +26,16 @@ class ServiceAccountKindMigrationService:
     previous replica is still consuming, so an event carrying ``kind`` can be
     read by a binary that drops it.
 
-    Only ``kind`` is written. A node is looked up first and left alone if it is
-    not there, so nothing is created by a stale id, and no other field is
-    touched — in particular not ``isActive``, so an account deleted after it was
-    staged stays deleted.
+    Only ``kind`` is written. The nodes are resolved first, in batched queries
+    rather than one lookup per account, so nothing is created by a stale id and
+    the startup health gate is not held open by a round trip per account. No
+    other field is touched — in particular not ``isActive``, so an account
+    deleted after it was staged stays deleted.
 
-    Idempotent, and retried on the next startup when it fails.
+    Idempotent, and retried on the next startup when it fails. A staged id with
+    no node yet is a failure rather than a skip: it usually means that
+    account's own ``userAdded`` has not been consumed, and recording the
+    backfill finished would leave it unmarked for good.
     """
 
     MIGRATION_FLAG_KEY = "/migrations/service_account_kind_v1"
@@ -64,52 +68,39 @@ class ServiceAccountKindMigrationService:
         if not user_ids:
             return {"success": True, "stamped": 0, "skipped": True}
 
+        wanted = [str(user_id) for user_id in user_ids]
         stamped = 0
-        missing = 0
-        pending: list[dict] = []
 
         try:
-            for user_id in user_ids:
-                # raise_on_error: a failed read answers None too, and reading
-                # that as "no such node" would record the backfill finished
-                # while nodes still have no kind.
-                node = await self.graph_provider.get_user_by_user_id(
-                    str(user_id), raise_on_error=True
-                )
-                if not node:
-                    missing += 1
-                    continue
-                if node.get("kind") == "service":
-                    continue
+            # One query per batch rather than one per account, and it raises
+            # for an id it cannot resolve, so an account whose own userAdded is
+            # still in flight is retried instead of being recorded as done.
+            keys = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                wanted, chunk_size=_BATCH
+            )
 
-                node_key = node.get("id") or node.get("_key")
-                if not node_key:
-                    missing += 1
-                    continue
-
-                pending.append(
+            node_keys = [keys[user_id] for user_id in wanted if user_id in keys]
+            for start in range(0, len(node_keys), _BATCH):
+                batch = [
                     {
                         "id": node_key,
                         "kind": "service",
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                )
-                if len(pending) >= _UPSERT_BATCH:
-                    await self.graph_provider.batch_upsert_nodes(pending, CollectionNames.USERS.value)
-                    stamped += len(pending)
-                    pending = []
-
-            if pending:
-                await self.graph_provider.batch_upsert_nodes(pending, CollectionNames.USERS.value)
-                stamped += len(pending)
+                    for node_key in node_keys[start : start + _BATCH]
+                ]
+                # Both backends answer falsy for a write that did not land, and
+                # counting those as stamped would retire them from the retry.
+                if not await self.graph_provider.batch_upsert_nodes(
+                    batch, CollectionNames.USERS.value
+                ):
+                    raise RuntimeError(
+                        f"The graph rejected {len(batch)} service-account kind write(s)"
+                    )
+                stamped += len(batch)
         except Exception as e:
             self.logger.error(f"❌ Service-account kind migration failed: {e}", exc_info=True)
             return {"success": False, "stamped": stamped, "error": str(e)}
-
-        if missing:
-            self.logger.warning(
-                f"⚠️ {missing} staged service account(s) have no user node; left unmarked"
-            )
 
         try:
             await self.config_service.set_config(
@@ -118,7 +109,6 @@ class ServiceAccountKindMigrationService:
                     "version": self.STATE_VERSION,
                     "done": True,
                     "stamped": stamped,
-                    "missing": missing,
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
@@ -126,7 +116,7 @@ class ServiceAccountKindMigrationService:
             self.logger.warning(
                 f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
             )
-        return {"success": True, "stamped": stamped, "missing": missing}
+        return {"success": True, "stamped": stamped}
 
 
 async def run_service_account_kind_migration(
