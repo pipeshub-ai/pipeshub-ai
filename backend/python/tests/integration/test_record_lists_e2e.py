@@ -254,10 +254,14 @@ async def _seed(w: _World) -> None:
         collection=teams,
     )
     await g.batch_create_edges(
+        # Membership role and grant role deliberately disagree in both
+        # directions: the grant is what the member gets on the knowledge base,
+        # and their role inside the team is about managing the team.
         [edge(w.team_user_key, users, w.team_ids[0], teams, role="READER", type="USER"),
          edge(w.team_user_key, users, w.team_ids[1], teams, role="WRITER", type="USER"),
          edge(w.team_user_key, users, w.kb_id, apps, role="FILEORGANIZER", type="USER"),
-         *(edge(t, teams, w.kb_id, apps, role="READER", type="TEAM") for t in w.team_ids)],
+         edge(w.team_ids[0], teams, w.kb_id, apps, role="WRITER", type="TEAM"),
+         edge(w.team_ids[1], teams, w.kb_id, apps, role="READER", type="TEAM")],
         collection=CollectionNames.PERMISSION.value,
     )
 
@@ -342,8 +346,17 @@ async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> N
 async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World) -> None:
     """Each team grant used to add another copy of every record in the KB.
 
-    The strongest grant wins. FILEORGANIZER is a retired role and reads as
-    READER, so the WRITER membership of the second team is the strongest here.
+    The strongest of them wins, and what a team grant is worth is the role on
+    the team's own grant rather than the member's role inside the team (see
+    graph_db/common/team_grant_role.py). This user reaches the same knowledge
+    base four ways, and each is worth something different:
+
+    * team A, where they are only a READER, grants WRITER -> WRITER
+    * team B, where they are a WRITER, grants READER -> READER, because
+      being senior in a team is not a claim on what the team was given
+    * directly, as FILEORGANIZER, a retired role that reads as READER
+
+    So WRITER, from a team they are merely a member of.
     """
     listing = await _all_records(world, user_id=world.team_user_id)
     ids = [item.id for item in listing.items]
