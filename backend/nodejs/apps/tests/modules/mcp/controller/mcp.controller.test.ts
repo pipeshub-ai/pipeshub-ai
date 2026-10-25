@@ -140,6 +140,31 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(JSON.stringify(events[0])).to.not.include('confidential plan')
     })
 
+    it('tags each event with the OAuth client, the User-Agent product and our channel', async () => {
+      arm()
+      const req = toolCallRequest()
+      req.headers = { 'user-agent': 'claude-code/2.1.0 (darwin; arm64) node/22', 'x-pipeshub-channel': 'claude-code-plugin' }
+      const res = { ...createMockResponse(), statusCode: 200 }
+      await handleMCPRequest(appConfig)(req, res as any, createMockNext())
+
+      expect(eventBuffer.drain()[0].props).to.include({
+        oauth_client_id: 'some-oauth-app',
+        user_agent: 'claude-code/2.1.0',
+        channel: 'claude-code-plugin',
+      })
+    })
+
+    it('drops a channel or User-Agent that is not a plain token, and never tags a PAT with its client id', async () => {
+      arm(accepted)
+      const req = initializeRequest({})
+      req.headers = { 'user-agent': '<script>', 'x-pipeshub-channel': 'Evil Channel; drop' }
+      const res = { ...createMockResponse(), statusCode: 200 }
+      await handleMCPRequest(appConfig)(req, res as any, createMockNext())
+
+      const props = eventBuffer.drain()[0].props ?? {}
+      expect(props).to.not.have.any.keys('user_agent', 'channel', 'oauth_client_id')
+    })
+
     it('records mcp_tool_called only after the transport has served the request', async () => {
       arm()
       let servedBeforeRecorded = false

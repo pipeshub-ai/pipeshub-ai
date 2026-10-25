@@ -48,12 +48,35 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     : user.isOAuth === true
       ? 'oauth'
       : 'session';
+  const userAgent = productToken(req.headers['user-agent']);
+  const channel = channelOf(req.headers['x-pipeshub-channel']);
   return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
     domain: domainFromEmail(email),
     auth_type: authType,
+    // Which client and which of our channels: for a stateless transport,
+    // every request has to say it, not only initialize.
+    ...(authType === 'oauth' && clientId ? { oauth_client_id: clientId } : {}),
+    ...(userAgent ? { user_agent: userAgent } : {}),
+    ...(channel ? { channel } : {}),
   };
+}
+
+/** The first product token of a User-Agent (`claude-code/2.1.0`), never the
+ *  whole header, which can carry machine and OS details. */
+function productToken(header: unknown): string | undefined {
+  if (typeof header !== 'string') return undefined;
+  const token = header.trim().split(/\s+/)[0] ?? '';
+  return /^[\w.@/+-]{1,80}$/.test(token) ? token : undefined;
+}
+
+/** `X-PipesHub-Channel`, set by PipesHub's own clients (plugin, CLI, docs
+ *  snippets). Anything else is dropped rather than stored as typed. */
+function channelOf(header: unknown): string | undefined {
+  return typeof header === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(header)
+    ? header
+    : undefined;
 }
 
 /** Props for `mcp_connected`, or undefined when this request is not an
