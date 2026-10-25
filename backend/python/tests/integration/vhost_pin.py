@@ -12,8 +12,10 @@ SSL_CERT_FILE. Installed by conftest.py.
 from __future__ import annotations
 
 import socket
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def is_pinned_host(host: object) -> bool:
@@ -21,10 +23,10 @@ def is_pinned_host(host: object) -> bool:
     return isinstance(host, str) and host.lower().rstrip(".").endswith(".amazonaws.com")
 
 
-def pin_getaddrinfo(addr: str, original: Callable[..., Any]) -> Callable[..., Any]:
+def pin_getaddrinfo(addr: str, original: Callable[..., object]) -> Callable[..., object]:
     pin_host, _, pin_port = addr.rpartition(":")
 
-    def pinned(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
+    def pinned(host: object, port: object, *args: object, **kwargs: object) -> object:
         if is_pinned_host(host):
             return original(pin_host, int(pin_port), *args, **kwargs)
         return original(host, port, *args, **kwargs)

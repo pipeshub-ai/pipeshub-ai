@@ -113,7 +113,11 @@ async function main(): Promise<void> {
   )
 
   const app = express()
-  app.use(express.json({ limit: '100mb' }))
+  // The body parsers the API mounts before every route (src/app.ts); a JSON
+  // parser skips a body it has read, so a route reading raw bytes sees a Buffer
+  // only for a non-JSON content type, as in production.
+  app.use(express.json({ limit: '10mb' }))
+  app.use(express.urlencoded({ extended: true }))
   app.use('/api/v1/document', createStorageRouter(container))
   app.use(ErrorMiddleware.handleError())
   const server = http.createServer(app)

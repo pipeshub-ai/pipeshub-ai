@@ -23,9 +23,10 @@ name: backend-matrix
 # virtual-hosted: MinIO answers <bucket>.s3.us-east-1.amazonaws.com over TLS
 # with a throwaway CA, and both the storage service and the tests resolve
 # *.amazonaws.com to it, because the S3 adapter reads stored records only through
-# such URLs. Nothing reaches AWS. A discovered file that contributes no test case
-# (for example, one missing pytest.mark.integration) fails the job, as does any
-# skip. A storage test that also needs a graph store belongs in the graph jobs
+# such URLs (ARTIFACTS_IT_S3_VHOST=1 tells the tests so). Nothing reaches AWS. A
+# discovered file that contributes no test case (for example, one missing
+# pytest.mark.integration) fails the job, as does any skip, except a reason that
+# begins "not applicable on <store>:" on the leg running that store. A storage test that also needs a graph store belongs in the graph jobs
 # (name NEO4J_IT_URI or ARANGO_IT_URL there); one that skips here for lack of a
 # service fails this job like any other skip.
 
@@ -380,6 +381,7 @@ jobs:
           {
             echo "STORAGE_IT_CERTS=$RUNNER_TEMP/storage-it-certs"
             echo "STORAGE_IT_S3_VHOST=1"
+            echo "ARTIFACTS_IT_S3_VHOST=1"
             echo "STORAGE_IT_S3_VHOST_ADDR=127.0.0.1:$MINIO_VHOST_STORAGE_IT_PORT"
             echo "S3_ENDPOINT=https://127.0.0.1:$MINIO_VHOST_STORAGE_IT_PORT"
             echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/storage-it-certs/ca.crt"
@@ -425,37 +427,15 @@ jobs:
           # shellcheck disable=SC2086
           pytest $TESTS -m integration -v -rs --timeout=300 --junitxml="$REPORT"
 
+      # Every skip fails, and so does a discovered file that contributed no test.
+      # The one allowance: a test that cannot apply to this store says so with a
+      # reason beginning "not applicable on <store>:", counted only on that leg.
       - name: Fail if anything skipped
+        working-directory: backend/python
         env:
           DISCOVERED: ${{ runner.temp }}/storage-discovered.txt
-        run: |
-          python - <<'EOF'
-          import os
-          import sys
-          import xml.etree.ElementTree as ET
-
-          root = ET.parse(os.environ["REPORT"]).getroot()
-          cases = list(root.iter("testcase"))
-          tests = len(cases)
-          # Every file the job discovered must contribute a test case: a file that
-          # pytest deselects (no pytest.mark.integration) tested nothing.
-          modules = [f[: -len(".py")].replace("/", ".") for f in open(os.environ["DISCOVERED"]).read().split()]
-          silent = [m for m in modules if not any(c.get("classname", "") == m or c.get("classname", "").startswith(m + ".") for c in cases)]
-          if silent:
-              print(f"::error::No test case ran from {', '.join(silent)}. Does each test carry pytest.mark.integration?")
-              sys.exit(1)
-          # A strict xfail ran (a known gap, documented in its marker); junit files it as a skip.
-          skipped = sum(1 for c in cases for s in c.findall("skipped") if s.get("type") != "pytest.xfail")
-          if tests == 0 or skipped:
-              print(
-                  f"::error::{tests} collected, {skipped} skipped. Each skip "
-                  "is a test that did not run against the storage service: "
-                  "it was unreachable, or the test could not set up what "
-                  "it checks. The reasons are in the test step above."
-              )
-              sys.exit(1)
-          print(f"{tests} tests ran against a real storage service, none skipped.")
-          EOF
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+        run: python tests/integration/compose/check_storage_junit.py
 
       - name: Dump service logs
         if: failure()
