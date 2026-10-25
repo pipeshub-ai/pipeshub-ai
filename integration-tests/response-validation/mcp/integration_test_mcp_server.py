@@ -40,6 +40,10 @@ CURATED_TOOLS = {
     "pipeshub_get_record_content",
     "pipeshub_directory",
     "pipeshub_agents",
+    "pipeshub_create_collection",
+    "pipeshub_upload",
+    "pipeshub_indexing_status",
+    "pipeshub_connect_source",
 }
 
 # Registered by PipesHub itself (modules/mcp/code-graph.tools.ts), not the

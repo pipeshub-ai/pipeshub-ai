@@ -86,14 +86,26 @@ async def create_share_groups(
         await processor.on_new_record_groups(groups)
 
 
+def _under_any(external_id: str | None, roots: set[str]) -> bool:
+    if not external_id:
+        return False
+    return any(external_id == root or external_id.startswith(f"{root}/") for root in roots)
+
+
 async def prune_unseen(
     processor: DataSourceEntitiesProcessor,
     connector_id: str,
     seen: set[str],
     logger: Logger,
+    unread: set[str] | None = None,
 ) -> None:
+    """Delete the records this sync did not see, except those under ``unread``."""
+    keep = unread or set()
     records = await processor.get_records_by_record_type(connector_id, RecordType.FILE)
-    stale = [r for r in records if r.external_record_id not in seen]
+    stale = [
+        r for r in records
+        if r.external_record_id not in seen and not _under_any(r.external_record_id, keep)
+    ]
     if not stale:
         return
     logger.info("Removing %s records no longer in the synced shares", len(stale))
@@ -212,7 +224,7 @@ async def walk_shares(
         creator_email=creator_email,
     )
     seen: set[str] = set()
-    complete = True
+    unread: set[str] = set()
     unreadable: list[str] = []
     folder_scope = FolderScope.from_filters(sync_filters)
     for share_name in shares:
@@ -223,7 +235,7 @@ async def walk_shares(
                 share_name, sync_filters, indexing_filters
             )
             seen |= result.seen
-            complete = complete and result.complete
+            unread |= result.unread
             if not result.complete and result.seen == {share_name}:
                 unreadable.append(share_name)
             if result.complete:
@@ -242,15 +254,20 @@ async def walk_shares(
                     record_sync_point, share_name, result.max_timestamp_ms
                 )
         except Exception:
-            complete = False
+            # Nothing tells which of its records the walk got to, so all of them stay.
+            unread.add(share_name)
             unreadable.append(share_name)
             logger.exception("Error syncing share %s", share_name)
-    if prune and complete:
-        await prune_unseen(processor, connector_id, seen, logger)
-    elif prune and not complete:
+    if unread:
         logger.warning(
-            "Some listings failed; not removing records that were not seen this sync"
+            "Could not read %d paths; keeping the records stored under them: %s",
+            len(unread),
+            ", ".join(sorted(unread)[:20]),
         )
+    if prune:
+        # A folder that failed to list keeps its own records only, so one
+        # unreadable folder does not stop removals everywhere else on the share.
+        await prune_unseen(processor, connector_id, seen, logger, unread)
     return unreadable
 
 

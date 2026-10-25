@@ -527,13 +527,15 @@ class TestCifsConnectorSync:
         assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_incomplete_listing_skips_prune(self, mock_filters, cifs_connector, mock_processor):
+    async def test_a_failed_share_root_removes_nothing(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         ds = _ds(fail_dirs={(SHARE, "")})
         cifs_connector.data_source = ds
         cifs_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
         await cifs_connector.run_sync()
-        mock_processor.get_records_by_record_type.assert_not_awaited()
+        mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)

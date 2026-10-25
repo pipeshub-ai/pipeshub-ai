@@ -320,3 +320,68 @@ async def test_progress_is_not_mistaken_for_completion() -> None:
     await service.migrate()
 
     assert config.set_config.await_args.args[1].get("done") is not True
+
+
+@pytest.mark.asyncio
+async def test_a_changed_disabled_set_is_not_marked_done() -> None:
+    """Same accounts, different answer about which are switched off. This pass
+    stamped the old set, and `done` would stop anyone staging the new one."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    applied = _staged("u1", "u2")
+    newer = _staged("u1", "u2", disabled=["u2"])
+    config = MagicMock()
+    config.get_config = AsyncMock(side_effect=[applied, newer])
+    config.set_config = AsyncMock()
+    service = ServiceAccountKindMigrationService(provider, config, MagicMock())
+
+    assert (await service.migrate())["success"] is True
+    config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_progress_does_not_write_a_stale_list_back() -> None:
+    """Node replaces the document when the list changes, and that replacement
+    carries no progress. Writing the old snapshot over it would undo the new
+    list and then mark its ids stamped, so the next start would skip them."""
+    provider = _provider({"u1": "node-1"})
+    applied = _staged("u1", "u-not-yet")
+    newer = _staged("u1", "u-not-yet", "u3")
+    config = MagicMock()
+    config.get_config = AsyncMock(side_effect=[applied, newer])
+    config.set_config = AsyncMock()
+    service = ServiceAccountKindMigrationService(provider, config, MagicMock())
+
+    result = await service.migrate()
+
+    assert (result["stamped"], result["missing"]) == (1, 1)
+    config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_done_document_keeps_the_lists_it_applied() -> None:
+    """The user management service compares them against the collection on
+    every boot. Replacing them with a bare flag leaves it unable to tell a
+    later change from the set this pass marked."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    service, config = _service(provider, _staged("u1", "u2", disabled=["u2"]))
+
+    await service.migrate()
+
+    written = config.set_config.await_args.args[1]
+    assert written["done"] is True
+    assert written["userIds"] == ["u1", "u2"]
+    assert written["disabledUserIds"] == ["u2"]
+
+
+@pytest.mark.asyncio
+async def test_only_what_is_new_is_written_after_a_restage() -> None:
+    """Re-staged with the accounts already marked named, so a boot that found
+    one newcomer does not rewrite every other node."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    staged = {**_staged("u1", "u2"), "stampedUserIds": ["u1"]}
+    service, _ = _service(provider, staged)
+
+    assert (await service.migrate())["stamped"] == 1
+    assert [d["id"] for d in provider.batch_upsert_nodes.await_args.args[0]] == [
+        "node-2"
+    ]

@@ -37,6 +37,13 @@ export interface ServiceAccountKindState {
    * without this it would stay usable on the graph for good.
    */
   disabledUserIds?: string[];
+  /**
+   * Ids the graph already holds the right answer for. Written by whichever
+   * side last knew — the connector service after an unfinished pass, or here
+   * when only part of the answer has moved — so the next pass writes the
+   * difference rather than every account again.
+   */
+  stampedUserIds?: string[];
   stagedAt?: number;
 }
 
@@ -96,15 +103,13 @@ export class ServiceAccountKindBackfillMigration {
 
   async run(): Promise<ServiceAccountKindBackfillResult> {
     const state = await this.readState();
-    if (state?.done === true) {
-      return {
-        accountsFound: 0,
-        accountsStaged: 0,
-        disabledStaged: 0,
-        skipped: true,
-      };
-    }
 
+    // Read even when the last pass reported done. `done` says the accounts
+    // staged then were marked, not that the answer has not moved since: a
+    // rolling upgrade can finish this backfill in a new pod while an older
+    // one still owns the `entity-events` partition and drops the fields it
+    // has never heard of, so an account created or switched off in that
+    // window gets no usable event and nothing else would ever correct it.
     const userIds: string[] = [];
     const disabledUserIds: string[] = [];
     const cursor = Users.find({ kind: 'service', isDeleted: false })
@@ -136,8 +141,8 @@ export class ServiceAccountKindBackfillMigration {
     // "the list has not been written yet", and would wait for a list that is
     // never coming.
     //
-    // Staging the same list again would only churn the key and its cache
-    // invalidation; the connector service has not answered either way yet.
+    // Staging the same answer again would only churn the key and its cache
+    // invalidation, whether the connector service has answered yet or not.
     if (
       this.sameList(state?.userIds, userIds) &&
       this.sameList(state?.disabledUserIds, disabledUserIds)
@@ -150,10 +155,24 @@ export class ServiceAccountKindBackfillMigration {
       };
     }
 
+    // What the graph already holds the right answer for, so the connector
+    // service writes only the difference rather than every account again.
+    // After a clean pass that is everything it was given; after an unfinished
+    // one it is what that pass managed.
+    const settled = new Set(
+      (state?.done === true ? state.userIds : state?.stampedUserIds) ?? [],
+    );
+    const wasDisabled = new Set(state?.disabledUserIds ?? []);
+    const isDisabledNow = new Set(disabledUserIds);
+    const stampedUserIds = userIds.filter(
+      (id) => settled.has(id) && wasDisabled.has(id) === isDisabledNow.has(id),
+    );
+
     await this.writeState({
       version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
       userIds,
       disabledUserIds,
+      stampedUserIds,
       stagedAt: Date.now(),
     });
 
