@@ -15,6 +15,7 @@ import {
 import {
   isKnowledgeLimitWithin,
   sameKnowledgeLimit,
+  storedKnowledgeLimitFilter,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import {
@@ -627,13 +628,7 @@ export class OAuthAppService {
       // Saved only over the limit read above. Two edits from one snapshot
       // are each judged against it, so without this the later save could
       // pass as a widening while dropping what the earlier one added.
-      app.$where = previousLimit
-        ? {
-            'knowledgeLimit.apps': previousLimit.apps,
-            'knowledgeLimit.recordGroups': previousLimit.recordGroups,
-            'knowledgeLimit.records': previousLimit.records,
-          }
-        : { knowledgeLimit: null };
+      app.$where = storedKnowledgeLimitFilter(previousLimit);
     }
 
     // The knowledge limit rides in each token's claim. A narrowed one may
@@ -677,10 +672,24 @@ export class OAuthAppService {
       try {
         await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
+        // Put back only over the limit this request saved: an edit that
+        // landed since stands, and was judged against what is stored.
+        if (data.knowledgeLimit !== undefined) {
+          app.$where = storedKnowledgeLimitFilter(
+            toKnowledgeLimit(app.knowledgeLimit),
+          );
+        }
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
-        app.$where = {};
-        await app.save()
+        try {
+          await app.save();
+        } catch (rollbackError) {
+          if (
+            !(rollbackError instanceof mongoose.Error.DocumentNotFoundError)
+          ) {
+            throw rollbackError;
+          }
+        }
         throw error
       }
       this.logger.info('OAuth app access changed; tokens revoked', {

@@ -49,6 +49,19 @@ export const sameKnowledgeLimit = (
   return JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 };
 
+/** A query filter that matches an app whose stored limit is `limit`, with
+ * each list in the order it was stored; none matches an absent limit. */
+export const storedKnowledgeLimitFilter = (
+  limit: KnowledgeLimit | null | undefined,
+): Record<string, unknown> =>
+  limit
+    ? {
+        'knowledgeLimit.apps': limit.apps,
+        'knowledgeLimit.recordGroups': limit.recordGroups,
+        'knowledgeLimit.records': limit.records,
+      }
+    : { knowledgeLimit: null };
+
 /** Whether everything `inner` reaches is still inside `outer`. A limit
  * reaches what any of its lists names, so each list of `inner` must sit in
  * the same list of `outer`. Absent `outer` holds anything; absent `inner`
