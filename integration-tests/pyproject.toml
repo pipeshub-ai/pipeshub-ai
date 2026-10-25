@@ -114,7 +114,7 @@ dependencies = [
   "redis==5.2.1",
   "requests-toolbelt==1.0.0",
   "requests==2.34.2",
-  "sentence-transformers==5.6.0",
+  "sentence-transformers==6.2.0",
   # Same pin as backend/python/pyproject.toml.
   "transformers==5.20.2",
   "slack-sdk==3.45.0",
