@@ -625,6 +625,26 @@ export class OAuthAppService {
       app.knowledgeLimit = data.knowledgeLimit ?? undefined;
     }
 
+    // The knowledge limit rides in each token's claim. A narrowed one may
+    // hide what a token reaches, so those tokens go below. A widened one
+    // keeps them: each token, and each refresh, stays at the limit its user
+    // agreed to, and the new items reach a user once they connect again.
+    const limitNarrowed = !isKnowledgeLimitWithin(
+      previousLimit,
+      app.knowledgeLimit,
+    );
+    const limitWidened =
+      !limitNarrowed && !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
+    if (limitWidened) {
+      // Refresh tokens stored before they kept the user's limit take the
+      // app's on refresh. Revoked before the save, so a refresh that still
+      // gets through read the app before it and carries the old limit;
+      // revoked after, a refresh in between could mint with the wider one.
+      await this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
+        app.clientId,
+      );
+    }
+
     await app.save()
 
     // Tokens carry their scopes in the claim, and neither Node nor the Python
@@ -633,26 +653,9 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    // The knowledge limit rides in the claim the same way. A narrowed one may
-    // hide what a token reaches, so those tokens go. A widened one keeps
-    // them: each token, and each refresh, stays at the limit its user agreed
-    // to, and the new items reach a user once they connect again. Only
-    // refresh tokens stored before they kept that limit would follow the
-    // app's, so those go.
-    const limitNarrowed = !isKnowledgeLimitWithin(
-      previousLimit,
-      app.knowledgeLimit,
-    );
-    const limitWidened =
-      !limitNarrowed && !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
-    const revokeAll = removedScopes.length > 0 || limitNarrowed;
-    if (revokeAll || limitWidened) {
+    if (removedScopes.length > 0 || limitNarrowed) {
       try {
-        await (revokeAll
-          ? this.oauthTokenService.revokeAllTokensForApp(app.clientId)
-          : this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
-              app.clientId,
-            ));
+        await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
@@ -664,7 +667,6 @@ export class OAuthAppService {
         orgId,
         removedScopes,
         limitNarrowed,
-        limitWidened,
       })
     }
 

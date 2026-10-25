@@ -196,7 +196,18 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
   });
 
-  it('puts the old limit back and fails when widening cannot revoke the old refresh tokens', async () => {
+  it('revokes the old refresh tokens before it saves a widened limit', async () => {
+    // After the save, a refresh of one of them could read the wider limit
+    // and mint with it before the revocation reached it.
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledBefore(app.save)).to.equal(true);
+  });
+
+  it('saves nothing and fails when widening cannot revoke the old refresh tokens', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };
     tokens.revokeRefreshTokensWithoutKnowledgeLimit.rejects(new Error('mongo down'));
@@ -208,8 +219,20 @@ describe('updating what an OAuth app can see', () => {
       expect((error as Error).message).to.equal('mongo down');
     }
 
-    expect(app.knowledgeLimit).to.deep.equal(limit);
-    expect(app.save.calledTwice).to.equal(true);
+    expect(app.save.called).to.equal(false);
+  });
+
+  it('revokes the old refresh tokens before the save and every token after it when scopes go as the limit widens', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, {
+      allowedScopes: [],
+      knowledgeLimit: null,
+    });
+
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledBefore(app.save)).to.equal(true);
+    expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
   });
 
   it('revokes nothing when an app with no limit is saved with none', async () => {
