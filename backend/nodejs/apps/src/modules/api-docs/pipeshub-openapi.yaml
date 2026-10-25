@@ -13572,8 +13572,10 @@ components:
           description: |
             The `userId` of the service account this agent should search
             knowledge as, as returned by the service accounts API. Only valid
-            on a service-account agent; omit it and the agent searches as its
-            creator.
+            on a service-account agent: sending it without `isServiceAccount`
+            is refused rather than ignored, so a request cannot quietly create
+            an agent that searches as its creator. Omit it and the agent
+            searches as its creator.
         toolsets:
           type: array
           maxItems: 100
@@ -13934,9 +13936,11 @@ components:
           nullable: true
           description: |
             The `userId` of the service account this agent should search
-            knowledge as. Send null to clear the binding and go back to
-            searching as the agent's creator. Only valid on a service-account
-            agent.
+            knowledge as. Only valid on a service-account agent, checked
+            against what the agent will be once the request is applied, so one
+            request may convert an agent and bind it. Null is accepted on any
+            agent and clears the binding, going back to searching as the
+            agent's creator.
         toolsets:
           type: array
           maxItems: 100

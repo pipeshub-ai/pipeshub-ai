@@ -568,6 +568,38 @@ async def _resolve_service_account_binding(
     return wanted
 
 
+async def _checked_service_account_binding(
+    requested: object,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    *,
+    is_service_account: bool,
+) -> str | None:
+    """The binding to store, refusing one the agent could not use.
+
+    `None` is allowed whatever the agent is. It means "search as the creator",
+    which is where every unbound agent already sits, and every agent document
+    carries this field as null — so a client that reads an agent and sends it
+    back unchanged must not be turned away.
+
+    Anything else is only meaningful on a service agent, and is refused rather
+    than quietly dropped: dropping it would leave an agent searching as its
+    creator, the wider identity, while whoever asked believed they had narrowed
+    it. On update, "is a service agent" means what the agent will be once the
+    request is applied, so one request may convert an agent and bind it.
+    """
+    if requested is None:
+        return None
+    if not is_service_account:
+        raise InvalidRequestError(
+            "Only a service agent searches as a service account. Make this "
+            "a service agent first, or leave the binding alone."
+        )
+    return await _resolve_service_account_binding(
+        requested, graph_provider, caller_org_id,
+    )
+
+
 async def _enrich_user_info_for_service_account_agent_chat(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
@@ -2686,11 +2718,12 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
-        service_account_binding: str | None = None
-        if is_service_account and body.get("serviceAccountUserId"):
-            service_account_binding = await _resolve_service_account_binding(
-                body["serviceAccountUserId"], services["graph_provider"], org_key,
-            )
+        service_account_binding = await _checked_service_account_binding(
+            body.get("serviceAccountUserId"),
+            services["graph_provider"],
+            org_key,
+            is_service_account=is_service_account,
+        )
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
         else:
@@ -3384,22 +3417,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
 
         if "serviceAccountUserId" in body:
-            # Checked against what the agent will be, not what it is, so the
-            # same request may convert an agent and bind it in one step.
-            if not final_service_account:
-                raise InvalidRequestError(
-                    "Only a service agent searches as a service account. Make this "
-                    "a service agent first, or leave the binding alone."
-                )
-            if body["serviceAccountUserId"] is None:
-                # Clearing is allowed: it returns the agent to searching as its
-                # creator, which is where every unbound agent already is, so it
-                # takes nothing away that binding had not just given.
-                body["serviceAccountUserId"] = None
-            else:
-                body["serviceAccountUserId"] = await _resolve_service_account_binding(
-                    body["serviceAccountUserId"], services["graph_provider"], org_key,
-                )
+            body["serviceAccountUserId"] = await _checked_service_account_binding(
+                body["serviceAccountUserId"],
+                services["graph_provider"],
+                org_key,
+                is_service_account=final_service_account,
+            )
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )

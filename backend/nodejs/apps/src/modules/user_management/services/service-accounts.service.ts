@@ -496,9 +496,22 @@ export class ServiceAccountsService {
     // it would go on reading with the reach of an account an administrator has
     // just switched off. Published on enabling too: a flag written only on the
     // way down would stay set after the account came back.
+    //
+    // Published whenever the request named `isDisabled`, not only when the
+    // stored value moved. If an earlier attempt wrote Mongo and then failed
+    // before publishing — token revocation throws, or the broker is down —
+    // the account is already disabled by the time the retry arrives, so
+    // nothing changed and a check on change alone would publish nothing. The
+    // graph would keep an account that is switched off in Mongo, and a bound
+    // agent would go on searching with it. The event carries the state rather
+    // than a transition, so publishing it twice says the same thing twice.
     const isDisabledNow = account.isDisabled === true;
     const disabledChanged = isDisabledNow !== wasDisabled;
-    if (input.fullName !== undefined || disabledChanged) {
+    if (
+      input.fullName !== undefined ||
+      input.isDisabled !== undefined ||
+      disabledChanged
+    ) {
       const updatedPayload: UserUpdatedEvent = {
         orgId,
         userId: idOf(account),
