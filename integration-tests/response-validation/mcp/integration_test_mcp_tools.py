@@ -26,9 +26,9 @@ import uuid
 from collections.abc import Callable, Iterator
 
 import pytest
+import requests
 from pipeshub_client import PipeshubClient
 
-from helper.clients.kb_client import KBClient
 from helper.indexing_progress import POLL, RECOVERY_TIMEOUT
 from helper.mcp_client import McpToolResult, call_mcp_tool
 from helper.stored_names import stored_name
@@ -341,7 +341,7 @@ class TestChat:
 # pipeshub_indexing_status, pipeshub_connect_source
 # ====================================================================
 @pytest.fixture(scope="module")
-def filled(call: CallTool, kb_client: KBClient, ai_models_configured) -> Iterator[dict]:
+def filled(call: CallTool, mcp_base_url: str, mcp_user_jwt: str, ai_models_configured) -> Iterator[dict]:
     """A collection an agent made and filled through MCP alone, polled until indexed.
 
     The suite's OAuth app holds every scope, so its token carries kb:write and
@@ -375,8 +375,13 @@ def filled(call: CallTool, kb_client: KBClient, ai_models_configured) -> Iterato
             "needle": needle,
         }
     finally:
+        # The test user owns it, and only an owner may delete it: kb_client may act as a service account.
         try:
-            kb_client.delete_kb(created["collectionId"])
+            requests.delete(
+                f"{mcp_base_url.rstrip('/')}/api/v1/knowledgeBase/{created['collectionId']}",
+                headers={"Authorization": f"Bearer {mcp_user_jwt}"},
+                timeout=30,
+            ).raise_for_status()
         except Exception:  # noqa: BLE001 - teardown must not mask test results
             logger.warning("could not delete the collection %s", created["collectionId"])
 
@@ -392,7 +397,7 @@ class TestFillAWorkspace:
     def test_upload_reports_the_stored_record(self, filled: dict) -> None:
         uploaded = filled["uploaded"]
 
-        assert [u["name"] for u in uploaded["uploaded"]] == [filled["name"]], uploaded
+        assert [u["name"] for u in uploaded["uploaded"]] == [stored_name(filled["name"])], uploaded
         assert uploaded["uploaded"][0]["recordId"], uploaded
         assert uploaded["failed"] == [], uploaded
         assert uploaded["summary"] is not None, uploaded
