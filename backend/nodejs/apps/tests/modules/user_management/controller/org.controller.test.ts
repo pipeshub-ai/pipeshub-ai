@@ -785,40 +785,50 @@ describe('OrgController', () => {
 
       await controller.updateOrganizationDetails(req, res, next);
 
-      expect(update.firstCall.args[1]).to.deep.equal({ 'permanentAddress.city': 'Pune' });
+      expect(update.firstCall.args[1]).to.deep.equal({ permanentAddress: { city: 'Pune' } });
       expect(res.status.calledWith(200)).to.be.true;
     });
 
-    it('writes a partial address as dotted paths with no parent permanentAddress key', async () => {
-      req.body = { permanentAddress: { city: 'Pune' } };
-      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+    const run = async (saved: any, body: any) => {
+      req.body = body;
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012', permanentAddress: saved } as any);
       const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
-
       await controller.updateOrganizationDetails(req, res, next);
+      return update.firstCall.args[1] as Record<string, unknown>;
+    };
+    const full = { addressLine1: '1 Main', city: 'Pune', state: 'MH', postCode: '411001', country: 'IN' };
 
-      const doc = update.firstCall.args[1] as Record<string, unknown>;
-      expect(doc).to.deep.equal({ 'permanentAddress.city': 'Pune' });
-      expect(doc).to.not.have.property('permanentAddress');
+    it('merges a partial address with the saved one', async () => {
+      const doc = await run({ ...full }, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { ...full, city: 'Goa' } });
     });
 
-    it('writes a full address as one dotted path per field', async () => {
-      const full = { addressLine1: '1 Main', city: 'Pune', state: 'MH', postCode: '411001', country: 'IN' };
-      req.body = { shortName: 'X', permanentAddress: full };
-      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+    it('uses a toObject() copy of a mongoose document and drops non-address keys', async () => {
+      req.body = { permanentAddress: { city: 'Goa' } };
+      const saved = { ...full, _id: 'x' };
+      sinon.stub(Org, 'findOne').resolves({
+        _id: '507f1f77bcf86cd799439012',
+        toObject: () => ({ permanentAddress: saved }),
+      } as any);
       const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
-
       await controller.updateOrganizationDetails(req, res, next);
+      expect(update.firstCall.args[1]).to.deep.equal({ permanentAddress: { ...full, city: 'Goa' } });
+    });
 
-      const doc = update.firstCall.args[1] as Record<string, unknown>;
-      expect(doc).to.deep.equal({
-        shortName: 'X',
-        'permanentAddress.addressLine1': '1 Main',
-        'permanentAddress.city': 'Pune',
-        'permanentAddress.state': 'MH',
-        'permanentAddress.postCode': '411001',
-        'permanentAddress.country': 'IN',
-      });
-      expect(doc).to.not.have.property('permanentAddress');
+    it('gives just the supplied fields when the saved address is null', async () => {
+      const doc = await run(null, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { city: 'Goa' } });
+    });
+
+    it('gives just the supplied fields when there is no saved address', async () => {
+      const doc = await run(undefined, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { city: 'Goa' } });
+    });
+
+    it('replaces a full address field by field', async () => {
+      const next2 = { addressLine1: '2 Side', city: 'Goa', state: 'GA', postCode: '403001', country: 'IN' };
+      const doc = await run({ ...full }, { shortName: 'X', permanentAddress: next2 });
+      expect(doc).to.deep.equal({ shortName: 'X', permanentAddress: next2 });
     });
 
     it('writes nothing for an empty permanentAddress', async () => {

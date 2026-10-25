@@ -404,6 +404,19 @@ export class OrgController {
     return address;
   }
 
+  private savedAddress(org: unknown): Record<string, string> {
+    const doc = org as { toObject?: () => Record<string, unknown> };
+    const plain = doc.toObject?.() ?? (org as Record<string, unknown>);
+    const stored = plain.permanentAddress;
+    const saved: Record<string, string> = {};
+    if (stored === null || typeof stored !== 'object') return saved;
+    for (const field of ADDRESS_FIELDS) {
+      const part = (stored as Record<string, unknown>)[field];
+      if (typeof part === 'string') saved[field] = part;
+    }
+    return saved;
+  }
+
   async updateOrganizationDetails(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -430,17 +443,17 @@ export class OrgController {
       }
 
       // Update only the fields that are provided in the request body
-      const updateData: Record<string, string> = {};
+      const updateData: Record<string, string | Record<string, string>> = {};
 
       if (email) updateData.contactEmail = email;
       if (regName) updateData.registeredName = regName;
       if (short) updateData.shortName = short;
-      // One dotted path per supplied address field, so a partial address
-      // leaves the saved fields it omits as they are.
-      if (address) {
-        for (const [field, part] of Object.entries(address)) {
-          updateData[`permanentAddress.${field}`] = part;
-        }
+      // Merge the supplied fields into the saved address so a partial address
+      // keeps the fields it omits. A whole-object $set also works when the
+      // stored value is null, where a dotted path would fail.
+      if (address && Object.keys(address).length > 0) {
+        const saved = this.savedAddress(org);
+        updateData.permanentAddress = { ...saved, ...address };
       }
 
       // Perform the update
