@@ -275,6 +275,23 @@ async def test_a_binding_to_a_disabled_account_is_refused_on_every_chat() -> Non
             agent(serviceAccountUserId=off["userId"]), graph, LOG, ORG,
         )
     assert caught.value.status_code == 500
+    # Not "deleted": switching it back on makes this agent work again, which
+    # is a different thing for an administrator to do.
+    assert "switched off" in caught.value.detail
+    assert "deleted" not in caught.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_binding_still_says_deleted() -> None:
+    gone = {**ACCOUNT, "isActive": False}
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={gone["userId"]: gone},
+    )
+    with pytest.raises(HTTPException) as caught:
+        await _enrich_user_info_for_service_account_agent_chat(
+            agent(serviceAccountUserId=gone["userId"]), graph, LOG, ORG,
+        )
+    assert "deleted" in caught.value.detail
 
 
 @pytest.mark.asyncio

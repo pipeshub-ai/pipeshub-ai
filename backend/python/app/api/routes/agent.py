@@ -657,22 +657,30 @@ async def _enrich_user_info_for_service_account_agent_chat(
                 "account. An administrator needs to point it at one again."
             ),
         )
-    # Checked on every run, not only when the binding was set: soft-delete
-    # leaves the node and only clears `isActive`, so without this an agent
-    # would go on searching with the reach of an account an administrator has
-    # removed. Falling back to the creator would be worse for the same reason
-    # as above — it widens the agent's reach at the moment the narrower
-    # identity stopped being allowed.
+    # Checked on every run, not only when the binding was set: an account can
+    # be removed or switched off long after an administrator bound it, and
+    # neither reaches here any other way. Falling back to the creator would be
+    # worse for the same reason as above — it widens the agent's reach at the
+    # moment the narrower identity stopped being allowed.
     if bound and not _is_live_identity(identity_doc):
+        switched_off = identity_doc.get("isDisabled") is True
         logger.error(
-            "Agent %s is bound to %s, which has been deleted",
+            "Agent %s is bound to %s, which has been %s",
             agent.get("_key"),
             identity_key,
+            "switched off" if switched_off else "deleted",
         )
         raise HTTPException(
             status_code=500,
             detail=(
+                # Said separately, because what an administrator should do
+                # differs: a switched-off account can be switched back on and
+                # this agent works again, a deleted one cannot.
                 "This agent is bound to a service account that has been "
+                "switched off. Switch it back on, or point the agent at "
+                "another one."
+                if switched_off
+                else "This agent is bound to a service account that has been "
                 "deleted. An administrator needs to point it at another one."
             ),
         )
