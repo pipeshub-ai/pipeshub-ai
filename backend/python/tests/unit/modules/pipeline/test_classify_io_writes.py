@@ -65,6 +65,7 @@ def _sink() -> MagicMock:
     sink = MagicMock()
     sink.prepare_enrichment = AsyncMock()
     sink.write_enrichment = AsyncMock()
+    sink.write_summary_point = AsyncMock()
     sink.persist_named_entities = AsyncMock(return_value="written")
     sink.entity_resolution_mode = MagicMock(return_value="apply")
     return sink
@@ -126,6 +127,31 @@ async def test_a_kept_classification_is_restored_only_while_its_state_is_unchang
     assert blob.saves == 0
     await io.restore_stored_metadata(_job(), SemanticMetadata(summary="old"), still_current=unchanged)
     assert blob.saves == 1
+
+
+@pytest.mark.asyncio
+async def test_a_restored_classification_puts_its_summary_point_back() -> None:
+    """A re-index of unchanged content deletes the record's vectors and rewrites the stored record
+    without its classification. Restoring the kept classification must also restore the summary
+    point, or the record silently drops out of summary-level search."""
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    sink = _sink()
+    io = _classify_io(blob, sink=sink)
+
+    async def superseded() -> bool:
+        return False
+
+    with pytest.raises(RevisionSuperseded):
+        await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"), still_current=superseded)
+    sink.write_summary_point.assert_not_awaited()
+
+    await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+
+    [call] = sink.write_summary_point.await_args_list
+    ctx: TransformContext = call.args[0]
+    assert ctx.record.id == "rec-1" and ctx.record.virtual_record_id == "vr-1"
+    assert ctx.record.semantic_metadata.summary == "kept"
+    sink.write_enrichment.assert_not_awaited()  # the taxonomy survives a re-index
 
 
 @pytest.mark.asyncio

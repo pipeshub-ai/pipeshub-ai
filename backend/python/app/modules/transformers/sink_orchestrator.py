@@ -685,6 +685,21 @@ class SinkOrchestrator(Transformer):
         for name in unknown:
             setattr(metadata, name, None)
 
+    async def write_summary_point(self, ctx: TransformContext) -> None:
+        """The summary point of ``ctx.record``'s classification; nothing when it has no summary."""
+        record = ctx.record
+        metadata = record.semantic_metadata
+        if metadata is None or not (metadata.summary or "").strip():
+            return
+        # Not wrapped in a stage: it times its own steps.
+        await self.vector_store.index_record_summary(
+            record.id,
+            record.virtual_record_id,
+            record.org_id,
+            metadata,
+            record,
+        )
+
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
         """The summary point, graph taxonomy and the entity points it touches, of a
         prepared classification (``prepare_enrichment``), for ``ctx.record``.
@@ -698,15 +713,8 @@ class SinkOrchestrator(Transformer):
         metadata = record.semantic_metadata
         if metadata is None:
             return
-        if index_summary and (metadata.summary or "").strip():
-            # Not wrapped in a stage: it times its own steps.
-            await self.vector_store.index_record_summary(
-                record.id,
-                record.virtual_record_id,
-                record.org_id,
-                metadata,
-                record,
-            )
+        if index_summary:
+            await self.write_summary_point(ctx)
         with stage("graph.enrich"):
             touched_entities = await self.graphdb.write_taxonomy(
                 record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
