@@ -13402,6 +13402,7 @@ components:
         - clickup
         - confluence
         - confluencedatacenter
+        - docs
         - drive
         - github
         - gmail
@@ -13414,6 +13415,7 @@ components:
         - redshift
         - salesforce
         - sharepoint
+        - sheets
         - slack
         - teams
         - zoom
