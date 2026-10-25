@@ -26,7 +26,7 @@ dependencies = [
   # Same pins as backend/python/pyproject.toml.
   "pysmb==1.2.15",
   "smbprotocol==1.17.0",
-  "Brotli==1.2.0",
+  "Brotli==1.2.1",
   "CairoSVG==2.9.1",
   "celery==5.4.0",
   "confluent-kafka==2.8.0",
@@ -36,7 +36,7 @@ dependencies = [
   "curl-cffi==0.15.0",
   "dependency-injector==4.44.0",
   "discord.py==2.6.3",
-  "docling==2.133.0",
+  "docling==2.142.1",
   "dropbox==12.0.2",
   "docx2python==3.5.0",
   "etcd3==0.12.0",
@@ -45,7 +45,7 @@ dependencies = [
   # Starlette comes in through FastAPI, whose range admits releases with known advisories.
   "starlette==1.7.0",
   "fastmcp==3.4.10",
-  "fastembed==0.8.0",
+  "fastembed==0.9.1",
   "feedparser>=6.0.0",
   "trafilatura>=2.0.0",
   "html-to-markdown==2.3.0",
@@ -93,7 +93,7 @@ dependencies = [
   "pagerduty>=5.0.0",
   "pandas==2.2.3",
   "pdfplumber==0.11.9",
-  "Pillow>=12.3.0,<13",
+  "Pillow>=13.0.0,<14",
   "pillow-avif-plugin==1.5.5",
   "prometheus-client==0.21.1",
   "protobuf>=4.25.0,<6",
@@ -133,7 +133,7 @@ include = ["helper", "connectors", "connectors.*", "messaging*", "response-valid
 validation = ["schemas/*.yaml", "schemas/edges/*.yaml"]
 
 [build-system]
-requires = ["setuptools>=83.0.0"]
+requires = ["setuptools>=84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
