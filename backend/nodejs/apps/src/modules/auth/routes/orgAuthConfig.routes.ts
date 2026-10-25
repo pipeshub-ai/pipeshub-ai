@@ -16,7 +16,7 @@ import {
 } from '../../../edition';
 import { findSignInRemovalNotice } from '../services/signInRemoval.service';
 const authMethodSchema = z.object({
-  type: z.nativeEnum(AuthMethodType),
+  type: z.enum(AuthMethodType),
 });
 const authStepSchema = z.object({
   order: z.number(),

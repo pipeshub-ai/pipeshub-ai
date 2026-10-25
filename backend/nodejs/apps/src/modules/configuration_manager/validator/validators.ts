@@ -10,6 +10,12 @@ import {
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
 import { canSearch } from '../types/web-search.types';
+import { messageWhenMissing } from '../../../libs/utils/validation.utils';
+import {
+  guidCheck,
+  integerCheck,
+  urlCheck,
+} from '../../../libs/utils/zod-formats';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -48,7 +54,7 @@ const refineS3CredentialPair = (
   });
   if (resolved.kind !== 'partial') return;
   ctx.addIssue({
-    code: z.ZodIssueCode.custom,
+    code: 'custom',
     message: S3_PARTIAL_CREDENTIALS_MESSAGE,
     path: [
       resolved.missingField === 'accessKeyId'
@@ -112,7 +118,7 @@ export const localConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.LOCAL),
   // You can add local storage specific fields here if needed
   mountName: z.string().optional(),
-  baseUrl: z.string().url().optional(),
+  baseUrl: z.string().check(urlCheck()).optional(),
 });
 
 export const storageValidationSchema = z.object({
@@ -169,13 +175,13 @@ export const microsoftConfigSchema = z.object({
 
 export const mongoDBConfigSchema = z.object({
   body: z.object({
-    uri: z.string().url(),
+    uri: z.string().check(urlCheck()),
   }),
 });
 
 export const arangoDBConfigSchema = z.object({
   body: z.object({
-    url: z.string().url(),
+    url: z.string().check(urlCheck()),
     username: z.string().optional(),
     password: z.string().optional(),
   }),
@@ -229,12 +235,12 @@ export const platformSettingsSchema = z.object({
   body: z.object({
     fileUploadMaxSizeBytes: z
       .number()
-      .int()
+      .check(integerCheck())
       .positive()
       .max(1024 * 1024 * 1024, { message: 'Max 1GB per file' }) // safety upper bound
       .describe('Max per-file upload size in bytes'),
     featureFlags: z
-      .record(z.boolean())
+      .record(z.string(), z.boolean())
       .default({})
       .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
   }),
@@ -261,7 +267,7 @@ export const deleteSlackBotConfigSchema = z.object({
 
 export const kafkaConfigSchema = z.object({
   body: z.object({
-    brokers: z.array(z.string().url()), // Ensures an array of valid URLs
+    brokers: z.array(z.string().check(urlCheck())), // Ensures an array of valid URLs
     sasl: z
       .object({
         mechanism: z.string(),
@@ -354,12 +360,18 @@ export const atlassianCredentialsSchema = z.object({
   }),
 });
 
+// zod 3 worded a missing value this way; any other wrong value keeps the stock text.
+const adminConsentSchema = z.literal(
+  true,
+  messageWhenMissing('Has Admin Consent must be true'),
+);
+
 export const microsoftConnectorCredentialsSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Client ID is required' }),
     clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
     tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
+    hasAdminConsent: adminConsentSchema,
   }),
 });
 
@@ -370,7 +382,7 @@ export const sharepointCredentialsSchema = z.object({
       clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
       tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
       sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
-      hasAdminConsent: z.literal(true, { message: 'Has Admin Consent must be true' }),
+      hasAdminConsent: adminConsentSchema,
     }),
 });
 
@@ -407,14 +419,14 @@ export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
 
 export const urlSchema = z.object({
   body: z.object({
-    url: z.string().url(),
+    url: z.string().check(urlCheck()),
   }),
 });
 
 export const publicUrlSchema = z.object({
   body: z.object({
-    frontendUrl: z.string().url().optional(),
-    connectorUrl: z.string().url().optional(),
+    frontendUrl: z.string().check(urlCheck()).optional(),
+    connectorUrl: z.string().check(urlCheck()).optional(),
   }),
 });
 
@@ -444,7 +456,7 @@ export const metricsCollectionPushIntervalSchema = z.object({
 
 export const metricsCollectionRemoteServerSchema = z.object({
   body: z.object({
-    serverUrl: z.string().url(),
+    serverUrl: z.string().check(urlCheck()),
   }),
 });
 
@@ -466,13 +478,11 @@ export const providerType = z.string().min(1, 'Provider is required');
 // `location`, `serviceAccountJson`; future Bedrock / Anthropic / etc. keys) are
 // declared in the Python registry (`backend/python/app/config/ai_models/providers`),
 // which is the source of truth — mirroring the `providerType` comment above.
-// We therefore `.passthrough()` so any unknown keys survive validation and reach
+// We therefore `.loose()` so any unknown keys survive validation and reach
 // the Python backend; stripping them silently would otherwise produce confusing
 // downstream errors like "Vertex AI requires a service account JSON" even when
 // the user uploaded one.
 //
-// `.passthrough()` must precede `.refine(...)`, because `refine` returns a
-// `ZodEffects` that does not expose `.passthrough()`.
 export const configurationSchema = z.object({
   model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-5.6-luna, gpt-5.6-terra')"),
   modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
@@ -484,8 +494,8 @@ export const configurationSchema = z.object({
   awsAccessKeyId: z.string().optional().describe("AWS access key ID"),
   awsAccessSecretKey: z.string().optional().describe("AWS secret access key"),
   region: z.string().optional().describe("AWS region"),
-  model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
-  encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
+  model_kwargs: z.record(z.string(), z.any()).optional().describe("Additional model kwargs"),
+  encode_kwargs: z.record(z.string(), z.any()).optional().describe("Additional encoding kwargs"),
   cache_folder: z.string().optional().describe("Cache folder for models"),
   // Python's LLM factory treats a blank value as "no default", same as absent.
   defaultReasoningEffort: z
@@ -503,7 +513,7 @@ export const configurationSchema = z.object({
       },
     )
     .describe('Reasoning effort used when a request does not choose one'),
-}).passthrough().refine(
+}).loose().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)
     if (data.modelFriendlyName && data.modelFriendlyName.trim() !== '') {
@@ -548,7 +558,7 @@ export const discoverModelsRequestSchema = z.object({
   body: z.object({
     provider: providerType,
     capability: z.string().optional(),
-    configuration: configurationSchema.default({}),
+    configuration: configurationSchema.prefault({}),
     modelType: modelType.optional(),
     modelKey: z.string().optional(),
     query: z.string().optional(),
@@ -579,13 +589,13 @@ export const batchAddModelsRequestSchema = z.object({
     configuration: batchSharedConfigurationSchema,
     models: z.array(batchModelSchema).min(1).max(25),
     defaultModel: z.string().optional(),
-    connectionId: z.string().uuid().optional(),
+    connectionId: z.string().check(guidCheck()).optional(),
   }).superRefine((body, ctx) => {
     const seen = new Set<string>();
     for (const model of body.models) {
       if (seen.has(model.model)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           message: `Duplicate model id ${model.model}`,
           path: ['models'],
         });
@@ -624,21 +634,29 @@ export const addProviderRequestSchema = z.object({
 // Updated AI Models Config schema with proper typing
 export const aiModelsConfigSchema = z.object({
   body: z
-    .object({
-      ocr: z.array(modelConfigurationSchema).optional(),
-      embedding: z.array(modelConfigurationSchema).optional(),
-      slm: z.array(modelConfigurationSchema).optional(),
-      llm: z.array(modelConfigurationSchema).optional(),
-      reasoning: z.array(modelConfigurationSchema).optional(),
-      multiModal: z.array(modelConfigurationSchema).optional(),
-      imageGeneration: z.array(modelConfigurationSchema).optional(),
-      tts: z.array(modelConfigurationSchema).optional(),
-      stt: z.array(modelConfigurationSchema).optional(),
-      decision: z.array(modelConfigurationSchema).optional(),
-    })
-    .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
-    })
+    .object(
+      {
+        ocr: z.array(modelConfigurationSchema).optional(),
+        embedding: z.array(modelConfigurationSchema).optional(),
+        slm: z.array(modelConfigurationSchema).optional(),
+        llm: z.array(modelConfigurationSchema).optional(),
+        reasoning: z.array(modelConfigurationSchema).optional(),
+        multiModal: z.array(modelConfigurationSchema).optional(),
+        imageGeneration: z.array(modelConfigurationSchema).optional(),
+        tts: z.array(modelConfigurationSchema).optional(),
+        stt: z.array(modelConfigurationSchema).optional(),
+        decision: z.array(modelConfigurationSchema).optional(),
+      },
+      {
+        // Only the unknown-key issue carries this wording; every other issue
+        // keeps zod's own message (as `.strict({ message })` did in zod 3).
+        error: (issue) =>
+          issue.code === 'unrecognized_keys'
+            ? 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision'
+            : undefined,
+      },
+    )
+    .strict()
     .refine(
       (data) => {
         // Ensure at least one field is present and non-empty
@@ -713,7 +731,7 @@ const isServerAddress = (value: unknown): boolean => {
 };
 
 export const webSearchConfigurationSchema = z
-  .record(z.any())
+  .record(z.string(), z.any())
   .refine(
     (configuration) =>
       configuration.baseUrl === undefined ||
@@ -781,12 +799,12 @@ export const updateDefaultWebSearchProviderSchema = z.object({
 export const webSearchSettingsSchema = z
   .object({
     includeImages: z.boolean(),
-    maxImages: z.number().int().min(1).max(500).optional(),
+    maxImages: z.number().check(integerCheck()).min(1).max(500).optional(),
   })
   .superRefine((settings, ctx) => {
     if (settings.includeImages && settings.maxImages === undefined) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: ['maxImages'],
         message: 'maxImages is required when includeImages is true',
       });
@@ -817,10 +835,15 @@ export const identityPolicyBodySchema = z
           .array(z.string().trim().min(1).max(256))
           .max(500)
           .default([]),
-        maxForwarded: z.number().int().min(1).max(500).default(50),
+        maxForwarded: z
+          .number()
+          .check(integerCheck())
+          .min(1)
+          .max(500)
+          .default(50),
       })
       .strict()
-      .default({}),
+      .prefault({}),
     pseudonymize: z.boolean().default(false),
     onMissingIdentity: z.enum(['service', 'block']).default('service'),
     queryEmbeddingIdentity: z.enum(['user', 'service']).default('user'),
@@ -872,7 +895,7 @@ export const identityPreviewSchema = z.object({
     .object({
       userId: z.string().min(1).optional(),
       workload: z.string().min(1).max(64).default('chat'),
-      configuration: z.record(z.any()).default({}),
+      configuration: z.record(z.string(), z.any()).default({}),
       connectionId: z.string().min(1).optional(),
     })
     .strict(),

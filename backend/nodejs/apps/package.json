@@ -105,7 +105,7 @@
     "winston": "^3.19.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "xss": "^1.0.15",
-    "zod": "^3.24.1"
+    "zod": "^4.6.6"
   },
   "overrides": {
     "bn.js": "4.12.3",
