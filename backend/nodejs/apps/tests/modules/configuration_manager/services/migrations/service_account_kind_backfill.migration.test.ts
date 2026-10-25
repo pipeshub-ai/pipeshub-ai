@@ -186,13 +186,27 @@ describe('ServiceAccountKindBackfillMigration', () => {
     expect(kvStore.set.calledOnce).to.equal(true);
   });
 
-  it('writes nothing when there are no service accounts', async () => {
+  it('stages an explicit empty list when there are no service accounts', async () => {
+    // Otherwise the connector service cannot tell "none to mark" from "not
+    // written yet", and waits for a list that is never coming.
     stubCursor([]);
     const kvStore = makeKvStore();
 
     const result = await run(kvStore);
 
     expect(result.accountsFound).to.equal(0);
+    expect(kvStore.set.calledOnce).to.equal(true);
+    expect(unseal(kvStore.set.firstCall.args[1]).userIds).to.deep.equal([]);
+  });
+
+  it('does not restage an empty list it has already written', async () => {
+    stubCursor([]);
+    const kvStore = makeKvStore(
+      seal({ version: SERVICE_ACCOUNT_KIND_STATE_VERSION, userIds: [] }),
+    );
+
+    const result = await run(kvStore);
+
     expect(result.skipped).to.equal(true);
     expect(kvStore.set.called).to.equal(false);
   });

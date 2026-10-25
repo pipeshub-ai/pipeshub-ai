@@ -114,10 +114,11 @@ export class ServiceAccountKindBackfillMigration {
       }
     }
 
-    if (userIds.length === 0) {
-      return { accountsFound: 0, accountsStaged: 0, skipped: true };
-    }
-
+    // An empty list is staged too, rather than nothing. The connector service
+    // cannot otherwise tell "this deployment has no service accounts" from
+    // "the list has not been written yet", and would wait for a list that is
+    // never coming.
+    //
     // Staging the same list again would only churn the key and its cache
     // invalidation; the connector service has not answered either way yet.
     if (this.sameList(state?.userIds, userIds)) {

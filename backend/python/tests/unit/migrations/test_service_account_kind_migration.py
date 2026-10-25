@@ -16,6 +16,7 @@ def _service(provider, state=None) -> tuple[ServiceAccountKindMigrationService, 
     config = MagicMock()
     config.get_config = AsyncMock(return_value=state)
     config.set_config = AsyncMock()
+    # The migration re-reads before recording done; keep answering the same.
     return ServiceAccountKindMigrationService(provider, config, MagicMock()), config
 
 
@@ -24,9 +25,25 @@ def _staged(*user_ids) -> dict:
 
 
 def _provider(keys: dict) -> MagicMock:
-    """A graph that resolves the staged userIds to node keys."""
+    """A graph holding exactly `keys`, answering like the real providers.
+
+    The batched lookup raises for a chunk holding an id it cannot resolve and
+    returns nothing for that chunk, so the migration falls back to one lookup
+    per id there. Both behaviours are reproduced here.
+    """
     provider = MagicMock()
-    provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(return_value=keys)
+
+    async def batched(user_ids, *, chunk_size, org_id=None) -> dict[str, str]:
+        missing = [u for u in user_ids if u not in keys]
+        if missing:
+            raise ValueError(f"Users not found in graph: {missing}")
+        return {u: keys[u] for u in user_ids}
+
+    async def one(user_id, *, raise_on_error=False) -> dict | None:
+        return {"id": keys[user_id]} if user_id in keys else None
+
+    provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(side_effect=batched)
+    provider.get_user_by_user_id = AsyncMock(side_effect=one)
     provider.batch_upsert_nodes = AsyncMock(return_value=True)
     return provider
 
@@ -71,22 +88,87 @@ async def test_the_nodes_are_resolved_in_one_batched_lookup() -> None:
     service, _ = _service(provider, _staged(*keys))
 
     assert (await service.migrate())["stamped"] == 250
-    assert provider.get_graph_user_keys_by_mongo_user_ids.await_count == 1
+    # Three chunks, not two hundred and fifty lookups.
+    assert provider.get_graph_user_keys_by_mongo_user_ids.await_count == 3
+    assert provider.get_user_by_user_id.await_count == 0
     assert provider.batch_upsert_nodes.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_a_staged_id_with_no_node_is_retried_not_recorded_done() -> None:
     """An unresolved id usually means that account's own userAdded is still in
-    flight. The lookup raises for it, and the flag stays unset."""
+    flight, so the flag stays unset and a later startup finishes the job."""
     provider = _provider({})
-    provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
-        side_effect=ValueError("Users not found in graph: ['gone']")
-    )
     service, config = _service(provider, _staged("gone"))
 
-    assert (await service.migrate())["success"] is False
+    result = await service.migrate()
+
+    assert (result["success"], result["stamped"], result["missing"]) == (True, 0, 1)
     provider.batch_upsert_nodes.assert_not_called()
+    config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_one_straggler_does_not_cost_the_accounts_that_do_have_nodes() -> None:
+    """The batched lookup raises for the whole chunk and hands back nothing, so
+    without the per-id fallback a single missing id would leave every other
+    account unmarked on every boot."""
+    provider = _provider({"u1": "node-1"})
+    service, config = _service(provider, _staged("u1", "u-not-yet"))
+
+    result = await service.migrate()
+
+    assert (result["success"], result["stamped"], result["missing"]) == (True, 1, 1)
+    assert provider.batch_upsert_nodes.await_args.args[0] == [
+        {
+            "id": "node-1",
+            "kind": "service",
+            "updatedAtTimestamp": provider.batch_upsert_nodes.await_args.args[0][0][
+                "updatedAtTimestamp"
+            ],
+        }
+    ]
+    config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_staged_list_finishes_the_backfill() -> None:
+    """Staged explicitly as empty means this deployment has no service
+    accounts — nothing to mark, and nothing to wait for."""
+    provider = _provider({})
+    service, config = _service(provider, {"version": 1, "userIds": []})
+
+    assert (await service.migrate())["success"] is True
+    assert config.set_config.await_args.args[1]["done"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_cannot_be_read_is_not_an_empty_key() -> None:
+    """Reading that as "nothing staged" makes the boot look idle while the
+    backfill silently waits for another restart."""
+    provider = _provider({})
+    config = MagicMock()
+    config.get_config = AsyncMock(side_effect=ConnectionError("etcd down"))
+    config.set_config = AsyncMock()
+    service = ServiceAccountKindMigrationService(provider, config, MagicMock())
+
+    assert (await service.migrate())["success"] is False
+    config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_list_that_changed_while_we_worked_is_not_recorded_done() -> None:
+    """The store has no compare-and-set. If user management staged another
+    account meanwhile, writing done over it would strand that one."""
+    provider = _provider({"u1": "node-1"})
+    config = MagicMock()
+    config.get_config = AsyncMock(
+        side_effect=[_staged("u1"), _staged("u1", "u2")]
+    )
+    config.set_config = AsyncMock()
+    service = ServiceAccountKindMigrationService(provider, config, MagicMock())
+
+    assert (await service.migrate())["stamped"] == 1
     config.set_config.assert_not_called()
 
 
@@ -97,6 +179,7 @@ async def test_a_failed_lookup_is_not_read_as_a_missing_node() -> None:
         side_effect=ConnectionError("graph down")
     )
     service, config = _service(provider, _staged("u1"))
+    # Not a ValueError, so it is a failure rather than "this id has no node".
 
     assert (await service.migrate())["success"] is False
     config.set_config.assert_not_called()
@@ -135,10 +218,6 @@ async def test_nothing_staged_yet_is_not_done() -> None:
     provider = _provider({})
     service, config = _service(provider, None)
 
-    assert (await service.migrate())["skipped"] is True
-    config.set_config.assert_not_called()
-
-    service, config = _service(provider, {"version": 1, "userIds": []})
     assert (await service.migrate())["skipped"] is True
     config.set_config.assert_not_called()
 

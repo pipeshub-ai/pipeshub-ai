@@ -33,9 +33,9 @@ class ServiceAccountKindMigrationService:
     deleted after it was staged stays deleted.
 
     Idempotent, and retried on the next startup when it fails. A staged id with
-    no node yet is a failure rather than a skip: it usually means that
-    account's own ``userAdded`` has not been consumed, and recording the
-    backfill finished would leave it unmarked for good.
+    no node yet usually means that account's own ``userAdded`` has not been
+    consumed: the accounts that do have nodes are still stamped, and only
+    ``done`` is withheld, so the next startup stamps the straggler and finishes.
     """
 
     MIGRATION_FLAG_KEY = "/migrations/service_account_kind_v1"
@@ -47,15 +47,94 @@ class ServiceAccountKindMigrationService:
         self.logger = logger
 
     async def _read_state(self) -> dict | None:
+        """The staged document, or None when nothing has been staged yet.
+
+        raise_on_error, so a store that cannot be read is not mistaken for a
+        key that was never written — that reads as "nothing to do" and the
+        boot looks idle while the backfill silently waits for another restart.
+        """
+        state = await self.config_service.get_config(
+            self.MIGRATION_FLAG_KEY, raise_on_error=True
+        )
+        return state if isinstance(state, dict) else None
+
+    async def _resolve_nodes(self, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
+        """Map each staged `userId` to its node key, and name the ones with no node."""
+        found: dict[str, str] = {}
+        missing: list[str] = []
+
+        for start in range(0, len(wanted), _BATCH):
+            chunk = wanted[start : start + _BATCH]
+            try:
+                found.update(
+                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                        chunk, chunk_size=_BATCH
+                    )
+                )
+            except ValueError:
+                # That call raises for the whole chunk when any one id has no
+                # node, and does not hand back the ones it did find. So only
+                # the chunk holding a straggler pays a lookup per id, and only
+                # while that id is missing. A store failure is not a ValueError
+                # and still surfaces.
+                for user_id in chunk:
+                    node = await self.graph_provider.get_user_by_user_id(
+                        user_id, raise_on_error=True
+                    )
+                    key = (node or {}).get("id") or (node or {}).get("_key")
+                    if key:
+                        found[user_id] = str(key)
+                    else:
+                        missing.append(user_id)
+
+        return found, missing
+
+    async def _record_done(self, processed: list[str], stamped: int) -> None:
+        """Write `done`, unless the staged list moved while we were working.
+
+        The store has no compare-and-set, so this re-reads instead. A list that
+        has changed means the user management service staged an account after
+        we read: writing `done` over it would leave that one unmarked for good,
+        and leaving the key alone costs one more pass on the next startup.
+        """
         try:
-            state = await self.config_service.get_config(self.MIGRATION_FLAG_KEY)
-            return state if isinstance(state, dict) else None
+            current = await self._read_state()
         except Exception as e:
-            self.logger.debug(f"Unable to read the service-account kind state: {e}")
-            return None
+            self.logger.warning(
+                f"⚠️ Could not re-read the service-account kind state ({e}); "
+                "leaving it unset, which repeats harmlessly next startup"
+            )
+            return
+
+        if current is None or list(current.get("userIds") or []) != processed:
+            self.logger.info(
+                "ℹ️ The staged service-account list changed while it was being "
+                "applied; finishing on the next startup"
+            )
+            return
+
+        try:
+            await self.config_service.set_config(
+                self.MIGRATION_FLAG_KEY,
+                {
+                    "version": self.STATE_VERSION,
+                    "done": True,
+                    "stamped": stamped,
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
+            )
 
     async def migrate(self) -> dict[str, Any]:
-        state = await self._read_state()
+        try:
+            state = await self._read_state()
+        except Exception as e:
+            self.logger.error(f"❌ Could not read the service-account kind state: {e}")
+            return {"success": False, "stamped": 0, "error": str(e)}
+
         if state is None:
             # Nothing staged yet. The user management service stages on every
             # boot until we answer, so this is not a failure and must not be
@@ -64,22 +143,18 @@ class ServiceAccountKindMigrationService:
         if state.get("done") is True:
             return {"success": True, "stamped": 0, "skipped": True}
 
-        user_ids = state.get("userIds") or []
-        if not user_ids:
+        processed = [str(user_id) for user_id in (state.get("userIds") or [])]
+        if not processed:
+            # Staged explicitly as empty: this deployment has no service
+            # accounts, so there is nothing to mark and the backfill is done.
+            await self._record_done(processed, 0)
             return {"success": True, "stamped": 0, "skipped": True}
 
-        wanted = [str(user_id) for user_id in user_ids]
         stamped = 0
-
         try:
-            # One query per batch rather than one per account, and it raises
-            # for an id it cannot resolve, so an account whose own userAdded is
-            # still in flight is retried instead of being recorded as done.
-            keys = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
-                wanted, chunk_size=_BATCH
-            )
+            found, missing = await self._resolve_nodes(processed)
 
-            node_keys = [keys[user_id] for user_id in wanted if user_id in keys]
+            node_keys = [found[user_id] for user_id in processed if user_id in found]
             for start in range(0, len(node_keys), _BATCH):
                 batch = [
                     {
@@ -102,21 +177,18 @@ class ServiceAccountKindMigrationService:
             self.logger.error(f"❌ Service-account kind migration failed: {e}", exc_info=True)
             return {"success": False, "stamped": stamped, "error": str(e)}
 
-        try:
-            await self.config_service.set_config(
-                self.MIGRATION_FLAG_KEY,
-                {
-                    "version": self.STATE_VERSION,
-                    "done": True,
-                    "stamped": stamped,
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-        except Exception as e:
+        if missing:
+            # Marked what we could. `done` is withheld so the next startup
+            # stamps these once their own userAdded has been applied; the
+            # accounts already marked are skipped by the upsert being a no-op.
             self.logger.warning(
-                f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
+                f"⚠️ {len(missing)} staged service account(s) have no user node yet; "
+                "marked the rest and will finish on a later startup"
             )
-        return {"success": True, "stamped": stamped}
+            return {"success": True, "stamped": stamped, "missing": len(missing)}
+
+        await self._record_done(processed, stamped)
+        return {"success": True, "stamped": stamped, "missing": 0}
 
 
 async def run_service_account_kind_migration(
