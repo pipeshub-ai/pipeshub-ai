@@ -10,13 +10,15 @@ Value encoding, as stored in ``properties.json``:
   ``validate_values`` also takes an ISO-8601 string with an explicit offset
   (``2026-01-02T03:04:05Z``) and converts it; one without an offset is refused,
   since its instant is unknown.
-- ``FLOAT``: an int is widened to a float; NaN and infinities are refused (JSON
-  cannot carry them).
+- ``FLOAT``: an int is widened to a float; NaN, infinities and ints past the
+  float range are refused (JSON cannot carry them as floats).
 - ``STRING``, every ``STRING_LIST`` item and every enum value: at most
-  ``MAX_STRING_BYTES`` bytes of UTF-8. A list holds at most ``MAX_LIST_ITEMS``.
+  ``MAX_STRING_BYTES`` bytes of UTF-8 (text with a lone surrogate is refused).
+  A list holds at most ``MAX_LIST_ITEMS``.
 """
 
 import math
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Literal
@@ -24,6 +26,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.vector_db.const import const as vector_payload
+from app.services.vector_db.models import VectorChunkMetadata, VectorChunkPayload
 
 MAX_STRING_BYTES = 1024
 MAX_LIST_ITEMS = 64
@@ -44,15 +47,17 @@ PIPELINE_FIELD_NAMES = frozenset({
 
 
 def _vector_payload_keys() -> frozenset[str]:
-    # Every payload field the vector store indexes, from its own constants, so a
-    # field added there is reserved here without a second list to keep in step.
-    fields = {
+    # Every payload field the vector store indexes or writes on a point, from its
+    # own constants and models, so a field added there is reserved here without a
+    # second list to keep in step.
+    keys = {
         value for name, value in vars(vector_payload).items()
         if name.endswith("_FIELD") and isinstance(value, str)
     }
-    fields.update(field for field, _ in vector_payload.PAYLOAD_KEYWORD_INDEXES)
+    keys.update(key for key, _ in vector_payload.PAYLOAD_KEYWORD_INDEXES)
+    keys.update(f.name for model in (VectorChunkMetadata, VectorChunkPayload) for f in fields(model))
     # "metadata.orgId" is stored as "orgId" inside the point's metadata.
-    return frozenset(field.rsplit(".", 1)[-1] for field in fields)
+    return frozenset(key.rsplit(".", 1)[-1] for key in keys)
 
 
 RESERVED_PROPERTY_NAMES: frozenset[str] = PIPELINE_FIELD_NAMES | _vector_payload_keys()
@@ -73,8 +78,21 @@ _SEARCHABLE_TYPES = frozenset({PropertyType.STRING, PropertyType.STRING_LIST})
 SemanticLabel = Literal["title", "author", "created_at", "modified_at", "url", "status", "owner"]
 
 
-def _utf8_len(text: str) -> int:
-    return len(text.encode("utf-8", errors="surrogatepass"))
+def _utf8_len(text: str) -> int | None:
+    """Bytes of ``text`` as UTF-8; None when it holds a lone surrogate, which
+    UTF-8 cannot carry and a stored ``properties.json`` could not read back."""
+    try:
+        return len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+
+
+def string_fits(value: object) -> bool:
+    """Whether ``value`` is a string a STRING property (or list item) stores."""
+    if not isinstance(value, str):
+        return False
+    size = _utf8_len(value)
+    return size is not None and size <= MAX_STRING_BYTES
 
 
 class PropertyDefinition(BaseModel, frozen=True):
@@ -115,8 +133,8 @@ class PropertyDefinition(BaseModel, frozen=True):
                 raise ValueError(f"property {self.name!r}: an enum needs enum_values")
             if len(set(self.enum_values)) != len(self.enum_values):
                 raise ValueError(f"property {self.name!r}: enum_values repeat")
-            if any(not v or _utf8_len(v) > MAX_STRING_BYTES for v in self.enum_values):
-                raise ValueError(f"property {self.name!r}: an enum value is empty or too long")
+            if any(not v or not string_fits(v) for v in self.enum_values):
+                raise ValueError(f"property {self.name!r}: an enum value is empty or too long, or not UTF-8")
         elif self.enum_values:
             raise ValueError(f"property {self.name!r}: enum_values are for enum properties only")
         return self
@@ -208,7 +226,10 @@ class MetadataValidationError(ValueError):
 def _string(name: str, value: object) -> str:
     if not isinstance(value, str):
         raise MetadataValidationError(name, "expected a string")
-    if _utf8_len(value) > MAX_STRING_BYTES:
+    size = _utf8_len(value)
+    if size is None:
+        raise MetadataValidationError(name, "not valid UTF-8 text (a lone surrogate)")
+    if size > MAX_STRING_BYTES:
         raise MetadataValidationError(name, f"longer than {MAX_STRING_BYTES} bytes")
     return value
 

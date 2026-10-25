@@ -22,8 +22,11 @@ from app.modules.record_metadata.builtin import (
     ticket_metadata,
 )
 from app.modules.record_metadata.schemas import (
+    MAX_SCHEMA_VERSIONS,
     MetadataSchemaError,
     MetadataSchemaRegistry,
+    hash_key,
+    latest_key,
     schema_key,
 )
 
@@ -31,13 +34,17 @@ ORG, CONNECTOR = "org-1", "conn-1"
 
 
 class _Config:
-    """``ConfigurationService``'s get and create-if-absent over a dict, as mocks."""
+    """``ConfigurationService``'s get, set and create-if-absent over a dict, as mocks."""
 
     def __init__(self) -> None:
         self.values: dict[str, Any] = {}
         self.get_config = AsyncMock(side_effect=self._get)
         self.create_config_if_absent = AsyncMock(side_effect=self._create)
-        self.set_config = AsyncMock()
+        self.set_config = AsyncMock(side_effect=self._set)
+
+    async def _set(self, key: str, value: Any) -> bool:  # noqa: ANN401
+        self.values[key] = value
+        return True
 
     async def _get(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         return self.values.get(key, default)
@@ -74,28 +81,91 @@ class TestRegistry:
         # Reads skip the cache and fail loudly, so an outage never reads as "no schema yet".
         for call in config.get_config.await_args_list:
             assert call.kwargs == {"use_cache": False, "raise_on_error": True}
-        config.set_config.assert_not_awaited()
+        # Only the latest pointer is ever rewritten; a version never is.
+        assert [c.args[0] for c in config.set_config.await_args_list] == [latest_key(CONNECTOR)]
+        assert config.values[latest_key(CONNECTOR)] == {"orgId": ORG, "version": 1}
+        assert config.values[hash_key(CONNECTOR, _props("b", "a"))] == {"orgId": ORG, "version": 1}
 
     async def test_same_properties_same_version(self, registry: MetadataSchemaRegistry, config: _Config) -> None:
         first = await registry.register(ORG, CONNECTOR, _props("a", "b"))
         again = await registry.register(ORG, CONNECTOR, _props("b", "a"))
 
         assert again == first
-        assert config.create_config_if_absent.await_count == 1
+        assert [k for k in config.values if k.rsplit("/", 1)[1].isdigit()] == [schema_key(CONNECTOR, 1)]
+        # The second registration is a lookup: no create, no rewrite of the pointer.
+        assert config.create_config_if_absent.await_count == 2
+        assert config.set_config.await_count == 1
 
     async def test_changed_properties_new_version(self, registry: MetadataSchemaRegistry) -> None:
-        await registry.register(ORG, CONNECTOR, _props("a"))
+        first = await registry.register(ORG, CONNECTOR, _props("a"))
         second = await registry.register(ORG, CONNECTOR, _props("a", "b"))
-        # Going back to an earlier set is a change too: versions only count up.
-        third = await registry.register(ORG, CONNECTOR, _props("a"))
+        assert second.schema_id.endswith(":2")
+        assert await registry.get(ORG, CONNECTOR) == second
+        # Going back to an earlier set (a rollback) is that set's version again, and the latest.
+        back = await registry.register(ORG, CONNECTOR, _props("a"))
 
-        assert second.schema_id.endswith(":2") and third.schema_id.endswith(":3")
-        assert await registry.get(ORG, CONNECTOR) == third
+        assert back == first
+        assert await registry.get(ORG, CONNECTOR) == first
         assert (await registry.get(ORG, CONNECTOR, version=2)) == second
-        assert await registry.get(ORG, CONNECTOR, version=4) is None
+        assert await registry.get(ORG, CONNECTOR, version=3) is None
 
     async def test_no_schema(self, registry: MetadataSchemaRegistry) -> None:
         assert await registry.get(ORG, CONNECTOR) is None
+
+    async def test_alternating_sets_mint_one_version_each(
+        self, registry: MetadataSchemaRegistry, config: _Config,
+    ) -> None:
+        # Old and new workers registering at startup during a rolling deploy.
+        ids = [(await registry.register(ORG, CONNECTOR, _props(*names))).schema_id
+               for names in [("a",), ("a", "b"), ("a",), ("a", "b"), ("a",), ("a", "b")]]
+
+        assert ids == [f"{ORG}:{CONNECTOR}:{v}" for v in (1, 2, 1, 2, 1, 2)]
+        assert schema_key(CONNECTOR, 3) not in config.values
+
+    async def test_the_latest_is_two_reads(self, registry: MetadataSchemaRegistry, config: _Config) -> None:
+        for n in range(1, 51):
+            await registry.register(ORG, CONNECTOR, _props(f"v{n}"))
+        config.get_config.reset_mock()
+
+        latest = await registry.get(ORG, CONNECTOR)
+
+        assert latest is not None and latest.schema_id.endswith(":50")
+        assert [c.args[0] for c in config.get_config.await_args_list] == [
+            latest_key(CONNECTOR), schema_key(CONNECTOR, 50),
+        ]
+
+    async def test_without_a_pointer_the_latest_is_the_last_version(
+        self, registry: MetadataSchemaRegistry, config: _Config,
+    ) -> None:
+        for n in (1, 2, 3):
+            await registry.register(ORG, CONNECTOR, _props(f"v{n}"))
+        del config.values[latest_key(CONNECTOR)]
+
+        assert (await registry.get(ORG, CONNECTOR)).schema_id.endswith(":3")
+
+    async def test_a_hash_entry_naming_other_properties_is_not_trusted(
+        self, registry: MetadataSchemaRegistry, config: _Config,
+    ) -> None:
+        await registry.register(ORG, CONNECTOR, _props("a"))
+        config.values[hash_key(CONNECTOR, _props("b"))] = {"orgId": ORG, "version": 1}
+
+        schema = await registry.register(ORG, CONNECTOR, _props("b"))
+
+        assert schema.schema_id.endswith(":2") and schema.properties == _props("b")
+
+    async def test_at_the_version_cap(self, registry: MetadataSchemaRegistry, config: _Config) -> None:
+        # Versions stored before the pointer and hash keys existed.
+        for v in range(1, MAX_SCHEMA_VERSIONS + 1):
+            config.values[schema_key(CONNECTOR, v)] = {
+                "orgId": ORG, "version": v, "properties": [p.model_dump(mode="json") for p in _props(f"v{v}")],
+            }
+
+        assert (await registry.get(ORG, CONNECTOR)).schema_id.endswith(f":{MAX_SCHEMA_VERSIONS}")
+        with pytest.raises(MetadataSchemaError, match="schema versions"):
+            await registry.register(ORG, CONNECTOR, _props("one_more"))
+        same = await registry.register(ORG, CONNECTOR, _props(f"v{MAX_SCHEMA_VERSIONS}"))
+        assert same.schema_id.endswith(f":{MAX_SCHEMA_VERSIONS}")
+        assert schema_key(CONNECTOR, MAX_SCHEMA_VERSIONS + 1) not in config.values
 
     async def test_a_lost_race_compares_against_the_winner(
         self, registry: MetadataSchemaRegistry, config: _Config,

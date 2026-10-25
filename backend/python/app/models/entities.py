@@ -1630,6 +1630,8 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            # With it lost, the email fields (then the source's user ids) read as emails.
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
             **Record.delete_state_from_arango(record_doc),

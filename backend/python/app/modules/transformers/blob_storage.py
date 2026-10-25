@@ -342,7 +342,7 @@ def _storage_status_error(
         reason = f"{message}: the storage service refused it (HTTP {status})"
         too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
         return StorageRequestRejectedError(
-            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large, detail=detail
         )
     return aiohttp.ClientError(message)
 

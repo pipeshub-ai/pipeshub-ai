@@ -1357,6 +1357,19 @@ class TestTicketRecordFromArango:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    @pytest.mark.parametrize("hidden", [True, False])
+    def test_hidden_emails_survive_the_round_trip(self, hidden: bool) -> None:
+        """With the flag lost, the email fields (the source's user ids) would read as emails."""
+        rec = TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc())
+        rec.is_email_hidden = hidden
+
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+
+        assert back.is_email_hidden is hidden
+
+    def test_a_ticket_doc_without_the_flag_reads_as_not_hidden(self) -> None:
+        assert TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc()).is_email_hidden is False
+
 
 # ============================================================================
 # ProjectRecord.from_arango_record tests (lines 1039-1045)
