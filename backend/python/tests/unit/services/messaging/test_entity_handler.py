@@ -437,6 +437,54 @@ class TestUserUpdated:
         assert user_data["isActive"] is True
 
     @pytest.mark.asyncio
+    async def test_a_deleted_user_is_not_put_back(self) -> None:
+        """Soft delete is `isActive: False`, and these upserts merge. An update
+        event still in flight, or one from a request that raced the delete,
+        would otherwise bring a removed user back — and for a service account
+        that is the field a bound agent's identity is checked against."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1", "isActive": False},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        result = await svc.process_event(
+            "userUpdated",
+            {
+                "userId": "u-1",
+                "orgId": "org-1",
+                "email": "alice@test.com",
+                "fullName": "Alice Smith Updated",
+            },
+        )
+        assert result is True
+
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert "isActive" not in user_data
+        assert user_data["fullName"] == "Alice Smith Updated"
+
+    @pytest.mark.asyncio
+    async def test_a_node_from_before_the_field_is_still_marked_active(self) -> None:
+        """A node written before `isActive` existed is not evidence of a
+        deletion, so an update still marks it active."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1"},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        await svc.process_event(
+            "userUpdated",
+            {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"},
+        )
+
+        assert graph_provider.batch_upsert_nodes.call_args[0][0][0]["isActive"] is True
+
+    @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
         graph_provider.get_user_by_user_id = AsyncMock(return_value=None)

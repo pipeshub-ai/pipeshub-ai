@@ -464,10 +464,20 @@ export class ServiceAccountsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      await Users.updateOne(
+      const written = await Users.updateOne(
         { _id: account._id, orgId, kind: 'service', isDeleted: false },
         { $set: changes },
       ).exec();
+
+      // Nothing matched means the account stopped being one between the read
+      // at the top of this method and this write — deleted, in practice.
+      // Nothing was stored, so there is nothing to tell the graph, and saying
+      // it anyway would leave the graph holding a state no database agrees
+      // with. On a deleted account that state is what a bound agent is
+      // checked against, so it would put a removed identity back in use.
+      if (written.matchedCount === 0) {
+        throw new NotFoundError('Service account not found');
+      }
     }
 
     // Disabling has to reach the tokens this account obtained to act as other
