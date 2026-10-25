@@ -785,8 +785,50 @@ describe('OrgController', () => {
 
       await controller.updateOrganizationDetails(req, res, next);
 
-      expect(update.firstCall.args[1]).to.deep.equal({ permanentAddress: { city: 'Pune' } });
+      expect(update.firstCall.args[1]).to.deep.equal({ 'permanentAddress.city': 'Pune' });
       expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('writes a partial address as dotted paths with no parent permanentAddress key', async () => {
+      req.body = { permanentAddress: { city: 'Pune' } };
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+      await controller.updateOrganizationDetails(req, res, next);
+
+      const doc = update.firstCall.args[1] as Record<string, unknown>;
+      expect(doc).to.deep.equal({ 'permanentAddress.city': 'Pune' });
+      expect(doc).to.not.have.property('permanentAddress');
+    });
+
+    it('writes a full address as one dotted path per field', async () => {
+      const full = { addressLine1: '1 Main', city: 'Pune', state: 'MH', postCode: '411001', country: 'IN' };
+      req.body = { shortName: 'X', permanentAddress: full };
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+      await controller.updateOrganizationDetails(req, res, next);
+
+      const doc = update.firstCall.args[1] as Record<string, unknown>;
+      expect(doc).to.deep.equal({
+        shortName: 'X',
+        'permanentAddress.addressLine1': '1 Main',
+        'permanentAddress.city': 'Pune',
+        'permanentAddress.state': 'MH',
+        'permanentAddress.postCode': '411001',
+        'permanentAddress.country': 'IN',
+      });
+      expect(doc).to.not.have.property('permanentAddress');
+    });
+
+    it('writes nothing for an empty permanentAddress', async () => {
+      req.body = { permanentAddress: {} };
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+      await controller.updateOrganizationDetails(req, res, next);
+
+      expect(update.firstCall.args[1]).to.deep.equal({});
     });
   });
 

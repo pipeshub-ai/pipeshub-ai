@@ -430,17 +430,18 @@ export class OrgController {
       }
 
       // Update only the fields that are provided in the request body
-      const updateData: Partial<{
-        contactEmail: string;
-        registeredName: string;
-        shortName: string;
-        permanentAddress: Record<string, string>;
-      }> = {};
+      const updateData: Record<string, string> = {};
 
       if (email) updateData.contactEmail = email;
       if (regName) updateData.registeredName = regName;
       if (short) updateData.shortName = short;
-      if (address) updateData.permanentAddress = address;
+      // One dotted path per supplied address field, so a partial address
+      // leaves the saved fields it omits as they are.
+      if (address) {
+        for (const [field, part] of Object.entries(address)) {
+          updateData[`permanentAddress.${field}`] = part;
+        }
+      }
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
