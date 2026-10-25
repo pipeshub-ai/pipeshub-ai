@@ -2508,11 +2508,12 @@ class LinearConnector(BaseConnector):
             known = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=project_id)
             records = await self._project_to_records(project_id, scope)
-            if not records or not self._in_date_scope(records[-1][0]):
+            # The project comes first; its links, documents and files follow it.
+            if not records or not self._in_date_scope(records[0][0]):
                 continue
             await self.data_entities_processor.on_new_records(records)
             if known is not None:
-                await self.data_entities_processor.on_record_content_update(records[-1][0])
+                await self.data_entities_processor.on_record_content_update(records[0][0])
 
     # ==================== HELPER FUNCTIONS ====================
 
