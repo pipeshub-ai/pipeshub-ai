@@ -40,10 +40,7 @@ def _blocks_by_type(container: BlocksContainer, block_type: BlockType) -> list[B
 
 def _child_block_indices(group: BlockGroup) -> list[int]:
     assert group.children is not None
-    indices: list[int] = []
-    for block_range in group.children.block_ranges:
-        indices.extend(range(block_range.start, block_range.end + 1))
-    return indices
+    return [i for r in group.children.block_ranges for i in range(r.start, r.end + 1)]
 
 
 def _child_group_indices(group: BlockGroup) -> list[int]:
