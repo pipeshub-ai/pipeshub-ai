@@ -65,7 +65,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1153.0",
     "@azure/storage-blob": "^12.34.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "@pipeshub-ai/mcp": "4.4.0",
+    "@pipeshub-ai/mcp": "4.5.0",
     "@qdrant/js-client-rest": "^1.19.0",
     "@slack/bolt": "^4.6.0",
     "arangojs": "^10.6.0",
