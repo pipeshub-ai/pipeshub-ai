@@ -12,7 +12,7 @@ import httpx
 import openai
 import pytest
 
-from app.config.constants.arangodb import OriginTypes, RecordTypes
+from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     DocumentProcessingError,
@@ -327,8 +327,11 @@ class TestHelpers:
 _UPLOAD_ONLY = (ue.UNREADABLE_FILE, ue.FILE_TOO_LARGE, ue.PASSWORD_PROTECTED, ue.PROCESSING_TIMED_OUT)
 
 
-def _synced(record_type: str) -> dict:
-    return {"origin": OriginTypes.CONNECTOR.value, "recordType": record_type}
+def _synced(record_type: str, connector: str | None = None) -> dict:
+    record = {"origin": OriginTypes.CONNECTOR.value, "recordType": record_type}
+    if connector is not None:
+        record["connectorName"] = connector
+    return record
 
 
 class TestSyncedItems:
@@ -353,8 +356,43 @@ class TestSyncedItems:
             _wrapped(DocumentProcessingError("x"), MemoryError()),
             record=_synced(RecordTypes.FILE.value), source="Google Drive",
         )
-        assert reason.startswith("This file from Google Drive is too large to index.")
-        assert "smaller files in Google Drive" in reason
+        assert reason.startswith("This file from Google Drive is too large to index,")
+        assert "added to Google Drive are indexed on the next sync" in reason
+
+    def test_a_github_pull_request_is_not_told_to_reindex_it(self) -> None:
+        # The app refuses Reindex on one record of a code repository.
+        reason = ue.to_user_reason(
+            BlockContainerValidationError([], record_id="r1"),
+            record=_synced(RecordTypes.PULL_REQUEST.value, Connectors.GITHUB_TEAMS.value),
+            source="GitHub Apache",
+        )
+        assert "Reindex" not in reason
+        assert "indexed again on the next sync after it changes in GitHub Apache" in reason
+
+    def test_a_slow_code_file_points_at_a_repository_reindex(self) -> None:
+        reason = ue.for_synced_item(
+            ue.PROCESSING_TIMED_OUT, RecordTypes.CODE_FILE.value, "GitLab", Connectors.GITLAB.value,
+        )
+        assert "Reindex the whole repository from the knowledge hub" in reason
+        assert "Try Reindex" not in reason
+
+    @pytest.mark.parametrize("connector", sorted(ue._CODE_REPO_CONNECTORS))
+    @pytest.mark.parametrize("record_type", [*sorted(ue._SYNCED_FILE_TYPES), *sorted(ue._SYNCED_ITEM_KINDS), None])
+    @pytest.mark.parametrize("reason", _UPLOAD_ONLY)
+    def test_no_code_repository_item_is_told_to_reindex_it_alone(
+        self, reason: str, record_type: str | None, connector: str,
+    ) -> None:
+        assert "Try Reindex" not in ue.for_synced_item(reason, record_type, "Repo", connector.lower())
+
+    def test_other_connectors_can_still_reindex_one_item(self) -> None:
+        reason = ue.for_synced_item(ue.UNREADABLE_FILE, RecordTypes.TICKET.value, "Jira", Connectors.JIRA.value)
+        assert "Try Reindex after it changes in Jira" in reason
+
+    @pytest.mark.parametrize("record_type", [*sorted(ue._SYNCED_FILE_TYPES), *sorted(ue._SYNCED_ITEM_KINDS)])
+    def test_a_password_protected_item_is_not_assumed_editable_in_its_source(self, record_type: str) -> None:
+        # A mail attachment can't have its password removed where it lives.
+        reason = ue.for_synced_item(ue.PASSWORD_PROTECTED, record_type, "Gmail")
+        assert "Remove the password" not in reason
 
     @pytest.mark.parametrize("record_type", [*sorted(ue._SYNCED_FILE_TYPES), *sorted(ue._SYNCED_ITEM_KINDS), "SOMETHING_NEW", None])
     @pytest.mark.parametrize("reason", _UPLOAD_ONLY)

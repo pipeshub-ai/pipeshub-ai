@@ -12,6 +12,7 @@ import pytest
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EventTypes,
     MimeTypes,
     OriginTypes,
@@ -3201,6 +3202,7 @@ class TestProcessEventErrors:
             "connectorId": "conn-1",
             "origin": OriginTypes.CONNECTOR.value,
             "recordType": RecordTypes.PULL_REQUEST.value,
+            "connectorName": Connectors.GITHUB_TEAMS.value,
             "mimeType": "text/markdown",
         }
         connector_instance = {"_key": "conn-1", "isActive": True, "name": "GitHub Apache"}
@@ -3232,9 +3234,12 @@ class TestProcessEventErrors:
         updates = gp.update_node.call_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == user_errors.for_synced_item(
-            user_errors.UNREADABLE_FILE, RecordTypes.PULL_REQUEST.value, "GitHub Apache"
+            user_errors.UNREADABLE_FILE, RecordTypes.PULL_REQUEST.value, "GitHub Apache",
+            Connectors.GITHUB_TEAMS.value,
         )
         assert "upload" not in updates["reason"]
+        # The app refuses Reindex on one GitHub record, so it isn't suggested.
+        assert "Reindex" not in updates["reason"]
         # Queued copies are told the same.
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
             "r1", "vr1", updates["reason"]
