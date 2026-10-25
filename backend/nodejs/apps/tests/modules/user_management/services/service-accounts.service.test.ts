@@ -586,29 +586,73 @@ describe('ServiceAccountsService', () => {
       });
     });
 
-    it('tells the permission graph about a rename, but not about a disable', async () => {
+    // Disabling used to stop at this collection, and that was the behaviour
+    // pinned here. It no longer is: an agent bound to a service account
+    // searches as that identity on the permission graph alone, so an account
+    // switched off here has to be switched off there too.
+    const stubAccount = (isDisabled: boolean) => {
       const account: any = {
         _id: id,
         email: `svc-x-${orgId}@service.pipeshub.internal`,
         fullName: 'Old name',
-        isDisabled: false,
+        isDisabled,
         save: sinon.stub().resolvesThis(),
       };
       sinon
         .stub(Users, 'findOne')
         .returns({ exec: sinon.stub().resolves(account) } as any);
       sinon.stub(Users, 'updateOne').returns({ exec: sinon.stub().resolves({}) } as any);
+      sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({ ...account, isDisabled: false }),
+      } as any);
+      return account;
+    };
 
-      const disabling = makeService();
-      await disabling.service.update(orgId, id, { isDisabled: true });
-      expect(disabling.events.publishEvent.called).to.equal(false);
+    it('tells the permission graph when an account is switched off', async () => {
+      stubAccount(false);
 
-      const renaming = makeService();
-      await renaming.service.update(orgId, id, { fullName: 'New name' });
-      expect(renaming.events.publishEvent.calledOnce).to.equal(true);
-      expect(renaming.events.publishEvent.firstCall.args[0].eventType).to.equal(
-        'userUpdated',
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: true });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      const { eventType, payload } = events.publishEvent.firstCall.args[0];
+      expect(eventType).to.equal('userUpdated');
+      expect(payload.isDisabled).to.equal(true);
+    });
+
+    it('tells it again when the account is switched back on', async () => {
+      // A flag written only on the way down would stay set afterwards.
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: false });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      expect(events.publishEvent.firstCall.args[0].payload.isDisabled).to.equal(
+        false,
       );
+    });
+
+    it('carries the current state on a rename rather than leaving it stale', async () => {
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { fullName: 'New name' });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      const { eventType, payload } = events.publishEvent.firstCall.args[0];
+      expect(eventType).to.equal('userUpdated');
+      expect(payload.fullName).to.equal('New name');
+      expect(payload.isDisabled).to.equal(true);
+    });
+
+    it('says nothing when neither the name nor the switch moved', async () => {
+      stubAccount(false);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { description: 'Just a note' });
+
+      expect(events.publishEvent.called).to.equal(false);
     });
   });
 });

@@ -360,6 +360,8 @@ export const DefaultMcpScopes = [
   'conversation:write',
   'conversation:chat',
   'kb:read',
+  'kb:write',
+  'kb:upload',
   'team:read',
   'user:read',
   'usergroup:read',
@@ -384,6 +386,10 @@ export const AgentMcpScopes = [
   'conversation:chat',
   'semantic:write',
   'kb:read',
+  // Lets an agent fill an empty workspace: create a collection and upload into
+  // it. Delete stays out of the preset.
+  'kb:write',
+  'kb:upload',
   'user:read',
   'connector:read',
   'code:read',

@@ -5,8 +5,8 @@ from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-# How many nodes are stamped per round trip.
-_UPSERT_BATCH = 100
+# How many ids one lookup or one write asks about.
+_BATCH = 100
 
 
 class ServiceAccountKindMigrationService:
@@ -26,12 +26,20 @@ class ServiceAccountKindMigrationService:
     previous replica is still consuming, so an event carrying ``kind`` can be
     read by a binary that drops it.
 
-    Only ``kind`` is written. A node is looked up first and left alone if it is
-    not there, so nothing is created by a stale id, and no other field is
-    touched — in particular not ``isActive``, so an account deleted after it was
-    staged stays deleted.
+    Only ``kind`` is written. The nodes are resolved first, in batched queries
+    rather than one lookup per account, so nothing is created by a stale id and
+    the startup health gate is not held open by a round trip per account. No
+    other field is touched — in particular not ``isActive``, so an account
+    deleted after it was staged stays deleted.
 
-    Idempotent, and retried on the next startup when it fails.
+    Idempotent, and retried on the next startup when it fails. A staged id with
+    no node yet usually means that account's own ``userAdded`` has not been
+    consumed: the accounts that do have nodes are still stamped, and only
+    ``done`` is withheld, so the next startup stamps the straggler and
+    finishes. What has already been written is recorded alongside the staged
+    list, so that next startup writes only the straggler rather than every
+    node again — the upsert merges, so a repeat would still move
+    ``updatedAtTimestamp`` on nodes that are already correct.
     """
 
     MIGRATION_FLAG_KEY = "/migrations/service_account_kind_v1"
@@ -43,73 +51,71 @@ class ServiceAccountKindMigrationService:
         self.logger = logger
 
     async def _read_state(self) -> dict | None:
-        try:
-            state = await self.config_service.get_config(self.MIGRATION_FLAG_KEY)
-            return state if isinstance(state, dict) else None
-        except Exception as e:
-            self.logger.debug(f"Unable to read the service-account kind state: {e}")
-            return None
+        """The staged document, or None when nothing has been staged yet.
 
-    async def migrate(self) -> dict[str, Any]:
-        state = await self._read_state()
-        if state is None:
-            # Nothing staged yet. The user management service stages on every
-            # boot until we answer, so this is not a failure and must not be
-            # recorded as done.
-            return {"success": True, "stamped": 0, "skipped": True}
-        if state.get("done") is True:
-            return {"success": True, "stamped": 0, "skipped": True}
+        raise_on_error, so a store that cannot be read is not mistaken for a
+        key that was never written — that reads as "nothing to do" and the
+        boot looks idle while the backfill silently waits for another restart.
+        """
+        state = await self.config_service.get_config(
+            self.MIGRATION_FLAG_KEY, raise_on_error=True
+        )
+        return state if isinstance(state, dict) else None
 
-        user_ids = state.get("userIds") or []
-        if not user_ids:
-            return {"success": True, "stamped": 0, "skipped": True}
+    async def _resolve_nodes(self, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
+        """Map each staged `userId` to its node key, and name the ones with no node."""
+        found: dict[str, str] = {}
+        missing: list[str] = []
 
-        stamped = 0
-        missing = 0
-        pending: list[dict] = []
-
-        try:
-            for user_id in user_ids:
-                # raise_on_error: a failed read answers None too, and reading
-                # that as "no such node" would record the backfill finished
-                # while nodes still have no kind.
-                node = await self.graph_provider.get_user_by_user_id(
-                    str(user_id), raise_on_error=True
+        for start in range(0, len(wanted), _BATCH):
+            chunk = wanted[start : start + _BATCH]
+            try:
+                found.update(
+                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                        chunk, chunk_size=_BATCH
+                    )
                 )
-                if not node:
-                    missing += 1
-                    continue
-                if node.get("kind") == "service":
-                    continue
+            except ValueError:
+                # That call raises for the whole chunk when any one id has no
+                # node, and does not hand back the ones it did find. So only
+                # the chunk holding a straggler pays a lookup per id, and only
+                # while that id is missing. A store failure is not a ValueError
+                # and still surfaces.
+                for user_id in chunk:
+                    node = await self.graph_provider.get_user_by_user_id(
+                        user_id, raise_on_error=True
+                    )
+                    key = (node or {}).get("id") or (node or {}).get("_key")
+                    if key:
+                        found[user_id] = str(key)
+                    else:
+                        missing.append(user_id)
 
-                node_key = node.get("id") or node.get("_key")
-                if not node_key:
-                    missing += 1
-                    continue
+        return found, missing
 
-                pending.append(
-                    {
-                        "id": node_key,
-                        "kind": "service",
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                )
-                if len(pending) >= _UPSERT_BATCH:
-                    await self.graph_provider.batch_upsert_nodes(pending, CollectionNames.USERS.value)
-                    stamped += len(pending)
-                    pending = []
+    async def _record_done(self, processed: list[str], stamped: int) -> None:
+        """Write `done`, unless the staged list moved while we were working.
 
-            if pending:
-                await self.graph_provider.batch_upsert_nodes(pending, CollectionNames.USERS.value)
-                stamped += len(pending)
+        The store has no compare-and-set, so this re-reads instead. A list that
+        has changed means the user management service staged an account after
+        we read: writing `done` over it would leave that one unmarked for good,
+        and leaving the key alone costs one more pass on the next startup.
+        """
+        try:
+            current = await self._read_state()
         except Exception as e:
-            self.logger.error(f"❌ Service-account kind migration failed: {e}", exc_info=True)
-            return {"success": False, "stamped": stamped, "error": str(e)}
-
-        if missing:
             self.logger.warning(
-                f"⚠️ {missing} staged service account(s) have no user node; left unmarked"
+                f"⚠️ Could not re-read the service-account kind state ({e}); "
+                "leaving it unset, which repeats harmlessly next startup"
             )
+            return
+
+        if current is None or list(current.get("userIds") or []) != processed:
+            self.logger.info(
+                "ℹ️ The staged service-account list changed while it was being "
+                "applied; finishing on the next startup"
+            )
+            return
 
         try:
             await self.config_service.set_config(
@@ -118,7 +124,6 @@ class ServiceAccountKindMigrationService:
                     "version": self.STATE_VERSION,
                     "done": True,
                     "stamped": stamped,
-                    "missing": missing,
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
@@ -126,7 +131,105 @@ class ServiceAccountKindMigrationService:
             self.logger.warning(
                 f"⚠️ Failed to set the service-account kind flag: {e}; it will re-run (harmlessly)"
             )
-        return {"success": True, "stamped": stamped, "missing": missing}
+
+    async def _record_progress(self, state: dict, stamped_ids: set[str]) -> None:
+        """Remember what has been written, so an unfinished pass is not redone.
+
+        Only ever written beside the staged list it belongs to. If user
+        management stages a different list the whole document is replaced, and
+        this goes with it — which is right, because a changed list means the
+        answer may have changed too.
+        """
+        try:
+            await self.config_service.set_config(
+                self.MIGRATION_FLAG_KEY,
+                {**state, "stampedUserIds": sorted(stamped_ids)},
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Could not record service-account kind progress: {e}; "
+                "the next startup repeats work that changes nothing"
+            )
+
+    async def migrate(self) -> dict[str, Any]:
+        try:
+            state = await self._read_state()
+        except Exception as e:
+            self.logger.error(f"❌ Could not read the service-account kind state: {e}")
+            return {"success": False, "stamped": 0, "error": str(e)}
+
+        if state is None:
+            # Nothing staged yet. The user management service stages on every
+            # boot until we answer, so this is not a failure and must not be
+            # recorded as done.
+            return {"success": True, "stamped": 0, "skipped": True}
+        if state.get("done") is True:
+            return {"success": True, "stamped": 0, "skipped": True}
+
+        processed = [str(user_id) for user_id in (state.get("userIds") or [])]
+        # Only the ones switched off are named. Absence already reads as not
+        # disabled, and an account disabled before any of this shipped emits
+        # no event of its own, so this is its only chance to be marked.
+        disabled = {str(user_id) for user_id in (state.get("disabledUserIds") or [])}
+        # Written by an earlier pass that could not finish. The staged list is
+        # unchanged, so these nodes already hold what this would write.
+        already = {str(user_id) for user_id in (state.get("stampedUserIds") or [])}
+        if not processed:
+            # Staged explicitly as empty: this deployment has no service
+            # accounts, so there is nothing to mark and the backfill is done.
+            await self._record_done(processed, 0)
+            return {"success": True, "stamped": 0, "skipped": True}
+
+        stamped = 0
+        try:
+            found, missing = await self._resolve_nodes(processed)
+
+            resolved = [user_id for user_id in processed if user_id in found]
+            node_keys = [
+                found[user_id] for user_id in resolved if user_id not in already
+            ]
+            disabled_keys = {
+                found[user_id]: user_id in disabled for user_id in resolved
+            }
+            for start in range(0, len(node_keys), _BATCH):
+                batch = [
+                    {
+                        "id": node_key,
+                        "kind": "service",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        # Written both ways rather than only when true: an
+                        # account enabled again before this ran would
+                        # otherwise keep a stale flag from an earlier pass.
+                        "isDisabled": disabled_keys.get(node_key, False),
+                    }
+                    for node_key in node_keys[start : start + _BATCH]
+                ]
+                # Both backends answer falsy for a write that did not land, and
+                # counting those as stamped would retire them from the retry.
+                if not await self.graph_provider.batch_upsert_nodes(
+                    batch, CollectionNames.USERS.value
+                ):
+                    raise RuntimeError(
+                        f"The graph rejected {len(batch)} service-account kind write(s)"
+                    )
+                stamped += len(batch)
+        except Exception as e:
+            self.logger.error(f"❌ Service-account kind migration failed: {e}", exc_info=True)
+            return {"success": False, "stamped": stamped, "error": str(e)}
+
+        if missing:
+            # Marked what we could, and recorded it so the next startup writes
+            # only the stragglers. `done` is withheld until none are left.
+            self.logger.warning(
+                f"⚠️ {len(missing)} staged service account(s) have no user node yet; "
+                "marked the rest and will finish on a later startup"
+            )
+            if resolved:
+                await self._record_progress(state, already | set(resolved))
+            return {"success": True, "stamped": stamped, "missing": len(missing)}
+
+        await self._record_done(processed, stamped)
+        return {"success": True, "stamped": stamped, "missing": 0}
 
 
 async def run_service_account_kind_migration(

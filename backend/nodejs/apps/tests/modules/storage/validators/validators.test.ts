@@ -393,6 +393,7 @@ describe('artifact set validators', () => {
     'groups.json',
     'reconciliation.json',
     'record.json',
+    'properties.json',
     'blocks/part-0000.jsonl',
     'text/part-0042.jsonl',
     `${IMAGE}.png`,
@@ -420,6 +421,8 @@ describe('artifact set validators', () => {
     'enrich/a/b@1.json',
     'manifest.json/x',
     'MANIFEST.json',
+    'properties.jsonl',
+    'enrich/properties.json',
     'record.json\0',
   ]
 

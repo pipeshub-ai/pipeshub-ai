@@ -16,6 +16,9 @@ Files of a revision (paths are relative to its root):
   text: its index, its group's index, its page, its text. Same cut as blocks.
 - ``metadata.json``: the classification, when there is one.
 - ``reconciliation.json``: block hashes to ids and ids to indexes.
+- ``properties.json``: the record's provided property values
+  (``RecordMetadata``: ``{"schemaId", "values"}``), for a ticket that sets any
+  of the built-in ticket schema's properties.
 - ``manifest.json``: what was written, with sizes and sha256s. Written last,
   only once every other file is stored, so a revision without it is incomplete.
 
@@ -41,6 +44,7 @@ from app.models.entities import Record
 from app.modules.artifacts.models import (
     ASSET_MEDIA_TYPE,
     MANIFEST_PATH,
+    PROPERTIES_PATH,
     ArtifactEntry,
     ArtifactFile,
     ArtifactRef,
@@ -52,6 +56,7 @@ from app.modules.artifacts.store import (
     NodeArtifactStore,
     artifact_writes_available,
 )
+from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.transformers.blob_storage import SHARED_CONTENT_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -259,6 +264,11 @@ def build_revision(
             built, "reconciliation", "reconciliation.json", reconciliation_metadata,
             len(entries) if isinstance(entries, dict) else 0,
         )
+    # The values are this record's; when record.json is another record's (it
+    # stored the shared content first), they would not describe it.
+    properties = ticket_metadata(record)
+    if properties is not None and (stored_record_fields or {}).get("id") in (None, record.id):
+        _add_single(built, "properties", PROPERTIES_PATH, properties.to_json_dict(), len(properties.values))
     return built
 
 

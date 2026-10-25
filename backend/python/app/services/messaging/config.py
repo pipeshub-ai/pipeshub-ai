@@ -401,6 +401,17 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def revision_retention_grace_seconds(self) -> float:
+        """How old an artifact-set revision or a revision's stage states must be before the
+        retention sweep may remove them, once nothing points at or is on that revision.
+
+        Covers a revision being written or flipped to while the sweep reads, and a
+        record moving back to earlier content. Zero turns the sweep off (see
+        ``app/modules/artifacts/retention.py``).
+        """
+        return _env_seconds("REVISION_RETENTION_GRACE_SECONDS", 24 * 3600.0)
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 

@@ -111,6 +111,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     wait_until_jira_condition,
 )
 from helper.indexing_wait import (  # noqa: E402
+    RECORD_INDEXING_TERMINAL,
     wait_until_record_indexing_completed,
 )
 
@@ -916,10 +917,18 @@ class TestJiraIndexing:
             pytest.skip("No reference issue discovered on primary — skipping")
         external_id = jira_connector["reference_issue_id"]
 
+        # The reference issue is queued behind the whole first sync of the primary project
+        # (about 400 issues on the simulator), so the wait follows the queue: it fails when
+        # indexing stops moving, not when a slower message broker takes longer to reach it.
+        async def indexed_so_far() -> int:
+            records = await graph_provider.fetch_records_by_type(connector_id, "")
+            return sum(1 for r in records if r.get("indexingStatus") in RECORD_INDEXING_TERMINAL)
+
         rec = await wait_until_record_indexing_completed(
             graph_provider, connector_id, external_id,
             timeout=JIRA_INDEXING_WAIT_SEC,
             description=f"TC-JIRA-IDX-001 {key}", pipeshub_client=pipeshub_client,
+            queue_progress=indexed_so_far,
         )
         assert rec.indexing_status == ProgressStatus.COMPLETED.value
         assert rec.record_type == RecordType.TICKET

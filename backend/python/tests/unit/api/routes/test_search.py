@@ -723,6 +723,73 @@ class TestSearchHonoursLimit:
         out = await self._run(SearchQuery(query="q", limit=10), response)
         assert len(out["searchResults"]) == 4 and "omittedPassages" not in out
 
+    @pytest.mark.asyncio
+    async def test_a_passage_with_the_typed_code_survives_the_cut(self) -> None:
+        # Hybrid scores are ranks within each query, so generic passages that
+        # rank well for every rewrite outscore the one keyword match for a code.
+        hits = [
+            {"content": f"A test note with a search identifier, part {i}.", "score": 0.83,
+             "metadata": {"recordId": "note"}}
+            for i in range(12)
+        ] + [
+            {"content": "Final Customer is at 1 Last Rd, code “gravelpont9014.”", "score": 0.59,
+             "metadata": {"recordId": "csv"}},
+        ]
+        response = {
+            "searchResults": hits,
+            "records": [{"_key": "note"}, {"_key": "csv"}],
+            "virtual_to_record_map": {"vn": {"_key": "note"}, "vc": {"_key": "csv"}},
+            "status_code": 200,
+        }
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=10), response)
+        kept = [h["metadata"]["recordId"] for h in out["searchResults"]]
+        assert len(kept) == 10 and "csv" in kept
+        assert kept[-1] == "csv", "the kept passages are still listed best score first"
+        assert {r["_key"] for r in out["records"]} == {"note", "csv"}
+        assert out["omittedPassages"] == {"note": 3}
+
+    @pytest.mark.asyncio
+    async def test_the_typed_text_must_match_whole_words(self) -> None:
+        hits = [
+            {"content": f"generic {i}", "score": 0.9, "metadata": {"recordId": "a"}} for i in range(3)
+        ] + [{"content": "gravelpont90145 is another code", "score": 0.1, "metadata": {"recordId": "b"}}]
+        response = {"searchResults": hits, "records": [{"_key": "a"}, {"_key": "b"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=3), response)
+        assert {h["metadata"]["recordId"] for h in out["searchResults"]} == {"a"}
+
+    @pytest.mark.asyncio
+    async def test_a_typed_neighbour_does_not_push_out_its_match(self) -> None:
+        # One expanded section (shared score); only a neighbour holds the code.
+        section = [
+            {"content": "neighbour with gravelpont9014", "score": 0.5, "distanceFromMatch": 1,
+             "metadata": {"recordId": "s"}},
+            {"content": "the matched passage", "score": 0.5, "distanceFromMatch": 0,
+             "metadata": {"recordId": "s"}},
+        ]
+        generic = [{"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}}]
+        response = {"searchResults": section + generic, "records": [{"_key": "s"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage", "neighbour with gravelpont9014"]
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=1), {**response, "searchResults": section + generic})
+        assert [h["content"] for h in out["searchResults"]] == ["the matched passage"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_typed_neighbours_own_section_is_promoted(self) -> None:
+        # Two tables of one workbook with the same RRF score; only table 2 holds the code.
+        def passage(content: str, group: int, distance: int) -> dict:
+            return {"content": content, "score": 0.5, "distanceFromMatch": distance,
+                    "block_group_index": group, "metadata": {"recordId": "book"}}
+
+        hits = [
+            passage("table 1 match", 1, 0),
+            passage("table 2 match", 2, 0),
+            passage("table 2 row with gravelpont9014", 2, 1),
+            {"content": "generic", "score": 0.9, "metadata": {"recordId": "g"}},
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "book"}, {"_key": "g"}], "status_code": 200}
+        out = await self._run(SearchQuery(query="gravelpont9014", limit=2), response)
+        assert [h["content"] for h in out["searchResults"]] == ["table 2 match", "table 2 row with gravelpont9014"]
+
 
 class TestSearchSurvivesQueryTransformationFailure:
     """A failed rewrite or expansion falls back to the query the user typed."""

@@ -276,6 +276,11 @@ class EntityEventService(BaseEventService):
                 # in by the backfill, not from here.
                 if payload.get("kind"):
                     user_data["kind"] = payload["kind"]
+                # Sent by restore, which has just switched the account back on
+                # in the collection that owns the answer. Left alone when
+                # absent, so a producer that says nothing cannot change it.
+                if payload.get("isDisabled") is not None:
+                    user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
                 user_key = str(uuid4())
                 user_data = {
@@ -293,6 +298,13 @@ class EntityEventService(BaseEventService):
                     # Absence means a person. Every producer of a service
                     # account sends this; nothing else needs to.
                     "kind": payload.get("kind") or "human",
+                # Absence means not disabled, so only a true value is worth
+                # storing; a person never carries this at all.
+                **(
+                    {"isDisabled": True}
+                    if payload.get("isDisabled") is True
+                    else {}
+                ),
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -435,6 +447,13 @@ class EntityEventService(BaseEventService):
                 "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # The only signal the graph gets that an account was switched
+            # off. Written only when the event carries it, so an update that
+            # says nothing about it — one from a producer that predates the
+            # field — cannot switch an account back on.
+            if payload.get("isDisabled") is not None:
+                user_data["isDisabled"] = bool(payload["isDisabled"])
 
             # Add only non-null optional fields
             optional_fields = [
