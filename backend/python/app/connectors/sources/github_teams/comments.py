@@ -909,8 +909,13 @@ class CommentsHelper:
                         content_res.data,
                     )
             if file_content:
+                # Measured after redaction, which can lengthen a short secret.
                 file_content = redact_secrets(file_content).text
-                text_left -= len(file_content.encode("utf-8"))
+                content_bytes_used = len(file_content.encode("utf-8"))
+                if content_bytes_used > text_left:
+                    file_content, content_over_budget = None, True
+                else:
+                    text_left -= content_bytes_used
             diff_over_budget = False
             if diff:
                 diff_bytes = len(patch.encode("utf-8"))

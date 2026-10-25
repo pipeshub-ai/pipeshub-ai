@@ -1246,6 +1246,19 @@ class TestPullRequestDiffLimit:
         assert content.decode() in groups["big.py"].data
         assert "Diff: omitted" in groups["small.py"].data
 
+    async def test_inlined_text_is_measured_after_redaction(self, monkeypatch) -> None:
+        # Redaction can lengthen a short secret, so text that fit before it may not after.
+        monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", PR_FILE_INLINE_CONTENT_MAX_BYTES)
+        monkeypatch.setattr(comments_module, "redact_secrets", lambda text: SimpleNamespace(text=text + "!!"))
+        content = b"y" * PR_FILE_INLINE_CONTENT_MAX_BYTES
+        groups = await _pr_file_groups(
+            [_changed("big.py", None)],
+            contents={"get_file_contents": ok_response(SimpleNamespace(decoded_content=content, content=None))},
+        )
+
+        assert "y" * 100 not in groups["big.py"].data
+        assert "Full File Content: omitted (this pull request's changes exceed" in groups["big.py"].data
+
     async def test_no_contents_request_once_an_inlined_file_cannot_fit(self, monkeypatch) -> None:
         # get_file_contents is not mocked, so a request for it fails the test.
         monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", PR_FILE_INLINE_CONTENT_MAX_BYTES - 1)
