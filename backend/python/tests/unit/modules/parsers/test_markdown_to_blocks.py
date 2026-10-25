@@ -61,11 +61,11 @@ def _is_empty_split_container(block: Block) -> bool:
 
 
 def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
-    for block in container.blocks:
-        assert block.data is not None, (
-            f"block index={block.index} type={block.type} "
-            f"sub_type={block.sub_type} has data=None"
-        )
+    missing = [b for b in container.blocks if b.data is None]
+    assert not missing, (
+        "blocks with data=None: "
+        + ", ".join(f"index={b.index} type={b.type} sub_type={b.sub_type}" for b in missing)
+    )
 
 
 def _assert_empty_text_split_container(block: Block) -> None:
