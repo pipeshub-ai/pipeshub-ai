@@ -135,7 +135,7 @@ describe('OAuthAuthorizeView layout', () => {
   });
 
   // body is overflow: hidden, so a minHeight wrapper grows past the screen and the buttons get clipped.
-  it('scrolls inside a fixed-height wrapper so a tall consent card is never cut off', async () => {
+  it('makes the page wrapper a fixed-height scroll container', async () => {
     get.mockResolvedValue(consentResponse([]));
 
     render(h(Theme, null, h(OAuthAuthorizeView, null)));
