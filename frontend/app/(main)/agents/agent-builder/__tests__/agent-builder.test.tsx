@@ -233,9 +233,6 @@ describe('building a new agent', () => {
       knowledge: [{ connectorId: 'kb-1' }],
       webSearch: { provider: 'duckduckgo' },
     });
-    // Create takes a string, not a nullable one, so an unbound new agent must
-    // leave the field off the body rather than send null.
-    expect('serviceAccountUserId' in payload).toBe(false);
     expect(payload.toolsets).toEqual([
       expect.objectContaining({
         instanceId: 'jira-instance-1',
@@ -368,11 +365,16 @@ describe('service agents', () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(agentsApi.createAgent).toHaveBeenCalledTimes(1));
-    expect(lastSavedPayload(agentsApi.createAgent)).toMatchObject({
+    const saPayload = lastSavedPayload(agentsApi.createAgent);
+    expect(saPayload).toMatchObject({
       name: 'Ops bot',
       isServiceAccount: true,
       shareWithOrg: true,
     });
+    // This is the call that sent null and was refused: create takes a string,
+    // not a nullable one. toMatchObject alone stays green with null present,
+    // so the field has to be checked for absence explicitly.
+    expect('serviceAccountUserId' in saPayload).toBe(false);
     expect(router.replace).toHaveBeenCalledWith('/agents/edit?agentKey=new-agent&sa=1');
   });
 
