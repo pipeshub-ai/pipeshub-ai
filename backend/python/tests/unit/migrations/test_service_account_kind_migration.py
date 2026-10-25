@@ -115,6 +115,7 @@ async def test_a_staged_id_with_no_node_is_retried_not_recorded_done() -> None:
 
     assert (result["success"], result["stamped"], result["missing"]) == (True, 0, 1)
     provider.batch_upsert_nodes.assert_not_called()
+    # Nothing resolved, so there is no progress to record and nothing to flag.
     config.set_config.assert_not_called()
 
 
@@ -129,6 +130,8 @@ async def test_one_straggler_does_not_cost_the_accounts_that_do_have_nodes() -> 
     result = await service.migrate()
 
     assert (result["success"], result["stamped"], result["missing"]) == (True, 1, 1)
+    # Progress is recorded so the next boot skips this node, but never `done`.
+    assert config.set_config.await_args.args[1].get("done") is not True
     written = provider.batch_upsert_nodes.await_args.args[0]
     assert written == [
         {
@@ -138,7 +141,6 @@ async def test_one_straggler_does_not_cost_the_accounts_that_do_have_nodes() -> 
             "isDisabled": False,
         }
     ]
-    config.set_config.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -282,3 +284,39 @@ async def test_the_flag_is_written_both_ways_not_only_when_true() -> None:
     await service.migrate()
 
     assert provider.batch_upsert_nodes.await_args.args[0][0]["isDisabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_second_pass_does_not_rewrite_what_the_first_one_stamped() -> None:
+    """While a straggler keeps `done` unset, every later boot would otherwise
+    merge the same document over every node that is already correct, moving
+    updatedAtTimestamp each time."""
+    provider = _provider({"u1": "node-1"})
+    staged = _staged("u1", "u-not-yet")
+    config = MagicMock()
+    config.set_config = AsyncMock()
+    # First pass sees the plain staged list; the second sees what it recorded.
+    after_first = {**staged, "stampedUserIds": ["u1"]}
+    config.get_config = AsyncMock(side_effect=[staged, after_first])
+    service = ServiceAccountKindMigrationService(provider, config, MagicMock())
+
+    first = await service.migrate()
+    assert (first["stamped"], first["missing"]) == (1, 1)
+    assert config.set_config.await_args.args[1]["stampedUserIds"] == ["u1"]
+
+    provider.batch_upsert_nodes.reset_mock()
+    second = await service.migrate()
+
+    assert second["stamped"] == 0
+    provider.batch_upsert_nodes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_progress_is_not_mistaken_for_completion() -> None:
+    """The recorded progress must never carry done, or the straggler is lost."""
+    provider = _provider({"u1": "node-1"})
+    service, config = _service(provider, _staged("u1", "u-not-yet"))
+
+    await service.migrate()
+
+    assert config.set_config.await_args.args[1].get("done") is not True

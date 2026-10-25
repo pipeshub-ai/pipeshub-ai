@@ -97,7 +97,12 @@ export class ServiceAccountKindBackfillMigration {
   async run(): Promise<ServiceAccountKindBackfillResult> {
     const state = await this.readState();
     if (state?.done === true) {
-      return { accountsFound: 0, accountsStaged: 0, disabledStaged: 0, skipped: true };
+      return {
+        accountsFound: 0,
+        accountsStaged: 0,
+        disabledStaged: 0,
+        skipped: true,
+      };
     }
 
     const userIds: string[] = [];
