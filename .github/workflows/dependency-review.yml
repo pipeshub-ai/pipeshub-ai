@@ -2,7 +2,9 @@ name: Dependency Review
 
 # Blocks a pull request that introduces a dependency with a known high or
 # critical vulnerability. Only changes the PR adds or bumps are judged, so
-# vulnerabilities already on main never fail an unrelated PR.
+# vulnerabilities already on main never fail an unrelated PR. Runtime,
+# development and unknown-scope dependencies are all checked (the action's
+# default is runtime only).
 on:
   pull_request:
     branches:
@@ -35,6 +37,7 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
           vulnerability-check: true
           license-check: false
           comment-summary-in-pr: on-failure
