@@ -234,7 +234,7 @@ dependencies = [
     "httpx2==2.16.0",
     "prometheus-client==0.26.0",
     "PyGithub==2.8.1",
-    "python-gitlab==6.4.0",
+    "python-gitlab==8.6.0",
     "google-api-python-client==2.201.0",
     "google-auth-oauthlib==1.5.0",
     "google-cloud-storage==3.17.1",
