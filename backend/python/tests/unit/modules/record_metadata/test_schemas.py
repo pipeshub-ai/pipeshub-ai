@@ -1,7 +1,7 @@
 """The schema registry (versions in the config store) and the built-in ticket schema."""
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -38,6 +38,7 @@ class _Config:
 
     def __init__(self) -> None:
         self.values: dict[str, Any] = {}
+        self.logger = MagicMock()
         self.get_config = AsyncMock(side_effect=self._get)
         self.create_config_if_absent = AsyncMock(side_effect=self._create)
         self.set_config = AsyncMock(side_effect=self._set)
@@ -108,6 +109,23 @@ class TestRegistry:
         assert await registry.get(ORG, CONNECTOR) == first
         assert (await registry.get(ORG, CONNECTOR, version=2)) == second
         assert await registry.get(ORG, CONNECTOR, version=3) is None
+
+    async def test_an_unconfirmed_latest_pointer_is_logged_and_the_next_registration_moves_it(
+        self, registry: MetadataSchemaRegistry, config: _Config,
+    ) -> None:
+        first = await registry.register(ORG, CONNECTOR, _props("a"))
+        # The store answers False both when it failed and when a racer wrote after us.
+        config.set_config.side_effect = None
+        config.set_config.return_value = False
+
+        second = await registry.register(ORG, CONNECTOR, _props("a", "b"))
+
+        assert second.schema_id.endswith(":2")
+        config.logger.warning.assert_called_once()
+        assert await registry.get(ORG, CONNECTOR) == first  # a stored version, never a missing one
+        config.set_config.side_effect = config._set
+        assert await registry.register(ORG, CONNECTOR, _props("a", "b")) == second
+        assert await registry.get(ORG, CONNECTOR) == second
 
     async def test_no_schema(self, registry: MetadataSchemaRegistry) -> None:
         assert await registry.get(ORG, CONNECTOR) is None

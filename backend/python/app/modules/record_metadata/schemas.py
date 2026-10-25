@@ -176,7 +176,13 @@ class MetadataSchemaRegistry:
         if isinstance(current, dict) and current.get("version") == version and current.get("orgId") == org_id:
             return
         # Last writer wins between racing registrations; either names a stored version.
-        await self.config_service.set_config(key, {"orgId": org_id, "version": version})
+        # False is not an error to raise: the store reads the key back after writing it,
+        # so a racer's write in between returns False too. The pointer is only a shortcut
+        # (without one, get scans the versions), and the next registration rewrites it.
+        if not await self.config_service.set_config(key, {"orgId": org_id, "version": version}):
+            self.config_service.logger.warning(
+                "Latest schema pointer of connector %s was not confirmed at version %s", connector_id, version,
+            )
 
     async def register_builtin(
         self, org_id: str, connector_id: str, connector: Connectors | str,
