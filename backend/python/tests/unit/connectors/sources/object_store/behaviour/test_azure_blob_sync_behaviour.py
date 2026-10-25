@@ -291,21 +291,28 @@ class TestFailuresAreReported:
 
 
 class TestTeamScope:
-    """PP-322: a team connector syncs only containers it names."""
+    """A team connector syncs the containers it names, or every listed one when it names none."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("selection", [None, ("not_in", [OTHER])], ids=["empty", "not-in"])
-    async def test_without_named_containers_it_refuses(self, connector, store, db, config, selection) -> None:
+    async def test_without_named_containers_it_syncs_every_container(self, connector, store, other, db) -> None:
         connector.container_name = None
-        if selection:
-            config.set_selection("containers", selection[1], selection[0])
         store.put("a.txt")
+        other.put("b.txt")
 
-        with pytest.raises(ValueError, match="Container Names"):
-            await connector.run_sync()
+        await connector.run_sync()
 
-        assert db.paths() == set()
-        connector.notify.assert_awaited()
+        assert db.paths() >= {path("a.txt"), path("b.txt", OTHER)}
+
+    @pytest.mark.asyncio
+    async def test_a_not_in_filter_leaves_out_the_containers_it_names(self, connector, store, other, db, config) -> None:
+        connector.container_name = None
+        config.set_selection("containers", [OTHER], "not_in")
+        store.put("a.txt")
+        other.put("b.txt")
+
+        await connector.run_sync()
+
+        assert path("a.txt") in db.paths() and path("b.txt", OTHER) not in db.paths()
 
     @pytest.mark.asyncio
     async def test_with_named_containers_it_syncs_only_those(self, connector, store, other, db, config) -> None:
@@ -713,67 +720,21 @@ class TestFailureReports:
 
 
 class TestClearedTeamSelection:
-    """A team connector whose Container Names are cleared stops syncing; what it synced before must not stay readable by the org."""
+    """A team connector whose Container Names are cleared goes back to syncing every listed container."""
 
     @pytest.mark.asyncio
-    async def test_its_containers_are_removed(self, connector, store, other, db, config) -> None:
-        choose_containers(connector, config, [BUCKET, OTHER])
+    async def test_it_syncs_every_container_and_keeps_what_it_synced(self, connector, store, other, db, config) -> None:
+        choose_containers(connector, config, [BUCKET])
         store.put("a.txt")
         other.put("b.txt")
         await connector.run_sync()
-        assert {path("a.txt"), path("b.txt", OTHER)} <= db.paths()
+        assert db.paths() == {path("a.txt")}
 
         config.sync_filters.pop("containers")
-        with pytest.raises(ValueError, match="Container Names"):
-            await connector.run_sync()
-
-        assert not db.paths()
-        assert BUCKET not in db.record_groups and OTHER not in db.record_groups
-        assert "The 2 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("fail_mode", ["raise", "empty"])
-    async def test_an_unreadable_config_removes_nothing(self, connector, store, db, config, fail_mode) -> None:
-        choose_containers(connector, config, [BUCKET])
-        store.put("a.txt")
-        await connector.run_sync()
-        # The run's own filter load then sees no filters, as it would after a failed read.
-        config.fail_mode, config.fail_from = fail_mode, config.reads
-
-        with pytest.raises(ValueError):
-            await connector.run_sync()
-
-        assert path("a.txt") in db.paths()
-        assert BUCKET in db.record_groups
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("excluded", [[OTHER], []], ids=["naming-one", "naming-none"])
-    async def test_a_not_in_filter_removes_nothing(self, connector, store, db, config, excluded) -> None:
-        choose_containers(connector, config, [BUCKET])
-        store.put("a.txt")
         await connector.run_sync()
 
-        config.set_selection("containers", excluded, "not_in")
-        with pytest.raises(ValueError, match="Container Names"):
-            await connector.run_sync()
-
-        assert path("a.txt") in db.paths()
-        assert BUCKET in db.record_groups
-
-    @pytest.mark.asyncio
-    async def test_the_notice_counts_only_containers_actually_removed(self, connector, store, other, db, config) -> None:
-        choose_containers(connector, config, [BUCKET, OTHER])
-        store.put("a.txt")
-        other.put("b.txt")
-        await connector.run_sync()
-        db.refused_group_deletes.add(OTHER)
-
-        config.set_selection("containers", [])
-        with pytest.raises(ValueError, match="Container Names"):
-            await connector.run_sync()
-
-        assert BUCKET not in db.record_groups and OTHER in db.record_groups
-        assert "The 1 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
+        assert db.paths() >= {path("a.txt"), path("b.txt", OTHER)}
+        assert BUCKET in db.record_groups and OTHER in db.record_groups
 
 
 class TestFolderTimes:
