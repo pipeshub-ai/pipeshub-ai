@@ -4322,6 +4322,8 @@ class TestServiceAccountAgentRoutes:
         agent_nodes = services["graph_provider"].batch_upsert_nodes.await_args_list[0].args[0]
         assert agent_nodes[0]["isServiceAccount"] is True
         assert agent_nodes[0]["serviceAccountId"] == "sa-1"
+        data = json.loads(result.body)
+        assert data["agent"]["serviceAccountId"] == "sa-mongo-1"
 
     @pytest.mark.asyncio
     async def test_create_agent_rejects_service_account_id_when_not_service_account(self) -> None:

@@ -214,14 +214,14 @@ class TestRequiredFields:
 
 
 class TestUserSchemaKind:
-    def test_accepts_valid_kinds_and_none(self):
+    def test_accepts_valid_kinds_and_none(self) -> None:
         validator = Draft4Validator(adapt_schema(documents.user_schema))
         validator.validate({"email": "user@example.com", "kind": "individual"})
         validator.validate({"email": "bot@example.com", "kind": "service"})
         validator.validate({"email": "user@example.com", "kind": None})
         validator.validate({"email": "user@example.com"})
 
-    def test_rejects_invalid_kind(self):
+    def test_rejects_invalid_kind(self) -> None:
         validator = Draft4Validator(adapt_schema(documents.user_schema))
         with pytest.raises(ValidationError):
             validator.validate({"email": "admin@example.com", "kind": "admin"})
@@ -244,13 +244,13 @@ class TestAgentSchemaServiceAccountId:
         doc.update(extra)
         return doc
 
-    def test_accepts_service_account_id_and_none(self):
+    def test_accepts_service_account_id_and_none(self) -> None:
         validator = Draft4Validator(adapt_schema(documents.agent_schema))
         validator.validate(self._valid_agent_doc(serviceAccountId="sa-user-id"))
         validator.validate(self._valid_agent_doc(serviceAccountId=None))
         validator.validate(self._valid_agent_doc())
 
-    def test_rejects_invalid_service_account_id(self):
+    def test_rejects_invalid_service_account_id(self) -> None:
         validator = Draft4Validator(adapt_schema(documents.agent_schema))
         with pytest.raises(ValidationError):
             validator.validate(self._valid_agent_doc(serviceAccountId=12345))

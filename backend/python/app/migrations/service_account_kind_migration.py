@@ -47,6 +47,7 @@ class ServiceAccountKindMigrationService:
             return {"success": True, "users_updated": 0, "skipped": True}
 
         updated = 0
+        failures = 0
         try:
             orgs = await self.graph_provider.get_all_orgs(active=False)
             for org in orgs or []:
@@ -59,7 +60,7 @@ class ServiceAccountKindMigrationService:
                     email = str(user.get("email") or "").strip().lower()
                     if (
                         email.endswith(SERVICE_ACCOUNT_EMAIL_SUFFIX)
-                        and user.get("kind") != "service"
+                        and user.get("kind") is None
                     ):
                         user_key = user.get("_key") or user.get("id")
                         if not user_key:
@@ -70,15 +71,27 @@ class ServiceAccountKindMigrationService:
                             "kind": "service",
                             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
-                        await self.graph_provider.batch_upsert_nodes(
+                        success = await self.graph_provider.batch_upsert_nodes(
                             [update_doc], CollectionNames.USERS.value
                         )
-                        updated += 1
+                        if success:
+                            updated += 1
+                        else:
+                            failures += 1
+                            self.logger.warning(
+                                f"Failed to update kind for service account user {user_key}"
+                            )
         except Exception as e:
             self.logger.error(
                 f"❌ Service account kind migration failed: {e}", exc_info=True
             )
             return {"success": False, "users_updated": updated, "error": str(e)}
+
+        if failures > 0:
+            self.logger.warning(
+                f"⚠️ Service account kind migration had {failures} failure(s); flag left unset for retry"
+            )
+            return {"success": False, "users_updated": updated, "failures": failures}
 
         try:
             await self.config_service.set_config(

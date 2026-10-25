@@ -580,7 +580,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_uses_service_account_id_when_present(self) -> None:
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(
@@ -607,7 +609,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_service_account_doc_not_found(self) -> None:
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value=None)
@@ -624,7 +628,9 @@ class TestEnrichUserInfoForServiceAccountChat:
 
     @pytest.mark.asyncio
     async def test_service_account_doc_no_user_id(self) -> None:
-        from app.api.routes.agent import _enrich_user_info_for_service_account_agent_chat
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(

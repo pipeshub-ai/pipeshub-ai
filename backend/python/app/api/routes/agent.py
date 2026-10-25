@@ -2922,6 +2922,19 @@ async def create_agent(request: Request) -> JSONResponse:
         )
         response_agent["createdBy"] = user_context["userId"]
 
+        sa_key = response_agent.get("serviceAccountId")
+        if sa_key:
+            sa_doc = await graph_provider.get_document(
+                str(sa_key), CollectionNames.USERS.value
+            )
+            if not sa_doc:
+                try:
+                    sa_doc = await graph_provider.get_user_by_user_id(str(sa_key))
+                except Exception:
+                    sa_doc = None
+            if sa_doc and sa_doc.get("userId"):
+                response_agent["serviceAccountId"] = sa_doc["userId"]
+
         all_failed = failed_toolsets + failed_mcp_servers
         status = "partial_success" if all_failed else "success"
         message = f"Agent created with warnings: {len(all_failed)} attachment(s) failed" if all_failed else "Agent created successfully"

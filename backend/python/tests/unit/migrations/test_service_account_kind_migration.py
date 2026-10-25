@@ -99,3 +99,48 @@ async def test_error_leaves_flag_unset() -> None:
     assert result["success"] is False
     assert "db error" in result.get("error", "")
     assert MIGRATION_FLAG_KEY not in config.values
+
+
+@pytest.mark.asyncio
+async def test_preserves_explicit_kind_classification() -> None:
+    users = {
+        "org-1": [
+            {
+                "_key": "sa-ind",
+                "email": "human-service@service.pipeshub.internal",
+                "kind": "individual",
+            },
+            {
+                "_key": "sa-bot",
+                "email": "bot@service.pipeshub.internal",
+            },
+        ]
+    }
+    graph = FakeGraph(users)
+    config = FakeConfig()
+    logger = logging.getLogger("test")
+
+    result = await run_service_account_kind_migration(graph, config, logger)
+
+    assert result["success"] is True
+    assert result["users_updated"] == 1
+    assert len(graph.upserted) == 1
+    assert graph.upserted[0]["id"] == "sa-bot"
+    assert config.values.get(MIGRATION_FLAG_KEY, {}).get("done") is True
+
+
+@pytest.mark.asyncio
+async def test_batch_upsert_failure_leaves_flag_unset() -> None:
+    graph = FakeGraph(
+        {"org-1": [{"_key": "sa1", "email": "bot@service.pipeshub.internal"}]}
+    )
+    graph.batch_upsert_nodes = AsyncMock(return_value=False)
+    config = FakeConfig()
+    logger = logging.getLogger("test")
+
+    result = await run_service_account_kind_migration(graph, config, logger)
+
+    assert result["success"] is False
+    assert result["users_updated"] == 0
+    assert result.get("failures") == 1
+    assert MIGRATION_FLAG_KEY not in config.values
