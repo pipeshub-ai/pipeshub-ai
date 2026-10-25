@@ -990,9 +990,26 @@ const createAgentBodySchema = z
   });
 
 export const createAgentSchema = z.object({
-  body: createAgentBodySchema.extend({
-    apiToolsetTools: agentApiToolsetToolsSchema,
-  }),
+  body: createAgentBodySchema
+    .extend({
+      apiToolsetTools: agentApiToolsetToolsSchema,
+    })
+    // Only a service agent searches as a service account. Accepting the pair
+    // without the flag would create an agent that quietly searches as its
+    // creator — the wide identity — while the caller believed they had asked
+    // for the narrow one. On update there is no equivalent check here, because
+    // the agent may already be a service agent and the body need not say so;
+    // that one is checked against the stored agent on the Python side.
+    .refine(
+      (body) =>
+        body.serviceAccountUserId === undefined ||
+        body.isServiceAccount === true,
+      {
+        message:
+          'Only a service agent searches as a service account. Set isServiceAccount, or leave the binding out.',
+        path: ['serviceAccountUserId'],
+      },
+    ),
 });
 
 // ---------------------------------------------------------------------------

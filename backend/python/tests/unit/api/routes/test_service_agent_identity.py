@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from app.api.routes.agent import (
     AgentNotFoundError,
     InvalidRequestError,
+    _checked_service_account_binding,
     _enrich_user_info_for_service_account_agent_chat,
     _resolve_service_account_binding,
 )
@@ -334,3 +335,62 @@ async def test_an_unbound_agent_is_unaffected_by_the_disabled_field() -> None:
         agent(), graph, LOG, ORG,
     )
     assert info["userId"] == CREATOR["userId"]
+
+
+# ---------------------------------------------------------------------------
+# What an agent is allowed to ask for, before the account itself is looked up.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_binding_is_allowed_on_an_agent_that_is_not_a_service_agent() -> None:
+    """Every agent document carries this field as null, so a client that reads
+    an agent and sends it straight back must not be turned away."""
+    graph = FakeGraph()
+    graph.raised = True  # the account must not be looked up at all
+
+    assert (
+        await _checked_service_account_binding(
+            None, graph, ORG, is_service_account=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_binding_is_allowed_on_a_service_agent_too() -> None:
+    """Clearing returns the agent to searching as its creator, which is where
+    every unbound service agent already sits."""
+    graph = FakeGraph()
+    graph.raised = True
+
+    assert (
+        await _checked_service_account_binding(
+            None, graph, ORG, is_service_account=True,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_binding_on_a_regular_agent_is_refused_not_dropped() -> None:
+    """Dropping it would leave the agent searching as its creator — the wider
+    identity — while whoever asked believed they had narrowed it."""
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+
+    with pytest.raises(InvalidRequestError):
+        await _checked_service_account_binding(
+            ACCOUNT["userId"], graph, ORG, is_service_account=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_binding_on_a_service_agent_is_resolved() -> None:
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+
+    assert (
+        await _checked_service_account_binding(
+            ACCOUNT["userId"], graph, ORG, is_service_account=True,
+        )
+        == ACCOUNT["userId"]
+    )

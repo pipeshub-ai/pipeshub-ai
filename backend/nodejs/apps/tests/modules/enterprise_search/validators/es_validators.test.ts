@@ -2186,6 +2186,37 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('refuses a binding on create unless the agent is a service agent', () => {
+      // Dropping it would create an agent that searches as its creator, the
+      // wider identity, while whoever asked believed they had narrowed it.
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal([
+          'body',
+          'serviceAccountUserId',
+        ])
+      }
+    })
+
+    it('refuses a binding on create when the flag is explicitly false', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Nightly agent',
+          models: [validModel],
+          isServiceAccount: false,
+          serviceAccountUserId: '65f1a2b3c4d5e6f701020304',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('does not require serviceAccountUserId', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Nightly agent', models: [validModel], isServiceAccount: true },

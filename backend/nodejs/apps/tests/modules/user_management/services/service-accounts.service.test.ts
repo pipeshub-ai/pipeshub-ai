@@ -646,6 +646,24 @@ describe('ServiceAccountsService', () => {
       expect(payload.isDisabled).to.equal(true);
     });
 
+    it('tells it again when a disable is retried over an already-off account', async () => {
+      // An earlier attempt can write Mongo and then fail before publishing —
+      // token revocation throws, or the broker is down. By the time the retry
+      // arrives the account is already off, so nothing has changed; publishing
+      // only on a change would leave the graph holding an account that is
+      // switched off everywhere else, and a bound agent still searching with
+      // it.
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: true });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      expect(events.publishEvent.firstCall.args[0].payload.isDisabled).to.equal(
+        true,
+      );
+    });
+
     it('says nothing when neither the name nor the switch moved', async () => {
       stubAccount(false);
 
