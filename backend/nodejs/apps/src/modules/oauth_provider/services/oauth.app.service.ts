@@ -13,6 +13,7 @@ import {
   OAuthGrantType,
 } from '../schema/oauth.app.schema'
 import {
+  isKnowledgeLimitWithin,
   sameKnowledgeLimit,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
@@ -632,13 +633,26 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    // The knowledge limit rides in the claim the same way. Any change goes:
-    // a new limit may hide what a token reaches, and a lifted one widens what
-    // users agreed to, so they connect again.
-    const limitChanged = !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
-    if (removedScopes.length > 0 || limitChanged) {
+    // The knowledge limit rides in the claim the same way. A narrowed one may
+    // hide what a token reaches, so those tokens go. A widened one keeps
+    // them: each token, and each refresh, stays at the limit its user agreed
+    // to, and the new items reach a user once they connect again. Only
+    // refresh tokens stored before they kept that limit would follow the
+    // app's, so those go.
+    const limitNarrowed = !isKnowledgeLimitWithin(
+      previousLimit,
+      app.knowledgeLimit,
+    );
+    const limitWidened =
+      !limitNarrowed && !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
+    const revokeAll = removedScopes.length > 0 || limitNarrowed;
+    if (revokeAll || limitWidened) {
       try {
-        await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+        await (revokeAll
+          ? this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+          : this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
+              app.clientId,
+            ));
       } catch (error) {
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
@@ -649,7 +663,8 @@ export class OAuthAppService {
         appId: app._id.toString(),
         orgId,
         removedScopes,
-        limitChanged,
+        limitNarrowed,
+        limitWidened,
       })
     }
 

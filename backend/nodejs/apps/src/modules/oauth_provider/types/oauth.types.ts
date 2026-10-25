@@ -68,6 +68,13 @@ export interface GenerateTokensOptions {
    */
   actorUserId?: string;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The limit the user agreed to, for tokens minted from their grant (a
+   * code, a device approval, a refresh). Widening the app's limit later
+   * leaves these tokens at it. `null` is no limit; left out, the token takes
+   * the app's current limit.
+   */
+  grantedKnowledgeLimit?: KnowledgeLimit | null;
 }
 
 // Token Response (RFC 6749 compliant)

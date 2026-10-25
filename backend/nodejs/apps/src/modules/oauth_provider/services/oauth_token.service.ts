@@ -10,7 +10,7 @@ import {
 } from '../schema/oauth.access_token.schema';
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
 import {
-  sameKnowledgeLimit,
+  isKnowledgeLimitWithin,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema';
@@ -104,10 +104,13 @@ export class OAuthTokenService {
 
     const jti = randomUUID();
     const now = Math.floor(Date.now() / 1000);
-    // A personal access token names its own limit; every other token takes
-    // its app's, read here so a refresh picks up the creator's latest edit.
+    // A personal access token names its own limit, and a user grant carries
+    // the one its user agreed to. Every other token takes its app's.
     const knowledgeLimit =
-      opts?.knowledgeLimit ?? toKnowledgeLimit(app.knowledgeLimit);
+      opts?.knowledgeLimit ??
+      (opts?.grantedKnowledgeLimit === undefined
+        ? toKnowledgeLimit(app.knowledgeLimit)
+        : toKnowledgeLimit(opts.grantedKnowledgeLimit));
     const accessTokenLifetime =
       opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime;
 
@@ -237,6 +240,9 @@ export class OAuthTokenService {
         orgId: new Types.ObjectId(orgId),
         scopes,
         expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
+        // Stored as null when there is none, so a refresh can tell "no
+        // limit" from a token issued before the limit was stored here.
+        knowledgeLimit: knowledgeLimit ?? null,
       });
 
       result.refreshToken = refreshToken;
@@ -263,12 +269,13 @@ export class OAuthTokenService {
   }
 
   /**
-   * updateApp saves a reduced scope list or a changed knowledge limit and
+   * updateApp saves a reduced scope list or a narrowed knowledge limit and
    * then revokes the app's tokens. A grant that read the app before that save
    * can insert its tokens after the revocation. Reading the app again after
    * the insert closes the gap: if this read still sees the old values, the
    * save and its revocation come later and catch these tokens; if it sees the
-   * new ones, they are revoked here.
+   * new ones, they are revoked here. A limit that only widened keeps the
+   * tokens, which reach no more than the user agreed to.
    */
   private async revokeIfAppChanged(
     clientId: string,
@@ -287,7 +294,7 @@ export class OAuthTokenService {
       current &&
       isGrantCoveredBy(scopes, current.allowedScopes) &&
       (signed === undefined ||
-        sameKnowledgeLimit(signed.knowledgeLimit, current.knowledgeLimit))
+        isKnowledgeLimitWithin(signed.knowledgeLimit, current.knowledgeLimit))
     ) {
       return;
     }
@@ -495,7 +502,14 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
-      { recheckAppScopes: true },
+      // The limit the user agreed to, not the app's: an app whose limit has
+      // widened since reaches the new items once its user connects again.
+      // A token stored without one takes the app's, which updateApp keeps
+      // from widening under it.
+      {
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: storedToken.knowledgeLimit,
+      },
     );
 
     this.logger.info('Tokens refreshed', {
@@ -573,6 +587,29 @@ export class OAuthTokenService {
     ]);
 
     this.logger.info('All tokens revoked for app', { clientId });
+  }
+
+  /**
+   * Revoke the app's refresh tokens stored before they kept the user's
+   * knowledge limit. A refresh gives those the app's current limit, so they
+   * cannot outlive a widening of it. Their access tokens keep the limit they
+   * were signed with and run out on their own.
+   */
+  async revokeRefreshTokensWithoutKnowledgeLimit(
+    clientId: string,
+  ): Promise<void> {
+    await OAuthRefreshToken.updateMany(
+      {
+        clientId: { $eq: clientId },
+        isRevoked: { $eq: false },
+        knowledgeLimit: { $exists: false },
+      },
+      { isRevoked: true, revokedAt: new Date() },
+    );
+
+    this.logger.info('Refresh tokens without a stored limit revoked', {
+      clientId,
+    });
   }
 
   /**
