@@ -5,8 +5,9 @@ used to protect the conversation's first question instead of the current one,
 so when the current turn's tool results filled the window the follow-up was
 summarised away and the model answered the first question again.
 
-The suite adds its own model with a 48K ``contextLength`` so that reading one
-long manual is enough to make compaction fire, uploads six ~120K-character
+The suite adds its own model with a 40K ``contextLength``, where one search
+result fits whole and two in one turn make compaction fire (the arithmetic is
+at ``_CONTEXT_LENGTH``). It uploads six ~120K-character
 manuals in which the two answers sit in different chapters of different
 volumes, and asks A (reminders) then B (choosing a practice) in one
 conversation. That runs through a named Agent Builder agent (``quick``) and
@@ -49,12 +50,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
 logger = logging.getLogger("ai-agents-it")
 
-# The system prompt and tool schemas take about 16K of the window and the reply
-# reserve 8K, so at 24K the messages got ~4K and every search result was cut to a
-# third of itself: neither manual's notes reached an answer. 48K leaves one
-# 32K-character search result whole, and a few searches or one manual still
-# overflow it, so compaction fires.
-_CONTEXT_LENGTH = 48_000
+# Messages get B = window - system prompt and tool schemas - reply reserve. The reserve
+# is 8K, or on a small window at most a quarter of it and half of what the prompt
+# leaves (ContextBudget.for_model). The prompt here is ~15.4K for the named agent and
+# ~16.8K for the assistant, so at 24K B was ~4.3K and ~3.6K, and each search result
+# (32K characters, ~8K tokens) was cut to a third. At 40K B is ~16.6K and ~15.2K: one
+# result fits whole under the 70% low-water mark (~11.6K, ~10.6K), and two pass every
+# compaction trigger up to auto_compact's 85% (~14.1K, ~12.9K).
+_CONTEXT_LENGTH = 40_000
 _MANUAL_CHARS = 120_000
 _QUESTION_A = "How do I set up automated appointment reminders by SMS and email, and can patients confirm or cancel?"
 _QUESTION_B = "I have access to more than one practice. How do I pick which practice to log into and set a default?"
@@ -143,7 +146,7 @@ class Exchange:
 def small_window_model(pipeshub_client: PipeshubClient, ai_provider) -> Iterator[SmallWindowModel]:
     """The suite's provider again, with a context length small enough that compaction must fire."""
     provider, model_name, configuration = ai_provider
-    configuration = {**configuration, "modelFriendlyName": f"IT 48K {uuid.uuid4().hex[:6]}"}
+    configuration = {**configuration, "modelFriendlyName": f"IT 40K {uuid.uuid4().hex[:6]}"}
 
     def add(is_reasoning: bool):
         return pipeshub_client.request("POST", f"{AI_MODELS}/providers", json={
