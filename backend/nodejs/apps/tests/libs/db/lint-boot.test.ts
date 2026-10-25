@@ -52,7 +52,7 @@ describe('libs/db lint', () => {
       else if (p.endsWith('.ts') && !p.includes(join('src', 'libs', 'db') + '/')) files.push(p)
     })
     walk(root)
-    const users = files.filter((f) => /from '[./]*(libs\/)?db(\/uow|\/index)?'/.test(readFileSync(f, 'utf8')))
+    const users = files.filter((f) => /from '[./]*(libs\/)?db(\/[a-z-]+)?'/.test(readFileSync(f, 'utf8')))
     for (const f of users) expect(scanSource(readFileSync(f, 'utf8')), f).to.deep.equal([])
   })
 })

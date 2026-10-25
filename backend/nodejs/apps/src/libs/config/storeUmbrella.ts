@@ -16,11 +16,15 @@ export const POSTGRES_SETTINGS: Readonly<Record<string, string>> = {
 };
 
 /** Call once, after `.env` is loaded and before anything reads the per-store settings. */
-export function applyStoreUmbrella(env: NodeJS.ProcessEnv = process.env): boolean {
+export function applyStoreUmbrella(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
   const value = (env[UMBRELLA_ENV] ?? '').trim().toLowerCase();
   if (!value) return false;
   if (value !== 'postgres') {
-    throw new Error(`${UMBRELLA_ENV}='${value}' is not supported; use 'postgres' or leave it unset`);
+    throw new Error(
+      `${UMBRELLA_ENV}='${value}' is not supported; use 'postgres' or leave it unset`,
+    );
   }
   for (const [key, setting] of Object.entries(POSTGRES_SETTINGS)) {
     if (!env[key]?.trim()) env[key] = setting;

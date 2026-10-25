@@ -22,6 +22,16 @@ async function until(cond: () => boolean, ms = 15000): Promise<void> {
   before(() => { process.env.PG_NODE_URL = URL; process.env.PG_POOLER = 'none'; process.env.PG_LISTEN_PING_S = '0.4'; process.env.PG_LISTEN_PING_TIMEOUT_S = '0.6' })
   after(() => { configurePg(undefined); delete process.env.PG_LISTEN_PING_S; delete process.env.PG_LISTEN_PING_TIMEOUT_S })
 
+  it('holds no connection when the last subscriber leaves while it is being made', async () => {
+    const hub = ListenHub.forUrl(URL)
+    const internals = hub as unknown as { subs: Set<unknown>; doConnect(): Promise<void> }
+    internals.subs.add({ channel: 'pipeshub_kv_changed', onNotify: () => undefined })
+    const connecting = internals.doConnect()
+    internals.subs.clear()
+    await connecting
+    expect(hub.connections).to.equal(0)
+  })
+
   it('replaces a connection that stops answering, tells subscribers to re-read, and listens again', async () => {
     const u = new globalThis.URL(URL)
     let frozenBefore = 0

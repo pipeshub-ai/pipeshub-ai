@@ -23,6 +23,9 @@ on:
       - 'backend/nodejs/apps/src/libs/db/**'
       - 'backend/nodejs/apps/src/libs/services/pg-*.ts'
       - 'backend/nodejs/apps/src/libs/keyValueStore/**'
+      - 'backend/nodejs/apps/src/modules/crawling_manager/services/crawling_pg.ts'
+      - 'backend/nodejs/apps/src/modules/crawling_manager/services/connector_schedule_sweep.ts'
+      - 'backend/nodejs/apps/tests/modules/crawling_manager/services/crawling_pg.test.ts'
       - 'backend/nodejs/apps/tests/libs/services/pg-*'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
@@ -103,7 +106,9 @@ jobs:
         run: |
           sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
           sudo systemctl start "postgresql@${{ matrix.pg }}-main"
-          eval "$(PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5432/postgres PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
+          # the runner image already has a cluster on 5432, so a newly installed one is on another port
+          PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
           python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
 
@@ -157,7 +162,8 @@ jobs:
         run: |
           sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
           sudo systemctl start "postgresql@${{ matrix.pg }}-main"
-          eval "$(PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5432/postgres PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_RUNTIME_ROLE=node "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
+          PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_RUNTIME_ROLE=node "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           npm run test:pg-services -- --reporter xunit --reporter-option output="$RUNNER_TEMP/node-services-junit.xml"
 
       - name: No unexpected skips

@@ -58,6 +58,21 @@ type D = { n?: number; tag?: string }
     expect((await queue.getCompleted()).length).to.be.at.most(2)             // removeOnComplete: 2
   })
 
+  it('removeOnComplete: true drops the finished job only, not the ones that finished before it', async () => {
+    const queue = new PgJobQueue<D>(q, { attempts: 1 })
+    const ran: string[] = []
+    worker(async (j) => { ran.push(j.id) })
+    await queue.add('keep', { n: 1 }, { jobId: 'kept' })
+    await until(() => ran.includes('kept'))
+    await until(async () => (await queue.getCompleted()).some((j) => j.id === 'kept'))
+    await queue.add('drop', { n: 2 }, { jobId: 'dropped', removeOnComplete: true })
+    await until(() => ran.includes('dropped'))
+    await sleep(300)
+    const ids = (await queue.getCompleted()).map((j) => j.id)
+    expect(ids).to.include('kept')
+    expect(ids).to.not.include('dropped')
+  })
+
   it('runs a one-time delayed job once, and a job id that is taken adds nothing', async () => {
     const queue = new PgJobQueue<D>(q, { attempts: 1 })
     const ran: number[] = []

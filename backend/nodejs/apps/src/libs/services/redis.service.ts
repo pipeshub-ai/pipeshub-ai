@@ -239,7 +239,7 @@ export class InProcessCacheService implements ICacheService {
     return Promise.resolve();
   }
 
-  /** INCR with the expiry set when the counter is created, as the Redis service does. */
+  /** INCR whose expiry is set when the counter is created; later increments do not extend it (RedisService.increment refreshes the TTL on every call). */
   increment(key: string, options: CacheOptions = {}): Promise<number> {
     this.sweep();
     const k = this.key(key, options.namespace);

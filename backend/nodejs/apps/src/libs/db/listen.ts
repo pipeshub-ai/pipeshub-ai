@@ -117,6 +117,13 @@ export class ListenHub {
       this.schedule();
       return;
     }
+    if (this.subs.size === 0) {
+      // the last subscriber left while this connection was being made: hold nothing
+      client.removeAllListeners();
+      client.on('error', () => undefined);
+      await client.end().catch(() => undefined);
+      return;
+    }
     this.client = client;
     this.attempt = 0;
     this.lastOk = Date.now();

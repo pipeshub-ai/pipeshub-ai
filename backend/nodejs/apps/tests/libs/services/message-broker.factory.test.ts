@@ -448,11 +448,28 @@ describe('MessageBrokerFactory', () => {
       expect(createMessageAdminForBrokerType('postgres' as any, undefined, undefined, mockLogger as any)).to.be.instanceOf(PgQueueAdminService);
     });
 
+    it('fails connect() when the queue cannot be reached, like the Kafka and Redis connections', async () => {
+      process.env.MESSAGE_BROKER = 'postgres';
+      for (const make of [createMessageProducer, createMessageConsumer]) {
+        const c = make({ type: 'postgres' } as any, mockLogger as any) as any;
+        c.healthCheck = async () => false;
+        let err: unknown;
+        await c.connect().catch((e: unknown) => { err = e; });
+        expect(err, make.name).to.be.instanceOf(Error);
+        expect(c.isConnected()).to.equal(false);
+        c.healthCheck = async () => true;
+        await c.connect();
+        expect(c.isConnected()).to.equal(true);
+      }
+    });
+
     it('gives the mail consumer its own group and a claim that outlives one send', () => {
       process.env.MESSAGE_BROKER = 'postgres';
       const c = createMailMessageConsumer({ kafka: { brokers: [] }, redis: { host: '', port: 0 } } as any, mockLogger as any);
       expect(c).to.be.instanceOf(BasePgQueueConsumerConnection);
       expect((c as any).groupId).to.equal('mail-consumer-group');
+      expect((c as any).config.claimMinIdleMs).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+      expect((c as any).config.readCount).to.equal(1);
     });
   });
 

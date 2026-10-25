@@ -137,9 +137,18 @@ export abstract class BasePgQueueProducerConnection implements IMessageProducer 
 
   constructor(protected readonly logger: Logger) {}
 
-  connect(): Promise<void> {
+  async connect(): Promise<void> {
+    // like the Kafka and Redis connections, fail at start-up when the database cannot be reached or is misconfigured
+    if (!(await this.healthCheck())) {
+      throw new MessageBrokerError(
+        'Failed to connect to the PostgreSQL queue',
+        {
+          details:
+            'the queue health probe failed (check PG_NODE_URL and that the database is migrated)',
+        },
+      );
+    }
     this.connected = true;
-    return Promise.resolve();
   }
 
   disconnect(): Promise<void> {
@@ -248,9 +257,18 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     this.visibilityS = Math.max((config.claimMinIdleMs ?? 30_000) / 1000, 5);
   }
 
-  connect(): Promise<void> {
+  async connect(): Promise<void> {
+    // like the Kafka and Redis connections, fail at start-up when the database cannot be reached or is misconfigured
+    if (!(await this.healthCheck())) {
+      throw new MessageBrokerError(
+        'Failed to connect to the PostgreSQL queue',
+        {
+          details:
+            'the queue health probe failed (check PG_NODE_URL and that the database is migrated)',
+        },
+      );
+    }
     this.connected = true;
-    return Promise.resolve();
   }
 
   async disconnect(): Promise<void> {

@@ -82,9 +82,16 @@ export class ConnectorScheduleSweepService {
           removeOnFail: 10,
         });
         this.queue = queue;
-        this.worker = new PgJobWorker(SWEEP_QUEUE_NAME, run, {
+        const worker = new PgJobWorker(SWEEP_QUEUE_NAME, run, {
           concurrency: 1,
         });
+        // an emitted 'error' with no listener would crash the process on a transient database error
+        worker.on('error', (e: unknown) => {
+          this.logger.error('connector schedule sweep worker error', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+        });
+        this.worker = worker;
         await queue.upsertJobScheduler(
           SWEEP_JOB_NAME,
           { every: intervalMinutes * 60_000 },

@@ -122,6 +122,7 @@ const SQL = {
     WHERE queue = $1 AND id = $2 AND attempts_made = $3 AND state = 'active' RETURNING id`,
   extend: `/* pipeshub:sched.extend */ UPDATE platform.sched_jobs SET locked_until = now() + make_interval(secs => $3::double precision)
     WHERE queue = $1 AND id = ANY($2::text[]) AND state = 'active'`,
+  dropOne: `/* pipeshub:sched.dropone */ DELETE FROM platform.sched_jobs WHERE queue = $1 AND id = $2 AND state = $3`,
   trim: `/* pipeshub:sched.trim */ DELETE FROM platform.sched_jobs WHERE queue = $1 AND state = $2 AND id NOT IN (
       SELECT id FROM platform.sched_jobs WHERE queue = $1 AND state = $2 ORDER BY finished_ms DESC NULLS LAST, id LIMIT $3)`,
   stalledBack: `/* pipeshub:sched.stalledback */ UPDATE platform.sched_jobs SET state = 'waiting', stalled = stalled + 1, locked_by = NULL, locked_until = NULL
@@ -501,12 +502,15 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
     let waitMs = POLL_MS;
     if (this.listener?.healthy()) {
       waitMs = SAFETY_NET_MS;
-      const r = await unit(false, (tx) =>
-        tx.query<{ secs: number | null }>(SQL.nextDue, [this.queueName]),
-      );
-      const secs = r.rows[0]?.secs;
-      if (secs !== null && secs !== undefined)
-        waitMs = Math.min(Math.max(secs * 1000, 20) + 20, SAFETY_NET_MS);
+      // every slot busy: nothing can be claimed until one finishes, and finishing wakes this loop, so a due run is no reason to poll
+      if (this.inFlight.size < this.concurrency) {
+        const r = await unit(false, (tx) =>
+          tx.query<{ secs: number | null }>(SQL.nextDue, [this.queueName]),
+        );
+        const secs = r.rows[0]?.secs;
+        if (secs !== null && secs !== undefined)
+          waitMs = Math.min(Math.max(secs * 1000, 20) + 20, SAFETY_NET_MS);
+      }
     }
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, waitMs);
@@ -595,6 +599,7 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
             tx,
             'completed',
             job.opts.removeOnComplete ?? this.defaults.removeOnComplete,
+            job.id,
           );
         return r.rows.length > 0;
       });
@@ -626,6 +631,7 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
                 tx,
                 'failed',
                 job.opts.removeOnFail ?? this.defaults.removeOnFail,
+                job.id,
               );
           });
         }
@@ -643,11 +649,13 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
     tx: Tx,
     state: string,
     keep: number | boolean | undefined,
+    jobId: string,
   ): Promise<void> {
     if (typeof keep === 'number')
       await tx.query(SQL.trim, [this.queueName, state, keep]);
     else if (keep === true)
-      await tx.query(SQL.trim, [this.queueName, state, 0]);
+      // BullMQ's removeOnComplete: true drops this job only, not the ones that finished before it
+      await tx.query(SQL.dropOne, [this.queueName, jobId, state]);
   }
 
   private async recoverStalled(): Promise<void> {

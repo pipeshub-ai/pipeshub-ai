@@ -359,7 +359,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     it('transaction-scoped advisory locks with registered keys: exclusion within, release at commit, nothing left on the session', async () => {
       const { rt } = rtOn(reset.port)
-      const key = registerLockKey(`it.lock.${cluster.port}`, 7_340_500 + (cluster.port % 100))
+      const key = registerLockKey(`it.lock.${cluster.port}`, 7_340_500 + cluster.port)
       const holding = barrier(2)
       const release = barrier(2)
       const a = inOrg('aaaaaaaaaaaaaaaaaaaaaaaa', () => rt.withUow({}, async (tx) => { await tx.advisoryXactLock(key, 1); await holding(); await release() }))
