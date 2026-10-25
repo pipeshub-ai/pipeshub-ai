@@ -268,10 +268,12 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
-                # Set on the existing node too, which is what lets the user
-                # management service fill in nodes that predate the field by
-                # republishing them. Left alone when absent, so an older
-                # producer cannot blank a value a newer one has already set.
+                # Set on the existing node too: a service account that is
+                # restored, or recreated under an address the graph already
+                # knows, arrives here rather than below. Left alone when
+                # absent, so an older producer cannot blank a value a newer
+                # one has already set. Nodes that predate the field are filled
+                # in by the backfill, not from here.
                 if payload.get("kind"):
                     user_data["kind"] = payload["kind"]
             else:
