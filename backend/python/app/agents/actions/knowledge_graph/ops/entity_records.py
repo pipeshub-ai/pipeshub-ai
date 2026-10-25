@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.views import (
     _trunc,
 )
 from app.models.entities import resolve_weburl
+from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
@@ -187,11 +188,9 @@ def _render_page(
         app = context.app_names.get(record.get("connectorId"))
         if app:
             parts.append(f"app: {app}")
-        modified = _compact_date(
-            record.get("sourceLastModifiedTimestamp") or record.get("updatedAtTimestamp")
-        )
-        if modified:
-            parts.append(f"modified: {modified}")
+        dated = RecordDates.from_graph(record).listing_date(record.get("updatedAtTimestamp"))
+        if dated:
+            parts.append(f"{dated[0]}: {_compact_date(dated[1])}")
         url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
         if url:
             parts.append(f"url={url}")

@@ -4,7 +4,7 @@ import ipaddress
 import os
 import shutil
 import socket
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -22,6 +22,9 @@ from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflic
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
@@ -40,7 +43,7 @@ from app.utils.aimodels import (
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import provider_error_code
+from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
 from app.web.deadline import Deadline
 from app.web.errors import (
     AuthFailed,
@@ -55,7 +58,22 @@ from app.web.errors import (
 )
 from app.web.health import check_provider, provider_name
 
-router = APIRouter(dependencies=[Depends(deny_service_tokens)])
+
+async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
+    """Bind the admin as the caller. The projector sends admin workloads as the service, so a probe never spends a person's gateway budget."""
+    user = getattr(request.state, "user", None)
+    container = getattr(request.app, "container", None)
+    config_service = container.config_service() if container is not None else None
+    async with call_scope(
+        principal_from_request_user(user if isinstance(user, dict) else None),
+        Workload.HEALTH_CHECK,
+        config_service=config_service,
+        container=container,
+    ):
+        yield
+
+
+router = APIRouter(dependencies=[Depends(deny_service_tokens), Depends(_bind_health_check_identity)])
 
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
@@ -258,10 +276,67 @@ def _model_setup_failed_message(kind: str, provider: str | None) -> str:
 _REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
 
 
-def _rejected_settings_message(code: str, kind: str, model_config: dict, model: str) -> str:
+def _rejected_settings_message(
+    code: str, kind: str, model_config: dict, model: str, exc: BaseException | None = None,
+) -> str:
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if _normalize_provider_key(model_config.get("provider")) == "bedrock":
+        from app.utils.aimodels import (
+            bedrock_inference_profile_hint,
+            bedrock_is_openai_gpt,
+        )
+
+        profiles = bedrock_inference_profile_hint(model)
+        if profiles and code in ("invalid_request", "model_not_found"):
+            return (
+                f"Bedrock only serves \"{model}\" through a cross-Region inference profile. "
+                f"Change the model name to {profiles} in Workspace > AI Models, then try again."
+            )
+        if code == "auth_error":
+            cause = bedrock_access_denied_cause(exc)
+            if cause == "credentials":
+                return (
+                    f"AWS rejected the credentials for {name}: the access key, secret key or "
+                    "session token is wrong or has expired. Check them in Workspace > AI Models, "
+                    "or the server's IAM role when no key is set, then try again."
+                )
+            if cause == "account":
+                return (
+                    f"AWS hasn't enabled {name} for this AWS account. IAM permissions can't fix "
+                    "this: ask AWS Support to enable the model for the account and Region, "
+                    "or choose another model."
+                )
+            if cause == "marketplace":
+                return (
+                    f"AWS couldn't complete the AWS Marketplace subscription for {name}, "
+                    "usually because the account has no valid payment method. Fix billing in "
+                    "the AWS console, wait a few minutes, then try again. IAM permissions "
+                    "can't fix this."
+                )
+            if cause == "other":
+                return (
+                    f"Bedrock denied access to {name}. Check the model's access, billing and "
+                    "account status in the Amazon Bedrock console, then try again."
+                )
+            if cause == "scp":
+                return (
+                    f"An AWS Organizations service control policy blocks {name}. Ask your AWS "
+                    "Organizations administrator to allow Bedrock for this account, then try again."
+                )
+            extra = (
+                " OpenAI GPT models also need that permission on the account's default project "
+                "(arn:aws:bedrock:<region>:<account-id>:project/default)."
+                if bedrock_is_openai_gpt(model) else ""
+            )
+            return (
+                f"Bedrock denied access to {name}. Make sure the access key, or the server's IAM "
+                f"role when no key is set, allows bedrock:InvokeModel and "
+                f"bedrock:InvokeModelWithResponseStream on this inference profile and on the "
+                f"foundation model in every Region the profile routes to "
+                f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
+            )
     if code == "auth_error":
         return (
             f"The API key for {name} was rejected by {provider}. "
@@ -296,7 +371,7 @@ async def _model_setup_failed_response(
     code = provider_error_code(e)
     if code in _REJECTED_SETTINGS_CODES:
         return _config_error(
-            _rejected_settings_message(code, kind, model_config, model),
+            _rejected_settings_message(code, kind, model_config, model, e),
             model_config, model, error_code=code,
         )
     if _looks_like_connectivity_error(e):

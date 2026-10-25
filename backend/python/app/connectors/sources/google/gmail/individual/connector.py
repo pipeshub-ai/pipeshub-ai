@@ -1,5 +1,5 @@
 import asyncio
-import base64
+import functools
 import io
 import os
 import re
@@ -21,7 +21,6 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
-    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -57,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     FilterCategory,
@@ -77,7 +77,17 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
-from app.connectors.sources.google.common.gmail_message_parts import find_message_part
+from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
+from app.connectors.sources.google.common.gmail_endpoint import gmail_api_base_url
+from app.connectors.sources.google.common.gmail_errors import classify
+from app.connectors.sources.google.common.gmail_mailbox_sync import (
+    GmailMailboxApi,
+    GmailMailboxSync,
+    MailboxWindow,
+)
+from app.connectors.sources.google.common.gmail_message_parts import decode_body_data, find_message_part
+from app.connectors.sources.google.common.gmail_notices import GmailNotices
+from app.connectors.sources.google.common.gmail_sync_health import GmailSyncHealth
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -94,7 +104,7 @@ from app.models.entities import (
     USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import Permission
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.filename_utils import temp_path_for
@@ -240,6 +250,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
         self.config: Optional[Dict] = None
         self._datasource_refresh_lock = asyncio.Lock()
 
+        # What the current run could not do; decides its outcome and what a full sync may remove.
+        self._sync_health = GmailSyncHealth()
+        self._call_policy = GmailCallPolicy(self.logger)
+
         # Acquired in init(), once the factory has injected the shared pool.
         self._gmail_executor: ThreadPoolLease | None = None
 
@@ -247,6 +261,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """Initialize the Google Gmail connector with credentials and services."""
         try:
             self._gmail_executor = self._thread_lease(_GMAIL_INDIVIDUAL_MAX_CONCURRENCY)
+            if gmail_api_base_url():
+                self.logger.warning(
+                    "Gmail calls for this connector go to %s (GMAIL_GOOGLE_API_BASE_URL), not to Google: "
+                    "only a test deployment should set it.", gmail_api_base_url()
+                )
 
             # Load connector config
             config = await self.config_service.get_config(
@@ -311,7 +330,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     config_service=self.config_service,
                     is_individual=True,  # This is an individual connector
                     version="v1",
-                    connector_instance_id=self.connector_id
+                    connector_instance_id=self.connector_id,
+                    api_base_url=gmail_api_base_url(),
                 )
 
                 # Create Google Gmail Data Source from the client
@@ -645,7 +665,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             if not body_data:
                 return []
             try:
-                decoded_data = base64.urlsafe_b64decode(body_data).decode('UTF-8')
+                decoded_data = decode_body_data(body_data).decode('UTF-8')
 
                 # Match Drive file URLs: https://drive.google.com/file/d/{file_id}/view?usp=drive_web
                 # This matches the exact pattern used in gmail_user_service.py
@@ -813,7 +833,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         config_service=self.config_service,
                         is_individual=True,  # Individual connector
                         version="v3",
-                        connector_instance_id=self.connector_id
+                        connector_instance_id=self.connector_id,
+                        api_base_url=gmail_api_base_url(),
                     )
 
 
@@ -972,78 +993,79 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.logger.error(f"Error processing attachment in generator: {e}", exc_info=True)
                 continue
 
-    async def _sync_user_mailbox(self) -> None:
-        """
-        Synchronizes Gmail mailbox contents for the current user.
-        Routes to incremental sync if history_id exists, otherwise performs full sync.
-        """
-        try:
-            if not self.gmail_data_source:
-                self.logger.error("Gmail data source not initialized")
-                return
+    async def _sync_user_mailbox(self, user_email: str) -> None:
+        """Syncs the connected mailbox: a full read, or the changes since the last sync (`GmailMailboxSync`)."""
+        if not self.gmail_data_source:
+            raise GoogleMailError("Gmail data source not initialized. Call init() first.")
 
-            # Load sync and indexing filters
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "gmail", self.connector_id, self.logger
-            )
-
-            # Get user profile to extract email
+        async def datasource() -> GoogleGmailDataSource:
             await self._get_fresh_datasource()
-            user_profile = await self.gmail_data_source.users_get_profile(userId="me")
-            user_email = user_profile.get("emailAddress")
-            if not user_email:
-                self.logger.error("Email address not found in user profile")
-                return
+            return self.gmail_data_source
 
-            self.logger.info(f"Starting sync for user {user_email}")
+        received = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        window = MailboxWindow(
+            q=build_gmail_received_date_threads_query(received),
+            start_ms=received.get_datetime_start() if received else None,
+            end_ms=received.get_datetime_end() if received else None,
+        )
 
-            # Get sync point for this user
-            sync_point_key = generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email)
-            sync_point = await self.gmail_delta_sync_point.read_sync_point(sync_point_key)
+        async def build_records(message: Dict, thread_id: str) -> list[tuple[Record, list[Permission]]]:
+            return await self._records_for_message(user_email, message, thread_id)
 
-            # Check if history_id exists for incremental sync
-            history_id = sync_point.get('historyId') if sync_point else None
+        self.logger.info(f"Starting sync for user {user_email}")
+        mailbox = GmailMailboxSync(
+            mailbox=user_email,
+            api=GmailMailboxApi(datasource, "me", self._call_policy),
+            build_records=build_records,
+            processor=self.data_entities_processor,
+            connector_id=self.connector_id,
+            sync_point=self.gmail_delta_sync_point,
+            sync_point_key=generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email),
+            health=self._sync_health,
+            logger=self.logger,
+            window=window,
+            batch_size=self.batch_size,
+        )
+        await mailbox.run()
+        self.logger.info(f"Finished sync for user {user_email}: {mailbox.stats}")
 
-            if history_id:
-                self.logger.info(f"History ID found for user {user_email}, performing incremental sync")
-                try:
-                    await self._run_sync_with_history_id(user_email, history_id, sync_point_key)
-                except Exception as e:
-                    # If incremental sync fails, fallback to full sync
-                    self.logger.warning(
-                        f"Incremental sync failed for user {user_email}, "
-                        f"falling back to full sync: {e}"
-                    )
-                    await self._run_full_sync(user_email, sync_point_key)
-            else:
-                self.logger.info(f"No history ID found for user {user_email}, performing full sync")
-                await self._run_full_sync(user_email, sync_point_key)
-
-        except Exception as ex:
-            self.logger.error(f"❌ Error in sync for user: {ex}")
-            raise
+    async def _records_for_message(
+        self, user_email: str, message: Dict, thread_id: str
+    ) -> list[tuple[Record, list[Permission]]]:
+        """A message's record followed by its attachments' records, with the indexing filters applied."""
+        out: list[tuple[Record, list[Permission]]] = []
+        async for mail_update in self._process_gmail_message_generator([message], user_email, thread_id):
+            if not mail_update or not mail_update.record:
+                continue
+            mail_record = mail_update.record
+            out.append((mail_record, mail_update.new_permissions or []))
+            out.extend([
+                (attach_update.record, attach_update.new_permissions or [])
+                async for attach_update in self._process_gmail_attachment_generator(
+                    user_email,
+                    mail_record.external_record_id,
+                    self._extract_attachment_infos(message),
+                    mail_update.new_permissions or [],
+                    mail_record.external_record_group_id,
+                )
+                if attach_update and attach_update.record
+            ])
+        return out
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Google Gmail."""
+        """Reads the connected mailbox's profile: fails when Google no longer accepts the connection. Never
+        raises."""
+        self.logger.info("Testing connection and access to Google Gmail")
         try:
-            self.logger.info("Testing connection and access to Google Gmail")
-            if not self.gmail_data_source:
-                self.logger.error("Gmail data source not initialized. Call init() first.")
-                return False
-
-            if not self.gmail_client:
+            if not self.gmail_data_source or not self.gmail_client:
                 self.logger.error("Gmail client not initialized. Call init() first.")
                 return False
-
-            # Try to make a simple API call to test connection
-            # For now, just check if client is initialized
-            if self.gmail_client.get_client() is None:
-                self.logger.warning("Google Gmail API client not initialized")
-                return False
-
+            policy = GmailCallPolicy(self.logger, max_wait_s=15)
+            await self._get_fresh_datasource()
+            await policy.run(lambda: self.gmail_data_source.users_get_profile(userId="me"), "mailbox check")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error testing connection and access to Google Gmail: {e}")
+            self.logger.error(f"❌ Gmail connection test failed ({classify(e).value}): {e}")
             return False
 
     def get_signed_url(self, record: Record) -> Optional[str]:
@@ -1187,7 +1209,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     config_service=self.config_service,
                     is_individual=True,  # Individual connector
                     version="v3",
-                    connector_instance_id=self.connector_id
+                    connector_instance_id=self.connector_id,
+                    api_base_url=gmail_api_base_url(),
                 )
                 drive_service = user_drive_client.get_client()
                 self.logger.info("Using user OAuth credentials for Drive access")
@@ -1328,6 +1351,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.error(f"Failed to stream Drive file {drive_file_id}: {str(drive_error)}")
             raise to_stream_error(drive_error, connector=self.display_name) from drive_error
 
+    async def _stream_call(self, request: object, what: str) -> Dict:
+        """One read for preview or indexing, retried through a brief rate limit or outage."""
+        policy = GmailCallPolicy(self.logger, max_wait_s=60)
+        return await policy.run(
+            lambda: self.gmail_data_source.execute(
+                functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+            ),
+            what,
+        )
+
     async def _stream_mail_record(
         self,
         gmail_service,
@@ -1342,13 +1375,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 .messages()
                 .get(userId="me", id=message_id, format="full")
             )
-            message = await self.gmail_data_source.execute(request.execute)
+            message = await self._stream_call(request, "Gmail read")
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
-            raw_html = base64.urlsafe_b64decode(
-                mail_content_base64.encode("ASCII")
-            ).decode("utf-8", errors="replace")
+            raw_html = decode_body_data(mail_content_base64).decode("utf-8", errors="replace")
 
             latest_reply_html = ""
 
@@ -1452,7 +1483,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     .messages()
                     .get(userId="me", id=message_id, format="full")
                 )
-                message = await self.gmail_data_source.execute(request.execute)
+                message = await self._stream_call(request, "Gmail read")
             except HttpError as access_error:
                 self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
                 raise map_source_status(
@@ -1489,10 +1520,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
             )
-            attachment = await self.gmail_data_source.execute(request.execute)
+            attachment = await self._stream_call(request, "Gmail read")
 
             # Decode the attachment data
-            file_data = base64.urlsafe_b64decode(attachment["data"])
+            file_data = decode_body_data(attachment["data"])
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -1666,278 +1697,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error creating personal record groups: {e}", exc_info=True)
             raise
 
-    async def _run_full_sync(
-        self,
-        user_email: str,
-        sync_point_key: str
-    ) -> None:
-        """
-        Performs a full sync of Gmail mailbox contents for the current user.
-
-        Args:
-            user_email: The user email address
-            sync_point_key: Sync point key for this user
-        """
-        try:
-            self.logger.info(f"Starting full sync for user {user_email}")
-
-            # Get user profile to extract historyId
-            try:
-                await self._get_fresh_datasource()
-                profile = await self.gmail_data_source.users_get_profile(userId="me")
-                history_id = profile.get('historyId')
-                self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
-            except Exception as e:
-                self.logger.warning(f"Failed to get historyId for user {user_email}: {e}")
-                history_id = None
-
-            # Initialize batch processing
-            batch_records = []
-            batch_count = 0
-            total_threads = 0
-            total_messages = 0
-            page_token = None
-            threads_q = build_gmail_received_date_threads_query(
-                self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
-            )
-            if threads_q:
-                self.logger.info(f"Full sync thread list query (RECEIVED_DATE): {threads_q!r}")
-
-            # Fetch threads with pagination
-            while True:
-                try:
-                    # Fetch threads list
-                    await self._get_fresh_datasource()
-                    threads_response = await self.gmail_data_source.users_threads_list(
-                        userId="me",
-                        maxResults=100,
-                        pageToken=page_token,
-                        q=threads_q,
-                    )
-
-                    threads = threads_response.get('threads', [])
-                    if not threads:
-                        break
-
-                    self.logger.info(f"Fetched {len(threads)} threads for user {user_email}")
-                    total_threads += len(threads)
-
-                    # Process each thread
-                    for thread_data in threads:
-                        thread_id = thread_data.get('id')
-                        if not thread_id:
-                            continue
-
-                        try:
-                            # Get full thread with all messages
-                            thread = await self.gmail_data_source.users_threads_get(
-                                userId="me",
-                                id=thread_id,
-                                format="full"
-                            )
-
-                            messages = thread.get('messages', [])
-                            if not messages:
-                                continue
-
-                            # Process messages in thread sequentially (ascending order) using generator
-                            previous_message_id = None
-
-                            async for mail_update in self._process_gmail_message_generator(
-                                messages,
-                                user_email,
-                                thread_id
-                            ):
-                                try:
-                                    if not mail_update or not mail_update.record:
-                                        continue
-
-                                    mail_record = mail_update.record
-                                    permissions = mail_update.new_permissions or []
-
-                                    # Add email to batch
-                                    batch_records.append((mail_record, permissions))
-                                    batch_count += 1
-                                    total_messages += 1
-
-                                    # Create SIBLING relation if there was a previous message
-                                    if previous_message_id:
-                                        try:
-                                            await self.data_entities_processor.create_record_relation(
-                                                previous_message_id,
-                                                mail_record.id,
-                                                RecordRelations.SIBLING.value
-                                            )
-                                        except Exception as relation_error:
-                                            self.logger.error(f"Error creating sibling relation: {relation_error}")
-
-                                    # Update previous message ID
-                                    previous_message_id = mail_record.id
-
-                                    # Extract attachment_infos from message payload
-                                    message_id = mail_record.external_record_id
-                                    # Find the message in the messages list to extract attachment info
-                                    message = None
-                                    for msg in messages:
-                                        if msg.get('id') == message_id:
-                                            message = msg
-                                            break
-
-                                    if message:
-                                        attachment_infos = self._extract_attachment_infos(message)
-                                        external_record_group_id = mail_record.external_record_group_id
-
-                                        # Process attachments using generator
-                                        async for attach_update in self._process_gmail_attachment_generator(
-                                            user_email,
-                                            message_id,
-                                            attachment_infos,
-                                            permissions,
-                                            external_record_group_id,
-                                        ):
-                                            if attach_update and attach_update.record:
-                                                # Add attachment to SAME batch_records list
-                                                batch_records.append((attach_update.record, attach_update.new_permissions or []))
-                                                batch_count += 1
-
-                                    # Process batch when it reaches the size limit
-                                    if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
-                                        self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
-                                        batch_records = []
-                                        batch_count = 0
-
-                                        # Allow other operations to proceed
-                                        await asyncio.sleep(0.1)
-
-                                except Exception as msg_error:
-                                    self.logger.error(f"Error processing message: {msg_error}")
-                                    continue
-
-                        except Exception as thread_error:
-                            self.logger.error(f"Error processing thread {thread_id}: {thread_error}")
-                            continue
-
-                    # Check for next page
-                    next_page_token = threads_response.get('nextPageToken')
-                    if next_page_token:
-                        page_token = next_page_token
-
-                        # Save intermediate pageToken for resumability
-                        await self.gmail_delta_sync_point.update_sync_point(
-                            sync_point_key,
-                            {
-                                "pageToken": page_token,
-                                "historyId": history_id
-                            }
-                        )
-                    else:
-                        # No more pages
-                        break
-
-                except Exception as page_error:
-                    self.logger.error(f"Error fetching threads page: {page_error}")
-                    raise
-
-            # Process remaining records in batch
-            if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
-                self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
-
-            # Update sync point with final state (clear pageToken, keep historyId)
-            await self.gmail_delta_sync_point.update_sync_point(
-                sync_point_key,
-                {
-                    "pageToken": None,
-                    "historyId": history_id,
-                    "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                }
-            )
-
-            self.logger.info(
-                f"Completed full sync for user {user_email}: "
-                f"{total_threads} threads, {total_messages} messages"
-            )
-
-        except Exception as ex:
-            self.logger.error(f"❌ Error in full sync for user {user_email}: {ex}")
-            raise
-
-    def _merge_history_changes(self, inbox_changes: Dict, sent_changes: Dict) -> Dict:
-        """
-        Merge and deduplicate history changes from multiple labels.
-
-        Args:
-            inbox_changes: History changes from INBOX label
-            sent_changes: History changes from SENT label
-
-        Returns:
-            Merged history changes dictionary
-        """
-        merged_history = []
-        seen_history_ids = set()
-
-        for change in inbox_changes.get('history', []) + sent_changes.get('history', []):
-            history_id = change.get('id')
-            if history_id and history_id not in seen_history_ids:
-                seen_history_ids.add(history_id)
-                merged_history.append(change)
-
-        # Sort by history ID to maintain chronological order
-        merged_history.sort(key=lambda x: int(x.get('id', 0)))
-
-        return {'history': merged_history}
-
-    async def _fetch_history_changes(
-        self,
-        start_history_id: str,
-        label_id: str
-    ) -> Dict:
-        """
-        Fetch history changes for a specific label with pagination.
-
-        Args:
-            start_history_id: History ID to start from
-            label_id: Label ID to filter by (e.g., "INBOX", "SENT")
-
-        Returns:
-            Dictionary containing history changes
-        """
-        all_history = []
-        current_page_token = None
-
-        while True:
-            try:
-                await self._get_fresh_datasource()
-                history_response = await self.gmail_data_source.users_history_list(
-                    userId="me",
-                    startHistoryId=start_history_id,
-                    labelId=label_id,
-                    historyTypes=["messageAdded", "messageDeleted", "labelAdded"],
-                    maxResults=500,
-                    pageToken=current_page_token
-                )
-
-                history_entries = history_response.get('history', [])
-                if history_entries:
-                    all_history.extend(history_entries)
-
-                # Check for next page
-                next_page_token = history_response.get('nextPageToken')
-                if next_page_token:
-                    current_page_token = next_page_token
-                else:
-                    break
-
-            except HttpError:
-                # Re-raise HttpError (especially 404) to be handled by caller
-                raise
-            except Exception as e:
-                self.logger.error(f"Error fetching history changes for label {label_id}: {e}")
-                raise
-
-        return {'history': all_history}
-
     async def _find_previous_message_in_thread(
         self,
         thread_id: str,
@@ -2010,387 +1769,47 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.warning(f"Error finding previous message in thread {thread_id}: {e}")
             return None
 
-    async def _delete_message_and_attachments(self, record_id: str, message_id: str) -> None:
-        """
-        Delete a message record and its associated attachments.
-
-        Args:
-            record_id: Internal record ID
-            message_id: External message ID
-        """
-        try:
-            # Find and delete associated attachment records first
-            attachment_records = await self.data_entities_processor.get_records_by_parent(
-                self.connector_id, message_id, RecordTypes.FILE.value
-            )
-
-            for attachment_record in attachment_records:
-                try:
-                    await self.data_entities_processor.on_record_deleted(attachment_record.id)
-                    self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
-                except Exception as attach_error:
-                    self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
-
-            # Delete the main message record
-            await self.data_entities_processor.on_record_deleted(record_id)
-            self.logger.debug(f"Deleted message record {record_id} for message {message_id}")
-
-        except Exception as e:
-            self.logger.error(f"Error deleting message and attachments {message_id}: {e}")
-
-    async def _process_history_changes(
-        self,
-        user_email: str,
-        history_entry: Dict,
-        batch_records: List[Tuple[Record, List[Permission]]]
-    ) -> int:
-        """
-        Process a single history change entry.
-
-        Args:
-            user_email: The user email address
-            history_entry: History change entry from Gmail API
-            batch_records: List to append processed records to
-
-        Returns:
-            Number of records processed
-        """
-        records_processed = 0
-        seen_message_ids = set()
-
-        try:
-            # Handle message additions
-            messages_to_add = []
-            if "messagesAdded" in history_entry:
-                for message_added in history_entry["messagesAdded"]:
-                    message = message_added.get("message", {})
-                    message_id = message.get("id")
-                    if message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_add.append(message)
-
-            # Handle labels added (messages moved to INBOX/SENT)
-            if "labelsAdded" in history_entry:
-                for label_added in history_entry["labelsAdded"]:
-                    message = label_added.get("message", {})
-                    message_id = message.get("id")
-                    label_ids = label_added.get("labelIds", [])
-                    # Only process if message is being added to INBOX or SENT and not already seen
-                    if message_id and message_id not in seen_message_ids:
-                        if any(label in ["INBOX", "SENT"] for label in label_ids):
-                            seen_message_ids.add(message_id)
-                            messages_to_add.append(message)
-
-            # Process message additions
-            for message in messages_to_add:
-                try:
-                    message_id = message.get("id")
-                    if not message_id:
-                        continue
-
-                    # Check if message already exists
-                    existing_record = await self._get_existing_record(message_id)
-                    if existing_record:
-                        self.logger.debug(f"Message {message_id} already exists, skipping")
-                        continue
-
-                    # Fetch full message details
-                    try:
-                        full_message = await self.gmail_data_source.users_messages_get(
-                            userId="me",
-                            id=message_id,
-                            format="full"
-                        )
-                    except HttpError as http_error:
-                        if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                            self.logger.warning(f"Message {message_id} not found, may have been deleted")
-                        else:
-                            self.logger.error(f"Error fetching message {message_id}: {http_error}")
-                        continue
-                    except Exception as fetch_error:
-                        self.logger.error(f"Error fetching message {message_id}: {fetch_error}")
-                        continue
-
-                    if not full_message:
-                        self.logger.warning(f"Failed to fetch full message {message_id}")
-                        continue
-
-                    # Extract thread_id
-                    thread_id = full_message.get("threadId")
-                    if not thread_id:
-                        self.logger.warning(f"Message {message_id} has no threadId")
-                        continue
-
-                    # Get previous message in thread for sibling relation
-                    previous_message_record_id = await self._find_previous_message_in_thread(
-                        thread_id,
-                        message_id,
-                        full_message.get("internalDate"),
-                        batch_records
-                    )
-
-                    # Process message using existing function
-                    mail_update = await self._process_gmail_message(
-                        user_email,
-                        full_message,
-                        thread_id,
-                        previous_message_record_id
-                    )
-
-                    if mail_update and mail_update.record:
-                        mail_record = mail_update.record
-                        permissions = mail_update.new_permissions or []
-
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                            mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                        # Create SIBLING relation if there was a previous message
-                        if previous_message_record_id:
-                            try:
-                                await self.data_entities_processor.create_record_relation(
-                                    previous_message_record_id,
-                                    mail_record.id,
-                                    RecordRelations.SIBLING.value
-                                )
-                            except Exception as relation_error:
-                                self.logger.error(f"Error creating sibling relation: {relation_error}")
-
-                        # Add to batch
-                        batch_records.append((mail_record, permissions))
-                        records_processed += 1
-
-                        # Extract and process attachments
-                        attachment_infos = self._extract_attachment_infos(full_message)
-                        if attachment_infos:
-                            external_record_group_id = mail_record.external_record_group_id
-                            async for attach_update in self._process_gmail_attachment_generator(
-                                user_email,
-                                message_id,
-                                attachment_infos,
-                                permissions,
-                                external_record_group_id,
-                            ):
-                                if attach_update and attach_update.record:
-                                    batch_records.append((
-                                        attach_update.record,
-                                        attach_update.new_permissions or []
-                                    ))
-                                    records_processed += 1
-
-                except Exception as msg_error:
-                    self.logger.error(f"Error processing message addition: {msg_error}")
-                    continue
-
-            # Handle message deletions
-            messages_to_delete = []
-            seen_message_ids = set()  # Reset for deletions
-            if "messagesDeleted" in history_entry:
-                for message_deleted in history_entry["messagesDeleted"]:
-                    message = message_deleted.get("message", {})
-                    message_id = message.get("id")
-                    if message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_delete.append(message)
-
-            # Handle labels added with TRASH (messages moved to trash)
-            if "labelsAdded" in history_entry:
-                for label_added in history_entry["labelsAdded"]:
-                    message = label_added.get("message", {})
-                    message_id = message.get("id")
-                    label_ids = label_added.get("labelIds", [])
-                    if "TRASH" in label_ids and message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_delete.append(message)
-
-            # Process message deletions
-            for message in messages_to_delete:
-                try:
-                    message_id = message.get("id")
-                    if not message_id:
-                        continue
-
-                    # Find existing record
-                    existing_record = await self._get_existing_record(message_id)
-                    if not existing_record:
-                        self.logger.debug(f"Message {message_id} not found in database, skipping deletion")
-                        continue
-
-                    # Delete the record and its attachments
-                    await self._delete_message_and_attachments(existing_record.id, message_id)
-                    records_processed += 1
-
-                except Exception as delete_error:
-                    self.logger.error(f"Error processing message deletion: {delete_error}")
-                    continue
-
-        except Exception as e:
-            self.logger.error(f"Error processing history change: {e}", exc_info=True)
-
-        return records_processed
-
-    async def _run_sync_with_history_id(
-        self,
-        user_email: str,
-        start_history_id: str,
-        sync_point_key: str
-    ) -> None:
-        """
-        Performs an incremental sync of Gmail mailbox contents using history API.
-
-        RECEIVED_DATE applies to full sync via `users.threads.list(q=...)`. The history
-        API has no equivalent `q`; new messages from history are processed without
-        re-applying that date window so incremental sync stays consistent with
-        thread-level indexing.
-
-        Args:
-            user_email: The user email address
-            start_history_id: History ID to start from
-            sync_point_key: Sync point key for this user
-        """
-        try:
-            self.logger.info(f"Starting incremental sync for user {user_email} from historyId {start_history_id}")
-
-            # Initialize batch processing
-            batch_records = []
-            batch_count = 0
-            total_changes = 0
-            latest_history_id = start_history_id
-
-            # Fetch history changes for both INBOX and SENT labels
-            # Process INBOX first
-            try:
-                inbox_changes = await self._fetch_history_changes(
-                    start_history_id,
-                    "INBOX"
-                )
-            except Exception as inbox_error:
-                self.logger.error(f"Error fetching INBOX history changes: {inbox_error}")
-                inbox_changes = {'history': []}
-
-            # Process SENT changes
-            try:
-                sent_changes = await self._fetch_history_changes(
-                    start_history_id,
-                    "SENT"
-                )
-            except Exception as sent_error:
-                self.logger.error(f"Error fetching SENT history changes: {sent_error}")
-                sent_changes = {'history': []}
-
-            # Combine and deduplicate changes
-            all_changes = self._merge_history_changes(inbox_changes, sent_changes)
-
-            # Process all history changes
-            for history_entry in all_changes.get('history', []):
-                try:
-                    processed = await self._process_history_changes(
-                        user_email,
-                        history_entry,
-                        batch_records
-                    )
-                    if processed:
-                        batch_count += processed
-                        total_changes += 1
-
-                        # Process batch when it reaches the size limit
-                        if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
-                            self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
-                            batch_records = []
-                            batch_count = 0
-
-                            # Allow other operations to proceed
-                            await asyncio.sleep(0.1)
-
-                except Exception as change_error:
-                    self.logger.error(f"Error processing history change: {change_error}")
-                    continue
-
-                # Update latest history ID from the entry
-                if history_entry.get('id'):
-                    latest_history_id = history_entry.get('id')
-
-            # Process remaining records in batch
-            if batch_records:
-                try:
-                    await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
-                    self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
-                except Exception as batch_error:
-                    self.logger.error(f"Error processing final batch: {batch_error}")
-
-            # Get latest historyId from user profile if available
-            try:
-                await self._get_fresh_datasource()
-                profile = await self.gmail_data_source.users_get_profile(userId="me")
-                current_history_id = profile.get('historyId')
-                if current_history_id:
-                    latest_history_id = current_history_id
-            except Exception as profile_error:
-                self.logger.warning(f"Failed to get current historyId from profile: {profile_error}")
-
-            # Update sync point with new historyId (even on partial failures)
-            try:
-                await self.gmail_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    {
-                        "pageToken": None,
-                        "historyId": latest_history_id,
-                        "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                    }
-                )
-            except Exception as sync_point_error:
-                self.logger.error(f"Error updating sync point: {sync_point_error}")
-
-            self.logger.info(
-                f"Completed incremental sync for user {user_email}: "
-                f"{total_changes} changes processed, latest historyId: {latest_history_id}"
-            )
-
-        except HttpError:
-            # Re-raise HttpError to be handled by caller (for 404 fallback)
-            raise
-        except Exception as ex:
-            self.logger.error(f"❌ Error in incremental sync for user {user_email}: {ex}")
-            # Try to update sync point even on error
-            try:
-                await self.gmail_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    {
-                        "pageToken": None,
-                        "historyId": start_history_id,  # Keep original on error
-                        "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                    }
-                )
-            except Exception:
-                pass  # Ignore sync point update errors during error handling
-            raise
-
     async def run_sync(self) -> None:
-        """Run sync for Google Gmail."""
+        """Run sync for Google Gmail. A run that could not read part of the mailbox raises at the end, so it is
+        not recorded as a success and a full sync removes nothing."""
+        self._sync_health = GmailSyncHealth()
+        self._call_policy = GmailCallPolicy(self.logger)
+        user_email = "the connected mailbox"
         try:
             self.logger.info("Starting sync for Google Gmail Individual")
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "gmail", self.connector_id, self.logger
+            )
 
-            # Get user profile
             await self._get_fresh_datasource()
-            user_profile = await self.gmail_data_source.users_get_profile(userId="me")
-            await self._create_app_user(user_profile)
-
-            # Extract email from profile
+            user_profile = await self._call_policy.run(
+                lambda: self.gmail_data_source.users_get_profile(userId="me"), "profile"
+            )
             user_email = user_profile.get("emailAddress")
             if not user_email:
-                self.logger.error("Email address not found in user profile")
                 raise ValueError("Email address not found in user profile")
-
-            # Create personal record groups
+            # The account this connection signs in as may differ from the creator's PipesHub address
+            # (a personal Gmail account): link them, so the creator finds this mail.
+            await self.register_authenticated_source_user(user_email, user_email)
+            await self._create_app_user(user_profile)
             await self._create_personal_record_group(user_email)
-
-            # Sync user's mailbox
-            await self._sync_user_mailbox()
-
-            self.logger.info("Sync completed for Google Gmail Individual")
+            await self._sync_user_mailbox(user_email)
         except Exception as e:
+            self._sync_health.record(user_email, e, "mailbox")
             self.logger.error(f"❌ Error during sync: {e}", exc_info=True)
+            await self._report_sync_problems()
             raise
+        await self._report_sync_problems()
+        self._sync_health.raise_if_incomplete()
+        self.logger.info("Sync completed for Google Gmail Individual")
+
+    async def _report_sync_problems(self) -> None:
+        if self._sync_health.problems:
+            self.last_sync_summary = self._sync_health.summary()
+        await GmailNotices(self.notify, self._notification_title, workspace=False).report(self._sync_health)
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        return self._sync_health.coverage()
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Gmail."""

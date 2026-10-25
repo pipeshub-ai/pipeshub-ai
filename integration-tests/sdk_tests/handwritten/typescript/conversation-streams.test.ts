@@ -53,6 +53,13 @@ test("Handwritten Conversation Streams", async () => {
     });
     expect(feedback.messageId).toEqual(answerId);
     expect(feedback.feedback.isHelpful).toBe(true);
+
+    const fork = await pipeshub.conversations.forkConversation({
+      conversationId,
+      messageId: answerId,
+    });
+    await pipeshub.conversations.deleteConversationById({ conversationId: fork.id });
+    expect(fork.forkedFrom).toEqual({ conversationId, messageId: answerId });
   } finally {
     await pipeshub.conversations.deleteConversationById({ conversationId });
   }

@@ -40,6 +40,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
+    listing_checkpoint,
 )
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -911,6 +912,7 @@ class GCSConnector(BaseConnector):
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
         # A run resumed from a saved token never sees the pages before it.
         resumed = page_token is not None
+        listing_started_at = sync_point.get("listing_started_at") if resumed else get_epoch_timestamp_in_ms()
 
         if last_sync_time:
             user_modified_after_ms = modified_after_ms
@@ -1044,7 +1046,7 @@ class GCSConnector(BaseConnector):
 
                     if page_token:
                         await self.record_sync_point.update_sync_point(
-                            sync_point_key, {"page_token": page_token}
+                            sync_point_key, {"page_token": page_token, "listing_started_at": listing_started_at}
                         )
 
             except Exception as e:
@@ -1080,9 +1082,9 @@ class GCSConnector(BaseConnector):
             await self.record_sync_point.update_sync_point(sync_point_key, {"page_token": None})
         if listing_failed:
             return listed, False
-        checkpoint = failed.checkpoint(max_timestamp)
+        checkpoint = listing_checkpoint(failed.checkpoint(max_timestamp), listing_started_at)
         # The listing reached its end, so the saved token is spent even when no time was seen.
-        done: dict[str, Any] = {"page_token": None}
+        done: dict[str, Any] = {"page_token": None, "listing_started_at": None}
         if checkpoint and checkpoint > 0:
             done["last_sync_time"] = checkpoint
         await self.record_sync_point.update_sync_point(sync_point_key, done)
@@ -1219,7 +1221,6 @@ class GCSConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
@@ -1251,7 +1252,6 @@ class GCSConnector(BaseConnector):
                     existing_record = None
 
                 if existing_record:
-                    is_move = True
                     self._moved_record_ids.add(existing_record.id)
                     self.logger.info(
                         f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
@@ -1277,9 +1277,6 @@ class GCSConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 

@@ -12,6 +12,7 @@ from app.agent_loop_lib.core.messages import (
     Message,
     MessageRole,
     ToolCall,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
@@ -23,7 +24,7 @@ from app.agent_loop_lib.core.streaming import (
     StreamEvent,
     TextDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 
 # Raw httpx — Ollama speaks NDJSON, no SSE complexity. No SDK needed.
@@ -88,15 +89,15 @@ class OllamaTransport(LLMTransport):
     # ------------------------------------------------------------------
 
     def _format_message(self, msg: Message) -> dict[str, Any]:
+        msg = as_sent(msg)
         if msg.role == MessageRole.TOOL:
             # Ollama's /api/chat has no dedicated tool-result role field
             # beyond "tool" + content — no tool_call_id round-trip, so the
             # model must disambiguate multiple pending calls from content
             # alone (a known Ollama tool-calling limitation, not ours).
             # It also has no multipart tool-result support, unlike
-            # OpenAI/Anthropic — any images are stripped here and delivered
-            # instead via the `shape_retrieved_image_injection` PRE_MODEL
-            # fallback hook, which injects them into a UserMessage.
+            # OpenAI/Anthropic, and this transport sends user messages as
+            # text only, so tool images are not delivered on this path.
             return {"role": "tool", "content": msg.text + getattr(msg, "step_footer", "")}
         if msg.role == MessageRole.ASSISTANT:
             return {
@@ -181,6 +182,8 @@ class OllamaTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
@@ -248,6 +251,8 @@ class OllamaTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)

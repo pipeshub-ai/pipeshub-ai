@@ -298,6 +298,8 @@ export interface IChatSession {
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
   lastActivityAt?: Number;
+  /** Owner's pin. `true` when pinned, absent otherwise (never stored as `false`). */
+  isPinned?: boolean;
   activeRunId?: string;
   tags?: Types.ObjectId[];
   createdAt?: Date;

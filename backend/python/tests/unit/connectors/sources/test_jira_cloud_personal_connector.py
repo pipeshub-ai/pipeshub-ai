@@ -213,8 +213,11 @@ class TestFetchProjectsEmitsGroupPermission:
         assert record_groups[0][0].inherit_permissions is True
         assert record_groups[1][0].inherit_permissions is True
 
-        # The helper still links the creator to the app, once for the list.
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        # The creator is linked to the app once for the list; no ConnectorGroup is written.
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        conn.data_entities_processor.on_new_app_users.assert_awaited_once()
+        members = conn.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [m.email for m in members] == ["owner@example.com"]
 
         rg_alpha, _ = record_groups[0]
         assert rg_alpha.external_group_id == "10001"
@@ -326,7 +329,7 @@ class TestPersonalRunSyncOrchestration:
 
     async def test_run_sync_resolves_creator_email_from_created_by(self) -> None:
         """If creator_email isn't set on the instance, run_sync should look it
-        up from the processor before calling ensure_connector_group_permission."""
+        up from the processor before linking the creator to the app."""
         conn = _make_connector(created_by="creator-id-99")
         conn.data_source = MagicMock()
         conn.creator_email = None
@@ -355,11 +358,10 @@ class TestPersonalRunSyncOrchestration:
             "creator-id-99"
         )
         assert conn.creator_email == "resolved@example.com"
-        # Helper still creates the ConnectorGroup with the resolved email.
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
-        call_args = conn.data_entities_processor.on_new_user_groups.call_args
-        _group, members = call_args.args[0][0]
-        assert members[0].email == "resolved@example.com"
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        conn.data_entities_processor.on_new_app_users.assert_awaited_once()
+        members = conn.data_entities_processor.on_new_app_users.call_args.args[0]
+        assert [m.email for m in members] == ["resolved@example.com"]
 
 
 # -----------------------------------------------------------------------------

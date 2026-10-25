@@ -32,6 +32,7 @@ from app.services.graph_db.arango.arango_http_provider import (
     ArangoHTTPProvider,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
@@ -516,6 +517,21 @@ class TestBatchCreateEdges:
                 [{"from_id": "1", "from_collection": "u", "to_id": "1", "to_collection": "r"}],
                 "edge_col",
             )
+
+
+class TestDeleteEdgesBySourceKeys:
+    @pytest.mark.asyncio
+    async def test_exclude_keeps_matching_edges(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [1, 1]
+
+        removed = await connected_provider.delete_edges_by_source_keys(
+            ["blocks/b1"], "recordLinks", filters={"source": "code_graph"}, exclude={"buildId": "new"},
+        )
+
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "edge.buildId != @exclude_buildId" in call.args[0]
+        assert call.kwargs["bind_vars"]["exclude_buildId"] == "new"
+        assert removed == 2
 
 
 class TestCreateEdgesIfAbsent:
@@ -2560,7 +2576,8 @@ class TestBatchUpdateNodes:
         )
         assert result is False
         aql_query = connected_provider.http_client.execute_aql.call_args[0][0]
-        assert "ignoreErrors: true" in aql_query
+        assert "ignoreErrors" not in aql_query
+        assert "DOCUMENT(@@collection, doc._key) != null" in aql_query
 
     @pytest.mark.asyncio
     async def test_all_updates_succeed(self, connected_provider):
@@ -2571,6 +2588,31 @@ class TestBatchUpdateNodes:
             [{"id": "r1", "indexingStatus": "COMPLETED"}], "records"
         )
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_write_conflict_in_transaction_raises(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception(
+            '{"errorNum":1200,"errorMessage":"conflict: cannot update document"}'
+        )
+        with pytest.raises(Exception, match="1200"):
+            await connected_provider.batch_update_nodes(
+                [{"id": "r1", "status": "OK"}], "records", transaction="txn-1"
+            )
+        assert connected_provider.http_client.execute_aql.call_args.kwargs["txn_id"] == "txn-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("transaction", "expect_ignore"), [("txn-1", False), (None, True)]
+    )
+    async def test_remove_ignores_errors_only_outside_transaction(
+        self, connected_provider, transaction, expect_ignore
+    ) -> None:
+        connected_provider.http_client.execute_aql.return_value = [1]
+        await connected_provider.delete_edges_by_source_keys(
+            ["records/r1"], "recordRelations", transaction=transaction
+        )
+        query = connected_provider.http_client.execute_aql.call_args[0][0]
+        assert ("ignoreErrors: true" in query) is expect_ignore
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -4626,6 +4668,29 @@ class TestReindexSingleRecord:
             assert result["code"] == 400
 
     @pytest.mark.asyncio
+    async def test_code_repo_record_requires_connector_sync(
+        self, connected_provider
+    ) -> None:
+        with patch.object(
+            connected_provider,
+            "get_document",
+            new_callable=AsyncMock,
+            return_value={
+                "id": "r1",
+                "origin": "CONNECTOR",
+                "connectorName": "GITHUB",
+                "connectorId": "c1",
+            },
+        ):
+            result = await connected_provider.reindex_single_record(
+                "r1", "u1", "org1"
+            )
+
+        assert result["success"] is False
+        assert result["code"] == 400
+        assert "connector sync" in result["reason"]
+
+    @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
         with patch.object(
             connected_provider, "get_document",
@@ -4847,10 +4912,27 @@ class TestPeopleEmailUniqueIndex:
 
 class TestEnsureIndexes:
     @pytest.mark.asyncio
-    async def test_calls_ensure_persistent_index(self, connected_provider):
+    async def test_registers_each_index_once(self, connected_provider) -> None:
+        """A total count broke whenever two PRs each added an index, and said nothing
+        about which one; a definition repeated by mistake is the error worth catching."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 63
+        keys = [
+            (c.args[0], tuple(c.args[1]))
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        ]
+        assert keys
+        assert [k for k in set(keys) if keys.count(k) > 1] == []
+
+    @pytest.mark.asyncio
+    async def test_registers_the_parent_lookup_index(self, connected_provider) -> None:
+        """get_records_by_parent runs once per synced record and filters on these two fields."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        assert any(
+            c.args[:2] == ("records", ["externalParentId", "connectorId"])
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -4864,6 +4946,41 @@ class TestEnsureIndexes:
         assert len(walks) == 1
         assert walks[0].args[:2] == ("records", ["orgId", "deletedAtTimestamp", "_key"])
         assert walks[0].kwargs.get("sparse", False) is False
+
+    @pytest.mark.asyncio
+    async def test_block_indexes_cover_every_query_shape(self, connected_provider) -> None:
+        """Each of these backs a query that is otherwise a full collection scan.
+
+        Named rather than counted, so removing one is distinguishable from adding one.
+        """
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        blocks = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.BLOCKS.value
+        }
+        assert blocks == {
+            ("orgId", "recordGroupId", "name"),           # a symbol name within a repo
+            ("orgId", "recordGroupId", "_key"),           # the per-repo block scan (SC-3)
+            ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
+            ("recordId",),                                # per-file reconciliation
+            ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
+            ("orgId", "name"),                            # free-text select, repo-agnostic
+            ("connectorId",),                             # connector-scoped delete
+            ("orgId", "connectorId", "nameFolded", "_key"),  # exact bare-name lookup (SC-6)
+        }
+
+        code_files = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.CODE_FILES.value
+        }
+        # A file's path lives here, not on its blocks, so this backs every
+        # path-prefix query the code tools make.
+        assert code_files == {("orgId", "filePath")}
 
 
 # ---------------------------------------------------------------------------
@@ -5102,9 +5219,7 @@ class TestDeleteRecordsAndRelationsWithTransaction:
     async def test_hard_delete_success(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
         )
@@ -5115,11 +5230,20 @@ class TestDeleteRecordsAndRelationsWithTransaction:
         """The record is not removed with its grants left behind."""
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.side_effect = RuntimeError("edge sweep failed")
+        async def execute_aql(query, bind_vars=None, txn_id=None) -> list:
+            if "@isOfType" in query:
+                return []
+            raise RuntimeError("edge sweep failed")
+
+        connected_provider.http_client.execute_aql.side_effect = execute_aql
         with pytest.raises(RuntimeError):
             await connected_provider.delete_records_and_relations("r1", hard_delete=True, transaction="txn1")
-        queries = [c.args[0] for c in connected_provider.http_client.execute_aql.await_args_list]
-        assert queries and all("REMOVE edge" in q for q in queries)
+        queries = [
+            c.kwargs.get("query", c.args[0] if c.args else "")
+            for c in connected_provider.http_client.execute_aql.await_args_list
+        ]
+        removes = [q for q in queries if "@isOfType" not in q]
+        assert removes and all("REMOVE edge" in q for q in removes)
 
 
 # ---------------------------------------------------------------------------
@@ -6959,9 +7083,29 @@ class TestEnsureIndexesExtended:
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
         calls = connected_provider.http_client.ensure_persistent_index.await_args_list
-        assert len(calls) == 63
         assert sum(1 for c in calls if c.args[0] == "namedEntities") == 3
         assert sum(1 for c in calls if c.args[0] == "valueMentions") == 6
+
+    @pytest.mark.asyncio
+    async def test_stage_state_indexes_match_the_pipeline_schema(self, connected_provider) -> None:
+        """ensure_pipeline_schema creates the same stage-state indexes on its own, and
+        each one is written out in both places, so the two lists can drift apart."""
+        index = connected_provider.http_client.ensure_persistent_index = AsyncMock()
+
+        await connected_provider._ensure_indexes()
+        from_schema = [c for c in index.await_args_list if c.args[0] == "stageStates"]
+        index.reset_mock()
+        await connected_provider.ensure_pipeline_schema()
+        from_pipeline = [c for c in index.await_args_list if c.args[0] == "stageStates"]
+
+        assert from_pipeline
+        assert from_schema == from_pipeline
+        # The equality alone passes if both paths lose it.
+        assert any(
+            c.args[1] == ["connectorId", "stage", "status", "_key"]
+            and c.kwargs.get("name") == "stage_state_connector_stage_status_key"
+            for c in from_schema
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -7727,6 +7871,32 @@ class TestDeleteNodesByConnectorId:
 # ---------------------------------------------------------------------------
 # delete_records
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# check_api_toolset_in_use
+# ---------------------------------------------------------------------------
+
+
+class TestCheckApiToolsetInUse:
+    @pytest.mark.asyncio
+    async def test_returns_agents_with_an_operation_of_the_toolset(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"agentId": "agents/a1", "agentName": "Support bot"}],
+        )
+
+        assert await connected_provider.check_api_toolset_in_use("t9") == ["Support bot"]
+
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "apiToolsetTools" in call.args[0] and "STARTS_WITH" in call.args[0] and "isDeleted != true" in call.args[0]
+        # The trailing ":" keeps toolset "t9" from matching "t90".
+        assert call.kwargs["bind_vars"] == {"prefix": "t9:"}
+
+    @pytest.mark.asyncio
+    async def test_raises_on_query_error(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("arango down"))
+        with pytest.raises(RuntimeError, match="arango down"):
+            await connected_provider.check_api_toolset_in_use("t1")
 
 
 # ---------------------------------------------------------------------------
@@ -10564,9 +10734,7 @@ class TestDeleteRecordsAndRelationsSoftDelete:
     async def test_soft_delete(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         connected_provider._get_all_edge_collections = AsyncMock(return_value=["permission"])
         connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(1, []))
         result = await connected_provider.delete_records_and_relations(
@@ -12882,7 +13050,7 @@ class TestDeleteRecordWithType:
         )
         swept = [c.args[2] for c in connected_provider.delete_edges_from.await_args_list]
         assert sorted(swept) == sorted([
-            "recordRelations", "isOfType", "belongsTo",
+            "nodeRelations", "isOfType", "belongsTo",
             "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
         ])
         assert connected_provider.delete_edges_to.call_count == 2
@@ -13347,10 +13515,10 @@ class TestGetAppPermissionRoleAql:
         
         # Check for team KB roles collection
         assert 'team_kb_roles' in aql
-        assert 'user_team_perm.type == "USER"' in aql
-        assert 'STARTS_WITH(user_team_perm._to, "teams/")' in aql
-        assert 'team_app_perm.type == "TEAM"' in aql
-        assert 'user_team_perm.role' in aql
+        assert 'team_member.type == "USER"' in aql
+        assert 'STARTS_WITH(team_member._to, "teams/")' in aql
+        assert 'team_grant.type == "TEAM"' in aql
+        assert aql_team_grant_role("team_grant", "team_member") in aql
         
         # Check for team KB role prioritization
         assert 'team_kb_role' in aql
@@ -13464,8 +13632,14 @@ class TestDeleteMainRecord:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         await connected_provider._delete_main_record("r1", transaction="txn1")
         connected_provider.http_client.execute_aql.assert_called_once()
+        # Every connector-specific delete executor ends here, so this is where a
+        # code file's blocks go with it.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -19045,7 +19219,7 @@ class TestGetConnectorStatsKB:
         assert "doc.isDeleted != true" in query
         for dropped in ("orgId", "origin"):
             assert dropped not in query
-        assert set(bind_vars) == {"app_handle", "folder_mime_types", "@belongs_to"}
+        assert set(bind_vars) == {"app_handle", "folder_mime_types", "@belongs_to", "@stage_states"}
         assert bind_vars["app_handle"] == f"{CollectionNames.APPS.value}/kb1"
         for name in bind_vars:
             assert "@" + name in query

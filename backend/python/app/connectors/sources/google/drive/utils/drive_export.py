@@ -24,6 +24,7 @@ from app.connectors.core.base.error.stream_errors import (
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     QUOTA_403_REASONS,
+    drive_error_reasons,
 )
 
 if TYPE_CHECKING:
@@ -51,15 +52,7 @@ class ExportSizeLimitExceeded(Exception):
 
 
 def drive_http_reasons(error: HttpError) -> set[str]:
-    details = getattr(error, "error_details", None) or []
-    if not isinstance(details, list):
-        return set()
-    return {
-        reason
-        for detail in details
-        if isinstance(detail, dict)
-        and (reason := detail.get("reason"))
-    }
+    return drive_error_reasons(error)
 
 
 def is_allowed_export_url(url: str | None) -> bool:

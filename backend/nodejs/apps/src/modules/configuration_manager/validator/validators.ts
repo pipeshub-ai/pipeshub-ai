@@ -147,16 +147,6 @@ export const azureAdConfigSchema = z.object({
   }),
 });
 
-export const ssoConfigSchema = z.object({
-  body: z.object({
-    entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
-    certificate: z.string().min(1, { message: 'SSO certificate is required' }),
-    emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
-    enableJit: z.boolean().optional().default(true),
-    samlPlatform: z.string().optional(),
-  }),
-});
-
 export const googleAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Google client ID is required' }),
@@ -168,20 +158,6 @@ export const githubAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'GitHub client ID is required' }),
     clientSecret: z.string().min(1, { message: 'GitHub client secret is required' }),
-  }),
-});
-
-export const oauthConfigSchema = z.object({
-  body: z.object({
-    providerName: z.string().min(1, { message: 'Provider name is required' }),
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().optional(),
-    authorizationUrl: z.string().url().optional().or(z.literal('')),
-    tokenEndpoint: z.string().url().optional().or(z.literal('')),
-    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
-    scope: z.string().optional(),
-    redirectUri: z.string().url().optional().or(z.literal('')),
-    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -819,4 +795,85 @@ export const webSearchSettingsSchema = z
 
 export const updateWebSearchSettingsSchema = z.object({
   body: webSearchSettingsSchema,
+});
+
+const identityHeaderName = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, {
+    message: 'Not a valid header name',
+  });
+
+export const identityPolicyBodySchema = z
+  .object({
+    subjectSource: z.enum(['userId', 'email', 'idpObjectId']).default('userId'),
+    includeEmail: z.boolean().default(false),
+    includeDisplayName: z.boolean().default(false),
+    groups: z
+      .object({
+        enabled: z.boolean().default(true),
+        allowList: z
+          .array(z.string().trim().min(1).max(256))
+          .max(500)
+          .default([]),
+        maxForwarded: z.number().int().min(1).max(500).default(50),
+      })
+      .strict()
+      .default({}),
+    pseudonymize: z.boolean().default(false),
+    onMissingIdentity: z.enum(['service', 'block']).default('service'),
+    queryEmbeddingIdentity: z.enum(['user', 'service']).default('user'),
+    serviceIdentityPrefix: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .default('svc:pipeshub'),
+  })
+  .strict();
+
+export const identityPolicySchema = z.object({
+  body: identityPolicyBodySchema,
+});
+
+export const connectionIdentityForwardingSchema = z.object({
+  params: z.object({ connectionId: z.string().min(1) }),
+  body: z
+    .object({
+      enabled: z.boolean(),
+      mode: z.enum(['headers', 'template', 'signedJwt']).default('headers'),
+      preset: z
+        .enum([
+          'litellm',
+          'portkey',
+          'helicone',
+          'cloudflare',
+          'apim',
+          'custom',
+        ])
+        .default('litellm'),
+      headerTemplates: z
+        .record(identityHeaderName, z.string().max(512))
+        .refine((templates) => Object.keys(templates).length <= 16, {
+          message: 'At most 16 header templates',
+        })
+        .default({}),
+      jwtAudience: z.string().trim().max(256).optional(),
+      serviceAuth: z.enum(['apiKey', 'jwt']).default('apiKey'),
+      // Absent keeps the stored key; an empty string clears it.
+      serviceApiKey: z.string().max(512).optional(),
+    })
+    .strict(),
+});
+
+export const identityPreviewSchema = z.object({
+  body: z
+    .object({
+      userId: z.string().min(1).optional(),
+      workload: z.string().min(1).max(64).default('chat'),
+      configuration: z.record(z.any()).default({}),
+      connectionId: z.string().min(1).optional(),
+    })
+    .strict(),
 });

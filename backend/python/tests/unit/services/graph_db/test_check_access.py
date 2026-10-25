@@ -49,6 +49,29 @@ class TestNodeIds:
         assert calls["node_ids"] == {"n1", "n2"} and calls["vrids"] == set()
 
     @pytest.mark.asyncio
+    async def test_a_placeholder_is_openable_and_is_not_a_citation(self) -> None:
+        stub = _row("stub", "v-stub")
+        stub["isPlaceholder"] = True
+        real = _row("real", "v-stub")
+        provider, _ = _provider([stub, real])
+        result = await provider.check_access(
+            "user-key", "org-1", node_ids=["stub"], virtual_record_ids=["v-stub"],
+        )
+        assert result.node_ids == frozenset({"stub"})
+        assert result.placeholder_ids == frozenset({"stub"})
+        assert result.records_by_vrid == {"v-stub": "real"}
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_reached_only_by_vrid_is_not_cited(self) -> None:
+        stub = _row("stub", "v-stub")
+        stub["isPlaceholder"] = True
+        provider, _ = _provider([stub])
+        result = await provider.check_access("user-key", "org-1", virtual_record_ids=["v-stub"])
+        assert result.node_ids == frozenset()
+        assert result.placeholder_ids == frozenset()
+        assert result.records_by_vrid == {}
+
+    @pytest.mark.asyncio
     async def test_the_citation_filters_never_narrow_node_ids(self) -> None:
         provider, _ = _provider([_row("n1", "v1", status="QUEUED", connector="app-out")])
         result = await provider.check_access(
@@ -217,6 +240,22 @@ class TestInterface:
     def test_the_old_entry_points_are_gone(self) -> None:
         for name in ("filter_accessible_nodes", "resolve_accessible_virtual_record_ids"):
             assert not hasattr(IGraphDBProvider, name) and not hasattr(Neo4jProvider, name), name
+
+
+class TestReadableContentExcludesStubs:
+    @pytest.mark.asyncio
+    async def test_a_placeholder_asked_by_id_is_not_readable_content(self) -> None:
+        provider, _ = _provider([
+            {"id": "stub", "isPlaceholder": True, "isInternal": False},
+            {"id": "real", "isPlaceholder": False, "isInternal": False},
+        ])
+
+        async def _user(user_id: str, raise_on_error: bool = False) -> dict[str, str]:
+            return {"id": "user-key"}
+
+        provider.get_user_by_user_id = _user
+        granted = await provider.filter_accessible_record_ids(["stub", "real"], "user-1", "org-1")
+        assert granted == {"real"}
 
 
 def _failing(backend: str) -> "IGraphDBProvider":

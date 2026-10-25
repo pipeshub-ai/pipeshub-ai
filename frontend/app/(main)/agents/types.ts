@@ -189,6 +189,8 @@ export interface AgentDetail {
   mcpServers?: AgentMcpServer[];
   /** The server couldn't read this agent's MCP servers, so `mcpServers` is empty but not the agent's. */
   mcpServersUnavailable?: boolean;
+  /** API toolset operations the agent may call, each `"<toolsetId>:<toolName>"`. */
+  apiToolsetTools?: string[];
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];

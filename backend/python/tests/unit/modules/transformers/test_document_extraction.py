@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import Block, BlockType, DataFormat
+from app.models.blocks import Block, BlockType, DataFormat, SemanticMetadata
 
 if TYPE_CHECKING:
     from app.modules.transformers.document_extraction import DocumentExtraction
@@ -614,7 +614,7 @@ class TestExtractMetadata:
         assert result.summary == "Fallback summary text"
         mock_fallback.assert_awaited_once()
         # The fallback summary follows the same summary rules as structured extraction.
-        sent = mock_fallback.await_args.args[0]
+        sent = mock_fallback.await_args.args[1]
         assert "**Summary**" in sent[0]["text"]
         assert sent[-1]["text"] == "Some content"
 
@@ -658,18 +658,24 @@ class TestFallbackSummary:
         mock_response = MagicMock()
         mock_response.content = "This is a summary of the doc."
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
         message_content = [
             {"type": "text", "text": "Document Content: "},
             {"type": "text", "text": "Hello world document."},
         ]
 
-        result = await ext._fallback_summary(message_content)
+        result = await ext._fallback_summary(llm, message_content)
 
         assert result is not None
         assert result.summary == "This is a summary of the doc."
+        # Only the summary is known: None fields tell the graph writer to keep
+        # the record's existing department/topic/language edges.
+        assert result.departments is None
+        assert result.topics is None
+        assert result.languages is None
+        assert result.categories == []
 
     @pytest.mark.asyncio
     async def test_fallback_empty_response_returns_none(self) -> None:
@@ -680,10 +686,10 @@ class TestFallbackSummary:
         mock_response = MagicMock()
         mock_response.content = ""
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         assert result is None
 
@@ -693,10 +699,10 @@ class TestFallbackSummary:
 
         ext = _build_extractor()
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(side_effect=Exception("LLM failure"))
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=Exception("LLM failure"))
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         assert result is None
 
@@ -713,10 +719,10 @@ class TestFallbackSummary:
             {"type": "text", "text": "of the doc."},
         ]
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         assert result is not None
         assert result.summary == "Summary of the doc."
@@ -734,10 +740,10 @@ class TestFallbackSummary:
             {"type": "text", "text": "  Text-only summary.  "},
         ]
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         assert result is not None
         assert result.summary == "Text-only summary."
@@ -748,10 +754,10 @@ class TestFallbackSummary:
 
         ext = _build_extractor()
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value="Plain string summary")
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value="Plain string summary")
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         assert result is not None
         assert result.summary == "Plain string summary"
@@ -792,6 +798,7 @@ class TestDocumentExtractionApply:
 
         ctx = MagicMock()
         ctx.record = record
+        record.record_type.value = "FILE"
 
         await ext.apply(ctx)
 
@@ -812,6 +819,7 @@ class TestDocumentExtractionApply:
 
         ctx = MagicMock()
         ctx.record = record
+        record.record_type.value = "FILE"
 
         await ext.apply(ctx)
 
@@ -1034,8 +1042,9 @@ class TestExtractMetadataDeeper:
 
     @pytest.mark.asyncio
     async def test_extract_metadata_llm_exception_propagates(self) -> None:
-        """When get_llm raises, exception propagates (called before try block)."""
+        """When get_llm_for_role raises, the exception propagates to the caller."""
         ext = _build_extractor()
+        ext.graph_provider.get_departments = AsyncMock(return_value=[])
 
         with patch(
             "app.modules.transformers.document_extraction.get_llm_for_role",
@@ -1282,7 +1291,8 @@ class TestCacheablePrefix:
     @pytest.mark.asyncio
     async def test_a_refusal_is_remembered_under_the_configured_model(self) -> None:
         """The deployment name differs from the configured model: the refusal must be
-        recorded under the name the strategy is chosen with, or every record resends it."""
+        recorded under the name the strategy is chosen with, or every record resends it.
+        Only the refused parameter is recorded; the key still routes the next record."""
         from langchain_openai import AzureChatOpenAI
 
         from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
@@ -1297,17 +1307,71 @@ class TestCacheablePrefix:
             with patch(
                 "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
                 new_callable=AsyncMock, return_value=None,
-            ) as mock_invoke, patch.object(ext, "_fallback_summary", AsyncMock(return_value=None)), patch(
+            ) as mock_invoke, patch.object(
+                # Without one the call raises ExtractionLLMError, which is not under test here.
+                ext, "_fallback_summary", AsyncMock(return_value=SemanticMetadata(summary="s"))
+            ), patch(
                 "app.modules.transformers.document_extraction.get_llm_for_role",
                 return_value=(llm, {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}),
             ):
                 await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
-                assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1]
-                mock_invoke.call_args.kwargs["on_cache_rejected"]()
+                assert set(mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1]) == {
+                    "prompt_cache_key", "prompt_cache_retention",
+                }
+                mock_invoke.call_args.kwargs["on_cache_rejected"](frozenset({"prompt_cache_retention"}))
                 await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
-            assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1] == {}
+            assert set(mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1]) == {"prompt_cache_key"}
         finally:
             REJECTED_CACHE_PARAMS.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_retention_is_dropped_and_the_key_kept(self) -> None:
+        """A 400 naming one cache parameter takes only that one off this
+        record's resend and off every later record's request."""
+        from langchain_core.messages import AIMessage
+
+        from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+        from app.modules.transformers.document_extraction import DocumentClassification
+
+        class _Refused(Exception):
+            status_code = 400
+
+        reply = DocumentClassification(
+            departments=["Sales"], category="General",
+            subcategories={"level1": "", "level2": "", "level3": ""},
+            languages=["English"], topics=[], summary="Summary.",
+        ).model_dump_json()
+
+        class AzureChatOpenAI:  # cache_target recognises the provider by class name
+            azure_endpoint = "https://acme.openai.azure.com"
+            deployment_name = "prod-54"
+            model_name = None
+            callbacks = None
+
+            def __init__(self) -> None:
+                self.sent: list[set[str]] = []
+
+            async def ainvoke(self, messages: list, **kwargs: object) -> AIMessage:
+                self.sent.append({name for name in kwargs if name.startswith("prompt_cache")})
+                if "prompt_cache_retention" in kwargs:
+                    raise _Refused("Error code: 400 - Unrecognized request argument supplied: prompt_cache_retention")
+                return AIMessage(content=reply)
+
+        llm = AzureChatOpenAI()
+        ext = _build_extractor()
+        config = {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}
+        REJECTED_CACHE_PARAMS.clear()
+        try:
+            with patch(
+                "app.modules.transformers.document_extraction.get_llm_for_role", return_value=(llm, config),
+            ), patch("app.utils.streaming._apply_structured_output", side_effect=lambda model, schema: model):
+                first = await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
+                second = await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
+        finally:
+            REJECTED_CACHE_PARAMS.clear()
+        assert first.departments == ["Sales"] and second.departments == ["Sales"]
+        key = {"prompt_cache_key"}
+        assert llm.sent == [key | {"prompt_cache_retention"}, key, key]
 
     @pytest.mark.asyncio
     async def test_a_refused_cache_point_is_stripped_and_not_sent_again(self) -> None:

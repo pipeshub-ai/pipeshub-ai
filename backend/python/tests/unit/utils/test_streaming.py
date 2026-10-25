@@ -2121,6 +2121,74 @@ class TestStreamContentCoverage:
                     pass
 
     @pytest.mark.asyncio
+    async def test_stream_content_never_logs_the_signed_query(self, caplog) -> None:
+        """The query of a presigned URL is a credential; only the path may be logged."""
+        from fastapi import HTTPException
+
+        from app.utils.streaming import stream_content
+
+        mock_response = AsyncMock()
+        mock_response.status = 403
+        mock_response.text = AsyncMock(return_value="AccessDenied")
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        url = (
+            "https://b.s3.amazonaws.com/k.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            "&X-Amz-Credential=AKIAEXAMPLE%2F20260101%2Fus-east-1%2Fs3%2Faws4_request"
+            "&X-Amz-Date=20260101T000000Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&X-Amz-Signature=deadbeef"
+        )
+        caplog.set_level(logging.DEBUG, logger="streaming")
+        with patch("app.utils.streaming.aiohttp.ClientSession", return_value=mock_session):
+            with pytest.raises(HTTPException):
+                async for _ in stream_content(url, "rec-1"):
+                    pass
+
+        assert "b.s3.amazonaws.com/k.pdf" in caplog.text
+        assert "X-Amz-" not in caplog.text
+        assert "AKIAEXAMPLE" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stream_content_redacts_a_signed_url_echoed_in_the_error_body(self, caplog) -> None:
+        from fastapi import HTTPException
+
+        from app.utils.streaming import stream_content
+
+        signed = (
+            "https://b.s3.amazonaws.com/k.pdf?X-Amz-Credential=AKIAEXAMPLE%2F20260101%2Fus-east-1%2Fs3%2Faws4_request"
+            "&X-Amz-Signature=deadbeef"
+        )
+        mock_response = AsyncMock()
+        mock_response.status = 403
+        mock_response.text = AsyncMock(
+            return_value=f"<Error><Code>AccessDenied</Code><Message>Denied for {signed}</Message>{'x' * 1000}</Error>"
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        caplog.set_level(logging.DEBUG, logger="streaming")
+        with patch("app.utils.streaming.aiohttp.ClientSession", return_value=mock_session):
+            with pytest.raises(HTTPException):
+                async for _ in stream_content("https://b.s3.amazonaws.com/k.pdf", "rec-1"):
+                    pass
+
+        assert "AccessDenied" in caplog.text
+        assert "AKIAEXAMPLE" not in caplog.text
+        assert "deadbeef" not in caplog.text
+        details = caplog.text.split("Error details: ", 1)[1].splitlines()[0]
+        assert len(details) <= 500
+
+    @pytest.mark.asyncio
     async def test_stream_content_404_error(self):
         """404 Not Found should raise HTTPException."""
         from fastapi import HTTPException

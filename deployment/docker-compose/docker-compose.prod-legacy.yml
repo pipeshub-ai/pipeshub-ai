@@ -60,8 +60,7 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      # Set to "true" to defer graph enrichment after vectordb indexing
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
@@ -81,6 +80,7 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -125,6 +125,7 @@ services:
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -145,7 +146,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -184,13 +185,24 @@ services:
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
       - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
       - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
       - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
@@ -201,6 +213,7 @@ services:
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
       # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
       - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
       # How long a delete waits for a running sync to stop.
@@ -458,7 +471,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: 2G

@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode, RefObject } from 'react';
+import Link from 'next/link';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -8,7 +9,7 @@ import { TableSkeleton } from '@/app/components/data-display';
 import { useTranslation } from 'react-i18next';
 import type { ArtifactListItem, ArtifactsOwnership, ArtifactsSortField, ArtifactsViewMode } from '../types';
 import type { ArtifactActionHandlers } from './artifact-actions';
-import type { ArtifactsPagination } from './pagination-footer';
+import type { PaginationState } from '@/app/components/data-display/pagination-footer';
 import { ArtifactsListView } from './artifacts-list-view';
 import { ArtifactsGridView } from './artifacts-grid-view';
 
@@ -27,7 +28,7 @@ interface ArtifactsDataTableProps extends ArtifactActionHandlers {
   onClearFilters: () => void;
   /** Focus lands here after a delete removes the focused row. */
   listRef?: RefObject<HTMLDivElement | null>;
-  pagination: ArtifactsPagination;
+  pagination: PaginationState;
   onPageChange: (page: number) => void;
 }
 
@@ -150,6 +151,16 @@ export function ArtifactsDataTable({
         icon={<EmptyIcon />}
         title={ownership === 'shared' ? t('artifacts.emptyShared') : t('artifacts.empty')}
         hint={ownership === 'shared' ? t('artifacts.emptySharedHint') : t('artifacts.emptyHint')}
+        action={
+          ownership === 'shared' ? undefined : (
+            <Button asChild variant="soft">
+              <Link href="/chat/">
+                <MaterialIcon name="chat_bubble_outline" size={16} />
+                {t('chat.startChat')}
+              </Link>
+            </Button>
+          )
+        }
       />
     ));
   }

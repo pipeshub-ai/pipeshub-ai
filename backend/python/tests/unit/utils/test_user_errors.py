@@ -363,6 +363,144 @@ class TestProviderErrorCode:
         error = openai.NotFoundError("not found", response=httpx.Response(404, request=request), body=None)
         assert ue.provider_error_code(error) == "model_not_found"
 
+    @pytest.mark.parametrize(
+        ("status", "error_code", "expected"),
+        (
+            (400, "ValidationException", "invalid_request"),
+            (403, "AccessDeniedException", "auth_error"),
+            (429, "ThrottlingException", "rate_limit"),
+        ),
+    )
+    def test_a_bedrock_client_error_is_read_by_its_http_status(
+        self, status: int, error_code: str, expected: str,
+    ) -> None:
+        from botocore.exceptions import ClientError
+
+        response = {
+            "Error": {"Code": error_code, "Message": "rejected"},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        }
+        assert ue.provider_error_code(ClientError(response, "Converse")) == expected
+
+
+def _bedrock_error(
+    code: str, message: str, operation: str = "Converse", status: int = 403,
+) -> BaseException:
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        operation,
+    )
+
+
+def _stored(cause: BaseException) -> BaseException:
+    """The chain a non-retriable embedding failure reaches `to_user_reason` as.
+
+    BedrockEmbeddings re-raises botocore's ClientError, `_embed_documents_with_retry`
+    lets a non-retriable one out unwrapped, and the vector store wraps it twice.
+    """
+    return _wrapped(
+        VectorStoreError("Failed to store documents in vector store"),
+        _wrapped(VectorStoreError("Failed to store batch 0"), cause),
+    )
+
+
+class TestBedrockAccessDeniedCause:
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        (
+            ("UnrecognizedClientException", "The security token included in the request is invalid."),
+            ("InvalidSignatureException", "The request signature we calculated does not match the signature you provided."),
+            ("ExpiredTokenException", "The security token included in the request is expired"),
+            ("InvalidClientTokenId", "The security token included in the request is invalid."),
+        ),
+    )
+    def test_a_wrong_or_expired_key_is_its_own_cause(self, code: str, message: str) -> None:
+        assert ue.bedrock_access_denied_cause(_bedrock_error(code, message)) == "credentials"
+
+    def test_the_cause_is_read_through_a_wrapper(self) -> None:
+        exc = _wrapped(
+            RuntimeError("Converse call failed"),
+            _bedrock_error("UnrecognizedClientException", "The security token included in the request is invalid."),
+        )
+        assert ue.bedrock_access_denied_cause(exc) == "credentials"
+
+    def test_an_iam_denial_is_not_a_credential_failure(self) -> None:
+        exc = _bedrock_error(
+            "AccessDeniedException",
+            "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
+        )
+        assert ue.bedrock_access_denied_cause(exc) == "iam"
+
+    def test_no_exception_has_no_cause(self) -> None:
+        assert ue.bedrock_access_denied_cause(None) is None
+
+
+class TestBedrockDenialReason:
+    @pytest.mark.parametrize(
+        "message",
+        (
+            "openai.gpt-6-luna is not available for this account.",
+            "explicit deny in a service control policy",
+            "Something new went wrong",
+            "Model access is denied due to INVALID_PAYMENT_INSTRUMENT. Your AWS Marketplace "
+            "subscription for this model cannot be completed.",
+        ),
+    )
+    def test_an_embedding_denial_that_is_not_a_bad_key_does_not_blame_the_key(self, message: str) -> None:
+        reason = ue.to_user_reason(_stored(_bedrock_error("AccessDeniedException", message, "InvokeModel")))
+        assert "API key" not in reason
+        assert "embedding model's provider refused access to the model" in reason
+
+    def test_an_embedding_bad_key_points_to_the_key(self) -> None:
+        error = _bedrock_error(
+            "UnrecognizedClientException", "The security token included in the request is invalid.", "InvokeModel",
+        )
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["auth_error"]
+
+    def test_an_embedding_iam_denial_asks_for_access_not_a_new_key(self) -> None:
+        error = _bedrock_error(
+            "AccessDeniedException",
+            "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
+            "InvokeModel",
+        )
+        reason = ue.to_user_reason(_stored(error))
+        assert "API key" not in reason
+        assert "aren't allowed to use the model" in reason
+        assert "bedrock:InvokeModel" in reason
+
+    def test_an_embedding_denial_under_an_embedding_error_reads_the_same(self) -> None:
+        error = _bedrock_error("AccessDeniedException", "is not authorized to perform: bedrock:InvokeModel", "InvokeModel")
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), error)
+        assert ue.to_user_reason(exc) == ue.to_user_reason(_stored(error))
+
+    @pytest.mark.parametrize("status", (400, 401))
+    def test_an_embedding_not_authorized_error_asks_for_access(self, status: int) -> None:
+        error = _bedrock_error(
+            "NotAuthorized", "You do not have permission to perform this action.", "InvokeModel", status=status,
+        )
+        assert ue.provider_error_code(error) == "auth_error"
+        assert ue.bedrock_access_denied_cause(error) == "iam"
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["permission_denied"]
+
+    def test_bedrock_throttling_while_storing_is_the_model_being_busy(self) -> None:
+        error = _bedrock_error("ThrottlingException", "Too many requests", "InvokeModel", status=429)
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["rate_limit"]
+
+    def test_a_chat_model_iam_denial_while_processing_asks_for_access(self) -> None:
+        error = _bedrock_error("AccessDeniedException", "is not authorized to perform: bedrock:InvokeModel")
+        exc = _wrapped(DocumentProcessingError("Failed to process document"), error)
+        assert "The AI model's credentials work but aren't allowed" in ue.to_user_reason(exc)
+
+    def test_a_connector_s3_denial_while_storing_stays_a_store_failure(self) -> None:
+        error = _bedrock_error("AccessDenied", "Access Denied", "GetObject")
+        assert ue.to_user_reason(_stored(error)) == ue.TEMPORARY_PROBLEM
+
+    def test_a_forbidden_response_from_another_provider_still_points_to_the_key(self) -> None:
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.PermissionDeniedError, 403))
+        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+
 
 class TestRepositoryFileReasons:
     @pytest.mark.parametrize(
@@ -441,3 +579,48 @@ class TestStorageRefusal:
         from app.utils.user_errors import GENERIC_FAILURE, to_user_reason
 
         assert to_user_reason(StorageRequestRejectedError("refused (HTTP 415)", 415)) == GENERIC_FAILURE
+
+
+class TestTooLargeRefusal:
+    """Only the storage service refusing the content for its size, wherever it sits in the chain."""
+
+    @staticmethod
+    def _refusal(too_large: bool = True) -> Exception:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+
+        return StorageRequestRejectedError("refused (HTTP 400): larger than the 30 MB limit", 400, too_large=too_large)
+
+    def test_the_refusal_itself(self) -> None:
+        refusal = self._refusal()
+        assert ue.too_large_refusal(refusal) is refusal
+
+    def test_as_the_cause_of_a_wrapper(self) -> None:
+        try:
+            raise RuntimeError("Failed to save record") from self._refusal()
+        except RuntimeError as wrapped:
+            assert ue.too_large_refusal(wrapped) is wrapped.__cause__
+
+    def test_as_the_context_of_a_later_error(self) -> None:
+        try:
+            try:
+                raise self._refusal()
+            except Exception:
+                raise ValueError("cleanup failed")  # noqa: B904 - the implicit context is the point
+        except ValueError as later:
+            assert ue.too_large_refusal(later) is later.__context__
+
+    def test_a_refusal_for_another_reason(self) -> None:
+        assert ue.too_large_refusal(self._refusal(too_large=False)) is None
+
+    def test_other_too_large_reasons_do_not_count(self) -> None:
+        assert ue.to_user_reason(MemoryError()) == ue.FILE_TOO_LARGE
+        assert ue.too_large_refusal(MemoryError()) is None
+        assert ue.too_large_refusal(ValueError("file is too large")) is None
+
+    def test_none(self) -> None:
+        assert ue.too_large_refusal(None) is None
+
+    def test_a_cyclic_chain_terminates(self) -> None:
+        a, b = ValueError("a"), ValueError("b")
+        a.__cause__, b.__cause__ = b, a
+        assert ue.too_large_refusal(a) is None

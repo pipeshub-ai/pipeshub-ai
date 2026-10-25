@@ -119,9 +119,9 @@ class TestQueries:
         assert LinearGraphQLOperations.QUERIES["viewer"]["fragments"] == ["UserFields"]
 
     def test_issues_has_fragments(self):
+        # The list query uses its own lighter fragment and nothing else.
         frags = LinearGraphQLOperations.QUERIES["issues"]["fragments"]
-        assert "IssueFields" in frags
-        assert "UserFields" in frags
+        assert frags == ["IssueListFields"]
 
 
 class TestMutations:
@@ -168,8 +168,12 @@ class TestGetOperationWithFragments:
     def test_query_with_fragments(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
         assert "fragment TeamFields" in result
-        assert "fragment UserFields" in result
         assert "query teams" in result
+        # Members are listed inline, 100 at a time with a cursor; the rest come from
+        # the teamMembers operation, so the UserFields fragment is no longer attached.
+        assert "fragment UserFields" not in result
+        assert "members(first: 100)" in result
+        assert "guest" in result
 
     def test_mutation_with_fragments(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("mutation", "issueCreate")
@@ -199,9 +203,14 @@ class TestGetOperationWithFragments:
         assert "fragment ProjectUpdateFields" in result
         assert "fragment ProjectUpdateCommentFields" in result
 
-    def test_issues_query_includes_comment_fragments(self):
+    def test_issues_query_uses_list_fragment(self) -> None:
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "issues")
-        assert "fragment CommentFields" in result
+        assert "fragment IssueListFields on Issue" in result
+        assert "...IssueListFields" in result
+        assert "fragment CommentFields" not in result
+        assert "fragment IssueFields" not in result
+        assert "$orderBy: PaginationOrderBy" in result
+        assert "orderBy: $orderBy" in result
 
     def test_result_is_string(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "viewer")

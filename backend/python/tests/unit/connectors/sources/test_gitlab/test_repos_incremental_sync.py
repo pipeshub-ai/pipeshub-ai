@@ -21,11 +21,13 @@ Async test execution:
 """
 from __future__ import annotations
 
+import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.connectors.sources.gitlab.constants import GITLAB_COMPARE_DIFF_LIMIT
 from app.connectors.sources.gitlab.repos import ReposSync, _classify_compare_diffs
 
@@ -81,7 +83,7 @@ def _make_incremental_connector() -> tuple[MagicMock, ReposSync]:
     repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
     repos._cleanup_emptied_folders = AsyncMock()
     repos._sync_repo_full = AsyncMock(return_value=True)
-    repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+    repos._get_code_repo_checkpoint = AsyncMock(return_value=(None, None))
     repos._update_code_repo_checkpoint = AsyncMock()
     repos.build_code_file_records = AsyncMock()
     return c, repos
@@ -753,17 +755,27 @@ class TestSyncRepoMainRouting:
     async def test_no_checkpoint_runs_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("sha-new"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=(None, None))
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "sha-new")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "sha-new", _PROJECT_PATH)
+
+    async def test_a_project_path_change_walks_the_whole_tree(self) -> None:
+        """Code records are keyed by the path: after a rename only a walk re-keys them."""
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(return_value=branch_res("same-sha"))
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("same-sha", "acme/old-name"))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "same-sha", _PROJECT_PATH)
 
     async def test_unchanged_head_skips_all_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("same-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="same-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("same-sha", _PROJECT_PATH))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_not_called()
@@ -772,17 +784,17 @@ class TestSyncRepoMainRouting:
     async def test_incremental_success_updates_checkpoint(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha", _PROJECT_PATH)
         repos._sync_repo_full.assert_not_called()
 
     async def test_incremental_failure_falls_back_to_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=False)
         repos._sync_repo_full = AsyncMock(return_value=True)
 
@@ -792,25 +804,25 @@ class TestSyncRepoMainRouting:
     async def test_incremental_raise_falls_back_to_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(side_effect=RuntimeError("graph fail"))
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
-        # The full walk never deletes, so the raised pass's pending deletes need a compare
-        # from last_sha next run — advancing the checkpoint would lose them.
+        # The interrupted pass may have left folders it owed a cleanup; a compare from
+        # last_sha next run names them again, so the checkpoint stays.
         repos._update_code_repo_checkpoint.assert_not_called()
 
     async def test_incremental_failure_checkpoint_updated_on_full_success(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=False)
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha", _PROJECT_PATH)
 
 
 # ===========================================================================
@@ -956,3 +968,31 @@ class TestBlobRecordVersion:
         assert new_record.version == 0
         assert new_record.source_created_at is None
         assert new_record.source_updated_at is None
+
+class TestPathPolicy:
+    """GitLab applies the same path policy as GitHub: .gitattributes and admin excludes (P-1, P-7)."""
+
+    async def test_gitattributes_and_exclude_filter_shape_the_diff(self) -> None:
+        c, repos = _make_incremental_connector()
+        gitattributes = MagicMock(success=True, data=MagicMock(
+            content=base64.b64encode(b"gen/** linguist-generated\n").decode()))
+        c.runtime.ds_call = AsyncMock(side_effect=[branch_res("new-sha"), gitattributes])
+        c.sync_filters = FilterCollection.model_validate({"filters": [{
+            "key": SyncFilterKey.EXCLUDE_PATHS.value, "type": "list", "operator": "in",
+            "value": ["docs/"]}]})
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("new-sha", _PROJECT_PATH))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        diffs = [diff_entry(old_path=p, new_path=p) for p in ("src/a.py", "gen/b.py", "docs/c.py")]
+
+        _, _, modifies, _ = _classify_compare_diffs(diffs, repos._policy)
+        assert modifies == ["src/a.py"]
+        assert c.runtime.ds_call.await_args_list[1].kwargs["ref"] == "new-sha"
+
+    async def test_an_unreadable_gitattributes_excludes_nothing_extra(self) -> None:
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("404"))
+
+        rules = await repos._load_linguist_exclusions(_PROJECT_ID, "sha")
+
+        assert not rules

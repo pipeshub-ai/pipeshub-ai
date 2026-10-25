@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import axios from 'axios';
-import { MailService } from '../../../../src/modules/user_management/services/mail.service';
+import {
+  MailService,
+  mailFailureError,
+} from '../../../../src/modules/user_management/services/mail.service';
+import { SMTP_PROBLEM_MESSAGES } from '../../../../src/modules/mail/types/mail-event.types';
 
 describe('MailService', () => {
   let mailService: MailService;
@@ -200,5 +204,24 @@ describe('MailService', () => {
       ]);
       expect(mail.sendCcTo).to.deep.equal(['cc@test.com']);
     });
+  });
+});
+
+describe('mailFailureError', () => {
+  it('passes on every SMTP setup message from the mail route', () => {
+    for (const message of Object.values(SMTP_PROBLEM_MESSAGES)) {
+      const err = mailFailureError({ statusCode: 502, data: message }, 'send the invitation');
+      expect(err.statusCode).to.equal(502);
+      expect(err.message).to.equal(message);
+    }
+  });
+
+  it('replaces anything else with the generic line', () => {
+    const err = mailFailureError(
+      { statusCode: 500, data: 'connect ECONNREFUSED 10.0.0.4:3000' },
+      'send the invitation',
+    );
+    expect(err.statusCode).to.equal(500);
+    expect(err.message).to.contain('PipesHub tried to send the invitation');
   });
 });

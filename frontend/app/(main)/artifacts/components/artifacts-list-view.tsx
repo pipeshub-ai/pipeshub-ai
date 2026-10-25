@@ -5,18 +5,18 @@ import { Flex, Box, Text, Button, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useTranslation } from 'react-i18next';
 import type { ArtifactListItem, ArtifactsSortField } from '../types';
 import { ArtifactActionMenu, type ArtifactActionHandlers } from './artifact-actions';
-import { PaginationFooter, type ArtifactsPagination } from './pagination-footer';
+import { PaginationFooter, type PaginationState } from '@/app/components/data-display/pagination-footer';
 
 interface ArtifactsListViewProps extends ArtifactActionHandlers {
   items: ArtifactListItem[];
   sortBy: ArtifactsSortField;
   sortOrder: 'asc' | 'desc';
   onSort: (field: ArtifactsSortField) => void;
-  pagination: ArtifactsPagination;
+  pagination: PaginationState;
   onPageChange: (page: number) => void;
 }
 
@@ -39,7 +39,7 @@ function HeaderCell({
   flex?: number;
   width?: string;
 }) {
-  const cellStyle = { width, flex: flex ? `${flex} 1 0` : undefined, flexShrink: width ? 0 : undefined, minWidth: 0, padding: '0 var(--space-2)', whiteSpace: 'nowrap' as const, boxSizing: 'border-box' as const, display: 'flex', alignItems: 'center' };
+  const cellStyle = { width, flex: flex ? `${flex} 1 0` : undefined, flexShrink: width ? 0 : undefined, minWidth: 0, padding: '0 var(--space-2)', whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis', boxSizing: 'border-box' as const, display: 'flex', alignItems: 'center' };
   const text = (
     <Text size="1" weight="medium" style={{ color: 'var(--slate-10)' }}>
       {label}
@@ -76,10 +76,13 @@ function HeaderCell({
 function ListRow({
   item,
   isMobile,
+  belowDesktop,
   handlers,
 }: {
   item: ArtifactListItem;
   isMobile: boolean;
+  /** Tablets drop the Conversation column and show it under the name. */
+  belowDesktop: boolean;
   handlers: ArtifactActionHandlers;
 }) {
   const { t } = useTranslation();
@@ -129,11 +132,15 @@ function ListRow({
               </Badge>
             )}
           </Flex>
-          {isMobile && (
+          {isMobile ? (
             <Text size="1" style={muted}>
               {[typeLabel, formatSize(item.sizeInBytes ?? undefined), chatTitle].join(' · ')}
             </Text>
-          )}
+          ) : belowDesktop ? (
+            <Text size="1" style={muted} title={chatTitle}>
+              {chatTitle}
+            </Text>
+          ) : null}
         </Flex>
       </Flex>
       {!isMobile && (
@@ -141,9 +148,11 @@ function ListRow({
           <Text size="2" style={{ ...muted, width: COLUMN.type, flexShrink: 0, padding: '0 var(--space-2)' }}>
             {typeLabel}
           </Text>
-          <Text size="2" style={{ ...muted, flex: '1 1 0', minWidth: 0, padding: '0 var(--space-2)' }} title={chatTitle}>
-            {chatTitle}
-          </Text>
+          {!belowDesktop && (
+            <Text size="2" style={{ ...muted, flex: '1 1 0', minWidth: 0, padding: '0 var(--space-2)' }} title={chatTitle}>
+              {chatTitle}
+            </Text>
+          )}
           <Text size="2" style={{ ...muted, width: COLUMN.date, flexShrink: 0, padding: '0 var(--space-2)' }}>
             {item.createdAt ? formatDate(item.createdAt) : '—'}
           </Text>
@@ -170,6 +179,7 @@ export function ArtifactsListView({
 }: ArtifactsListViewProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const belowDesktop = useIsBelowDesktop();
   const sortProps = { sortBy, sortOrder, onSort };
 
   return (
@@ -188,7 +198,7 @@ export function ArtifactsListView({
         {!isMobile && (
           <>
             <HeaderCell label={t('filter.type')} field="artifactType" width={COLUMN.type} {...sortProps} />
-            <HeaderCell label={t('artifacts.conversation')} flex={1} {...sortProps} />
+            {!belowDesktop && <HeaderCell label={t('artifacts.conversation')} flex={1} {...sortProps} />}
             <HeaderCell label={t('filter.dateCreated')} field="createdAtTimestamp" width={COLUMN.date} {...sortProps} />
             <HeaderCell label={t('artifacts.size')} width={COLUMN.size} {...sortProps} />
           </>
@@ -197,7 +207,7 @@ export function ArtifactsListView({
       </Flex>
       <Box style={{ flex: 1, overflow: 'auto' }}>
         {items.map((item) => (
-          <ListRow key={item.artifactId} item={item} isMobile={isMobile} handlers={handlers} />
+          <ListRow key={item.artifactId} item={item} isMobile={isMobile} belowDesktop={belowDesktop} handlers={handlers} />
         ))}
       </Box>
       <PaginationFooter pagination={pagination} onPageChange={onPageChange} />

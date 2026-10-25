@@ -1,5 +1,6 @@
 'use client';
 
+import { asArray } from '@/lib/utils/safe';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios, { AxiosError, isAxiosError } from 'axios';
@@ -8,10 +9,14 @@ import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
 import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -30,6 +35,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 interface ConsentData {
@@ -152,6 +158,8 @@ type ConsentOutcome =
 
 export function OAuthAuthorizeView() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
   const router = useRouter();
   const searchParams = useSearchParams();
   const isHydrated = useAuthStore((s) => s.isHydrated);
@@ -483,7 +491,7 @@ export function OAuthAuthorizeView() {
 
   if (outcome.type === 'success') {
     const granted = outcome.consent === 'granted';
-    const scopePermissionSummary = consentData.scopes.map((s) => ({
+    const scopePermissionSummary = asArray(consentData.scopes).map((s) => ({
       name: s.name,
       granted,
     }));
@@ -529,7 +537,7 @@ export function OAuthAuthorizeView() {
   return (
     <Flex
       style={{
-        height: '100vh',
+        minHeight: '100dvh',
         overflowY: 'auto',
         padding: 'var(--space-5)',
         background: 'var(--gray-2)',
@@ -617,14 +625,15 @@ export function OAuthAuthorizeView() {
 
           <Box
             style={{
-              maxHeight: 320,
+              // On phones the page scrolls instead of nesting a second scroll area.
+              maxHeight: isMobile ? undefined : 320,
               overflowY: 'auto',
               display: 'flex',
               flexDirection: 'column',
               gap: 'var(--space-2)',
             }}
           >
-            {consentData.scopes.map((scopeItem) => (
+            {asArray(consentData.scopes).map((scopeItem) => (
               <Flex
                 key={scopeItem.name}
                 direction="column"
@@ -665,7 +674,7 @@ export function OAuthAuthorizeView() {
               </Text>
               <Box
                 style={{
-                  maxHeight: 200,
+                  maxHeight: isMobile ? undefined : 200,
                   overflowY: 'auto',
                   display: 'flex',
                   flexDirection: 'column',
@@ -708,6 +717,8 @@ export function OAuthAuthorizeView() {
             </Flex>
           ) : null}
 
+          <KnowledgeLimitNotice appName={appName} limit={consentData.app.knowledgeLimit} />
+
           <Separator size="4" />
 
           <Text size="2" color="gray">
@@ -731,9 +742,9 @@ export function OAuthAuthorizeView() {
               type="button"
               variant="outline"
               color="gray"
-              size="2"
+              size={isBelowDesktop ? '3' : '2'}
               disabled={submitting}
-              style={{ flex: 1, minHeight: 32 }}
+              style={{ flex: 1, minHeight: 32, ...touchTarget(isBelowDesktop) }}
               onClick={() => handleConsent('denied')}
             >
               {t('oauthConsent.deny')}
@@ -741,15 +752,10 @@ export function OAuthAuthorizeView() {
             <LoadingButton
               type="button"
               variant="solid"
-              color="green"
-              size="2"
+              size={isBelowDesktop ? '3' : '2'}
               loading={submitting}
               loadingLabel={t('oauthConsent.submitting')}
-              style={{
-                flex: 1,
-                minHeight: 32,
-                backgroundColor: '#047857',
-              }}
+              style={{ flex: 1, minHeight: 32, ...touchTarget(isBelowDesktop) }}
               onClick={() => handleConsent('granted')}
             >
               {t('oauthConsent.allow')}

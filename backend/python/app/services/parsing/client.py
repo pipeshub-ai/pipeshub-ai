@@ -142,6 +142,7 @@ class ParsingClient(BaseServiceClient):
         org_id: str | None = None,
         provider: ParserProvider | None = None,
         skip_table_enrichment: bool = False,
+        file_path: str | None = None,
     ) -> ParseResult:
         """Parse *file_content* by calling the Parsing Service.
 
@@ -167,14 +168,28 @@ class ParsingClient(BaseServiceClient):
             form_data["org_id"] = org_id
         if provider is not None:
             form_data["provider"] = provider.value
+        if file_path:
+            form_data["file_path"] = file_path
 
+        record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:
             response = await self._post_multipart(
                 "/api/v1/parse",
                 files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
                 data=form_data,
                 operation="parse",
-                budget_seconds=messaging_env.record_processing_timeout,
+                budget_seconds=record_budget,
+                # The client-wide read timeout is sized from the generic
+                # record budget and capped at MAX_PARSE_READ_TIMEOUT_SECONDS,
+                # which is one Docling *batch* (PDF_PARSING_TIMEOUT_SECONDS),
+                # not the sum of them. With USE_PARSING_SERVICE=true the whole
+                # page-batch loop is a single /api/v1/parse response, so a
+                # large filing hit that cap long before its own budget and no
+                # wider retry budget could help it. Per record, per call.
+                read_timeout=max(
+                    self._timeout.read or 0.0,
+                    record_budget * PARSE_SHARE_OF_RECORD_BUDGET,
+                ),
                 org_id=org_id,
             )
         except ServiceBackpressureError as exc:

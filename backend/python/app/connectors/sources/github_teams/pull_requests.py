@@ -37,6 +37,7 @@ from app.models.blocks import (
     GroupType,
     wire_block_group_parent_children,
 )
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     PullRequestRecord,
     Record,
@@ -83,7 +84,7 @@ class PullRequestsSync:
     # PR stub -> PullRequestRecord (invoked from IssuesSync's shared batch)
     # ------------------------------------------------------------------
 
-    async def fetch_prs_batched(self, repo: GhObject) -> None:
+    async def fetch_prs_batched(self, repo: GhObject) -> bool:
         """Sync a repo's pull requests from the PR listing, one page at a time.
 
         PRs used to ride the shared ``/issues`` listing and then pay one
@@ -100,7 +101,11 @@ class PullRequestsSync:
 
         The fetched page IS the batch — no re-chunking. The checkpoint is
         committed once after the sweep; any page or batch failure returns
-        before that write so already-done pages are retried next sync.
+        False before that write so already-done pages are retried next sync.
+
+        The checkpoint itself is read again (``>=``): timestamps have one-second
+        resolution, so a PR changed in the same second as the newest one seen,
+        after the listing was read, carries the checkpoint's exact value.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -108,9 +113,6 @@ class PullRequestsSync:
         checkpoint_dt = await self._checkpoint_datetime(group_id)
         window_dt = sync_window_start(c.sync_filters)
         since_dt = listing_since(checkpoint_dt, window_dt)
-        # The checkpoint is the last PR already stored, so it is exclusive; a
-        # window start is a date the admin chose, so a PR updated at it counts.
-        inclusive = since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
 
         page = 1
         watermark = 0
@@ -127,12 +129,12 @@ class PullRequestsSync:
                     "checkpoint so this page is retried next sync.",
                     repo.full_name, page, res.error,
                 )
-                return
+                return False
             prs = res.data or []
             if not prs:
                 break
 
-            fresh = [p for p in prs if self._is_after(p, since_dt, inclusive=inclusive)]
+            fresh = [p for p in prs if self._is_after(p, since_dt)]
             if fresh:
                 record_updates = await self._build_pr_records(repo, fresh)
                 if not await c.issues.process_new_records(record_updates, {}):
@@ -141,7 +143,7 @@ class PullRequestsSync:
                         "checkpoint stays behind the failure rather than skipping past it.",
                         repo.full_name, page,
                     )
-                    return
+                    return False
                 processed += len(fresh)
                 watermark = max(watermark, *(epoch_ms_or_now(p.updated_at) for p in fresh))
 
@@ -158,8 +160,9 @@ class PullRequestsSync:
                 "Synced %s pull request(s) for %s across %s page(s)", processed, repo.full_name, page,
             )
             await c.issues._update_sync_checkpoint(group_id, watermark)
+        return True
 
-    def _is_after(self, pr: Any, since_dt: datetime | None, *, inclusive: bool = False) -> bool:
+    def _is_after(self, pr: Any, since_dt: datetime | None) -> bool:
         if since_dt is None:
             return True
         updated_at = getattr(pr, "updated_at", None)
@@ -167,7 +170,7 @@ class PullRequestsSync:
             return True
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
-        return updated_at >= since_dt if inclusive else updated_at > since_dt
+        return updated_at >= since_dt
 
     async def _checkpoint_datetime(self, group_id: str) -> datetime | None:
         last_ms = await self.c.issues._get_sync_checkpoint(group_id)
@@ -270,6 +273,9 @@ class PullRequestsSync:
                 review_name=reviewer_logins,
                 review_email=reviewer_emails,
                 last_commit_sha=getattr(pr.head, "sha", None) if getattr(pr, "head", None) else None,
+                # Both are on the listing payload, unlike `merged_by`.
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
                 inherit_permissions=True,
                 # Jira keys and addresses in the title and description join the PR
                 # to those records, in whichever connector holds them.
@@ -333,7 +339,8 @@ class PullRequestsSync:
 
         markdown_raw: str = getattr(pull_request, "body", "") or ""
         body_with_images = await c.comments.embed_images_as_base64(markdown_raw)
-        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record)
+        linked: set[str] = set()
+        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record, linked)
 
         bg_0 = BlockGroup(
             index=0,
@@ -363,12 +370,13 @@ class PullRequestsSync:
         # with the commits BlockGroup allocated above.
         comment_bgs, comment_remaining = await c.comments.build_pr_comment_and_diff_blocks(
             owner, repo_name, pr_number, pull_request, parent_index=0, record=record,
-            start_index=next_index,
+            start_index=next_index, seen_keys=linked,
         )
         block_groups.extend(comment_bgs)
         remaining.extend(comment_remaining)
 
         await c.issues.process_new_records(remaining)
+        await c.comments.remove_unlinked_attachments(record, linked)
         wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         return blocks_container.model_dump_json(indent=2).encode(GitHubLiterals.UTF_8.value)

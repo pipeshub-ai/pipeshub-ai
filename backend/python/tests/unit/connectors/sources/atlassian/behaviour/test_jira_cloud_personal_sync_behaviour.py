@@ -7,6 +7,8 @@ and answers the way Jira Cloud does for one account. Our databases are in-memory
 
 import json
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -123,7 +125,10 @@ class FakeJiraSite:
     def _issue(self, issue_id: str) -> httpx.Response:
         if not self._visible_issue(issue_id):
             return json_response(NOT_FOUND, status=404)
-        return json_response({"id": issue_id, "key": self.issues[issue_id]["key"]})
+        fields = self.issues[issue_id]["fields"]
+        return json_response({"id": issue_id, "key": self.issues[issue_id]["key"], "fields": {
+            name: fields[name] for name in ("project", "created", "updated")
+        }})
 
     def _search(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -139,6 +144,10 @@ class FakeJiraSite:
             if ticket["fields"]["project"]["key"] == key and self._visible_issue(issue_id)
             and issue_id not in self.unsearchable_issues
         ]
+        created_cut = re.search(r'created >= "([^"]+)"', body["jql"])
+        if created_cut:  # the account's timezone is UTC (see _myself)
+            cut = datetime.strptime(created_cut.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            found = [t for t in found if datetime.fromisoformat(t["fields"]["created"].replace("+0000", "+00:00")) >= cut]
         if listing_ids:
             if key in self.id_pages:
                 page = self.id_pages[key].get(body.get("nextPageToken"), {"issues": []})
@@ -278,22 +287,6 @@ class TestDeletedIssues:
         await connector.run_sync()
 
         assert tickets(db) == {"1", "3", "5"}
-
-    async def test_an_issue_a_narrowed_date_filter_leaves_out_is_not_removed(self, site, db, checkpoints) -> None:
-        site.issues["1"]["fields"]["created"] = "2024-06-01T09:00:00.000+0000"
-        site.issues["2"]["fields"]["created"] = "2024-06-01T09:00:00.000+0000"
-        connector, config_service = await synced(db, checkpoints)
-        config_service.config["filters"] = {
-            "sync": {"values": {"created": {"operator": "is_after", "type": "datetime", "value": {"start": 1_715_731_200_000}}}},
-        }
-        del site.issues["2"]
-
-        await connector.run_sync()
-
-        assert tickets(db) == {"1", "3", "5"}, "issue 3 was created before the new cutoff, and Jira still has it"
-        assert site.issue_reads(3) == 0
-        assert all("created" in b["jql"] for b in site.search_bodies[-2:]), "the issue search applies the narrowed filter"
-        assert all("created" not in b["jql"] for b in site.id_bodies), "the id listing does not"
 
     async def test_a_project_whose_issue_sync_failed_is_not_compared_in_that_sync(self, site, db, checkpoints) -> None:
         connector, _ = await synced(db, checkpoints)
@@ -483,7 +476,7 @@ class TestProjectsOutOfView:
     async def test_an_issue_whose_check_fails_is_kept_and_removed_by_a_later_sync(self, site, db, checkpoints) -> None:
         connector, _ = await synced(db, checkpoints)
         site.hidden_projects.add("ENG")
-        site.api.on("GET", f"{JIRA}/issue/3", [json_response({"errorMessages": ["busy"]}, status=503), json_response(NOT_FOUND, status=404)])
+        site.api.on("GET", f"{JIRA}/issue/3", [json_response({"errorMessages": ["boom"]}, status=500), json_response(NOT_FOUND, status=404)])
 
         await connector.run_sync()
 
@@ -517,3 +510,15 @@ class TestProjectsOutOfView:
         await connector.run_sync()
 
         assert site.project_reads("10000") == 0
+
+
+class TestFullSyncCoverage:
+    async def test_a_full_sync_whose_project_failed_reports_itself_incomplete(self, site, db, checkpoints) -> None:
+        connector, _ = await synced(db, checkpoints)
+        assert connector.full_sync_coverage().complete is True
+        site.failing_issue_search.add("OPS")
+        checkpoints.sync_points.clear()  # a full sync starts without sync points
+
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "so OPS's unread issues are not unlinked"

@@ -44,6 +44,8 @@ from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.services.artifact_registry.models import artifact_owner_id
+from app.services.graph_db.interface.graph_db_provider import CONNECTION_APPS_FILTER_KEY
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
@@ -61,6 +63,10 @@ logger = logging.getLogger(__name__)
 # below, so they need their own gate on `context.has_knowledge` instead.
 _KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
 
+# Code graph is a view over files a repo connector ingested. Without both
+# a configured code connector (org-wide) and attached code knowledge
+# (agent-scoped), the tools serve no purpose.
+_CODE_GRAPH_TOOLSETS = frozenset({"codegraph"})
 # Group names of the legacy internal toolsets that execute model-generated
 # code through `app.sandbox.manager.get_executor()`. `.as_internal()` exempts
 # them from the "configured on this agent" check, so without this gate they
@@ -103,15 +109,16 @@ def _has_tool_decorated_methods(cls: type) -> bool:
 
 def _record_for_approvals(
     context: "AgentContext", tool: "Tool", instance: tuple[str, str] | None, *, fallback_owner: str,
+    personal: bool = False,
 ) -> None:
     """Records an external toolset's tool for the approval gate: the instance its calls run on
-    (whose rules apply) and what it does to data."""
+    (whose rules apply, and whether it is the person's own) and what it does to data."""
     instance_id, owner = instance or ("", fallback_owner)
     tool_name = tool.path.rsplit("/", 1)[-1]
     type_tag = next((tag.value for tag in tool.tags if tag.key == "type"), None)
     context.tool_state.setdefault(TOOLSET_TOOLS_BY_PATH, {})[tool.path] = ApprovalTarget(
         source="toolset", instance_id=instance_id, tool_name=tool_name, owner=owner,
-        kind=toolset_tool_kind(tool_name, type_tag), tool=tool,
+        kind=toolset_tool_kind(tool_name, type_tag), tool=tool, personal=personal,
     )
 
 
@@ -172,7 +179,12 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
 
     config_service = state.get("config_service")
 
-    allowed_sql_connector_ids = state.get("allowed_sql_connector_ids") or frozenset()
+    allowed_sql_connector_ids = frozenset(state.get("allowed_sql_connector_ids") or ())
+    connection_apps = (state.get("filters") or {}).get(CONNECTION_APPS_FILTER_KEY)
+    if connection_apps is not None:
+        # A query runs against a whole database, so a connected app reaches
+        # only the SQL connectors its user picked whole.
+        allowed_sql_connector_ids &= frozenset(connection_apps)
     if (
         config_service
         and state.get("has_sql_connector")
@@ -189,6 +201,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 blob_store=state.get("blob_store"),
                 user_id=state.get("user_id"),
                 allowed_connector_ids=allowed_sql_connector_ids,
+                artifact_owner_user_id=artifact_owner_id(state),
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)
@@ -350,6 +363,13 @@ class PipesHubToolLoader:
                     )
                 continue
 
+            if ts_name in _CODE_GRAPH_TOOLSETS and not (
+                context.has_code_connector and context.has_code_knowledge
+            ):
+                if state_logger:
+                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
+                continue
+
             try:
                 instance = await instance_creator.create_instance_async(ts_class, ts_name)
 
@@ -392,6 +412,7 @@ class PipesHubToolLoader:
                 # An external toolset's calls pass the approval gate, under its instance's rules.
                 gated = has_factory and not is_internal
                 approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
+                personal = bool(approval_instance) and instance_creator.instance_is_personal(approval_instance[0])
                 for t in tools:
                     try:
                         registry.register_tool(t)
@@ -401,7 +422,7 @@ class PipesHubToolLoader:
                             state_logger.warning("Skipping duplicate: %s", t.name)
                         continue
                     if gated:
-                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name)
+                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name, personal=personal)
 
                 registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
                 if registered_names:

@@ -443,6 +443,20 @@ class TestRetryDelayBeforeSemaphore:
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
 
     @pytest.mark.asyncio
+    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config) -> None:
+        consumer = IndexingKafkaConsumer(logger, plain_config)
+        consumer.producer = AsyncMock()
+        before = time.time()
+
+        await consumer._requeue_message(
+            "pipeline.classify", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
+            retry_count=0, delay_s=90.0,
+        )
+
+        sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
+        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+
+    @pytest.mark.asyncio
     async def test_requeue_failure_does_not_commit_original(
         self, logger, plain_config
     ):
@@ -1397,6 +1411,130 @@ class TestProcessMessageWrapper:
         assert consumer.lease_renewer._handles == {}
 
 
+    @pytest.mark.asyncio
+    async def test_deadline_during_handler_cleanup_does_not_cut_it_short(
+        self, consumer
+    ) -> None:
+        """The handler generator is closed outside the processing timeout: a
+        deadline that passes while the handler's cleanup is still running must
+        not cancel that cleanup (it reverts IN_PROGRESS)."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        cleanup_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            try:
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="r1"),
+                )
+            finally:
+                await asyncio.sleep(0.2)
+                cleanup_finished.set()
+
+        releases = 0
+
+        async def release_fails_once(*_args) -> None:
+            nonlocal releases
+            releases += 1
+            if releases == 1:
+                raise RuntimeError("lease store unavailable")
+
+        consumer.message_handler = handler
+        consumer._release_distributed_slot = release_fails_once
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(
+                    value=json.dumps(
+                        {"eventType": "test", "payload": {"recordId": "r1"}}
+                    ).encode("utf-8")
+                )
+            )
+
+        assert result is False
+        assert cleanup_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_after_indexing_complete_runs_past_the_deadline(
+        self, consumer
+    ) -> None:
+        """Once INDEXING_COMPLETE is out the record is done: the handler's work
+        after it (releasing queued copies) must finish, and the record count as
+        a success, even when the processing deadline passes meanwhile."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        bookkeeping_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await asyncio.sleep(0.2)
+            bookkeeping_finished.set()
+
+        consumer.message_handler = handler
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(
+                    value=json.dumps(
+                        {"eventType": "test", "payload": {"recordId": "r1"}}
+                    ).encode("utf-8")
+                )
+            )
+
+        assert result is True
+        assert bookkeeping_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_handler_after_indexing_complete_is_bounded(
+        self, consumer
+    ) -> None:
+        """The work after INDEXING_COMPLETE runs past the processing deadline but
+        has its own bound: a handler stalled there fails the attempt (so the
+        message is redelivered) instead of holding it forever."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        never = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await never.wait()
+
+        consumer.message_handler = handler
+
+        with patch.object(concurrency, "POST_INDEXING_TAIL_TIMEOUT_S", 0.05):
+            result = await asyncio.wait_for(consumer._IndexingKafkaConsumer__process_message_wrapper(
+                    _make_message(
+                        value=json.dumps(
+                            {"eventType": "test", "payload": {"recordId": "r1"}}
+                        ).encode("utf-8")
+                    )
+                ), timeout=5)
+
+        assert result is False
+
+
 class TestTimingSummary:
     """The per-record timing line names how the delivery ended, and is
     written only once the record has let go of everything it held."""
@@ -1701,6 +1839,36 @@ class TestProcessMessageWrapperWithGovernor:
         assert result is False
         governor_consumer._requeue_message.assert_awaited_once()
         assert governor_consumer._requeue_message.await_args.kwargs["retry_count"] == 0
+        governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._commit_offset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_paused_dependency_hand_back_waits_its_delay_and_is_not_a_crash_loop(
+        self, governor_consumer
+    ) -> None:
+        """However long an outage lasts, a job waiting on it is never dead-lettered for waiting."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=1)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0)
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is False
+        assert governor_consumer._requeue_message.await_args.kwargs["delay_s"] == 42.0
+        governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
         governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
         governor_consumer._commit_offset.assert_awaited_once()
 

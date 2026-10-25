@@ -59,4 +59,24 @@ func TestHandwritten_AgentConversationStreams(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, answerID, feedback.MessageFeedbackUpdateResponse.MessageID)
 	assert.Equal(t, pipeshub.Pointer(true), feedback.MessageFeedbackUpdateResponse.Feedback.IsHelpful)
+
+	fork, err := s.Agents.ForkAgentConversation(ctx, agentKey, conversationID, answerID)
+	require.NoError(t, err)
+	assert.Equal(t, components.ForkedFrom{ConversationID: conversationID, MessageID: answerID},
+		fork.ForkConversationResponse.ForkedFrom)
+
+	upload, err := s.Agents.UploadAgentConversationChatAttachments(ctx, agentKey, operations.UploadAgentConversationChatAttachmentsRequestBody{
+		ConversationID: pipeshub.Pointer(conversationID),
+		Files: []operations.UploadAgentConversationChatAttachmentsFile{
+			{FileName: "sdk-test-attachment.txt", Content: []byte("PipesHub SDK test attachment.\n")},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, pipeshub.Pointer(conversationID), upload.ChatAttachmentUploadResponse.ConversationID)
+	require.NotEmpty(t, upload.ChatAttachmentUploadResponse.Attachments, "upload returned no attachment")
+	recordID := upload.ChatAttachmentUploadResponse.Attachments[0].RecordID
+	_, err = s.Agents.DeleteAgentConversationChatAttachment(ctx, agentKey, recordID)
+	require.NoError(t, err)
+	_, err = s.Agents.DeleteAgentConversationChatAttachment(ctx, agentKey, recordID)
+	requireStatus(t, 404, err)
 }

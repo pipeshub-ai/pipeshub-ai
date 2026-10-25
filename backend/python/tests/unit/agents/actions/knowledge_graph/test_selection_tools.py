@@ -16,6 +16,7 @@ from app.agents.actions.knowledge_graph.ops.scope import (
     SELECTION_ALONE_MESSAGE,
     SELECTION_BROWSE_HINT,
     SELECTION_OUTSIDE_MESSAGE,
+    _selection_cursor,
     apps_usable_whole,
     derive_scope,
     ids_within_scope,
@@ -211,6 +212,69 @@ class TestListingTheSelection:
         text = await list_selected_nodes({"filters": {"records": ["gone"]}}, _graph(), "u", "o")
         assert text == "Nothing this conversation is limited to is available."
 
+    @pytest.mark.asyncio
+    async def test_a_long_selection_names_the_first_page_and_a_cursor_for_the_next(self) -> None:
+        nodes = [{"id": f"r{i}", "recordName": f"Item {i}", "mimeType": "text/plain"} for i in range(3)]
+        graph = _graph(
+            readable={node["id"] for node in nodes},
+            nodes={"records": nodes},
+        )
+        state = {"filters": {"records": [node["id"] for node in nodes]}}
+        first = await list_selected_nodes(state, graph, "u", "o", page_size=2)
+        assert "Item 0" in first and "Item 1" in first and "Item 2" not in first
+        assert "showing 1–2 of 3" in first
+        cursor = first.split('cursor="', 1)[1].split('"', 1)[0]
+        second = await list_selected_nodes(state, graph, "u", "o", cursor=cursor, page_size=2)
+        assert "Item 2" in second and "Item 0" not in second
+        assert "This is the last page." in second
+        assert "cursor=" not in second
+
+    @pytest.mark.asyncio
+    async def test_a_selection_that_fits_the_page_has_no_cursor(self) -> None:
+        graph = _graph(
+            readable={"r0"},
+            nodes={"records": [{"id": "r0", "recordName": "Only", "mimeType": "text/plain"}]},
+        )
+        text = await list_selected_nodes({"filters": {"records": ["r0"]}}, graph, "u", "o", page_size=2)
+        assert "cursor=" not in text
+        assert text.startswith("This conversation is limited to these items:")
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_cursor_does_not_restart_the_list(self) -> None:
+        graph = _graph(
+            readable={"r0"},
+            nodes={"records": [{"id": "r0", "recordName": "Only", "mimeType": "text/plain"}]},
+        )
+        text = await list_selected_nodes(
+            {"filters": {"records": ["r0"]}}, graph, "u", "o", cursor="not-a-page",
+        )
+        assert "not a page" in text
+        assert "Only" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_lands_on_the_boundary_has_no_next_cursor(self) -> None:
+        nodes = [{"id": f"r{i}", "recordName": f"Item {i}", "mimeType": "text/plain"} for i in range(2)]
+        graph = _graph(readable={"r0", "r1"}, nodes={"records": nodes})
+        text = await list_selected_nodes(
+            {"filters": {"records": ["r0", "r1"]}}, graph, "u", "o", page_size=2,
+        )
+        assert "cursor=" not in text
+        assert text.startswith("This conversation is limited to these items:")
+
+    @pytest.mark.asyncio
+    async def test_a_cursor_past_the_last_page_does_not_repeat_it(self) -> None:
+        nodes = [{"id": f"r{i}", "recordName": f"Item {i}", "mimeType": "text/plain"} for i in range(3)]
+        graph = _graph(readable={n["id"] for n in nodes}, nodes={"records": nodes})
+        state = {"filters": {"records": [n["id"] for n in nodes]}}
+        first = await list_selected_nodes(state, graph, "u", "o", page_size=2)
+        cursor = first.split('cursor="', 1)[1].split('"', 1)[0]
+        last = await list_selected_nodes(state, graph, "u", "o", cursor=cursor, page_size=2)
+        assert "cursor=" not in last
+        past = await list_selected_nodes(
+            state, graph, "u", "o", cursor=_selection_cursor(4), page_size=2,
+        )
+        assert past == "There is no further page of this selection."
+
 
 BOUNDED = {
     "apps": [], "kb": [], "records": ["beta-root"], "selectionApps": ["beta"],
@@ -296,6 +360,31 @@ class TestReachingARecordByNameOrId:
             "attachments": [{"recordId": "upload-1", "virtualRecordId": "v-up"}],
         }
         assert await ids_within_scope(state, graph, "u", "o", ["upload-1", "b1"]) == {"upload-1"}
+
+    @pytest.mark.asyncio
+    async def test_a_file_attached_in_an_earlier_turn_is_always_readable(self) -> None:
+        """A later turn carries the upload in its history, not in `attachments`;
+        it is still part of the conversation, so the scope must not refuse it."""
+        upload = {"id": "upload-1", "orgId": "o", "origin": "UPLOAD", "connectorId": "attachments_o"}
+        graph = _graph(readable={"upload-1"}, inside=set(), nodes={"records": [upload]})
+        state = {
+            "filters": {"apps": [], "kb": [], "records": ["folder-a"]},
+            "previous_conversations": [
+                {"role": "user_query", "attachments": [{"recordId": "upload-1", "virtualRecordId": "v-up"}]},
+                {"role": "bot_response"},
+            ],
+        }
+        assert await ids_within_scope(state, graph, "u", "o", ["upload-1", "b1"]) == {"upload-1"}
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_attachment_naming_a_record_outside_the_bound_is_refused(self) -> None:
+        other = {"id": "secret", "orgId": "o", "origin": "CONNECTOR", "connectorId": "drive-1"}
+        graph = _graph(readable={"secret"}, inside=set(), nodes={"records": [other]})
+        state = {
+            "filters": BOUNDED,
+            "previous_conversations": [{"role": "user_query", "attachments": [{"recordId": "secret"}]}],
+        }
+        assert await ids_within_scope(state, graph, "u", "o", ["secret"]) == set()
 
     @pytest.mark.asyncio
     async def test_an_attachment_naming_a_record_outside_the_bound_is_refused(self) -> None:

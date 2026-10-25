@@ -13,6 +13,8 @@ from aiohttp import ClientSession
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.url_fetcher import private_addresses_blocked
 
 
 class GrantType(Enum):
@@ -144,6 +146,7 @@ class OAuthToken:
     uid: Optional[str] = None   # used for dropbox
     account_id: Optional[str] = None
     team_id: Optional[str] = None
+    id: Optional[str] = None  # Salesforce identity URL, ending in /<orgId>/<userId>
 
     @property
     def is_expired(self) -> bool:
@@ -173,7 +176,8 @@ class OAuthToken:
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
             "account_id": self.account_id,
-            "team_id": self.team_id
+            "team_id": self.team_id,
+            "id": self.id,
         }
 
     @classmethod
@@ -208,7 +212,13 @@ class OAuthProvider:
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = ClientSession()
+            # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
+            # aiohttp refuses any header over 8190 bytes by default.
+            # The token URL is configured by an administrator: the deployment's rule for such
+            # hosts applies (this server, link-local and cloud metadata never).
+            self._session = ClientSession(
+                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+            )
         return self._session
 
     async def close(self) -> None:
@@ -241,6 +251,10 @@ class OAuthProvider:
 
         params.update(self.config.additional_params)
         params.update(kwargs)
+
+        # urlencode writes None as the text "None", so an unset optional parameter
+        # (token_access_type is Dropbox's, unset for every other provider) is left out.
+        params = {key: value for key, value in params.items() if value is not None}
 
         return f"{self.config.authorize_url}?{urlencode(params)}"
 

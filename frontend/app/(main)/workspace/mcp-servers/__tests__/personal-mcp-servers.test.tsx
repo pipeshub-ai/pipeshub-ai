@@ -19,6 +19,13 @@ const mcpApi = vi.hoisted(() => ({
   getMyToolRules: vi.fn(),
   updateMyToolRules: vi.fn(),
 }));
+// These tests cover the default notices, whatever the build's config provides.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
+  McpAgentApprovalsNotice: (await import('@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice'))
+    .McpAgentApprovalsNotice,
+}));
 vi.mock('../api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
@@ -144,7 +151,7 @@ describe('McpPersonalLayout', () => {
     expect(screen.queryByText('Local Files')).toBeNull();
     expect(screen.queryByText('Old Slack')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Setup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set up' }));
     expect(onSetUp).toHaveBeenCalledWith(notion);
   });
 
@@ -696,7 +703,7 @@ describe('McpInstanceConfigPanel — More actions', () => {
     const handlers = renderEditing(editing);
     openMenu();
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Remove server/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete server/ }));
     expect(handlers.onRequestDelete).toHaveBeenCalledWith(editing);
   });
 

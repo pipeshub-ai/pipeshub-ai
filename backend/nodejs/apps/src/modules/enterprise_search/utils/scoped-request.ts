@@ -118,7 +118,7 @@ export const hydrateScopedRequestAsUser = async (
             );
             (req as AuthenticatedServiceRequest).headers.authorization =
               `Bearer ${scopedJwtToken}`;
-            (req as AuthenticatedServiceRequest).user = {
+            (req as AuthenticatedUserRequest).user = {
               userId: new Types.ObjectId(stableUserIdHex),
               orgId: org._id,
               email: email,

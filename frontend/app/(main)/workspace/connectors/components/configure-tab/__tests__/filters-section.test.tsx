@@ -219,12 +219,12 @@ describe('FiltersSection — a sync filter with a fallback when it is not set', 
     defaultOperator: 'last_30_days',
     fallbackOperator: 'last_30_days',
   };
-  const fallbackLine = 'Sync Messages From: Last 30 Days (default)';
+  const fallbackLine = 'Sync Messages From: Last 30 days (default)';
 
   it('keeps the window and its help text on screen after the filter is cleared', () => {
     setup({ sync: [syncWindow] });
     // Seeded from the schema default, so the filter's own card shows the window.
-    expect(screen.getByText('Sync Messages From: Last 30 Days')).toBeTruthy();
+    expect(screen.getByText('Sync Messages From: Last 30 days')).toBeTruthy();
     expect(screen.queryByText(fallbackLine)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /clear/i }));
@@ -565,7 +565,7 @@ describe('FiltersSection — dates', () => {
   it('explains that a rolling window has no dates to pick', () => {
     setup({ sync: [modified], syncValues: { modified: { operator: 'last_7_days', value: null } } });
     expect(screen.getByText('This operator uses a rolling window — no fixed dates to set.')).toBeTruthy();
-    expect(screen.getByText('Modified: Last 7 Days')).toBeTruthy();
+    expect(screen.getByText('Modified: Last 7 days')).toBeTruthy();
   });
 
   it('saves a picked date range as timestamps and shows it back', () => {
@@ -582,7 +582,7 @@ describe('FiltersSection — dates', () => {
       type: 'datetime',
     });
     expect(screen.getByTestId('picker-range').textContent).toBe('2026-01-02T10:00|2026-01-05T18:30');
-    expect(screen.getByText('Modified: Is Between · date range')).toBeTruthy();
+    expect(screen.getByText('Modified: Is between · date range')).toBeTruthy();
 
     fireEvent.click(screen.getByText('Clear dates'));
     expect(syncValue('modified')).toEqual({ operator: 'is_between', value: { start: null, end: null }, type: 'datetime' });

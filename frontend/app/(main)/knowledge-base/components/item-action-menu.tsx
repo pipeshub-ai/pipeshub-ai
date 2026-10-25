@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { DropdownMenu, IconButton, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Types
@@ -59,6 +60,8 @@ export interface ItemActionMenuProps {
  */
 export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, triggerSize = '1' }: ItemActionMenuProps) {
   const visibleActions = actions.filter(Boolean) as MenuAction[];
+  // Phones get 44px rows, as the workspace row menus do.
+  const isMobile = useIsMobile();
   // Which action is mid-flight (index), if any. Keeps the menu open and
   // shows a spinner while the promise settles.
   const [pendingIndex, setPendingIndex] = useState<number | null>(null);
@@ -69,6 +72,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
     <DropdownMenu.Root open={open} onOpenChange={onOpenChange}>
       <DropdownMenu.Trigger>
         <IconButton
+          className="touch-hit"
           variant="ghost"
           size={triggerSize}
           color="gray"
@@ -76,10 +80,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
           onClick={(e) => e.stopPropagation()}
           style={{
             cursor: 'pointer',
-            width: 24,
-            height: 24,
-            minWidth: 24,
-            padding: 0,
+            ...(triggerSize === '1' && { width: 24, height: 24, minWidth: 24, padding: 0 }),
             margin: 0,
             borderRadius: 'var(--radius-1)',
           }}
@@ -90,7 +91,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
       <DropdownMenu.Content
         size="1"
         style={{
-          minWidth: 140,
+          minWidth: isMobile ? 200 : 140,
           // The viewport already pads 4px (globals.css); a second 4 here doubles it.
           padding: 0,
           background: 'var(--olive-2)',
@@ -116,7 +117,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                 color={action.color}
                 disabled={isBlocked || undefined}
                 style={{
-                  height: 24,
+                  height: isMobile ? 44 : 24,
                   padding: '0 8px',
                   borderRadius: 'var(--radius-1)',
                   marginBottom: i < visibleActions.length - 1 ? '4px' : '0',
@@ -150,7 +151,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                     <MaterialIcon name={action.icon} size={16} color={iconColor} />
                   )}
                   <Text
-                    size="1"
+                    size={isMobile ? '2' : '1'}
                     style={{
                       fontWeight: 400,
                       letterSpacing: '0.04px',

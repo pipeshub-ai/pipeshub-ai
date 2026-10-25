@@ -507,6 +507,17 @@ def test_the_parent_triple_travels_with_the_row(
         assert {"parentId", "parentType", "parentName"} <= fields, sorted(fields)
 
 
+def test_the_status_reason_travels_with_the_row(
+    neo4j: Neo4jProvider, arango: ArangoHTTPProvider
+) -> None:
+    """The status tooltip reads 'Failed - <reason>'; without the reason a failed
+    file shows only 'Failed'. The parity test above cannot catch this: it
+    compares the backends with each other, and both dropped it together."""
+    for text in (neo4j._kh_v2_projection_cypher(), arango._kh_v2_projection_aql()):
+        fields = _projection_fields(text)
+        assert {"indexingStatus", "reason"} <= fields, sorted(fields)
+
+
 def test_the_comparator_output_is_returned(
     neo4j: Neo4jProvider, arango: ArangoHTTPProvider
 ) -> None:

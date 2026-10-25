@@ -10,6 +10,11 @@ import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
 import { AuthSessionRequest } from '../middlewares/types';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  REMOVED_SIGN_IN_METHODS,
+  RENAMED_SIGN_IN_METHODS,
+} from '../../../edition';
+import { findSignInRemovalNotice } from '../services/signInRemoval.service';
 const authMethodSchema = z.object({
   type: z.nativeEnum(AuthMethodType),
 });
@@ -32,6 +37,10 @@ const authStepSchema = z.object({
     }),
 });
 
+export const signInMethodRemoved = (type: string): string =>
+  `"${type}" sign-in was removed in PipesHub 1.0. Use password, email OTP, Google or Microsoft sign-in instead.`;
+export const signInMethodRenamed = (type: string, now: string): string =>
+  `"${type}" sign-in is now "${now}". Use "${now}" instead.`;
 export const SAML_IN_MULTI_STEP_POLICY =
   "SAML single sign-on can't be combined with other sign-in steps yet. Use SAML on its own as a one-step sign-in, or remove it from the policy.";
 
@@ -56,6 +65,19 @@ const authStepsSchema = z
 
       // Ensure unique authentication methods across all steps
       for (const method of step.allowedMethods) {
+        if (REMOVED_SIGN_IN_METHODS.includes(method.type)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: signInMethodRemoved(method.type),
+          });
+        }
+        const renamed = RENAMED_SIGN_IN_METHODS[method.type];
+        if (renamed) {
+          ctx.addIssue({
+            code: 'custom',
+            message: signInMethodRenamed(method.type, renamed),
+          });
+        }
         if (globalMethodSet.has(method.type)) {
           ctx.addIssue({
             code: 'custom',
@@ -98,6 +120,20 @@ export function createOrgAuthConfigRouter(container: Container) {
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.getAuthMethod(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+  router.get(
+    '/signInRemoval',
+    userValidator,
+    adminValidator,
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        res
+          .status(200)
+          .json(await findSignInRemovalNotice(String(req.user?.orgId)));
       } catch (error) {
         next(error);
       }

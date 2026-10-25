@@ -15,9 +15,8 @@ from app.schema.arango import edges as product_edges
 from validation.graph_edge_validator import (
     _ARANGO_SYSTEM_KEYS,
     _EDGE_COLLECTION_TO_YAML,
-    _EDGE_SCHEMA_DIR,
+    load_edge_schema,
 )
-from response_validator import load_yaml_schema
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +38,7 @@ def test_every_checked_edge_collection_has_a_product_schema() -> None:
 @pytest.mark.parametrize("collection", sorted(_EDGE_COLLECTION_TO_YAML))
 def test_the_yaml_names_every_field_the_product_declares(collection: str) -> None:
     declared = set(PRODUCT_SCHEMA[collection]["rule"]["properties"]) - _ARANGO_SYSTEM_KEYS
-    yaml_schema = load_yaml_schema(_EDGE_SCHEMA_DIR / _EDGE_COLLECTION_TO_YAML[collection])
+    yaml_schema = load_edge_schema(_EDGE_COLLECTION_TO_YAML[collection])
     missing = sorted(declared - set(yaml_schema.fields))
     assert not missing, (
         f"{_EDGE_COLLECTION_TO_YAML[collection]} lacks {missing}, which the product's "

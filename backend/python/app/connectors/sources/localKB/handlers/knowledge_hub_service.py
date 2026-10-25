@@ -6,7 +6,7 @@ import logging
 import re
 import traceback
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import replace
 from typing import Any, TypeVar
 
@@ -37,8 +37,14 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortOrder,
 )
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+    is_out_of_memory,
+)
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.retrieval.selection_scope import NamedNode
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.kh_cursor import (
     Boundary,
@@ -93,6 +99,24 @@ def _listing_mode(parent_id: str | None, flatten: bool) -> str:
     return "flatten" if flatten else "browse"
 
 
+_SORT_FROM_PROVIDER = {
+    "name": "name",
+    "createdAt": "createdAt",
+    "updatedAt": "updatedAt",
+    "sizeInBytes": "size",
+    "nodeType": "type",
+}
+
+
+def _flatten_for_cursor(mode: str | None, *, request_flatten: bool) -> bool:
+    """The cursor already chose this listing. A later request must not retarget it."""
+    if mode in ("search", "flatten"):
+        return True
+    if mode in ("root", "browse"):
+        return False
+    return request_flatten
+
+
 def _without_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, Any]:
     """The access context with these Apps out of the gate and their grants dropped."""
     if not app_ids:
@@ -100,6 +124,14 @@ def _without_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, 
     out = {**access, "gated_app_ids": [a for a in access.get("gated_app_ids") or [] if a not in app_ids]}
     if access.get("by_connector") is not None:
         out["by_connector"] = {k: v for k, v in access["by_connector"].items() if k not in app_ids}
+    return out
+
+
+def _only_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, Any]:
+    """The access context with only these Apps left in the gate."""
+    out = {**access, "gated_app_ids": [a for a in access.get("gated_app_ids") or [] if a in app_ids]}
+    if access.get("by_connector") is not None:
+        out["by_connector"] = {k: v for k, v in access["by_connector"].items() if k in app_ids}
     return out
 
 
@@ -165,6 +197,57 @@ class KnowledgeHubService:
 
     def _sort_field(self, sort_by: str) -> str:
         return self._SORT_FIELDS.get(sort_by, "name")
+
+    async def _applied_filters(
+        self,
+        cursor: str | None,
+        user_id: str,
+        org_id: str,
+        *,
+        q: str | None,
+        node_types: list[str] | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        indexing_status: list[str] | None,
+        created_at: dict | None,
+        updated_at: dict | None,
+        size: dict | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> AppliedFilters:
+        """The filters this page actually used. A cursor's, when one was sent."""
+        if cursor:
+            secret = await self._get_cursor_secret()
+            if secret is not None:
+                issued = decode(cursor, secret, expected_user_id=user_id, expected_org_id=org_id)
+                stored = issued.filters or {}
+                return AppliedFilters(
+                    q=stored.get("search_query"),
+                    nodeTypes=stored.get("node_types"),
+                    recordTypes=stored.get("record_types"),
+                    origins=stored.get("origins"),
+                    connectorIds=stored.get("connector_ids"),
+                    indexingStatus=stored.get("indexing_status"),
+                    createdAt=stored.get("created_at"),
+                    updatedAt=stored.get("updated_at"),
+                    size=stored.get("size"),
+                    sortBy=_SORT_FROM_PROVIDER.get(issued.sort_by or "", sort_by),
+                    sortOrder=(issued.sort_order or sort_order).lower(),
+                )
+        return AppliedFilters(
+            q=q,
+            nodeTypes=node_types,
+            recordTypes=record_types,
+            origins=origins,
+            connectorIds=connector_ids,
+            indexingStatus=indexing_status,
+            createdAt=created_at,
+            updatedAt=updated_at,
+            size=size,
+            sortBy=sort_by,
+            sortOrder=sort_order,
+        )
 
     def _decode_cursor(
         self,
@@ -236,6 +319,7 @@ class KnowledgeHubService:
         user_id: str,
         org_id: str,
         want_counts: bool,
+        limit_apps: list[str] | None = None,
     ) -> SearchPage:
         """A single-partition listing (root or scoped) as a page, with its cursors.
 
@@ -285,6 +369,7 @@ class KnowledgeHubService:
                     mode=mode,
                     user_id=user_id,
                     org_id=org_id,
+                    limit_apps=limit_apps,
                 ),
                 secret,
             )
@@ -317,8 +402,11 @@ class KnowledgeHubService:
         filters: dict[str, Any],
         flatten: bool,
         want_counts: bool,
+        max_depth: int = 50,
         access: dict[str, list[str]],
         excluded: frozenset[str] = frozenset(),
+        within: frozenset[str] | None = None,
+        limit_apps: list[str] | None = None,
     ) -> tuple[SearchPage, dict[str, Any] | None]:
         """One page of a listing or search, plus the `scope` a scoped request carries.
 
@@ -330,6 +418,26 @@ class KnowledgeHubService:
         # Nothing can verify it, so it cannot be trusted to say where to resume.
         if cursor and secret is None:
             raise BrowseRequestError("Invalid cursor: cursor paging is not configured", 400)
+        # Mode, parent, sort and filters travel in the cursor. The request's
+        # search text must not turn a search page into a browse, or the reverse.
+        if cursor:
+            try:
+                issued = decode(cursor, secret, expected_user_id=user_id, expected_org_id=org_id)
+            except CursorError as exc:
+                raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
+            # A cursor carries the total it was first counted with. One issued
+            # to a listing that was not narrowed to the same Apps would report
+            # rows outside them in that total.
+            issued_filters = issued.filters or {}
+            issued_apps = issued_filters.get("connector_ids") or ()
+            if within is not None and (not issued_apps or not set(issued_apps) <= within):
+                raise BrowseRequestError("Invalid cursor: issued for a different listing", 400)
+            # The Apps it may page over can be a filter's subset of the limit,
+            # so the limit itself is compared: a smaller limit's cursor would
+            # resume, and report its total, over a larger one.
+            if issued.limit_apps != limit_apps:
+                raise BrowseRequestError("Invalid cursor: issued for a different listing", 400)
+            flatten = _flatten_for_cursor(issued.mode, request_flatten=flatten)
         sort_field = self._sort_field(sort_by)
         sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
         mode = _listing_mode(parent_id, flatten)
@@ -342,6 +450,8 @@ class KnowledgeHubService:
                     await self.graph_provider.get_knowledge_hub_access_v3(user_key=user_key, org_id=org_id),
                     excluded,
                 )
+                if within is not None:
+                    access = _only_apps(access, within)
 
             async def fetch_global(token: str | None) -> SearchPage:
                 self._decode_cursor(token, secret, user_id, org_id, mode=mode)
@@ -350,7 +460,9 @@ class KnowledgeHubService:
                     user_key=user_key, user_id=user_id, org_id=org_id,
                     limit=limit, sort_field=sort_field, sort_dir=sort_dir,
                     filters=filters, cursor_token=token, secret=secret,
-                    access=access,
+                    access=access, limit_apps=limit_apps,
+                    # Depth counts from the root, and each App is one hop below it.
+                    max_depth=max_depth - 1 if max_depth < 50 else 50,
                 )
             try:
                 global_page = await self._walk_pages(fetch_global, cursor, page)
@@ -411,6 +523,7 @@ class KnowledgeHubService:
                     start_type=start_type,
                     include_scope=True,
                     via_parent_id=page_cursor.via_parent_id if page_cursor else None,
+                    max_depth=max_depth,
                 )
                 envelope = {
                     "partitions": [{
@@ -427,7 +540,7 @@ class KnowledgeHubService:
                 envelope["partitions"][0], page_cursor, secret,
                 filters=active, sort_field=field, sort_dir=order,
                 parent_id=parent_id, parent_type=parent_type, mode=mode,
-                user_id=user_id, org_id=org_id, want_counts=want_counts,
+                user_id=user_id, org_id=org_id, want_counts=want_counts, limit_apps=limit_apps,
             )
 
         return await self._walk_pages(fetch_single, cursor, page), scope
@@ -561,6 +674,7 @@ class KnowledgeHubService:
         include_typed_records: bool = False,
         cursor: str | None = None,
         is_org_admin: bool | None = None,
+        within_app_ids: Iterable[str] | None = None,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
@@ -572,6 +686,11 @@ class KnowledgeHubService:
         False), it always decides search-vs-browse mode. Only when it's
         omitted (None) do we fall back to computing it from which filters
         are present (see _has_flattening_filters).
+
+        `within_app_ids` narrows a root listing or a global search to these
+        Apps and collections before it is paged, so its pages, totals and
+        counts cover only them (a connected app limited to whole sources). It
+        is ignored below the root, where the start node decides what is listed.
         """
         filters_task: asyncio.Task | None = None
         permissions_task: asyncio.Task | None = None
@@ -636,6 +755,25 @@ class KnowledgeHubService:
                 ),
                 excluded,
             )
+            within: frozenset[str] | None = None
+            limit_apps: list[str] | None = None
+            if parent_id is None and within_app_ids is not None:
+                # Read once: it may be a one-shot iterable.
+                limit_set = frozenset(within_app_ids)
+                limit_apps = sorted(limit_set)
+                within = limit_set
+                if connector_ids:
+                    within &= frozenset(connector_ids)
+                # Carried in the cursor too, so a later page keeps to the same Apps,
+                # beside the limit they came from.
+                filters["connector_ids"] = sorted(within)
+                access = _only_apps(access, within)
+            if parent_id is None:
+                # A project's own file collection is opened from its project, by id;
+                # the top-level listing, global search and filter options leave it out.
+                hidden = frozenset(await self.graph_provider.get_hidden_app_ids(access["gated_app_ids"]))
+                access = _without_apps(access, hidden)
+                excluded = excluded | hidden
             # The filter options and the context permissions read neither the
             # page nor each other, so they run beside it rather than after it.
             if include and 'availableFilters' in include:
@@ -644,23 +782,32 @@ class KnowledgeHubService:
                 permissions_task = asyncio.create_task(self._get_permissions(
                     user_key, org_id, parent_id, parent_type, is_org_admin=is_org_admin,
                 ))
-            page_result, scope = await self._v2_nodes(
-                user_id=user_id,
-                user_key=user_key,
-                org_id=org_id,
-                access=access,
-                excluded=excluded,
-                parent_id=parent_id,
-                parent_type=parent_type,
-                limit=limit,
-                page=page,
-                cursor=cursor,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                filters=filters,
-                flatten=use_search_mode,
-                want_counts=bool(include and 'counts' in include),
-            )
+            try:
+                page_result, scope = await self._v2_nodes(
+                    user_id=user_id,
+                    user_key=user_key,
+                    org_id=org_id,
+                    access=access,
+                    excluded=excluded,
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    limit=limit,
+                    page=page,
+                    cursor=cursor,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    filters=filters,
+                    flatten=use_search_mode,
+                    want_counts=bool(include and 'counts' in include),
+                    max_depth=max(1, depth) if depth else 50,
+                    within=within,
+                    limit_apps=limit_apps,
+                )
+            except KnowledgeHubListingTooLarge as too_large:
+                # 422: the request is fine, the view is too wide; the message says to open a folder.
+                raise BrowseRequestError(str(too_large), 422) from too_large
+            except KnowledgeHubListingBusy as busy:
+                raise BrowseRequestError(str(busy), 503) from busy
 
             # The start node's own admission decides this, and the 404 body is
             # constant: naming the node, or its type, would confirm it exists
@@ -701,19 +848,15 @@ class KnowledgeHubService:
             current_node = self._to_current_node((scope or {}).get('currentNode'))
             parent_node = self._to_current_node((scope or {}).get('parentNode'))
 
-            # Build applied filters
-            applied_filters = AppliedFilters(
-                q=q,
-                nodeTypes=node_types,
-                recordTypes=record_types,
-                origins=origins,
-                connectorIds=connector_ids,
-                indexingStatus=indexing_status,
-                createdAt=created_at,
-                updatedAt=updated_at,
-                size=size,
-                sortBy=sort_by,
-                sortOrder=sort_order,
+            # The cursor decided the filters and the sort. The response has to
+            # say so, or a bare next page looks like a different query.
+            applied_filters = await self._applied_filters(
+                cursor, user_id, org_id,
+                q=q, node_types=node_types, record_types=record_types,
+                origins=origins, connector_ids=connector_ids,
+                indexing_status=indexing_status, created_at=created_at,
+                updated_at=updated_at, size=size,
+                sort_by=sort_by, sort_order=sort_order,
             )
 
             # Build filters info (without available filters initially)
@@ -810,19 +953,11 @@ class KnowledgeHubService:
 
         except BrowseRequestError as request_error:
             self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
-            return KnowledgeHubNodesResponse(
-                success=False,
-                error=request_error.message,  # user-written message
-                errorCode=request_error.status_code,
-                id=parent_id,
-                items=[],
-                pagination=PaginationInfo(
-                    page=page, limit=limit, totalItems=0, totalPages=0,
-                    hasNext=False, hasPrev=False
-                ),
-                filters=FiltersInfo(applied=AppliedFilters()),
-            )
+            return self._refusal(parent_id, page, limit, request_error.message, request_error.status_code)
         except Exception as e:
+            if is_out_of_memory(e):
+                # Some other statement of this request found the transaction pool spent: a retry, not a failure.
+                return self._refusal(parent_id, page, limit, str(KnowledgeHubListingBusy()), 503)
             self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,
@@ -844,6 +979,22 @@ class KnowledgeHubService:
                     task.cancel()
                 elif not task.cancelled():
                     task.exception()  # retrieved, so a discarded failure is not logged as unhandled
+
+    @staticmethod
+    def _refusal(parent_id: str | None, page: int, limit: int, message: str, code: int) -> KnowledgeHubNodesResponse:
+        """The empty failure response for a request this service can explain (``message`` is written for a reader)."""
+        return KnowledgeHubNodesResponse(
+            success=False,
+            error=message,
+            errorCode=code,
+            id=parent_id,
+            items=[],
+            pagination=PaginationInfo(
+                page=page, limit=limit, totalItems=0, totalPages=0,
+                hasNext=False, hasPrev=False
+            ),
+            filters=FiltersInfo(applied=AppliedFilters()),
+        )
 
     async def _get_available_filters(
         self,
@@ -1017,6 +1168,44 @@ class KnowledgeHubService:
         except Exception as e:
             self.logger.warning("Could not read the collection role for %s: %s", parent_id, e)
             return None
+
+    async def named_node_items(self, user_id: str, org_id: str, nodes: Iterable[NamedNode]) -> list[NodeItem]:
+        """The record groups, folders and files among ``nodes`` as listing rows.
+        Apps are left out: the root listing reads them with their grants."""
+        user = await self._shared(("user", user_id, org_id), lambda: self._resolve_user(user_id, org_id))
+        user_email = (user or {}).get("email")
+        rows: list[dict[str, Any]] = []
+        for node in nodes:
+            if node.node_type == "app":
+                continue
+            doc = node.doc
+            rows.append({
+                "id": node.id,
+                "name": node.name,
+                "nodeType": node.node_type,
+                "origin": "COLLECTION" if node.in_collection else "CONNECTOR",
+                "connector": doc.get("connectorName"),
+                "connectorId": doc.get("connectorId"),
+                "recordType": doc.get("recordType"),
+                "recordGroupType": doc.get("groupType"),
+                "indexingStatus": doc.get("indexingStatus"),
+                "createdAt": node.created_at or 0,
+                "updatedAt": node.updated_at or 0,
+                "sizeInBytes": doc.get("sizeInBytes"),
+                "mimeType": doc.get("mimeType"),
+                "extension": doc.get("extension"),
+                "webUrl": doc.get("webUrl"),
+                # A container opens whether or not it holds anything; a file is
+                # listed without the extra read that would tell.
+                "hasChildren": node.node_type in ("recordGroup", "folder"),
+            })
+        if user and user.get("_key"):
+            await self._stamp_collection_roles(rows, user["_key"])
+        items = [self._doc_to_node_item(row) for row in rows]
+        for item in items:
+            if item.webUrl:
+                item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
+        return items
 
     def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:
         """Convert a database document to a NodeItem"""

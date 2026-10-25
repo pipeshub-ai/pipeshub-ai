@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
+from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -93,6 +94,7 @@ def _node_item_to_row(item: Any) -> NodeRow:
         indexing_status=status,
         source_created_at=created_at,
         source_modified_at=updated_at,
+        upload_dated=getattr(item, "origin", None) == OriginType.COLLECTION.value and node_type == "record",
     )
 
 
@@ -241,8 +243,9 @@ class GraphNavigator:
         """Build a NavigationView for the given node.
 
         node_id=None → root (list of connected apps).
-        depth > 1 (record/folder parents) fetches descendants up to
-        `depth` levels via get_nodes(flattened=True, depth=...).
+        depth == 1 lists the direct children (browse mode, cursor paged);
+        depth > 1 fetches descendants up to `depth` levels via
+        get_nodes(flattened=True, depth=...).
 
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
         "lte": epoch_ms|None}` filters on the child's source timestamps.
@@ -326,7 +329,7 @@ class GraphNavigator:
             record_group_ids=record_group_ids,
             created_at=created_at,
             updated_at=updated_at,
-            flattened=True,
+            flattened=depth > 1,
             depth=depth,
             include_typed_records=True,
             node_types=node_types,

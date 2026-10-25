@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import (
+    AccessRule,
     CollectionNames,
     EntityRelations,
     MimeTypes,
@@ -174,6 +175,51 @@ class TestPlaceholdersAreRestricted:
 
         stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.FILE, _make_record())
         assert stub.is_placeholder and stub.access_rule == AccessRule.RESTRICTED
+
+    def test_a_placeholder_is_never_shown_as_queued(self) -> None:
+        # No indexing event is published for a stub, so QUEUED would never move.
+        from app.config.constants.arangodb import ProgressStatus
+
+        stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.TICKET, _make_record())
+        assert stub.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_withdraw_app_user_access_deletes_each_user_app_relation(self) -> None:
+        from app.config.constants.arangodb import CollectionNames, Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
+
+        await proc.withdraw_app_user_access("conn-1", [user, user])
+
+        tx_store.delete_edge.assert_awaited_once_with(
+            "node-1", CollectionNames.USERS.value, "conn-1", CollectionNames.APPS.value,
+            CollectionNames.USER_APP_RELATION.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
+        # Without explicit transactions the first delete has already committed.
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock(side_effect=[None, RuntimeError("boom")])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._access_changed = AsyncMock()
+        users = [
+            AppUser(id=f"node-{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=str(i),
+                    email=f"{i}@x.com", full_name=str(i))
+            for i in (1, 2)
+        ]
+
+        with pytest.raises(RuntimeError):
+            await proc.withdraw_app_user_access("conn-1", users)
+
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
 
     @pytest.mark.asyncio
     async def test_a_placeholder_parent_group_is_restricted(self) -> None:
@@ -942,10 +988,13 @@ class TestOnNewRecordGroupsMovesBlobsOnRename:
             connector_id="conn-1",
         )
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v1", "v2"])
         await proc.on_new_record_groups([(rg, [])])
 
+        # Named content only: another group whose name sanitizes the same shares the prefix.
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project"
+            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project",
+            virtual_record_ids=["v1", "v2"],
         )
 
     @pytest.mark.asyncio
@@ -2741,12 +2790,14 @@ class TestUpdateRecordGroupNameMovesBlobs:
         )
         proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v9"])
         await proc.update_record_group_name(
             "ext-folder", "New Space", old_name="Old Space", connector_id="conn-1"
         )
 
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space"
+            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space",
+            virtual_record_ids=["v9"],
         )
 
     @pytest.mark.asyncio
@@ -3255,7 +3306,7 @@ class TestNameChangedTriggersMove:
         )
 
         assert len(moves) == 1
-        assert moves[0][3] == "vrid-abc-123"
+        assert moves[0][3] == ("vrid-abc-123",)
 
 
 # ===========================================================================
@@ -5450,6 +5501,38 @@ class TestOnRecordMetadataUpdateAndDelete:
         proc.messaging_producer.send_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("method, args, store_call", [
+        ("batch_upsert_records", ([],), "batch_upsert_records"),
+        ("batch_update_nodes", ([], "records"), "batch_update_nodes"),
+        ("delete_records_and_relations", ("rec-1",), "delete_records_and_relations"),
+    ])
+    async def test_plain_write_entry_points_retry_a_deadlock_only(self, monkeypatch, method, args, store_call) -> None:
+        class TransientError(Exception):
+            pass
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        setattr(tx_store, store_call, AsyncMock(side_effect=[
+            TransientError("Neo.TransientError.Transaction.DeadlockDetected"), None,
+        ]))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        await getattr(proc, method)(*args)
+        assert getattr(tx_store, store_call).await_count == 2
+
+        other = AsyncMock(side_effect=ValueError("not transient"))
+        setattr(tx_store, store_call, other)
+        with pytest.raises(ValueError):
+            await getattr(proc, method)(*args)
+        assert other.await_count == 1
+
+        always = AsyncMock(side_effect=TransientError("Neo.TransientError.Transaction.DeadlockDetected"))
+        setattr(tx_store, store_call, always)
+        with pytest.raises(TransientError):
+            await getattr(proc, method)(*args)
+        assert always.await_count > 1
+
+    @pytest.mark.asyncio
     async def test_record_deleted_no_event_data(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
@@ -6146,7 +6229,7 @@ def _make_old_record(
 def _live_lookup(record) -> AsyncMock:
     """An external-id lookup that finds *record* (live) and nothing in the trash."""
 
-    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> Record | None:
         return None if visibility is RecordVisibility.DELETED else record
 
     return AsyncMock(side_effect=lookup)
@@ -7403,6 +7486,26 @@ class TestPlaceholderFlag:
         assert incoming.version == 0
 
     @pytest.mark.asyncio
+    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self) -> None:
+        """A stub written OPEN by an earlier sync is corrected when the sweep learns its level."""
+        for knows, expected in ((True, AccessRule.RESTRICTED), (False, AccessRule.OPEN)):
+            proc = _make_processor()
+            tx_store = _make_tx_store()
+            existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            existing.id = "rec-1"
+            existing.access_rule = AccessRule.OPEN
+            existing.indexing_status = ProgressStatus.NOT_STARTED.value
+            tx_store.get_record_by_external_id.return_value = existing
+            for name in ("_handle_record_group", "_handle_new_record", "_handle_updated_record",
+                         "_link_record_to_group", "_handle_parent_record", "_handle_record_permissions"):
+                setattr(proc, name, AsyncMock(return_value=MagicMock(permissions_from_group=False, parent_outside_group=False)))
+            incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            incoming.access_rule = AccessRule.RESTRICTED if knows else AccessRule.STRICT
+            incoming.rewrite_permissions = knows
+            await proc._process_record(incoming, [], tx_store)
+            assert incoming.access_rule == expected
+
+    @pytest.mark.asyncio
     async def test_process_record_bumps_version_on_real_revision_change(self):
         """Non-placeholder updates still bump version when revision changes."""
         proc = _make_processor()
@@ -7819,6 +7922,51 @@ class TestRecordGroupMoveRefreshesVectorMembership:
 
         events = _membership_events(proc)
         assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_indexed_standalone_record_joining_a_group_refreshes(self) -> None:
+        """A Drive item a grantee stored with no group, later filed under its shared
+        drive: its chunks were written without the drive, so they need it now."""
+        stored = _stored(None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_standalone_record_not_indexed_yet_publishes_nothing(self) -> None:
+        stored = _stored(None, virtual_record_id=None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_joining_from_no_group_leaves_no_old_group(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        moved = await proc._link_record_to_group(record, "rg-drive", tx_store, _stored(None))
+
+        assert moved is True
+        assert tx_store.link_record_to_group.await_args.kwargs["leaving_group_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_first_link_with_no_stored_record_is_not_a_move(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        assert await proc._link_record_to_group(record, "rg-new", tx_store, None) is False
 
     @pytest.mark.asyncio
     async def test_nothing_is_published_when_the_transaction_fails(self):
@@ -8434,6 +8582,21 @@ class TestParentRecordInAnotherGroup:
         tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with(stub.id, "rg-b")
         assert _hierarchy_edges(tx_store) == [("rg-b", stub.id)]
         tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-b", "story-1"))
+
+    @pytest.mark.asyncio
+    async def test_a_link_stub_without_a_group_joins_its_childs_group(self) -> None:
+        """A Jira issue first seen as a link target is a stub with no project; named
+        as a parent later, it takes the child's, or the ancestor backfill skips it."""
+        proc = _make_processor()
+        stub = self._epic(is_placeholder=True, external_record_group_id=None, record_group_id=None)
+        tx_store = self._store({"ext-epic": stub})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        assert stub.external_record_group_id == "ext-b"
+        tx_store.batch_update_nodes.assert_any_await(
+            [{"id": "epic-1", "externalGroupId": "ext-b", "recordGroupId": "rg-b"}], CollectionNames.RECORDS.value
+        )
 
     @pytest.mark.asyncio
     async def test_a_stored_placeholder_of_another_group_still_hides_the_record(self) -> None:

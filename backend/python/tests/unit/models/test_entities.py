@@ -833,8 +833,7 @@ class TestLinkRecord:
             linked_record_id="rec-linked-1",
         ))
         ctx = rec.to_llm_context()
-        assert "URL" in ctx
-        assert "https://example.com" in ctx
+        assert "* URL: https://example.com" in ctx.splitlines()
         assert "Title" in ctx
         assert "Example Link" in ctx
         assert "Public Access" in ctx
@@ -1175,6 +1174,15 @@ class TestLinkRecordFromArango:
         rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
         assert rec.is_public == LinkPublicStatus.UNKNOWN
 
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        # The storage path and access checks read the group; a link read back
+        # without it was filed and checked as if it belonged to no group.
+        rec = LinkRecord.from_arango_record(
+            self._link_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
+
 
 # ============================================================================
 # CommentRecord tests (lines 750-761, 764, 779, 789-795)
@@ -1400,6 +1408,13 @@ class TestProjectRecordFromArango:
             self._record_doc(connectorName="NONEXISTENT"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        rec = ProjectRecord.from_arango_record(
+            self._project_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================

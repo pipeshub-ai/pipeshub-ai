@@ -23,6 +23,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]  # noqa: E402
     ConfluenceDataSource,
@@ -153,7 +154,7 @@ class TestConfluenceIncrementalSync:
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
             record_name=title,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             external_record_group_id=space_id,
         )
 

@@ -93,9 +93,9 @@ def _row_line(
         parts.append(f"| Level {row.level}")
     created_label = _compact_date(row.source_created_at)
     if created_label:
-        parts.append(f"| created: {created_label}")
+        parts.append(f"| {'uploaded' if row.upload_dated else 'created'}: {created_label}")
     modified_label = _compact_date(row.source_modified_at)
-    if modified_label and modified_label != created_label:
+    if modified_label and modified_label != created_label and not row.upload_dated:
         parts.append(f"| modified: {modified_label}")
     if row.detail:
         parts.append(f"| {row.detail}")

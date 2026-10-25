@@ -10,14 +10,10 @@ import type { SmtpFormData, OnboardingStepId } from '../types';
 
 interface StepSmtpProps {
   onSuccess: (nextStep: OnboardingStepId | null) => void;
-  systemStepIndex: number;
-  totalSystemSteps: number;
 }
 
 export function StepSmtp({
   onSuccess,
-  systemStepIndex,
-  totalSystemSteps,
 }: StepSmtpProps) {
   const { t } = useTranslation();
   const { smtp, setSmtp, markStepCompleted, unmarkStepCompleted, submitting, setSubmitting, setSubmitStatus } =
@@ -86,7 +82,7 @@ export function StepSmtp({
           border: '1px solid var(--gray-4)',
           borderRadius: 'var(--radius-3)',
           padding: '24px',
-          width: '576px',
+          width: 'min(576px, 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -104,7 +100,7 @@ export function StepSmtp({
         backgroundColor: 'var(--gray-2)',
         border: '1px solid var(--gray-4)',
         borderRadius: 'var(--radius-3)',
-        width: '576px',
+        width: 'min(576px, 100%)',
         maxHeight: '100%',
         display: 'flex',
         flexDirection: 'column',
@@ -132,7 +128,7 @@ export function StepSmtp({
           weight="bold"
           style={{ color: 'var(--gray-12)' }}
         >
-          {t('onboarding.stepHeading', { current: systemStepIndex, total: totalSystemSteps, name: t('onboarding.stepSmtp.stepName') })}
+          {t('onboarding.stepHeading', { name: t('onboarding.stepSmtp.stepName') })}
         </Text>
       </Box>
 

@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+import copy
 from logging import Logger
 from typing import Any, Dict, List, Optional
+import weakref
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -72,6 +76,19 @@ class ConnectorSyncSkippedError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+# Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
+# connector. Keyed by id, not instance: a connector can be rebuilt between the two.
+_SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def connector_sync_lock(connector_id: str) -> asyncio.Lock:
+    lock = _SYNC_LOCKS.get(connector_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SYNC_LOCKS[connector_id] = lock
+    return lock
 
 
 class BaseConnector(ABC):
@@ -205,7 +222,8 @@ class BaseConnector(ABC):
         Every lookup is defensive: this feeds error messages, so it must never
         raise and mask the failure it is describing.
         """
-        instance_name = getattr(self, "instance_name", None)
+        # instance_name is set by the stream route, connector_instance_name by ConnectorFactory.
+        instance_name = getattr(self, "instance_name", None) or getattr(self, "connector_instance_name", None)
         if instance_name:
             return str(instance_name)
         metadata = getattr(type(self), "_connector_metadata", None)
@@ -218,9 +236,19 @@ class BaseConnector(ABC):
             return "the source"
         return getattr(connector_name, "value", None) or str(connector_name)
 
+    def _notification_title(self, event: str) -> str:
+        """A notification title that says which connector instance it is about."""
+        return f"{self.display_name}: {event}"
+
     @abstractmethod
     async def init(self) -> bool:
         pass
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """Called when ``init`` failed while starting a sync in the background, where no
+        one sees the error (the API shows its own). ``error`` is what ``init`` raised, or
+        None when it returned False. Does nothing by default; must not raise."""
+        return
 
     @abstractmethod
     def test_connection_and_access(self) -> bool:
@@ -234,6 +262,13 @@ class BaseConnector(ABC):
 
         Connectors that override this get a connection check in the setup form."""
         raise NotImplementedError(f"{cls.__name__} has no connection check")
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        """What is wrong with auth settings about to be saved, each fit to show the user.
+
+        Called with the merged settings a save would store. None by default."""
+        return []
 
     @classmethod
     def supports_connection_check(cls) -> bool:
@@ -269,6 +304,31 @@ class BaseConnector(ABC):
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
         NotImplementedError("This method is not supported")
+
+    # Names of the zero-argument steps of this connector's own sync that create the user,
+    # group and app edges. Empty: the connector is not linked after a user is added (see
+    # EntityEventService._link_user_to_connectors).
+    user_link_steps: tuple[str, ...] = ()
+
+    async def link_new_users(self) -> None:
+        """Run the user and group steps of the sync, without touching content.
+
+        Called after a user is added, holding connector_sync_lock, so never while this
+        connector syncs. The steps are the sync's own, so the source alone decides what the
+        new user may reach; they must be idempotent.
+        """
+        for step in self.user_link_steps:
+            await getattr(self, step)()
+
+    @contextmanager
+    def _keep_sync_state(self, *names: str) -> Iterator[None]:
+        """Leave the named sync bookkeeping fields as they were once the block ends."""
+        saved = {name: copy.copy(getattr(self, name)) for name in names}
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
 
     @abstractmethod
     async def cleanup(self) -> None:
@@ -580,6 +640,22 @@ class BaseConnector(ABC):
                 self.connector_id, email, e,
             )
 
+    async def authenticator_email(self) -> str | None:
+        """Email of the PipesHub user whose credentials this connector runs with: the app's
+        ``authenticatedBy``, else its creator, as ``link_authenticator_to_source_user`` resolves
+        them. None when neither names a user with an email."""
+        try:
+            user = await self.data_entities_processor.get_app_authenticator_user(
+                self.connector_id, self.created_by,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not read the user who authenticated it: %s", self.connector_id, e,
+            )
+            return None
+        email = (user or {}).get("email")
+        return email.strip() if isinstance(email, str) and email.strip() else None
+
     async def notify(
         self,
         type: NotificationType,
@@ -619,16 +695,20 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None = None,
         recipient_user_ids: list[str] | None = None,
         recipient_roles: list[NotificationRecipientRole] | None = None,
+        *,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome:
         """Like ``notify``, but waits for the broker and says what happened.
 
         For a caller that records a notice as delivered: only SENT means it was.
         A notice that failed to publish does not hold back the next attempt.
+        ``suppress_repeats=False`` sends it even when the same notice went out recently.
         """
         key = self._notification_key(title, message)
         reservation_before = self._notification_cache.get(key)
         prepared = self._prepare_notification(
-            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles,
+            suppress_repeats=suppress_repeats,
         )
         if isinstance(prepared, NotificationOutcome):
             return prepared
@@ -656,6 +736,8 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None,
         recipient_user_ids: list[str] | None,
         recipient_roles: list[NotificationRecipientRole] | None,
+        *,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service
         if not svc or not self.created_by:
@@ -671,7 +753,7 @@ class BaseConnector(ABC):
             return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
-        if self._suppress_notification(title, message, severity):
+        if suppress_repeats and self._suppress_notification(title, message, severity):
             return NotificationOutcome.SUPPRESSED
 
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name

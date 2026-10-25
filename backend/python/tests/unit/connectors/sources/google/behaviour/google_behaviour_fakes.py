@@ -296,6 +296,7 @@ class FakeEntitiesProcessor:
         self.record_group_permissions: dict[str, list[Any]] = {}
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
+        self.kept_user_groups: list[str] = []
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
         self.metadata_updates: list[Any] = []
@@ -373,6 +374,18 @@ class FakeEntitiesProcessor:
             key=lambda r: r.id,
         )[offset:]
         return found[:limit] if limit else found
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
+        """The real processor: the group by external id, then a keyset page of its records."""
+        group = await self.get_record_group_by_external_id(connector_id, external_group_id)
+        if group is None:
+            return []
+        return [r for r in self.records.values() if getattr(r, "external_record_group_id", None) == external_group_id
+                and getattr(r, "connector_id", None) == connector_id and matches_visibility(r, visibility)
+                and (after_key is None or r.id > after_key)][:limit]
 
     async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
         if self.fail_owner_lookup:
@@ -570,9 +583,35 @@ class FakeEntitiesProcessor:
         for user in users:
             self.app_users[user.email] = user
 
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_user_groups.append(external_group_id)
+
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, members in groups:
             self.user_groups[group.source_user_group_id] = (group, list(members))
+
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return [group for group, _ in self.user_groups.values()]
+
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.user_groups.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Drop the user's own grants on records and record groups, and their group memberships."""
+        removed = 0
+        email = user_email.lower()
+        for store in (self.permissions, self.record_group_permissions):
+            for key, perms in store.items():
+                kept = [p for p in perms if (getattr(p, "email", None) or "").lower() != email]
+                removed += len(perms) - len(kept)
+                store[key] = kept
+        for key, (group, members) in list(self.user_groups.items()):
+            kept_members = [m for m in members if (getattr(m, "email", None) or "").lower() != email]
+            removed += len(members) - len(kept_members)
+            self.user_groups[key] = (group, kept_members)
+        return removed
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)

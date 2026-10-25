@@ -230,9 +230,9 @@ constraint is too broad is the filter reported as too broad.
 The match runs first and grants nothing. It is one capped graph lookup
 that returns the mentioning records' virtual record ids, and those ids
 narrow the search the same way a tool's id list does. The normal
-permission path still decides what the user may read: with
-`ENABLE_CONTAINER_PERMISSION_FILTER` on, the search keeps its container
-scope and adjudicates the hits. An entity filter never loads the user's
+permission path still decides what the user may read: a search scoped
+by the connectors the user can enter keeps that scope and checks every
+hit. An entity filter never loads the user's
 whole accessible-record map to intersect a few thousand matches. A filter
 that matches more entities than the cap is reported as truncated and not
 searched, rather than searched on an arbitrary subset. A failed lookup is
@@ -257,6 +257,10 @@ Agent tools, when extraction is on:
 - `search_by_entities` searches the records that mention named people,
   organizations, products or places, by name, when the deployment sets
   `ENTITY_SEARCH_TOOL=true` (see below)
+
+With extraction off, the agent is not shown `find_records_by_value` or
+`named_entity_kinds`, so it never calls a tool that can only fail. The flag is
+read once per request, before tools load.
 
 An entity is visible only when the caller can read a record that mentions it.
 Records in the trash never come back from an entity filter; the entities on

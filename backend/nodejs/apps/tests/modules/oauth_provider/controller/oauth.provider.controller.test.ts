@@ -610,10 +610,16 @@ describe('OAuthProviderController', () => {
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
       expect(mockRes.setHeader.calledWith('Pragma', 'no-cache')).to.be.true
+      // A scope or knowledge limit changed mid-grant must not survive on this token.
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.equal({ recheckAppScopes: true })
     })
   })
 
   describe('revoke', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 even for invalid token', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.resolves(false)
@@ -632,6 +638,47 @@ describe('OAuthProviderController', () => {
       } as any
 
       await controller.revoke(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    // The device app is public: before, its revoke hashed an absent secret,
+    // threw, and was answered 200 with the token still valid.
+    it('revokes for a public client that sends no secret', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: false })
+      mockOAuthTokenService.revokeToken.resolves(true)
+      const req = {
+        body: { token: 'refresh', client_id: 'pipeshub-agent', token_type_hint: 'refresh_token' },
+      } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.calledOnceWith('refresh', 'pipeshub-agent', 'refresh_token')).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('refuses a confidential client that sends no secret', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    it('refuses a confidential client whose secret is not a string', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid', client_secret: null } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    it('refuses an unknown client', async () => {
+      mockOAuthAppService.getAppByClientId.rejects(new InvalidClientError('Invalid client_id'))
+      const req = { body: { token: 'tok', client_id: 'nope' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
       expect(mockRes.status.calledWith(401)).to.be.true
     })
   })
@@ -1020,6 +1067,48 @@ describe('OAuthProviderController', () => {
       expect(mockRes.json.firstCall.args[0].scope).to.equal('org:read')
     })
 
+    it('refuses a code issued under a limit the app no longer has', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+      const narrow = { apps: [], recordGroups: [], records: ['f1'] }
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: narrow })
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+      expect(mockRes.status.calledWith(400)).to.be.true
+    })
+
+    it('issues for a code whose limit is the app limit listed in another order', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+      const knowledgeLimit = { apps: [], recordGroups: [], records: ['f2', 'f1'] }
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'], knowledgeLimit })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({
+        userId: 'u1', orgId: 'o1', scopes: ['org:read'],
+        knowledgeLimit: { apps: [], recordGroups: [], records: ['f1', 'f2'] },
+      })
+      mockOAuthTokenService.generateTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+      })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.calledOnce).to.be.true
+    })
+
     it('drops scopes the app lost after the code was issued', async () => {
       const req = tokenRequest({
         grant_type: 'authorization_code', client_id: 'cid', code: 'code',
@@ -1039,6 +1128,25 @@ describe('OAuthProviderController', () => {
       await controller.token(req, mockRes, mockNext)
 
       expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['org:read'])
+    })
+
+    it('records the limit the app has at consent on the code', async () => {
+      const knowledgeLimit = { apps: ['a1'], recordGroups: [], records: ['f1'] }
+      mockOAuthAppService.getAppByClientId.resolves({
+        orgId: 'o1', allowedScopes: ['org:read'], isConfidential: true, knowledgeLimit,
+      })
+      mockAuthCodeService.generateCode.resolves('limited-code')
+      const req = {
+        body: {
+          client_id: 'cid', redirect_uri: 'https://example.com/cb',
+          scope: 'org:read', state: 'state1', consent: 'granted',
+        },
+        user: { userId: 'u1', orgId: 'o1' },
+      } as any
+
+      await controller.authorizeConsent(req, mockRes, mockNext)
+
+      expect(mockAuthCodeService.generateCode.firstCall.args[7]).to.deep.equal(knowledgeLimit)
     })
 
     // GHSA-cxgc-52jq-fcx9: the client type must reach exchangeCode so it can
@@ -1202,6 +1310,10 @@ describe('OAuthProviderController', () => {
   // revoke – additional branches
   // -----------------------------------------------------------------------
   describe('revoke (extended)', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 on non-client errors', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.rejects(new Error('token not found'))

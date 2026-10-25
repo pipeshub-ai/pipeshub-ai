@@ -15,15 +15,18 @@ lands only while its job is still the one it read. A normal write of the record
 (it was indexed again meanwhile) drops the job in its own transaction, and that
 write extracted afresh.
 
-The blob keeps the extraction indexing stored. A persist retry that later
-re-projects it writes those entities again, and that write queues the record
-for a re-extraction once more, so the record settles on the complete set.
+A written completion replaces the extraction the ``entities`` stage kept for the
+revision. When it cannot (a record indexed before the stage, a newer run, an
+error), a later re-projection writes the older extraction again, and that
+write queues the record once more, so the record settles on the complete set.
+Queuing here instead would never settle a record the stage has no state for.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 import os
 from typing import TYPE_CHECKING, Any
@@ -39,10 +42,15 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.kept import keep_extraction
 from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.messaging.utils import MessagingUtils
+from app.services.model_identity.boundary import config_service_of
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.concurrency import (
     MAX_CONCURRENT_INDEXING_LLM_CALLS,
     indexing_llm_slots_remaining,
@@ -66,6 +74,8 @@ DEFAULT_INTERVAL_SECONDS = 60.0
 LEADER_KEY = "named_entity_completion:leader"
 _LEASE_MARGIN_SECONDS = 15 * 60
 
+logger = logging.getLogger(__name__)
+
 
 def llm_mostly_free() -> bool:
     """At least half of the indexing LLM slots are free in this process."""
@@ -80,6 +90,7 @@ async def complete_named_entities(
     page_size: int = PAGE_SIZE,
     concurrency_manager=None,  # noqa: ANN001 - the indexing concurrency manager, when distributed
     still_leader: Callable[[], bool] | None = None,
+    config_service=None,  # noqa: ANN001 - reads the org's identity policy for the model gateway
 ) -> int:
     """Work the due re-extraction jobs. Returns how many records were written.
     ``still_leader``: checked before each record; the pass stops once it is false."""
@@ -103,7 +114,15 @@ async def complete_named_entities(
             await graph_provider.clear_named_entity_persist_retry(record_id, due)
             continue
         try:
-            outcome = await _complete_one(graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts)
+            async with call_scope(
+                service_principal("named-entity-completion", str(org_id or "")),
+                Workload.EXTRACTION,
+                config_service=config_service,
+                record_id=str(record_id),
+            ):
+                outcome = await _complete_one(
+                    graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts,
+                )
         except Exception as exc:
             logger.warning("named_entity_completion: record %s failed: %s", record_id, type(exc).__name__)
             await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
@@ -160,10 +179,21 @@ async def _complete_one(
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"
-    return await _under_record_lease(
-        concurrency_manager, record_id,
-        lambda: sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts),
-    )
+
+    async def persist_and_keep() -> str:
+        outcome = await sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts)
+        if outcome == "written":
+            # Otherwise a later reprojection (a persist retry, a re-embed) would bring back
+            # the extraction that left text unread.
+            try:
+                await keep_extraction(graph_provider, record["virtualRecordId"], record.get("contentRev"), extraction)
+            except Exception as exc:
+                logger.warning(
+                    "Completed named entities of record %s written but not kept: %s", record_id, type(exc).__name__
+                )
+        return outcome
+
+    return await _under_record_lease(concurrency_manager, record_id, persist_and_keep)
 
 
 def _record_lease_manager(app_container: Any) -> Any:  # noqa: ANN401
@@ -200,6 +230,7 @@ async def _pass_as_leader(
             logger=logger,
             concurrency_manager=_record_lease_manager(app_container),
             still_leader=lambda: not lost.is_set(),
+            config_service=config_service_of(app_container),
         )
     finally:
         keeper.cancel()

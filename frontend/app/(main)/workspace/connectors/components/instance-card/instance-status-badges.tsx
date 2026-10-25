@@ -12,6 +12,7 @@ import {
   type InstanceSyncOperationKey,
 } from './instance-status';
 import type { ConnectorConfig, ConnectorInstance } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 const SYNC_VALUE_COLOR: Record<
   NonNullable<ReturnType<typeof deriveInstanceSyncOperation>>['badgeColor'],
@@ -24,7 +25,6 @@ const SYNC_VALUE_COLOR: Record<
 
 const ROW_LABEL_STYLE: React.CSSProperties = {
   color: 'var(--gray-10)',
-  width: 164,
   flexShrink: 0,
   textTransform: 'uppercase',
   letterSpacing: '0.04px',
@@ -130,6 +130,7 @@ export function InstanceSetupStatusRow({
   instance: ConnectorInstance;
   config?: ConnectorConfig;
 }) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const setup = deriveInstanceSetupStatus(instance, config);
   const valueLabel = t(SETUP_I18N[setup.key]);
@@ -137,11 +138,11 @@ export function InstanceSetupStatusRow({
 
   return (
     <Tooltip content={t(SETUP_TOOLTIP_I18N[setup.key])}>
-      <Flex align="center" gap="4" style={{ width: '100%' }}>
+      <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'} style={{ width: '100%' }}>
         <Text
           size="1"
           weight="medium"
-          style={ROW_LABEL_STYLE}
+          style={{ ...ROW_LABEL_STYLE, width: isMobile ? 'auto' : 164 }}
         >
           {t('workspace.connectors.instanceStatus.setup.rowLabel')}
         </Text>

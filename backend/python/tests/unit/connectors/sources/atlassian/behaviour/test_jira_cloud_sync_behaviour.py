@@ -38,7 +38,13 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
-from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
+from app.models.entities import (
+    FileRecord,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+    TicketRecord,
+)
 from app.sources.client.jira.jira import JiraRESTClientViaToken
 from app.sources.external.jira.jira import JiraDataSource
 
@@ -180,8 +186,9 @@ class TestIssuePagination:
 
         search.bodies.clear()
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert search.bodies[0]["jql"] == 'project = "ENG" AND updated > "2024-05-02 11:30" ORDER BY updated ASC, id ASC', (
-            "the cut is written in the Jira account's timezone (New York), not UTC"
+        assert search.bodies[0]["jql"] == 'project = "ENG" AND updated > "2024-05-02 11:28" ORDER BY updated ASC, id ASC', (
+            "the cut is written in the Jira account's timezone (New York), not UTC, "
+            "and reads 2 minutes back for issues the search index returned late"
         )
 
     async def test_an_unchanged_issue_seen_again_is_not_rewritten(self, api, db, checkpoints, search) -> None:
@@ -218,6 +225,41 @@ class TestIssuePagination:
 
         assert set(tickets(db)) == {"1", "3"}
         assert stats["failed_project_keys"] == []
+
+    async def test_a_page_that_times_out_is_asked_for_in_halves(self, api, db, checkpoints, search) -> None:
+        sizes = slow_above(api, search, 25)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        stats = await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert stats["failed_project_keys"] == [] and "1" in db.records
+        assert list(dict.fromkeys(sizes)) == [100, 50, 25]
+
+    async def test_a_page_that_never_arrives_fails_the_project_at_the_smallest_page_size(
+        self, api, db, checkpoints, search
+    ) -> None:
+        sizes = slow_above(api, search, 0)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        stats = await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert stats["failed_project_keys"] == ["ENG"]
+        assert list(dict.fromkeys(sizes)) == [100, 50, 25, 12, 10]
+
+
+def slow_above(api: AtlassianApiStub, search: "IssueSearch", page_size: int) -> list[int]:
+    """Searches for more than ``page_size`` issues time out; returns every page size asked for."""
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sizes.append(json.loads(request.content)["maxResults"])
+        if sizes[-1] > page_size:
+            raise httpx.ReadTimeout("timed out", request=request)
+        return search(request)
+
+    api.on("POST", SEARCH, handler)
+    return sizes
 
 
 class TestRateLimits:
@@ -275,7 +317,7 @@ class TestRateLimits:
         search.bodies.clear()
         search.add("ENG", None, {"issues": []})
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert 'updated > "2024-05-01 06:00"' in search.bodies[0]["jql"]
+        assert 'updated > "2024-05-01 05:58"' in search.bodies[0]["jql"], "the saved cursor, less the 2-minute overlap"
 
     async def test_network_drops_are_retried(self, api, db, checkpoints, search, backoff_sleeps) -> None:
         calls = {"n": 0}
@@ -295,6 +337,20 @@ class TestRateLimits:
         assert stats["failed_project_keys"] == [] and "1" in db.records
         assert backoff_sleeps == [0.5]
 
+    @pytest.mark.parametrize("status", [502, 503, 504])
+    async def test_a_gateway_error_is_retried_like_a_rate_limit(self, api, site_db, checkpoints, search, status) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/group/bulk", [
+            json_response({"message": "gateway"}, status=status),
+            {"values": [{"groupId": "grp-dev", "name": "devs"}], "isLast": True},
+        ])
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(api.calls("GET", f"{JIRA}/group/bulk")) == 2
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com"]
+
 
 class SiteDb(CloudRecordsDb):
     """Adds the role writes and the PipesHub user a full Jira Cloud sync needs."""
@@ -307,6 +363,18 @@ class SiteDb(CloudRecordsDb):
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
+
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """The stored project and role nodes, with the fields the connector asks for."""
+        if collection == "roles":
+            return [{"externalRoleId": role_id} for role_id in self.app_roles]
+        assert collection == "recordGroups", collection
+        return [{"externalGroupId": g.external_group_id, "shortName": g.short_name} for g in self.record_groups.values()]
+
+    async def on_app_role_deleted(self, external_role_id: str, connector_id: str) -> None:
+        self.app_roles.pop(external_role_id, None)
 
 
 def stub_site(api: AtlassianApiStub) -> None:
@@ -818,49 +886,6 @@ class TestDeletedIssuesFoundByComparingIds:
 
         assert set(tickets(site_db)) == {"1", "3"}
 
-    async def test_an_issue_the_date_filter_now_leaves_out_is_not_removed(
-        self, api, site_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
-        stub_site(api)
-        listing.add("ENG", None, {"issues": [
-            created_on(1, "2024-06-01T09:00:00.000+0000"),
-            created_on(2, "2024-06-01T09:00:00.000+0000"),
-            created_on(3, "2024-05-01T09:00:00.000+0000"),
-        ]})
-        listing.id_pages[None] = {"issues": ids(1, 2, 3), "isLast": True}
-        connector, config_service = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        listing.add("ENG", None, {"issues": []})
-        cutoff = int(datetime.fromisoformat("2024-05-15T00:00:00+00:00").timestamp() * 1000)
-        config_service.config["filters"] = {
-            "sync": {"values": {"created": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}},
-        }
-        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
-        gone(api, 2, 3)
-
-        await connector.run_sync()
-
-        assert set(tickets(site_db)) == {"1", "3"}
-        assert issue_reads(api, 3) == 0, "a filtered-out issue Jira still has is left alone"
-        assert "created" in listing.bodies[-1]["jql"], "the issue search applies the narrowed filter"
-        assert listing.id_bodies[-1]["jql"] == 'project = "ENG" ORDER BY id ASC', "the id listing does not"
-
-    async def test_a_paid_plan_site_finds_deletions_in_the_audit_log_without_listing_ids(
-        self, api, keyed_db, checkpoints, listing, fresh_notification_memory
-    ) -> None:
-        api.on("GET", AUDIT, {"records": [], "total": 0})
-        connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
-        api.on("GET", AUDIT, ENG_2_DELETED)
-        gone(api, "ENG-2", 3)
-        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
-
-        await connector.run_sync()
-
-        assert set(tickets(keyed_db)) == {"1", "3"}, "ENG-3 is not in the audit log, so it stays"
-        assert listing.id_bodies == []
-        assert connector._notification_service.sent == []
-
     async def test_a_paid_plan_site_acts_on_the_audit_log_in_the_first_sync_after_a_full_resync(
         self, api, keyed_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
@@ -875,8 +900,6 @@ class TestDeletedIssuesFoundByComparingIds:
 
         assert set(tickets(keyed_db)) == {"1", "3"}
         assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
-        assert listing.id_bodies == []
-
 
 def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
     row: dict[str, Any] = {"accountId": account_id, "accountType": "atlassian", "active": True, "displayName": account_id}
@@ -1874,3 +1897,574 @@ class TestUnreadApplicationRoles:
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helper exception lives in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
+
+
+
+def now_in_project(api: AtlassianApiStub, ref: int, project_id: str, key: str) -> None:
+    """Jira still has the issue, and says which project it is in now."""
+    api.on("GET", f"{JIRA}/issue/{ref}", {
+        "id": str(ref), "key": key, "fields": {"project": {"id": project_id, "key": key.split("-")[0]}},
+    })
+
+
+class TestIssuesThatMovedOutOfTheSyncedProjects:
+    async def test_an_issue_the_search_does_not_list_yet_is_kept(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, {"records": [], "total": 0})
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
+        now_in_project(api, 2, "10000", "ENG-2")
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "2", "3"}
+
+    async def test_an_issue_that_moved_is_not_served_under_its_old_project(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, {"records": [], "total": 0})
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, project_id="20000"))
+
+        with pytest.raises(HTTPException) as err:
+            await connector._process_issue_blockgroups_for_streaming(site_db.records["1"])
+
+        assert err.value.status_code == 404
+        assert await connector._check_and_fetch_updated_issue(site_db.records["1"]) is None, "a reindex leaves it to the sync"
+
+
+SALARIES = {"id": "901", "filename": "salaries.txt", "mimeType": "text/plain", "size": 20, "created": "2024-05-02T15:00:00.000+0000"}
+NOTES = {"id": "902", "filename": "notes.txt", "mimeType": "text/plain", "size": 20, "created": "2024-05-02T15:00:00.000+0000"}
+ADMINS_ONLY = {"visibility": {"type": "role", "value": "Administrators", "identifier": "Administrators"}}
+
+
+def comment(comment_id: str, text: str, *, file: dict[str, Any] | None = None, **restriction: object) -> dict[str, Any]:
+    """A comment as Jira returns it with ``expand=renderedBody``; ``file`` is an attachment shown in it.
+
+    As on a real site, the ADF names the file by a media id only: the attachment id is in the rendered HTML.
+    """
+    content: list[dict[str, Any]] = [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]
+    html = f"<p>{text}</p>"
+    if file:
+        content.append({"type": "mediaGroup", "content": [
+            {"type": "media", "attrs": {"type": "file", "id": f"media-uuid-{file['id']}", "collection": ""}},
+        ]})
+        html += (
+            f'<p><a href="/rest/api/3/attachment/content/{file["id"]}" data-attachment-type="file" '
+            f'data-attachment-name="{file["filename"]}">{file["filename"]}</a></p>'
+        )
+    return {
+        "id": comment_id, "author": {"displayName": "Ana"}, "created": "2024-05-02T10:00:00.000+0000",
+        "jsdPublic": True, "body": {"type": "doc", "version": 1, "content": content}, "renderedBody": html, **restriction,
+    }
+
+
+def embedded(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same comments as an issue embeds them: without the rendered HTML."""
+    return [{k: v for k, v in c.items() if k != "renderedBody"} for c in comments]
+
+
+def commented(num: int, updated: str, comments: list[dict[str, Any]], *, total: int | None = None) -> dict[str, Any]:
+    """An issue as the search returns it: two attachments and the comments Jira embeds."""
+    ticket = issue(num, updated, attachments=[SALARIES, NOTES])
+    ticket["fields"]["comment"] = {"comments": embedded(comments), "total": len(comments) if total is None else total}
+    return ticket
+
+
+def jira_has_comments(api: AtlassianApiStub, num: int, comments: list[dict[str, Any]]) -> None:
+    """The comment listing of an issue, and its rendered description."""
+    api.on("GET", f"{JIRA}/issue/{num}/comment", {"comments": comments, "total": len(comments)})
+    api.on("GET", f"{JIRA}/issue/{num}", {"id": str(num), "key": f"ENG-{num}", "renderedFields": {"description": "<p>the description</p>"}})
+
+
+def opened_issue(num: int, comments: list[dict[str, Any]] | None = None, *, project_id: str = "10000") -> dict[str, Any]:
+    """An issue as GET issue returns it when a record is opened."""
+    comments = comments or []
+    return {
+        "id": str(num), "key": f"ENG-{num}",
+        "fields": {
+            "summary": f"Issue {num}", "project": {"id": project_id, "key": "ENG"}, "updated": "2024-05-03T10:00:00.000+0000",
+            "attachment": [SALARIES, NOTES], "comment": {"comments": embedded(comments), "total": len(comments)},
+        },
+        "renderedFields": {
+            "description": "<p>the description</p>",
+            "comment": {"comments": [{"id": c["id"], "body": c["renderedBody"]} for c in comments]},
+        },
+    }
+
+
+class TestRestrictedComments:
+    async def test_restricted_comments_and_internal_notes_are_left_out_of_what_is_served(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, [
+            comment("c1", "public update"),
+            comment("c2", "ROOT CAUSE: one engineer", **ADMINS_ONLY),
+            comment("c3", "INTERNAL: customer is overdue", jsdPublic=False),
+            comment("c4", "reply to the customer"),
+        ]))
+
+        served = (await connector._process_issue_blockgroups_for_streaming(db.records["1"])).decode()
+
+        assert "public update" in served and "reply to the customer" in served and "the description" in served
+        assert "ROOT CAUSE" not in served, "a comment for Administrators only is served to every reader of the issue"
+        assert "INTERNAL" not in served, "an internal note is served to every reader of the issue"
+
+    async def test_a_file_attached_in_a_restricted_comment_gets_no_record(self, api, db, checkpoints, search) -> None:
+        comments = [comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY)]
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", comments)]})
+        jira_has_comments(api, 1, comments)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db)
+        assert "attachment_901" not in db.records, "readable by fewer people than the issue"
+        assert "attachment_902" in db.records, "a file attached to the issue itself stays"
+
+    async def test_an_issue_without_restricted_comments_costs_no_extra_request(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_901" in db.records and "attachment_902" in db.records
+        assert api.calls("GET", f"{JIRA}/issue/1/comment") == [] and api.calls("GET", f"{JIRA}/issue/1") == []
+
+    async def test_a_file_a_public_comment_also_shows_keeps_its_record(self, api, db, checkpoints, search) -> None:
+        comments = [
+            comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY),
+            comment("c2", "shared with everyone", file=SALARIES),
+        ]
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", comments)]})
+        jira_has_comments(api, 1, comments)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_901" in db.records
+
+    async def test_a_file_stored_before_its_comment_was_restricted_is_removed(self, api, db, checkpoints, search) -> None:
+        restricted = [comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)]
+        search.add("ENG", None, [
+            {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]},
+            {"issues": [commented(1, "2024-05-02T10:00:00.000+0000", restricted)]},
+        ])
+        jira_has_comments(api, 1, restricted)
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "attachment_901" in db.records
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_901" not in db.records and "attachment_902" in db.records
+
+    async def test_a_restricted_comment_the_search_did_not_embed_is_still_read(self, api, db, checkpoints, search) -> None:
+        restricted = comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)
+        latest = comment("c2", "thanks")
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [latest], total=2)]})
+        jira_has_comments(api, 1, [restricted, latest])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        (listing_call,) = api.calls("GET", f"{JIRA}/issue/1/comment")
+        assert AtlassianApiStub.query(listing_call)["expand"] == "renderedBody"
+        assert "attachment_901" not in db.records and "attachment_902" in db.records
+
+    async def test_comments_that_cannot_be_read_leave_the_attachments_as_they_are(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c2", "thanks")], total=2)]})
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db), "the issue itself is still synced"
+        assert "attachment_901" not in db.records and "attachment_902" not in db.records, (
+            "no attachment is given a record while it is unknown which of them a restricted comment holds"
+        )
+
+    async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, [comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY)]))
+
+        served = (await connector._process_issue_blockgroups_for_streaming(db.records["1"])).decode()
+
+        assert "attachment_901" not in db.records, "opening the issue must not create the record either"
+        assert "attachment_902" in db.records and "notes.txt" in served
+        assert "salaries.txt" not in served
+
+    async def test_opening_an_issue_with_more_comments_than_jira_embeds_reads_them_all_and_serves_the_public_ones(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        latest = comment("c3", "latest reply")
+        jira_has_comments(api, 1, [comment("c1", "first answer"), comment("c2", "ROOT CAUSE", **ADMINS_ONLY), latest])
+        opened = opened_issue(1, [latest])
+        opened["fields"]["comment"]["total"] = 3
+        api.on("GET", f"{JIRA}/issue/1", opened)
+
+        served = (await connector._process_issue_blockgroups_for_streaming(db.records["1"])).decode()
+
+        assert "first answer" in served and "latest reply" in served, "a comment Jira did not embed is still served"
+        assert "ROOT CAUSE" not in served
+
+
+def titles(connector: JiraConnector) -> list[str]:
+    return [note["title"] for note in connector._notification_service.sent]
+
+
+class TestWhatASyncKeptAsStored:
+    # A kept project access or a short user read is noted as seen instead (see TestUnfinishedUserRead).
+    @pytest.mark.parametrize("break_jira", [
+        pytest.param(lambda api, search: search.add("ENG", None, json_response({"errorMessages": ["boom"]}, status=500)), id="an-issue-read-failed"),
+        pytest.param(lambda api, search: groups_in_two_pages(api, json_response({}, status=503)), id="the-group-list-was-cut-short"),
+        pytest.param(lambda api, search: api.on("GET", f"{JIRA}/project/ENG/role/10002", json_response({}, status=500)), id="a-role-read-failed"),
+    ])
+    async def test_a_full_sync_that_kept_part_of_jira_as_stored_reports_itself_incomplete(
+        self, api, site_db, checkpoints, search, break_jira
+    ) -> None:
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True, "a clean run read everything"
+
+        break_jira(api, search)
+        await connector.run_sync()
+
+        assert connector.full_sync_coverage().complete is False, "so nothing it did not see is unlinked"
+
+    @pytest.mark.parametrize(("break_jira", "title"), [
+        pytest.param(
+            lambda api: groups_in_two_pages(api, json_response({}, status=503)),
+            "couldn't read all user groups", id="the-group-list-was-cut-short",
+        ),
+        pytest.param(
+            lambda api: api.on("GET", f"{JIRA}/project/ENG/role/10002", json_response({}, status=500)),
+            "couldn't sync project roles", id="a-role-read-failed",
+        ),
+    ])
+    async def test_the_admin_is_told_when_groups_or_roles_keep_their_stored_members(
+        self, api, site_db, checkpoints, search, fresh_notification_memory, break_jira, title
+    ) -> None:
+        stub_site(api)
+        break_jira(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+        await drain_notifications(connector)
+
+        assert any(t.endswith(title) for t in titles(connector)), titles(connector)
+
+
+def browse_by_product_access(api: AtlassianApiStub, parameter: str | None) -> None:
+    """ENG grants Browse to an application role (none: any logged-in user); two products have a group each."""
+    holder: dict[str, Any] = {"type": "applicationRole", "parameter": parameter}
+    api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [{"permission": "BROWSE_PROJECTS", "holder": holder}]})
+    api.on("GET", f"{JIRA}/applicationrole", json_response([
+        {"key": "jira-software", "groupDetails": [{"groupId": "grp-sw", "name": "jira-software-users"}]},
+        {"key": "jira-servicedesk", "groupDetails": [{"groupId": "grp-sd", "name": "jira-servicedesk-users"}]},
+    ]))
+
+
+class TestWhoMayBrowse:
+    async def test_any_logged_in_user_is_the_groups_with_product_access(self, api, site_db, checkpoints, search) -> None:
+        # As on main (#4383): the union of the application roles' groups, not an org grant.
+        stub_site(api)
+        browse_by_product_access(api, None)
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sd"), ("EntityType.GROUP", "grp-sw")]
+
+    async def test_unreadable_application_roles_keep_the_access_of_a_project_granted_through_one(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        browse_by_product_access(api, "jira-software")
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sw")]
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["boom"]}, status=500))
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-sw")], "not granted to nobody while the roles are unknown"
+
+    async def test_a_deactivated_user_named_in_the_scheme_gets_no_grant(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-old", "user": {
+                "accountId": "acc-old", "emailAddress": "old@acme.com", "active": False,
+            }}},
+        ]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+
+
+class TestAccountTimezone:
+    async def test_an_unknown_timezone_widens_the_date_bounds_so_nothing_is_cut_off(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/myself", {"accountId": "me", "emailAddress": "sync@acme.com"})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        start = int(datetime.fromisoformat("2024-05-15T00:00:00+00:00").timestamp() * 1000)
+        end = int(datetime.fromisoformat("2024-05-20T00:00:00+00:00").timestamp() * 1000)
+        config_service.config["filters"] = {"sync": {"values": {
+            "created": {"operator": "is_between", "type": "datetime", "value": {"start": start, "end": end}},
+        }}}
+
+        await connector.run_sync()
+
+        jql = search.bodies[0]["jql"]
+        assert 'created >= "2024-05-14 12:00"' in jql, "12 hours earlier: the furthest west a zone can be"
+        assert 'created <= "2024-05-20 14:00"' in jql, "14 hours later: the furthest east"
+
+    async def test_a_timezone_changed_in_jira_applies_from_the_next_issue_sync(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-02T15:30:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        api.on("GET", f"{JIRA}/myself", {"accountId": "me", "emailAddress": "sync@acme.com", "timeZone": "Asia/Kolkata"})
+        search.bodies.clear()
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert 'updated > "2024-05-02 20:58"' in search.bodies[0]["jql"], "15:28 UTC written in Kolkata time"
+
+
+OPS_ONLY = {"values": [{"id": "10001", "key": "OPS", "name": "Operations"}], "isLast": True}
+
+
+class TestProjectsThatLeftTheSync:
+    @pytest.mark.parametrize(("answer", "selected"), [
+        pytest.param(json_response({"errorMessages": ["No project could be found"]}, status=404), None, id="gone"),
+        pytest.param({"id": "10000", "key": "ENG", "archived": True}, None, id="archived"),
+    ])
+    async def test_a_project_the_sync_no_longer_covers_is_removed_with_its_issues(
+        self, api, site_db, checkpoints, search, fresh_notification_memory, answer, selected
+    ) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "1" in tickets(site_db) and "10000" in site_db.record_groups
+
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        api.on("GET", f"{JIRA}/project/10000", answer)
+        if selected:
+            config_service.config["filters"] = {"sync": {"values": {
+                "project_keys": {"operator": "in", "type": "list", "value": selected},
+            }}}
+        await connector.run_sync()
+        await drain_notifications(connector)
+
+        assert "1" not in tickets(site_db) and "10000" not in site_db.record_groups
+        assert any(t.endswith("removed projects it no longer syncs") for t in titles(connector))
+
+    async def test_a_removed_projects_epic_takes_no_story_of_a_synced_project_with_it(
+        self, api, site_db, checkpoints, search, fresh_notification_memory
+    ) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        # A story in OPS stored under the ENG epic while both were synced.
+        site_db.records["2"] = site_db.records["1"].model_copy(update={
+            "id": "story-2", "external_record_id": "2", "external_record_group_id": "10001",
+            "parent_external_record_id": "1", "parent_record_type": RecordType.TICKET,
+        })
+
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        api.on("GET", f"{JIRA}/project/10000", json_response({"errorMessages": ["No project could be found"]}, status=404))
+        await connector.run_sync()
+
+        assert "1" not in tickets(site_db) and "2" in tickets(site_db), "the story is in a project still synced"
+
+    async def test_a_project_the_filter_leaves_out_is_kept_and_only_unlinked_by_the_full_sync(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        config_service.config["filters"] = {"sync": {"values": {
+            "project_keys": {"operator": "in", "type": "list", "value": ["OPS"]},
+        }}}
+        checkpoints.sync_points.clear()
+        await run_full_sync(connector, site_db)
+
+        assert "1" in tickets(site_db) and "10000" in site_db.record_groups, "kept for when it is selected again"
+        assert "ENG_10002" in site_db.app_roles, "its roles are kept with it"
+        assert "10000" in site_db.unlinked_record_groups, "the full sync unlinks it, so it is not shown"
+
+    async def test_a_selected_key_that_was_renamed_is_followed_to_the_new_key(
+        self, api, site_db, checkpoints, search, fresh_notification_memory
+    ) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/project/search", {"values": [], "isLast": True})
+        api.on("GET", f"{JIRA}/project/OLD", {"id": "10000", "key": "ENG", "name": "Engineering"})
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        config_service.config["filters"] = {"sync": {"values": {
+            "project_keys": {"operator": "in", "type": "list", "value": ["OLD"]},
+        }}}
+
+        await connector.run_sync()
+        await drain_notifications(connector)
+
+        assert "1" in tickets(site_db) and acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+        assert any(t.endswith("found selected projects under new keys") for t in titles(connector))
+
+    async def test_roles_of_a_project_the_sync_no_longer_covers_are_removed(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        site_db.app_roles["OLD_10002"] = []
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "OLD_10002" not in site_db.app_roles and "ENG_10002" in site_db.app_roles
+
+    async def test_no_project_is_removed_while_a_selected_key_cannot_be_looked_up(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/project/search", OPS_ONLY)
+        api.on("GET", f"{JIRA}/project/OLD", {"id": "10000", "key": "ENG", "name": "Engineering"})
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        config_service.config["filters"] = {"sync": {"values": {
+            "project_keys": {"operator": "in", "type": "list", "value": ["OLD", "OPS"]},
+        }}}
+        await connector.run_sync()
+        assert "1" in tickets(site_db) and "10000" in site_db.record_groups
+
+        api.on("GET", f"{JIRA}/project/OLD", json_response({"errorMessages": ["boom"]}, status=500))
+        api.on("GET", f"{JIRA}/project/10000", {"id": "10000", "key": "ENG", "name": "Engineering"})
+        await connector.run_sync()
+
+        assert "1" in tickets(site_db) and "10000" in site_db.record_groups, "ENG may be what OLD is called now"
+
+
+CHART = {"id": "903", "filename": "chart.png", "mimeType": "image/png", "size": 2048, "created": "2024-05-02T15:00:00.000+0000"}
+
+
+class TestAttachments:
+    async def test_a_file_removed_beyond_the_embedded_changelog_is_found_by_comparing_ids(
+        self, api, db, checkpoints, search
+    ) -> None:
+        edited = issue(1, "2024-05-03T10:00:00.000+0000", attachments=[NOTES])
+        edited["changelog"] = {"total": 41, "histories": [{"items": [{"field": "status", "fromString": "To Do", "toString": "Done"}]}]}
+        search.add("ENG", None, [
+            {"issues": [issue(1, "2024-05-01T10:00:00.000+0000", attachments=[SALARIES, NOTES])]},
+            {"issues": [edited]},
+        ])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "attachment_901" in db.records
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_901" not in db.records, "its removal is among the changelog entries Jira left out"
+        assert "attachment_902" in db.records
+
+    async def test_a_removal_both_in_the_changelog_and_found_by_comparing_ids_is_deleted_once(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000", attachments=[SALARIES, NOTES])]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        edited = issue(1, "2024-05-03T10:00:00.000+0000", attachments=[NOTES])
+        edited["changelog"] = {"total": 41, "histories": [{"items": [
+            {"field": "Attachment", "fieldId": "attachment", "from": "901", "to": None}]}]}
+
+        delete_ids = await connector._handle_attachment_deletions_from_changelog(edited)
+
+        assert delete_ids == [db.records["attachment_901"].id]
+
+    async def test_an_image_only_the_rendered_description_shows_is_inlined_not_given_a_record(
+        self, api, db, checkpoints, search
+    ) -> None:
+        ticket = issue(1, "2024-05-01T10:00:00.000+0000", attachments=[CHART, NOTES])
+        ticket["fields"]["description"] = {"type": "doc", "version": 1, "content": [{"type": "mediaSingle", "content": [
+            {"type": "media", "attrs": {"type": "file", "id": "media-uuid-903", "collection": ""}},
+        ]}]}
+        ticket["renderedFields"] = {"description": '<p><img src="/rest/api/3/attachment/content/903" alt="chart.png"></p>'}
+        search.add("ENG", None, {"issues": [ticket]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert search.bodies[0]["expand"] == "changelog,renderedFields"
+        assert "attachment_903" not in db.records and "attachment_902" in db.records
+
+
+class TestPlaceholderParents:
+    async def test_a_parent_in_a_project_that_is_not_synced_stays_a_bare_stub(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        stub = db.records["1"].model_copy(update={
+            "id": "stub-77", "external_record_id": "77", "record_name": "77", "external_revision_id": None, "is_placeholder": True,
+        })
+        db.records["77"] = stub
+        db.placeholders = [stub]
+        api.on("POST", f"{JIRA}/issue/bulkfetch", {"issues": [{"id": "77", "key": "OPS-77", "fields": {
+            "summary": "Confidential roadmap", "project": {"id": "20000", "key": "OPS"}, "updated": "2024-05-01T10:00:00.000+0000",
+        }}]})
+
+        await connector._sweep_placeholder_records(synced_project_ids={"10000"})
+
+        assert len(api.calls("POST", f"{JIRA}/issue/bulkfetch")) == 1
+        assert db.records["77"].record_name == "77" and db.records["77"].is_placeholder
+        assert "Confidential" not in db.records["77"].model_dump_json()
+
+    async def test_an_issue_whose_parent_is_in_a_project_this_sync_does_not_cover_hangs_off_its_project(
+        self, api, db, checkpoints, search,
+    ) -> None:
+        # A placeholder for that parent would never sync and would hide the issue for good.
+        child = issue(1, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["parent"] = {"id": "77", "key": "OPS-77", "fields": {"summary": "Roadmap"}}
+        search.add("ENG", None, {"issues": [child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._synced_project_keys = {"ENG"}
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert db.records["1"].parent_external_record_id is None
+        assert "77" not in db.records, "no placeholder is made for a parent nobody syncs"
+
+    async def test_the_synced_projects_are_forgotten_once_the_sync_ends(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector._synced_project_keys is None, "a reindex afterwards goes by what is stored, not a stale project set"
+
+    @pytest.mark.parametrize("parent_key", ["ENG-77", "OPS-77"])
+    async def test_a_parent_in_its_own_or_another_synced_project_stays_its_parent(
+        self, api, db, checkpoints, search, parent_key,
+    ) -> None:
+        child = issue(1, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["parent"] = {"id": "77", "key": parent_key, "fields": {"summary": "Roadmap"}}
+        search.add("ENG", None, {"issues": [child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._synced_project_keys = {"ENG", "OPS"}
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert db.records["1"].parent_external_record_id == "77"

@@ -21,11 +21,13 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
 from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
+from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -53,7 +55,10 @@ from app.connectors.core.sync.sync_runner import (
     join_cleanup_tasks,
     resumes_interrupted_full_sync,
 )
-from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.core.sync.task_manager import (
+    code_edge_build_task_manager,
+    reindex_task_manager,
+)
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.sources.localKB.api.kb_router import kb_router
@@ -79,6 +84,7 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
+from app.modules.code_graph.edge_build_reconciler import reconcile_forever  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -575,10 +581,74 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
+# Consumers every connector depends on; health fails without them. The code
+# graph's consumer and reconciler are optional: without them connectors still
+# sync, so health reports them as degraded rather than failing the service.
+_REQUIRED_CONSUMERS = frozenset({"entity", "sync"})
+_RETRY_FIRST_DELAY_SECONDS = 5.0
+_RETRY_MAX_DELAY_SECONDS = 300.0
+
+# What /health reports. Started consumers are read live through is_running();
+# components still retrying or that failed outright are recorded here.
+_started_consumers: list = []
+_component_status: dict[str, dict] = {}
+_retry_tasks: list[asyncio.Task] = []
+
+
+async def _keep_trying(name: str, attempt, logger: logging.Logger, first_error: Exception) -> None:  # noqa: ANN001
+    """Retry an optional component's start with backoff until it comes up.
+
+    A broker or Redis hiccup at boot used to leave the code graph without its
+    consumer (or reconciler) until the next restart, with nothing saying so.
+    """
+    attempts, delay = 1, _RETRY_FIRST_DELAY_SECONDS
+    while True:
+        await asyncio.sleep(delay)
+        attempts += 1
+        try:
+            await attempt()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _component_status[name] = {"state": "retrying", "attempts": attempts, "error": str(e)}
+            logger.error(f"❌ {name} failed to start (attempt {attempts}); retrying in "
+                         f"{min(delay * 2, _RETRY_MAX_DELAY_SECONDS):.0f}s: {e}")
+            delay = min(delay * 2, _RETRY_MAX_DELAY_SECONDS)
+            continue
+        _component_status.pop(name, None)
+        logger.info(f"✅ {name} started after {attempts} attempts")
+        return
+
+
+def _start_retrying(name: str, attempt, logger: logging.Logger, error: Exception) -> None:  # noqa: ANN001
+    # Set before the task first runs, so health never misses the failure.
+    _component_status[name] = {"state": "retrying", "attempts": 1, "error": str(error)}
+    task = asyncio.create_task(_keep_trying(name, attempt, logger, error), name=f"retry_{name}")
+    _retry_tasks.append(task)
+
+
+def component_health() -> dict[str, dict]:
+    """Each consumer and optional component, with whether health depends on it."""
+    report: dict[str, dict] = {}
+    for name, consumer in _started_consumers:
+        try:
+            running = bool(consumer.is_running())
+        except Exception:
+            running = False
+        report[name] = {"state": "running" if running else "stopped",
+                        "required": name in _REQUIRED_CONSUMERS}
+    for name, component in _component_status.items():
+        report[name] = {**component, "required": name in _REQUIRED_CONSUMERS}
+    return report
+
+
 async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> list:
     """Start all message consumers at application level"""
     logger = app_container.logger()
-    consumers = []
+    # The registry /health reads, so a consumer the retry starts later shows up.
+    consumers = _started_consumers
+    consumers.clear()
+    _component_status.clear()
     broker_type = get_message_broker_type()
 
     try:
@@ -635,10 +705,40 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         consumers.append(("sync", sync_consumer))
         logger.info("✅ Sync consumer started")
 
+        # 3. Code Graph Consumer. Optional: its failure must not stop the
+        # entity and sync consumers already running, and it keeps retrying.
+        async def start_code_graph_consumer() -> None:
+            logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
+            code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
+                app_container
+            )
+            code_graph_consumer = MessagingFactory.create_consumer(
+                broker_type=broker_type,
+                logger=logger,
+                config=code_graph_config,
+                retry_manager=retry_manager,
+            )
+            code_graph_message_handler = await KafkaUtils.create_code_graph_message_handler(
+                app_container,
+                graph_provider,
+            )
+            await code_graph_consumer.start(code_graph_message_handler)
+            # The same list the container holds, so a late start is still
+            # stopped at shutdown and shows in health.
+            consumers.append(("code_graph", code_graph_consumer))
+            logger.info("✅ Code graph consumer started")
+
+        try:
+            await start_code_graph_consumer()
+        except Exception as e:
+            logger.error(f"❌ Code graph consumer failed to start: {e}", exc_info=True)
+            _start_retrying("code_graph", start_code_graph_consumer, logger, e)
+
         logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers
 
     except Exception as e:
+        _component_status["message_consumers"] = {"state": "failed", "error": str(e)}
         logger.error(f"❌ Error starting consumers: {str(e)}")
         for name, consumer in consumers:
             try:
@@ -652,6 +752,9 @@ async def stop_kafka_consumers(container: ConnectorAppContainer) -> None:
     """Stop all Kafka consumers"""
 
     logger = container.logger()
+    for task in _retry_tasks:
+        task.cancel()
+    _retry_tasks.clear()
     consumers = getattr(container, 'kafka_consumers', [])
     for name, consumer in consumers:
         try:
@@ -709,6 +812,11 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling reindex tasks at shutdown: {e}")
 
+        try:
+            await code_edge_build_task_manager.cancel_all()
+        except Exception as e:
+            logger.warning(f"Error cancelling code edge build tasks at shutdown: {e}")
+
         # cancel_all only waits for the sync tasks; a finalizer detached by a
         # second cancel is still writing IDLE, releasing its lease and
         # publishing. Closing Redis and the producer under it is what leaves
@@ -726,6 +834,14 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
                 await coordinator.stop()
         except Exception as e:
             logger.warning(f"Error stopping sync lease manager at shutdown: {e}")
+
+        code_edge_build_redis = vars(container).get("code_edge_build_redis")
+        if code_edge_build_redis is not None:
+            try:
+                await code_edge_build_redis.aclose()
+                container.code_edge_build_redis = None
+            except Exception as e:
+                logger.warning(f"Error closing code edge build Redis client: {e}")
 
         # Stop messaging producer
         await stop_messaging_producer(container)
@@ -776,6 +892,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore
@@ -879,6 +996,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
 
+    # Before syncs resume: S3 and MinIO no longer read the created filter, so a saved one must move first.
+    try:
+        from app.migrations.s3_created_date_filter_migration import (
+            run_s3_created_date_filter_migration,
+        )
+
+        await run_s3_created_date_filter_migration(
+            app_container.config_service(), graph_provider, logger
+        )
+    except Exception as e:
+        logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
+
+    # Before syncs resume: earlier Nextcloud syncs linked whoever had the Nextcloud profile email to the app.
+    try:
+        from app.migrations.nextcloud_user_app_edges_migration import (
+            run_nextcloud_user_app_edges_migration,
+        )
+
+        await run_nextcloud_user_app_edges_migration(graph_provider, app_container.config_service(), logger)
+    except Exception as e:
+        logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
+
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
         from app.migrations.web_browser_identity_migration import (
@@ -966,6 +1105,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"Could not release queued syncs at startup: {e}")
 
+        # After the consumers, so the reconciler shares the event service (and
+        # its lock client and task manager) the code-graph consumer created.
+        async def start_reconciler() -> None:
+            code_graph_event_service = await KafkaUtils.create_code_graph_event_service(
+                app_container, graph_provider
+            )
+            app.state.code_edge_build_reconcile_task = asyncio.create_task(
+                reconcile_forever(graph_provider, code_graph_event_service, logger),
+                name="code_edge_build_reconcile",
+            )
+            logger.info("✅ Code edge build reconciler started")
+
+        try:
+            await start_reconciler()
+        except Exception as e:
+            logger.error(f"❌ Failed to start code edge build reconciler: {str(e)}", exc_info=True)
+            _start_retrying("code_edge_reconciler", start_reconciler, logger, e)
+
+        # Last: a large install takes a while, and lookups fall back meanwhile.
+        try:
+            from app.migrations.code_block_name_folded_migration import (
+                run_code_block_name_folded_backfill,
+            )
+
+            await run_code_block_name_folded_backfill(
+                app_container.config_service(), graph_provider, logger
+            )
+        except Exception as e:
+            logger.error(f"❌ Code block nameFolded backfill failed: {e}", exc_info=True)
+
+        # After nameFolded: re-indexes repos whose blocks predate this code
+        # graph version, once per version.
+        try:
+            from app.migrations.code_graph_backfill import run_code_graph_backfill
+
+            await run_code_graph_backfill(
+                app_container.config_service(), graph_provider, app_container.kafka_service(), logger,
+            )
+        except Exception as e:
+            logger.error(f"❌ Code graph backfill failed: {e}", exc_info=True)
+
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 
@@ -991,6 +1171,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.stored_content_heal_task = asyncio.create_task(
         run_stored_content_heal_loop(app_container, graph_provider), name="stored_content_heal"
     )
+    # Moves pre-hierarchical records/<vrid> copies into the hierarchy; one replica leads.
+    from app.connectors.services.flat_storage_migration import (
+        run_flat_storage_migration,
+    )
+
+    app.state.flat_storage_migration_task = asyncio.create_task(
+        run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -1005,7 +1193,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task", "stored_content_heal_task"):
+    # The code-edge reconciler stops before the task managers drain, so its
+    # sweep cannot start a build into the unwind.
+    for task_name in (
+        "connector_metrics_task", "trash_purge_task", "storage_release_task",
+        "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "flat_storage_migration_task",
+    ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -1123,10 +1317,18 @@ async def health_check() -> JSONResponse:
             },
         )
     try:
+        components = component_health()
+        down = [name for name, c in components.items() if c["state"] != "running"]
+        required_down = [name for name in down if components[name]["required"]
+                         or name == "message_consumers"]
+        overall = "fail" if required_down else ("degraded" if down else "healthy")
         return JSONResponse(
-            status_code=200,
+            # Degraded stays 200: an optional component missing is not a reason
+            # for an orchestrator to restart a service that is still syncing.
+            status_code=503 if required_down else 200,
             content={
-                "status": "healthy",
+                "status": overall,
+                "components": components,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -1362,10 +1564,54 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
         )
 
 
+@app.get("/health/vector-db/memory")
+async def vector_db_memory_check(request: Request) -> JSONResponse:
+    """Whether the vector database has the memory to keep search fast.
+
+    Advisory only: it never changes the health status. It reports the index's
+    total size and Qdrant's memory (the host's RAM when no limit is set), so it
+    is not in EXCLUDE_PATHS and it refuses non-admins itself: the Node.js route
+    checks too, but this port can be reachable directly. Reuses the provider
+    cached by ``/health/vector-db``.
+    """
+    from app.api.middlewares.auth import is_request_admin
+    from app.services.vector_db.vector_db_provider_factory import (
+        VectorDBProviderFactory,
+    )
+    from app.utils.logger import create_logger
+
+    if not is_request_admin(request):
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+
+    try:
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            container = request.app.container  # type: ignore[attr-defined]
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=create_logger("vector_db_health"),
+                config_service=container.config_service(),
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        report = await provider.memory_report()
+        if report is None:
+            return JSONResponse(status_code=200, content={"status": "unsupported"})
+        return JSONResponse(status_code=200, content=report.to_dict())
+    except Exception:
+        request.app.container.logger().warning(
+            "Vector DB memory report failed", exc_info=True
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unknown", "error": "Vector DB memory report failed"},
+        )
+
+
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
+app.include_router(api_toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)

@@ -26,6 +26,8 @@ export function CollectionStatsPanel() {
   const [isRefreshBusy, setIsRefreshBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
+  const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
 
   const collectionId = collectionStatsPanel.collectionId;
   const collectionName = collectionStatsPanel.collectionName;
@@ -126,6 +128,48 @@ export function CollectionStatsPanel() {
     }
   }, [collectionId, isManualIndexBusy, fetchStats, addToast, t]);
 
+  const handleRetryFailedClassification = useCallback(async () => {
+    if (!collectionId || isRetryClassificationBusy) return;
+    try {
+      setIsRetryClassificationBusy(true);
+      await KnowledgeBaseApi.reindexKnowledgeBase(collectionId, ['FAILED'], ['classify']);
+      addToast({
+        variant: 'success',
+        title: t('collections.stats.retryClassificationStart'),
+      });
+      await fetchStats(true);
+    } catch (error) {
+      console.error('Failed to retry classification', { collectionId, error });
+      addToast({
+        variant: 'error',
+        title: t('collections.stats.retryClassificationError'),
+      });
+    } finally {
+      setIsRetryClassificationBusy(false);
+    }
+  }, [collectionId, isRetryClassificationBusy, fetchStats, addToast, t]);
+
+  const handleRetryFailedEntities = useCallback(async () => {
+    if (!collectionId || isRetryEntitiesBusy) return;
+    try {
+      setIsRetryEntitiesBusy(true);
+      await KnowledgeBaseApi.reindexKnowledgeBase(collectionId, ['FAILED'], ['entities']);
+      addToast({
+        variant: 'success',
+        title: t('collections.stats.retryEntitiesStart'),
+      });
+      await fetchStats(true);
+    } catch (error) {
+      console.error('Failed to retry entity extraction', { collectionId, error });
+      addToast({
+        variant: 'error',
+        title: t('collections.stats.retryEntitiesError'),
+      });
+    } finally {
+      setIsRetryEntitiesBusy(false);
+    }
+  }, [collectionId, isRetryEntitiesBusy, fetchStats, addToast, t]);
+
   const handleNavigateToRecords = useCallback(
     (indexingStatuses?: IndexingStatus[]) => {
       if (!collectionId) return;
@@ -161,11 +205,15 @@ export function CollectionStatsPanel() {
         onRefresh={handleRefresh}
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
+        onRetryFailedClassification={handleRetryFailedClassification}
+        onRetryFailedEntities={handleRetryFailedEntities}
         onNavigateToRecords={handleNavigateToRecords}
         showSyncActions={true}
         isRefreshBusy={isRefreshBusy}
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
+        isRetryEntitiesBusy={isRetryEntitiesBusy}
       />
     </WorkspaceRightPanel>
   );

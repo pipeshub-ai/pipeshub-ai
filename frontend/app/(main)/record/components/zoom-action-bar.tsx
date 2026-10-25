@@ -44,7 +44,7 @@ export function ZoomActionBar({
       }}
     >
       <Tooltip content={t('chat.zoomIn')} side="left">
-        <IconButton
+        <IconButton className="touch-hit"
           variant="ghost"
           color="gray"
           size="1"
@@ -58,7 +58,7 @@ export function ZoomActionBar({
       </Tooltip>
 
       <Tooltip content={t('chat.zoomOut')} side="left">
-        <IconButton
+        <IconButton className="touch-hit"
           variant="ghost"
           color="gray"
           size="1"
@@ -72,7 +72,7 @@ export function ZoomActionBar({
       </Tooltip>
 
       <Tooltip content={t('filePreview.fitToScreen')} side="left">
-        <IconButton
+        <IconButton className="touch-hit"
           variant="ghost"
           color="gray"
           size="1"

@@ -71,7 +71,7 @@ class TestIsImageAttachmentMime:
 
 
 class TestIsDocAttachmentMime:
-    @pytest.mark.parametrize("mime", list(DOC_ATTACHMENT_MIME_TYPES))
+    @pytest.mark.parametrize("mime", sorted(DOC_ATTACHMENT_MIME_TYPES))
     def test_all_doc_types_return_true(self, mime):
         assert is_doc_attachment_mime(mime) is True
 

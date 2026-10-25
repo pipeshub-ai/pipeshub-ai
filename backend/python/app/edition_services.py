@@ -84,6 +84,8 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.services.model_identity.forwarders.registry import ForwarderRegistry
+    from app.services.model_identity.groups import GroupMembershipResolver
     from app.web.ports import WebAccessGate
 
 
@@ -105,6 +107,21 @@ def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, 
 def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
     """Wrap an embeddings client with edition extras. OSS: none."""
     return embeddings
+
+
+def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":  # noqa: ANN401 - an untyped dependency-injection object
+    """Resolves a person's IdP group ids for identity forwarding to a model gateway.
+
+    OSS knows no groups: the gateway receives the user id only.
+    """
+    from app.services.model_identity.groups import NoopGroupResolver
+
+    return NoopGroupResolver()
+
+
+def register_identity_forwarders(registry: "ForwarderRegistry") -> None:
+    """Add edition-specific wire formats (for example signed JWT) to the forwarder registry. OSS: none."""
+    pass
 
 
 def get_web_access_gate() -> "WebAccessGate":

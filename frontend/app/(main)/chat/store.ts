@@ -6,6 +6,7 @@ import {
   rememberUnreadConversation,
 } from '@/lib/storage/chat-unread';
 import { getCurrentUserId } from './utils/current-user-id';
+import { orderPinnedFirst, withPinned } from './utils/pinned-conversations';
 import {
   ChatKnowledgeFilters,
   CollectionMeta,
@@ -20,6 +21,7 @@ import {
   SearchResultItem,
   type ModelInfo,
   type PendingAskUserQuestion,
+  type RegenAnswers,
   type AgentCapabilities,
   DEFAULT_AGENT_CAPABILITIES,
   normalizeReasoningEffort,
@@ -40,10 +42,10 @@ function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
     const raw = localStorage.getItem(key);
     if (!raw) return { ...DEFAULT_AGENT_CAPABILITIES };
     const parsed = JSON.parse(raw) as Partial<AgentCapabilities>;
+    // Only the known keys: a deep research choice saved before its toggle was removed must not be sent.
     return {
       internalSearch: typeof parsed.internalSearch === 'boolean' ? parsed.internalSearch : true,
       webSearch: typeof parsed.webSearch === 'boolean' ? parsed.webSearch : true,
-      deepSearch: typeof parsed.deepSearch === 'boolean' ? parsed.deepSearch : false,
     };
   } catch {
     return { ...DEFAULT_AGENT_CAPABILITIES };
@@ -70,6 +72,8 @@ export interface ScopedToolGroupRow {
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
 }
 
 /**
@@ -452,6 +456,11 @@ interface ChatState {
   /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
   projectStreamTools: string[] | null;
 
+  /** The reply the composer's Regenerate bar is open for; its question card can be answered again meanwhile. */
+  regenTargetMessageId: string | null;
+  /** Answers picked again on that card. `null` re-runs the reply with the answers it already has. */
+  regenAnswers: RegenAnswers | null;
+
   // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
   /**
    * Selected tool `fullName`s for universal agent streams. `null` = all tools; `[]` = none; explicit
@@ -602,6 +611,12 @@ interface ChatState {
    * full refetch.
    */
   moveConversationToProject: (conversationId: string, projectId: string | null) => void;
+  /**
+   * Reflects a pin/unpin in the owner's own list straight away, pinned chats
+   * first. Only `conversations`: a pin is the owner's, so it never shows on
+   * shared or agent rows.
+   */
+  setConversationPinned: (conversationId: string, pinned: boolean) => void;
 
   setAgentSidebarAgentId: (id: string | null) => void;
   setAgentConversations: (conversations: Conversation[]) => void;
@@ -655,6 +670,9 @@ interface ChatState {
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
+
+  setRegenTargetMessageId: (messageId: string | null) => void;
+  setRegenAnswers: (answers: RegenAnswers | null) => void;
 
   // ── Universal agent actions ──
   setUniversalAgentStreamTools: (tools: string[] | null) => void;
@@ -820,6 +838,9 @@ const initialState = {
   projectKnowledgeScope: null as ChatKnowledgeFilters | null,
   projectKnowledgeScopeRestoredFor: null as string | null,
   projectStreamTools: null as string[] | null,
+
+  regenTargetMessageId: null as string | null,
+  regenAnswers: null as RegenAnswers | null,
 
   universalAgentStreamTools: null as string[] | null,
   universalAgentToolCatalogFullNames: [] as string[],
@@ -1320,6 +1341,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
+  setRegenTargetMessageId: (messageId) => set({ regenTargetMessageId: messageId }),
+  setRegenAnswers: (answers) => set({ regenAnswers: answers }),
+
   setUniversalAgentStreamTools: (tools) => set({ universalAgentStreamTools: tools }),
 
   hydrateUniversalAgentResources: (payload) =>
@@ -1504,6 +1528,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversations: state.conversations.map(patch),
         agentConversations: state.agentConversations.map(patch),
       };
+    }),
+
+  setConversationPinned: (conversationId, pinned) =>
+    set((state) => {
+      const updated = withPinned(state.conversations, conversationId, pinned);
+      return updated === state.conversations ? state : { conversations: orderPinnedFirst(updated) };
     }),
 
   addPendingConversation: (slotId) =>

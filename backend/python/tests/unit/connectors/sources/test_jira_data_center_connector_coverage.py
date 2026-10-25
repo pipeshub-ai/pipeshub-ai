@@ -1928,7 +1928,8 @@ async def test_check_and_fetch_updated_issue_null_assignee_does_not_crash():
     ds = MagicMock()
     ds.get_issue_v2 = AsyncMock(return_value=fresh)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_parse_jira_timestamp", side_effect=[200, 100, 100]):
+        # checked "updated", then created, updated and resolutiondate
+        with patch.object(conn, "_parse_jira_timestamp", side_effect=[200, 100, 100, 0]):
             row = await conn._check_and_fetch_updated_issue(rec)
     assert row is not None
     assert row[0].assignee is None
@@ -2561,6 +2562,24 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
     }
     box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
     assert len(box.block_groups) >= 2
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_leaves_out_restricted_comments() -> None:
+    conn = _make_connector()
+    issue_data = {
+        "id": "10", "key": "K-1", "fields": {"summary": "T"},
+        "comments": [
+            {"id": "c1", "author": {"displayName": "A"}, "renderedBody": "<p>open</p>", "created": "2024-01-01T00:00:00.000+0000"},
+            {"id": "c2", "author": {"displayName": "B"}, "renderedBody": "<p>role secret</p>", "created": "2024-01-02T00:00:00.000+0000",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "renderedBody": "<p>group secret</p>", "created": "2024-01-03T00:00:00.000+0000",
+             "visibility": {"type": "group", "value": "jira-administrators"}},
+        ],
+    }
+    box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
+    assert {bg.source_group_id for bg in box.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+    assert "secret" not in box.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -4861,3 +4880,28 @@ def test_extract_issue_data_keeps_jira_own_status_name() -> None:
     )
     assert row["status"] == Status.NEW
     assert row["source_status"] == "Backlog"
+
+
+def test_extract_issue_data_keeps_resolution_and_due_dates() -> None:
+    """Asked when an issue was done, the model had only its status. The
+    resolution date and due date are read with the issue and stored."""
+    conn = _make_connector()
+    row = conn._extract_issue_data(
+        {
+            "id": "1",
+            "key": "K-1",
+            "fields": {
+                "summary": "S", "issuetype": {"name": "Bug"}, "status": {"name": "Done"},
+                "resolutiondate": "2026-06-12T10:00:00.000+0000", "duedate": "2026-06-10",
+            },
+        },
+        {},
+    )
+    assert row["resolved_at"] == 1781258400000
+    assert row["due_date"] == 1781049600000
+
+    open_row = conn._extract_issue_data(
+        {"id": "2", "key": "K-2", "fields": {"summary": "S", "issuetype": {"name": "Bug"}}}, {},
+    )
+    assert open_row["resolved_at"] is None
+    assert open_row["due_date"] is None

@@ -51,6 +51,8 @@ def connector(
     connector = make_connector(kind, store, db, checkpoints, config)
     if kind == "azure_blob":
         connector.container_name = None
+        # A team Azure Blob connector must name its containers under In (PP-322).
+        connector.scope = "personal"
     else:
         connector.bucket_name = None
     connector.data_source.stores[OTHER] = other
@@ -111,7 +113,7 @@ class TestDeselectedBucket:
             await connector.run_sync()
 
         assert OTHER in db.record_groups
-        assert any(f"record group of de-selected {OTHER}" in r.getMessage() for r in caplog.records)
+        assert any(f"record group of {OTHER}" in r.getMessage() for r in caplog.records)
 
         db.refused_group_deletes.clear()
         await connector.run_sync()

@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useMemo } from 'react';
@@ -225,6 +227,7 @@ export function MoveFolderSidebar({
   onExpand,
   loadingNodeIds,
 }: MoveFolderSidebarProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -346,18 +349,12 @@ export function MoveFolderSidebar({
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: '100vh',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',

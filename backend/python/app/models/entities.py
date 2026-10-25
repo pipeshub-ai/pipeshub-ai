@@ -28,8 +28,13 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
-from app.utils.jinja_templates import compiled_template
-from app.utils.time_conversion import format_epoch_ms_for_llm, get_epoch_timestamp_in_ms
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
+from app.utils.jinja_templates import compiled_template, one_line
+from app.utils.time_conversion import (
+    format_day_for_llm,
+    format_epoch_ms_for_llm,
+    get_epoch_timestamp_in_ms,
+)
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
@@ -217,6 +222,8 @@ class ItemType(str, Enum):
     FEATURE = "FEATURE"
     SUBTASK = "SUBTASK"
     INCIDENT = "INCIDENT"
+    # The root cause that incidents are linked to (Zendesk's "problem" ticket type).
+    PROBLEM = "PROBLEM"
     IMPROVEMENT = "IMPROVEMENT"
     QUESTION = "QUESTION"
     DOCUMENTATION = "DOCUMENTATION"
@@ -311,6 +318,7 @@ class Record(BaseModel):
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
 
@@ -374,11 +382,33 @@ class Record(BaseModel):
         # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
         return format_epoch_ms_for_llm(epoch_ms)
 
+    def source_dates(self) -> RecordDates:
+        return RecordDates.resolve(
+            connector_name=self.connector_name,
+            origin=self.origin,
+            stored_origin=self.source_timestamp_origin,
+            created_ms=self.source_created_at,
+            modified_ms=self.source_updated_at,
+            # A record built without its stored createdAtTimestamp has the
+            # time it was built there, which is no upload time.
+            uploaded_ms=self.created_at if "created_at" in self.model_fields_set else None,
+        )
+
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
         if name and email:
             return f"{name} ({email})"
         return name or email or "N/A"
+
+    def status_summary(self) -> str | None:
+        """Where this record stands, in one short phrase: "Merged 2026-09-25 by
+        alice", "DONE (Jira: Done), resolved 2026-06-06, assignee Bo".
+
+        Shown beside a search entry and beside every record linked to one, so
+        that "was it merged, and when?" is answered without opening it. None
+        for a record with no state of its own (a page, a message, a file).
+        """
+        return None
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         lines = [
@@ -387,8 +417,7 @@ class Record(BaseModel):
             f"Connector: {self.connector_name.value}",
             f"Type: {self.record_type.value}",
             f"External ID: {self.external_record_id}",
-            f"Created At: {self._format_timestamp(self.source_created_at)}",
-            f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
+            *self.source_dates().header_lines(self._format_timestamp),
             f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
             f"External Parent ID: {self.parent_external_record_id if self.parent_external_record_id else 'N/A'}",
         ]
@@ -474,6 +503,8 @@ class Record(BaseModel):
         base.update({k: v for k, v in delete_state.items() if v is not None})
         if self.uploaded_by:
             base["uploadedBy"] = self.uploaded_by
+        if self.source_timestamp_origin:
+            base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
         return base
 
     @staticmethod
@@ -552,6 +583,7 @@ class Record(BaseModel):
             # narrowing it.
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -794,6 +826,7 @@ class FileRecord(Record):
             storage_document_id=arango_base_record.get("storageDocumentId"),
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -1227,6 +1260,8 @@ class LinkRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1348,6 +1383,7 @@ _SOURCE_STATUS_LABELS: dict[Connectors, str] = {
     Connectors.JIRA_CLOUD_PERSONAL: "Jira",
     Connectors.JIRA_DATA_CENTER: "Jira",
     Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+    Connectors.ZENDESK: "Zendesk",
 }
 
 
@@ -1373,6 +1409,38 @@ class TicketRecord(Record):
     is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
+    # Epoch ms the ticket was resolved or closed in the source (Jira's
+    # resolution date, GitHub's and GitLab's closed_at); None while open.
+    resolved_at: int | None = None
+    # Epoch ms of midnight UTC on the due date: a calendar date, no time.
+    due_date: int | None = None
+
+    def _status_value(self) -> str | None:
+        if not self.status:
+            return None
+        return self.status.value if isinstance(self.status, Enum) else str(self.status)
+
+    def _resolved_word(self) -> str:
+        """"closed" for a ticket closed without being done, else "resolved"."""
+        status_val = (self._status_value() or "").upper()
+        return "closed" if status_val in (Status.CLOSED.value, Status.CANCELLED.value) else "resolved"
+
+    def status_summary(self) -> str | None:
+        parts: list[str] = []
+        status_val = self._status_value()
+        if status_val:
+            parts.append(f"{status_val}{self._source_status_suffix(status_val)}")
+        if self.resolved_at:
+            parts.append(f"{self._resolved_word()} {format_day_for_llm(self.resolved_at)}")
+        elif self.due_date:
+            parts.append(f"due {format_day_for_llm(self.due_date, calendar_date=True)}")
+        assignee = self.assignee or self.assignee_email
+        if assignee:
+            parts.append(f"assignee {assignee}")
+        priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
+        if priority_val and priority_val != Priority.UNKNOWN.value:
+            parts.append(f"priority {priority_val}")
+        return ", ".join(parts) or None
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted ticket-specific metadata for LLM context"""
@@ -1380,9 +1448,17 @@ class TicketRecord(Record):
         lines = [base]
 
         specific_lines = []
-        if self.status:
-            status_val = self.status.value if isinstance(self.status, Enum) else self.status
+        status_val = self._status_value()
+        if status_val:
             specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
+
+        # The labels Jira's live fields use (field_registry.SYSTEM_FIELD_LABELS),
+        # so a fetch that adds them live keeps one line each, not two.
+        if self.resolved_at:
+            specific_lines.append(f"* Resolved: {format_day_for_llm(self.resolved_at)}")
+
+        if self.due_date:
+            specific_lines.append(f"* Due Date: {format_day_for_llm(self.due_date, calendar_date=True)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
@@ -1484,6 +1560,8 @@ class TicketRecord(Record):
             "assignee_source_id": self.assignee_source_id ,
             "reporter_source_id": self.reporter_source_id,
             "is_email_hidden": self.is_email_hidden,
+            "resolvedAtTimestamp": self.resolved_at,
+            "dueDateTimestamp": self.due_date,
         }
 
     @staticmethod
@@ -1552,6 +1630,8 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            resolved_at=ticket_doc.get("resolvedAtTimestamp"),
+            due_date=ticket_doc.get("dueDateTimestamp"),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1582,6 +1662,9 @@ class ProjectRecord(Record):
     lead_id: str | None = None
     lead_name: str | None = None
     lead_email: str | None = None
+
+    def status_summary(self) -> str | None:
+        return str(self.status) if self.status else None
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted project-specific metadata for LLM context"""
@@ -1632,6 +1715,8 @@ class ProjectRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -2411,6 +2496,24 @@ class PullRequestRecord(Record):
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
     last_commit_sha: str | None = Field(default=None)
+    # Epoch ms the source merged the PR, or closed it unmerged; None while open.
+    merged_at: int | None = None
+    closed_at: int | None = None
+
+    def _status_label(self) -> str | None:
+        if not self.status:
+            return None
+        return _PULL_REQUEST_STATUS_LABELS.get(self.status, self.status)
+
+    def status_summary(self) -> str | None:
+        label = self._status_label()
+        if self.merged_at:
+            label = f"{label or 'Merged'} {format_day_for_llm(self.merged_at)}"
+            if self.merged_by:
+                label = f"{label} by {self.merged_by}"
+        elif self.closed_at:
+            label = f"{label or 'Closed'} {format_day_for_llm(self.closed_at)}"
+        return label
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted pull-request-specific metadata for LLM context.
@@ -2423,10 +2526,15 @@ class PullRequestRecord(Record):
 
         specific_lines = []
         if self.status:
-            specific_lines.append(f"* Status: {_PULL_REQUEST_STATUS_LABELS.get(self.status, self.status)}")
+            specific_lines.append(f"* Status: {self._status_label()}")
 
         if self.creator_name or self.creator_email:
             specific_lines.append(f"* Author: {self._format_person(self.creator_name, self.creator_email)}")
+
+        if self.merged_at:
+            specific_lines.append(f"* Merged: {format_day_for_llm(self.merged_at)}")
+        elif self.closed_at:
+            specific_lines.append(f"* Closed: {format_day_for_llm(self.closed_at)}")
 
         if self.merged_by:
             specific_lines.append(f"* Merged By: {self.merged_by}")
@@ -2487,6 +2595,8 @@ class PullRequestRecord(Record):
             "mergedBy": self.merged_by,
             "labels":self.labels ,
             "lastCommitSha": self.last_commit_sha,
+            "mergedAtTimestamp": self.merged_at,
+            "closedAtTimestamp": self.closed_at,
         }
 
     @staticmethod
@@ -2534,6 +2644,8 @@ class PullRequestRecord(Record):
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
+            merged_at=pr_doc.get("mergedAtTimestamp"),
+            closed_at=pr_doc.get("closedAtTimestamp"),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2842,6 +2954,24 @@ class CodeFileRecord(Record):
     # generated. Classified by the connector from the path alone; the resolver
     # reads it instead of re-deriving "is this a test?" from the path.
     file_role: str | None = None
+    # The commit this version of the file was synced at (P-8).
+    commit_sha: str | None = None
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Adds the repo-relative path the code-graph tools address files by.
+
+        `Name` is a bare basename and `External ID` is a connector-specific URL,
+        so without this line a search hit carries no argument `get_neighbour`/
+        `read_code` accept — the only way left to obtain one is a
+        `query_code_graph` listing, which is why traces show every traversal
+        preceded by one.
+        """
+        base = super().to_llm_context(
+            frontend_url=frontend_url, include_full_semantic=include_full_semantic,
+        )
+        if not self.file_path:
+            return base
+        return f"{base}\nPath: {one_line(self.file_path)}"
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2863,6 +2993,7 @@ class CodeFileRecord(Record):
             "fileHash": self.file_hash,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     def to_arango_record(self) -> dict:
@@ -2875,6 +3006,7 @@ class CodeFileRecord(Record):
             "extension": self.extension,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     @staticmethod
@@ -2937,6 +3069,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            commit_sha=arango_base_code_file_record.get("commitSha"),
             **Record.delete_state_from_arango(arango_base_record),
         )
 

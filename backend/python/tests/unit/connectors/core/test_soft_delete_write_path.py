@@ -85,6 +85,9 @@ class _AutoCommitGraph:
         self.parent_edge = True
         self.writes = 0
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit = explicit
@@ -125,6 +128,10 @@ class _AutoCommitGraph:
                                      transaction: str | None = None) -> None:
         self._statement()
         self.record, self.parent_edge = None, False
+
+    async def delete_blocks_for_records(self, record_ids: list[str], transaction: str | None = None) -> int:
+        self._statement()
+        return 0
 
     async def delete_single_record(self, record_id: str, transaction: str | None = None) -> dict:
         # DETACH DELETE: the record and every edge on it, including the parent

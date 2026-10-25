@@ -57,26 +57,28 @@ export function WebSearchProviderRow({
     if (!isConfigurable) {
       return (
         <Badge color="gray" variant="soft" size="1">
-          Built-in
+          {t('workspace.webSearch.badges.builtIn')}
         </Badge>
       );
     }
     return (
       <Badge color={isConfigured ? 'green' : 'orange'} variant="soft" size="1">
-        {isConfigured ? 'Configured' : 'Not Configured'}
+        {isConfigured ? t('workspace.webSearch.badges.configured') : t('workspace.webSearch.badges.notConfigured')}
       </Badge>
     );
   };
 
-  const setDefaultDisabled = !isConfigured || isDefault || anyActionInProgress;
-  const setDefaultTooltip = !isConfigured
-    ? 'Configure this provider first before setting it as default.'
-    : '';
+  const setDefaultDisabled = isDefault || anyActionInProgress;
+  const configureLabel = isConfigured
+    ? t('workspace.webSearch.actions.editConfiguration')
+    : t('workspace.webSearch.configureTip');
+  const deleteLabel = t('workspace.webSearch.actions.deleteConfiguration');
 
   return (
     <Flex
       align="center"
       gap="3"
+      wrap="wrap"
       style={{
         padding: '12px 14px',
         border: '1px solid var(--olive-3)',
@@ -108,7 +110,8 @@ export function WebSearchProviderRow({
       </Flex>
 
       {/* Label + description */}
-      <Box style={{ flex: 1, minWidth: 0 }}>
+      {/* Basis 160px: on narrow rows the actions wrap below instead of squeezing the name. */}
+      <Box style={{ flex: '1 1 160px', minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
           {meta.label}
         </Text>
@@ -129,50 +132,37 @@ export function WebSearchProviderRow({
       </Box>
 
       {/* Right side: badge + set-default + configure + delete */}
-      <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+      <Flex align="center" gap="2" style={{ flexShrink: 0, marginLeft: 'auto' }}>
         {renderBadge()}
 
         {/* Set as Default */}
         {/* A provider that only reads pages backs up page reading; it is never the default search. */}
-        {meta.searches && !isDefault && !(inherited && isConfigurable) && (
-          setDefaultTooltip ? (
-            <Tooltip content={setDefaultTooltip}>
-              <span style={{ display: 'inline-flex' }}>
-                <Button
-                  variant="outline"
-                  color="gray"
-                  size="1"
-                  disabled
-                  style={{ cursor: 'not-allowed', gap: 4 }}
-                >
-                  <MaterialIcon name="star" size={14} color="var(--slate-10)" />
-                  Set as default
-                </Button>
-              </span>
-            </Tooltip>
-          ) : (
-            <Button
-              variant="outline"
-              color="gray"
-              size="1"
-              onClick={onSetDefault}
-              disabled={setDefaultDisabled}
-              style={{ cursor: setDefaultDisabled ? 'not-allowed' : 'pointer', gap: 4 }}
-            >
-              <MaterialIcon name="star" size={14} color="var(--slate-10)" />
-              {isSettingDefault ? 'Setting...' : 'Set as default'}
-            </Button>
-          )
+        {/* Hidden until configured: the "Not configured" badge and the gear already say what to do. */}
+        {meta.searches && isConfigured && !isDefault && !(inherited && isConfigurable) && (
+          <Button
+            variant="outline"
+            color="gray"
+            size="1"
+            onClick={onSetDefault}
+            disabled={setDefaultDisabled}
+            style={{ cursor: setDefaultDisabled ? 'not-allowed' : 'pointer', gap: 4 }}
+          >
+            <MaterialIcon name="star" size={14} color="var(--slate-10)" />
+            {isSettingDefault
+              ? t('workspace.webSearch.actions.settingDefault')
+              : t('workspace.webSearch.actions.setDefault')}
+          </Button>
         )}
 
         {/* Configure (gear) */}
         {isConfigurable && (
-          <Tooltip content={isConfigured ? 'Edit configuration' : 'Configure'}>
+          <Tooltip content={configureLabel}>
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
-              aria-label={`${isConfigured ? 'Edit configuration' : 'Configure'}: ${meta.label}`}
+              className="touch-hit"
+              aria-label={`${configureLabel}: ${meta.label}`}
               onClick={() => onConfigure(meta.type as ConfigurableProvider)}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
@@ -188,12 +178,13 @@ export function WebSearchProviderRow({
 
         {/* Delete */}
         {isConfigurable && isConfigured && (
-          <Tooltip content="Delete configuration">
+          <Tooltip content={deleteLabel}>
             <IconButton
               variant="ghost"
               color="red"
               size="2"
-              aria-label={`Delete configuration: ${meta.label}`}
+              className="touch-hit"
+              aria-label={`${deleteLabel}: ${meta.label}`}
               onClick={onDelete}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}

@@ -148,6 +148,8 @@ class FakeRecordsDb:
         self.record_batches: list[list[Any]] = []
         self.app_users: list[Any] = []
         self.user_groups: list[tuple[Any, list[Any]]] = []
+        self.deleted_groups: list[str] = []
+        self.withdrawn_users: list[Any] = []
         self.deleted: list[str] = []
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
@@ -156,6 +158,7 @@ class FakeRecordsDb:
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
+        self.full_sync = False
         self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
 
@@ -195,8 +198,16 @@ class FakeRecordsDb:
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
 
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        self.withdrawn_users.extend(users)
+
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.user_groups.extend(groups)
+
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.deleted_groups.append(external_group_id)
+        self.user_groups = [(g, m) for g, m in self.user_groups if g.source_user_group_id != external_group_id]
+        return True
 
     async def has_stored_permissions(
         self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
@@ -243,8 +254,13 @@ class FakeRecordsDb:
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
 
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync or getattr(self, "full_sync_seen", None) is not None
+
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         if self.fail_group_listing:
+            if not raise_on_error:
+                return []  # as the store does
             raise RuntimeError("database unavailable")
         return list({g.source_user_group_id: g for g, _ in self.user_groups}.values())
 
@@ -279,7 +295,15 @@ class FakeRecordsDb:
         self.permission_updates.append((record, permissions))
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
+        # The real one builds the indexing event from each record; a base Record raises here.
+        for record in records:
+            record.to_kafka_record()
         self.reindexed.extend(records)
+
+    async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id in self.fail_lookup_for:
+            raise RuntimeError(f"database unavailable for {external_record_id}")
+        return self.records.get(external_record_id)
 
 
 class FakeCheckpointStore:

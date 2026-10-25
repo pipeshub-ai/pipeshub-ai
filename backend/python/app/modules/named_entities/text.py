@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass(frozen=True)
@@ -12,9 +16,21 @@ class TextUnit:
     text: str
 
 
-def _block_type(block) -> str:
-    raw = getattr(block, "type", "")
+def _enum_text(raw: object) -> str:
     return getattr(raw, "value", raw) or ""
+
+
+def _block_type(block) -> str:
+    return _enum_text(getattr(block, "type", ""))
+
+
+def is_prose_text(block: object) -> bool:
+    """A text block of prose: not a table row, an image, or a code listing,
+    which parsers keep as a text block marked as code."""
+    return _block_type(block) == "text" and "code" not in (
+        _enum_text(getattr(block, "sub_type", None)),
+        _enum_text(getattr(block, "format", None)),
+    )
 
 
 def _block_text(block) -> str:
@@ -32,11 +48,14 @@ def _block_text(block) -> str:
     return ""
 
 
-def text_units_from_blocks(blocks) -> list[TextUnit]:
+def text_units_from_blocks(blocks, *, keep: Callable[[object], bool] | None = None) -> list[TextUnit]:
     """Mention offsets index ``text`` as the block holds it, so the text is never
-    stripped: leading whitespace would shift every offset."""
+    stripped: leading whitespace would shift every offset. ``keep`` picks the
+    blocks to read."""
     units: list[TextUnit] = []
     for index, block in enumerate(blocks or []):
+        if keep is not None and not keep(block):
+            continue
         text = _block_text(block)
         if not text.strip():
             continue

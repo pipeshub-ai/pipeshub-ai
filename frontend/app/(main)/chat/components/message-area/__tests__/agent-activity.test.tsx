@@ -2,7 +2,9 @@ import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
+import { getI18n } from 'react-i18next';
 import '@/lib/__tests__/test-i18n';
+import de from '@/lib/i18n/locales/de-DE.json';
 import {
   AgentActivityTimeline,
   toolActivityLabel,
@@ -511,6 +513,71 @@ describe('ToolCallCard — a tool that is not from an MCP server', () => {
 
     expect(screen.getByText('Found 2 records')).toBeTruthy();
     expect(screen.queryByTestId('tool-result-table')).toBeNull();
+  });
+});
+
+describe('ToolCallCard — SQL query section', () => {
+  function expand(part: MessagePart) {
+    const { container } = renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    return container;
+  }
+
+  it('shows the executed SQL in a Query section', () => {
+    const container = expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      argsSummary: 'Running SQL query on "PostgreSQL"',
+      args: JSON.stringify({ query: 'SELECT id, name FROM users WHERE active = true', source_name: 'PostgreSQL' }),
+    });
+
+    expect(screen.getByText('Query')).toBeTruthy();
+    expect(screen.getByText('Running SQL query on "PostgreSQL"')).toBeTruthy();
+    // Syntax highlighting splits the SQL across token spans.
+    expect(container.textContent).toContain('SELECT id, name FROM users WHERE active = true');
+    expect(screen.getByText('Copy')).toBeTruthy();
+  });
+
+  it('has no Query section for another tool with a "query" argument', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'web_search', status: 'completed', args: '{"query":"weather"}' });
+
+    expect(screen.queryByText('Query')).toBeNull();
+  });
+
+  describe('a cut-off query', () => {
+    // Cut inside the `--` comment, the copied prefix would still run, without its WHERE clause.
+    const args = JSON.stringify({ query: 'SELECT id FROM users -- active only\nWHERE active = true' });
+    const cutOff: MessagePart = {
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      args: args.slice(0, args.indexOf('\\n')),
+    };
+
+    it('offers no copy or download, and says only its start was kept', () => {
+      const container = expand(cutOff);
+
+      expect(container.textContent).toContain('SELECT id FROM users -- active only');
+      expect(screen.queryByText('Copy')).toBeNull();
+      expect(screen.queryByText('Download')).toBeNull();
+      expect(screen.getByText("Only the start of this query was kept, so it can't be copied.")).toBeTruthy();
+    });
+
+    it("says so in the reader's language", async () => {
+      const i18n = getI18n();
+      const previous = i18n.language;
+      if (!i18n.hasResourceBundle('de-DE', 'translation')) i18n.addResourceBundle('de-DE', 'translation', de);
+      await i18n.changeLanguage('de-DE');
+      try {
+        expand(cutOff);
+        expect(screen.getByText(de.chat.toolCard.queryCutOff)).toBeTruthy();
+      } finally {
+        await i18n.changeLanguage(previous);
+      }
+    });
   });
 });
 

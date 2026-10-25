@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.entity_search_tool import (
+    entity_search_offered_in,
+    named_entities_enabled_in,
+)
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
@@ -33,13 +36,24 @@ from app.modules.agents.qna.chat_state import (
     remember_record_ids,
 )
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.utils.chat_helpers import resolve_frontend_url
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.chat_helpers import (
+    keep_context_blocks_inside_connection,
+    keep_row_summaries_inside_connection,
+    resolve_frontend_url,
+)
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
-from .ops.scope import ids_within_scope, resolve_scope, selection_browse_refusal
+from .ops.scope import (
+    _has_selection,
+    ids_within_scope,
+    navigation_nameable_ids,
+    resolve_scope,
+    selection_browse_refusal,
+)
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
@@ -188,6 +202,26 @@ def _time_range_error_message(error_json: str) -> str:
         return error_json
 
 
+def _copies_outside_selection(identifier: str, matches: list, *, connected_app: bool = False) -> str:
+    """Where the readable copies of an issue key or URL live, when none of
+    them is inside this conversation. Success, not a failed tool call.
+
+    A connected app's limit is the most it may learn about, so a copy outside
+    it is not named (``connected_app``)."""
+    if connected_app:
+        return f"{identifier} is outside what this conversation is limited to."
+    places = []
+    for match in matches:
+        name = getattr(match, "name", None) or match.id
+        where = getattr(match, "connector_name", None) or "another source"
+        places.append(f"{name} ({where})")
+    found = "; ".join(places)
+    return (
+        f"{identifier} is outside what this conversation is limited to. "
+        f"A copy the user can open elsewhere: {found}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Toolset
 # ---------------------------------------------------------------------------
@@ -238,12 +272,13 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, with a created: date "
-            "when known\n"
+            "when known (uploaded: for a knowledge-base file — an upload time, not a document date)\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
             "to filter children by source timestamp (see parameter descriptions for date format) — "
             "use this instead of fetching all children when the question specifies a date range. "
+            "Inside a knowledge base these filter by when each file was uploaded. "
             "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
             "from the user's timezone. If time-filtered results are empty or too few, widen the "
             "range or retry without time filters and filter manually from the listing."
@@ -433,8 +468,11 @@ class KnowledgeGraph:
         connector_ids = list(scope.app_ids)
         kb_ids = list(scope.kb_ids)
 
-        if not connector_ids and not kb_ids:
-            # Chat-mode fallback: use all user-visible connectors
+        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
+            # Chat-mode fallback: use all user-visible connectors. A selection
+            # below app level is already the scope; substituting the connector
+            # catalog would hide a collection folder's children, because a
+            # collection is not one of those connectors.
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
             logger.debug(
@@ -460,7 +498,20 @@ class KnowledgeGraph:
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
-                    node_id = result.matches[0].id
+                    # The same issue key can exist on more than one connector.
+                    # The copy inside this conversation wins; another connector's
+                    # copy is named so the miss is not a broken tool.
+                    inside = await ids_within_scope(
+                        state, graph_provider, user_key, org_id,
+                        [match.id for match in result.matches],
+                    )
+                    chosen = next((match for match in result.matches if match.id in inside), None)
+                    if chosen is None:
+                        return True, _copies_outside_selection(
+                            node_id, result.matches,
+                            connected_app=connection_sources_of(state.get("filters")) is not None,
+                        )
+                    node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
         if refusal:
@@ -491,13 +542,29 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
-            # A linked record is named from any source the user reads, not
-            # only from those the turn is limited to.
-            if view.related:
-                inside = await ids_within_scope(
-                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
-                )
-                view.related = [row for row in view.related if row.id in inside]
+            # The listing names every ancestor the user can open, and every
+            # child under the opened node. Neither is the conversation's
+            # limit: a parent above a selected group would be named and
+            # offered as the place to see siblings, and a child the user
+            # cannot read would be offered to fetch.
+            ancestors, rows, related = await navigation_nameable_ids(
+                state, graph_provider, user_key, org_id,
+                ancestor_ids=[crumb.id for crumb in view.breadcrumbs],
+                row_ids=[row.id for row in view.rows],
+                related_ids=[row.id for row in view.related],
+            )
+            if ancestors is not None:
+                view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
+            view.rows = [row for row in view.rows if row.id in rows]
+            view.related = [row for row in view.related if row.id in related]
+            limit_sources = connection_sources_of(state.get("filters"))
+            await keep_context_blocks_inside_connection(
+                [(view.current.id if view.current else None, view)], graph_provider,
+                state.get("user_id", ""), org_id, limit_sources,
+            )
+            await keep_row_summaries_inside_connection(
+                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+            )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
@@ -638,7 +705,10 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
-        remember_record_ids(state, [m.id for m in result.matches])
+        await keep_context_blocks_inside_connection(
+            [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
+            connection_sources_of(state.get("filters")),
+        )
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -696,8 +766,13 @@ class KnowledgeGraph:
             "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
-            "All dates use the source system's timestamp (when the file was created in Drive, "
-            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "For connected apps these are the source system's timestamps (when the file was "
+            "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
+            "A knowledge-base upload is dated as its record header shows: by a date the "
+            "document states when one was found in it, otherwise only by the upload (the "
+            "file's last-modified time or the upload time), which is not when it was written. "
+            "A date filter can keep an upload dated only by its upload although it was written "
+            "outside the range, so check its header before treating it as in range.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -738,8 +813,9 @@ class KnowledgeGraph:
                     "Only include records created at the source on or after this date. "
                     "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
-                    "This filters by the document's original creation date at the source "
-                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "For connected apps this is the creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
+                    "knowledge-base upload, the date its record header shows. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -803,7 +879,7 @@ class KnowledgeGraph:
                if args.get("source_ids") else "")
             if args.get("query") else None
         ),
-        result_summary=search_result_summary,
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
         display_name="Searched the knowledge base",
     )
     async def search(
@@ -1168,10 +1244,18 @@ class KnowledgeGraph:
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
-        that go with it only where the deployment offers it
-        (``entity_search_surface``)."""
+        that go with it only where the deployment offers it, and the
+        named-entity tools only where extraction is on
+        (``entity_search_surface``); ``search_timeline`` unless
+        ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
-        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
+        from .ops.timeline import without_timeline_unless_enabled
+        tools = without_timeline_unless_enabled(tools)
+        return tools_for_request(
+            self, tools,
+            offered=entity_search_offered_in(self.state),
+            named_entities=named_entities_enabled_in(self.state),
+        )
 
     # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)
@@ -1240,7 +1324,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
-                description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
+                description=(
+                    "Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'. For "
+                    "knowledge-base files createdAt and updatedAt are upload times, not "
+                    "document dates."
+                ),
                 required=False,
                 default="updatedAt",
             ),
@@ -1250,6 +1338,16 @@ class KnowledgeGraph:
                 description="Sort order: 'asc' or 'desc'.",
                 required=False,
                 default="desc",
+            ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description=(
+                    "The next-page token from the selection listed in the prompt. "
+                    "Pass it with any query; the cursor chooses the page. "
+                    "Omit it to start at the first page."
+                ),
+                required=False,
             ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
@@ -1271,12 +1369,14 @@ class KnowledgeGraph:
         limit: int = 20,
         sort_by: str = "updatedAt",
         sort_order: str = "desc",
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         """Name-based listing — calls ops/listing.py execute_list_files."""
         from .ops.listing import execute_list_files
         return await execute_list_files(
             self.state,
             query=query,
+            cursor=cursor,
             source_ids=source_ids,
             node_types=node_types,
             record_types=record_types,
@@ -1284,6 +1384,126 @@ class KnowledgeGraph:
             limit=limit,
             sort_by=sort_by,
             sort_order=sort_order,
+        )
+
+    # -----------------------------------------------------------------------
+    # search_timeline — date-ordered search over a span (TIMELINE_SUMMARIES)
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_timeline",
+        short_description="Search a span of time period by period and return the matches in date order",
+        description=(
+            "Gather what happened over a span of time, in date order: what came up in a channel, "
+            "project or ticket between two dates, how something evolved, what was decided over a "
+            "period, where things stand after a run of exchanges.\n\n"
+            "It splits the span into up to 6 periods (calendar months, or weeks within one month), "
+            "searches each period separately, and returns each period's best-matching blocks under "
+            "its own heading, oldest first. A plain search returns the top matches overall, which "
+            "bunch around the single best-matching moment and miss the rest of the span; here every "
+            "period gets its own share. The whole result is about the size of one search result.\n\n"
+            "Pass start and end when the question names a period ('between March and May 2026' -> "
+            "start='2026-03-01', end='2026-05-31'), widened by a week or so where it is vague "
+            "('late July', 'mid-September'). With no start it covers the year before end, reaching "
+            "further back when the best matches are older; pass only start for 'since ...'. "
+            "Matches whose record has no source date are listed last. To keep to one channel, "
+            "project or space, pass its record_group entityId from "
+            "knowledgegraph__search_entities in entity_ids.\n\n"
+            "Each period shows a sample, not every record. Answer period by period and cite the "
+            "blocks under each period's heading. For a period that matters and looks thin, search "
+            "it with knowledgegraph__search and its date filters, or read a record in full."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="What to look for in every period — the topic, not the dates.",
+                required=True,
+            ),
+            ToolParameter(
+                name="start",
+                type=ParameterType.STRING,
+                description=(
+                    "First day of the span, 'YYYY-MM-DD' (start of that day, UTC) or an ISO 8601 "
+                    "datetime with a timezone. Omit to cover the year before end, or further back "
+                    "to the earliest of the best matches."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="end",
+                type=ParameterType.STRING,
+                description=(
+                    "Last day of the span, inclusive, same formats as start. Omit to end today."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_field",
+                type=ParameterType.STRING,
+                description=(
+                    "'created' (default) places each record by when it was created at its source: "
+                    "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
+                    "places it by its last update, for tickets or pages that changed over the span. "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found, otherwise by its file's last-modified time or its upload time; the "
+                    "result's header says when an upload dated only by its upload time is instead "
+                    "listed with no source date."
+                ),
+                required=False,
+                default="created",
+            ),
+            ToolParameter(
+                name="source_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Limit to these sources (app-connector or KB-collection IDs from the Knowledge "
+                    "Sources section). Omit to search every accessible source."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="entity_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional entityIds returned by search_entities in this turn: a record_group "
+                    "(a Slack channel, Jira project, Confluence space, Drive folder) keeps the "
+                    "timeline to that group's records; a department/category/topic narrows by it."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searched "{args.get("query", "")}" period by period'
+            + (f' from {args["start"]}' if args.get("start") else "")
+            + (f' to {args["end"]}' if args.get("end") else "")
+            if args.get("query") else None
+        ),
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
+        display_name="Searched the knowledge base over time",
+    )
+    async def search_timeline(
+        self,
+        query: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        date_field: str | None = None,
+        source_ids: list[str] | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> str | list[Part]:
+        """Date-ordered search — calls ops/timeline.py execute_timeline_search."""
+        from .ops.timeline import execute_timeline_search
+        return await execute_timeline_search(
+            self.state,
+            query,
+            start=start,
+            end=end,
+            date_field=date_field,
+            source_ids=source_ids,
+            entity_ids=entity_ids,
         )
 
     # -----------------------------------------------------------------------
@@ -1360,6 +1580,11 @@ def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolRe
     if result.is_error:
         return f"Lookup failed: {first_line}"
     return first_line or "Found records"
+
+
+def _timeline_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from .ops.timeline import timeline_result_summary
+    return timeline_result_summary(args, result)
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:

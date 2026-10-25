@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
+from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -87,6 +88,9 @@ class ChatState(TypedDict):
     error: dict[str, Any] | None
     org_id: str
     user_id: str
+    # Who owns the artifacts this run makes. The caller, when a service-account
+    # agent (running as user_id, its creator) is chatted with by a signed-in user.
+    artifact_owner_user_id: str
     user_email: str
     send_user_info: bool
     conversation_id: str | None
@@ -127,6 +131,7 @@ class ChatState(TypedDict):
     # assistant/placeholder agent (`get_authenticated_mcp_servers`). Consumed by the
     # agent-loop runtime's `MCPToolProvider`/`MCPAccessResolver` (`app/agents/agent_loop/`).
     mcp_servers: list[dict] | None  # Attached MCP server metadata (instanceId, name, tools) - NO secrets stored
+    api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
 
@@ -222,7 +227,9 @@ class ChatState(TypedDict):
     has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
-    has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    has_code_connector: bool  # True when org has at least one configured repo connector (GitLab/GitHub)
+    has_code_knowledge: bool  # True when agent_knowledge contains a repo connector
+    has_ui_client: bool  # True when the client can show and answer a question card; gates UI-only tools like ask_user_question
     # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
     client_name: str | None
     agent_key: str | None
@@ -506,9 +513,14 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
         state["tool_repetition_warnings"] = []
 
 
+# Clients that show question cards and send the answer back: the web app (the desktop app too) and
+# Slack. Node names API-token callers `api`; they, like headless runs, have no one to answer.
+_CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
+
+
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -570,6 +582,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     
     has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
     has_slack_knowledge = agent_knowledge_has_slack_connector(agent_knowledge)
+    has_code_knowledge = agent_knowledge_has_code_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -609,6 +622,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
+        "artifact_owner_user_id": chat_query.get("artifact_owner_user_id") or user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
@@ -681,6 +695,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # MCP servers (resolved by agent.py's chat handler; see ChatState field comments)
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
+        "api_toolset_tools": chat_query.get("apiToolsetTools", []),
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object
@@ -740,7 +755,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_sql_knowledge": has_sql_knowledge,
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
-        "has_ui_client": bool(client_name),
+        "has_code_connector": has_code_connector,
+        "has_code_knowledge": has_code_knowledge,
+        "has_ui_client": client_name in _CARD_CLIENTS,
         "client_name": client_name,
         "agent_key": chat_query.get("agentKey"),
         "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),

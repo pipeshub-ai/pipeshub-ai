@@ -142,7 +142,7 @@ class TestSyncRepoMembers:
         repo = make_repo()
         sync._create_record_group_hierarchy = AsyncMock()
         sync._flush_org_record_groups = AsyncMock()
-        sync._resolve_repos_with_filters = AsyncMock(return_value=[repo])
+        sync.resolve_repo_scope = AsyncMock(return_value=([repo], True))
         c.issues.fetch_issues_batched = AsyncMock()
         c.repos.run = AsyncMock()
 
@@ -463,7 +463,7 @@ class TestTeamAppEdge:
         c.repos.run = AsyncMock()
         sync = ProjectsSync(c)
         sync._sync_repo_members = AsyncMock(return_value=[])
-        sync._resolve_repos_with_filters = AsyncMock(return_value=list(repos))
+        sync.resolve_repo_scope = AsyncMock(return_value=(list(repos), True))
         return c, sync
 
     def _repo(self, repo_id: int, visibility: str) -> SimpleNamespace:
@@ -522,7 +522,7 @@ class TestSyncAllReposAndResolution:
     async def test_no_repos_after_filters_is_noop(self) -> None:
         c = make_mock_connector()
         sync = ProjectsSync(c)
-        sync._resolve_repos_with_filters = AsyncMock(return_value=[])
+        sync.resolve_repo_scope = AsyncMock(return_value=([], True))
         await sync.sync_all_repos()
         c.issues.fetch_issues_batched.assert_not_awaited()
 
@@ -530,14 +530,16 @@ class TestSyncAllReposAndResolution:
         c = make_mock_connector()
         sync = ProjectsSync(c)
         first, second = make_repo(repo_id=1), make_repo(repo_id=2, name="other")
-        sync._resolve_repos_with_filters = AsyncMock(return_value=[first, second])
-        sync._sync_repo = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        sync.resolve_repo_scope = AsyncMock(return_value=([first, second], True))
+        sync._sync_repo = AsyncMock(side_effect=[RuntimeError("boom"), True])
         sync._flush_org_record_groups = AsyncMock()
 
         await sync.sync_all_repos()
 
         assert sync._sync_repo.await_count == 2
         sync._flush_org_record_groups.assert_awaited()
+        # The failed repo is reported, so the sync does not read as a success.
+        assert len(sync.failures) == 1 and "boom" in sync.failures[0]
 
     async def test_child_step_error_does_not_abort_repo(self) -> None:
         c = make_mock_connector()

@@ -4,13 +4,18 @@ Azure Files Client
 Client wrapper for Azure File Share operations using the azure-storage-file-share SDK.
 """
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 try:
     from azure.core.exceptions import AzureError  # type: ignore
     from azure.storage.fileshare import ShareServiceClient  # type: ignore
+    from azure.storage.fileshare._shared.policies_async import (  # type: ignore
+        ExponentialRetry,
+    )
     from azure.storage.fileshare.aio import (  # type: ignore
         ShareServiceClient as AsyncShareServiceClient,
     )
@@ -21,7 +26,25 @@ except ImportError:
     )
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.address_guard import check_url_allowed
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import parse_retry_after
+
+# Longest Retry-After honoured, so one answer cannot park the sync.
+RETRY_AFTER_CAP_SECONDS = 60.0
+
+
+class RetryAfterExponentialRetry(ExponentialRetry):
+    """The SDK's default retry (the async clients build this class themselves when
+    given none), except that a Retry-After sent with a 5xx or 408 sets the wait."""
+
+    def get_backoff_time(self, settings: dict[str, Any]) -> float:
+        history = settings.get("history") or []
+        response = history[-1].http_response if history else None
+        retry_after = parse_retry_after(response.headers) if response is not None else None
+        if retry_after is not None:
+            return min(retry_after, RETRY_AFTER_CAP_SECONDS)
+        return super().get_backoff_time(settings)
 
 
 class AzureFilesConfigurationError(Exception):
@@ -54,6 +77,10 @@ class AzureFilesResponse:
     data: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Azure's x-ms-error-code (e.g. ShareNotFound), so callers can tell "gone" from any other failure.
+    error_code: Optional[str] = None
+    # Marker for the next page of a paged listing; None after the last page.
+    continuation_token: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -100,7 +127,7 @@ class AzureFilesConnectionStringConfig:
         """Create AsyncShareServiceClient using connection string"""
         try:
             return AsyncShareServiceClient.from_connection_string(
-                conn_str=self.connectionString
+                conn_str=self.connectionString, retry_policy=RetryAfterExponentialRetry()
             )
         except (ValueError, AzureError) as e:
             raise AzureFilesConfigurationError(
@@ -109,16 +136,23 @@ class AzureFilesConnectionStringConfig:
             ) from e
 
     def get_account_name(self) -> Optional[str]:
-        """Extract account name from connection string"""
+        """AccountName from the connection string, else as the SDK reads it from
+        FileEndpoint (a portal SAS connection string has no AccountName)."""
+        for part in self.connectionString.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == "AccountName" and value:
+                return value
         try:
-            for part in self.connectionString.split(";"):
-                if part.startswith("AccountName="):
-                    return part.split("=", 1)[1]
-        except IndexError as e:
-            raise AzureFilesConfigurationError(
-                "Could not parse AccountName from connection string",
-                {"connection_string_length": len(self.connectionString)},
-            ) from e
+            return self.create_share_service_client().account_name or None
+        except AzureFilesConfigurationError:
+            return None
+
+    def get_account_key(self) -> Optional[str]:
+        """AccountKey from the connection string; None for a SAS connection string."""
+        for part in self.connectionString.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == "AccountKey" and value:
+                return value
         return None
 
     def get_authentication_method(self) -> str:
@@ -191,7 +225,7 @@ class AzureFilesAccountKeyConfig:
         try:
             account_url = f"{self.endpointProtocol}://{self.accountName}.file.{self.endpointSuffix}"
             return AsyncShareServiceClient(
-                account_url=account_url, credential=self.accountKey
+                account_url=account_url, credential=self.accountKey, retry_policy=RetryAfterExponentialRetry()
             )
         except Exception as e:
             raise AzureFilesConfigurationError(
@@ -237,12 +271,66 @@ class AzureFilesAccountKeyConfig:
         }
 
 
+@dataclass
+class AzureFilesEntraIdConfig:
+    """Configuration for Azure Files using a Microsoft Entra ID service principal.
+
+    Lets admins grant a scoped RBAC role (Storage File Data Privileged Reader) and
+    disable account key access on the storage account.
+    """
+
+    accountUrl: str
+    tenantId: str
+    clientId: str
+    clientSecret: str
+    shareName: str | None = None
+
+    def __post_init__(self) -> None:
+        missing = [k for k in ("accountUrl", "tenantId", "clientId", "clientSecret") if not (getattr(self, k) or "").strip()]
+        if missing:
+            raise AzureFilesConfigurationError(f"{', '.join(missing)} cannot be empty for Entra ID authentication")
+        self.accountUrl = self.accountUrl.strip().rstrip("/")
+
+    def create_share_service_client(self) -> ShareServiceClient:
+        from azure.identity import ClientSecretCredential  # type: ignore
+
+        # Azure Files accepts OAuth only with token_intent="backup".
+        return ShareServiceClient(
+            account_url=self.accountUrl,
+            credential=ClientSecretCredential(self.tenantId, self.clientId, self.clientSecret),
+            token_intent="backup",
+        )
+
+    async def create_async_share_service_client(self) -> AsyncShareServiceClient:
+        from azure.identity.aio import ClientSecretCredential  # type: ignore
+
+        return AsyncShareServiceClient(
+            account_url=self.accountUrl,
+            credential=ClientSecretCredential(self.tenantId, self.clientId, self.clientSecret),
+            token_intent="backup",
+            retry_policy=RetryAfterExponentialRetry(),
+        )
+
+    def get_account_name(self) -> str | None:
+        host = urlparse(self.accountUrl).hostname or ""
+        return host.split(".", 1)[0] or None
+
+    def get_account_url(self) -> str:
+        return self.accountUrl
+
+    def get_authentication_method(self) -> str:
+        return "entra_id"
+
+    def to_dict(self) -> dict:
+        return {"authentication_method": "entra_id", "account_name": self.get_account_name(), "share_name": self.shareName}
+
+
 class AzureFilesRESTClient:
     """Azure Files REST client that handles file share operations internally"""
 
     def __init__(
         self,
-        config: Union[AzureFilesConnectionStringConfig, AzureFilesAccountKeyConfig],
+        config: AzureFilesConnectionStringConfig | AzureFilesAccountKeyConfig | AzureFilesEntraIdConfig,
     ) -> None:
         """Initialize with configuration"""
         self.config = config
@@ -265,9 +353,10 @@ class AzureFilesRESTClient:
         """Get or create the AsyncShareServiceClient"""
         if self._async_share_service_client is None:
             try:
-                self._async_share_service_client = (
-                    await self.config.create_async_share_service_client()
-                )
+                client = await self.config.create_async_share_service_client()
+                # Only the async client sends requests; the sync one only names endpoints.
+                await asyncio.to_thread(check_url_allowed, client.url)
+                self._async_share_service_client = client
             except Exception as e:
                 raise AzureFilesConfigurationError(
                     f"Failed to create AsyncShareServiceClient: {str(e)}",
@@ -289,21 +378,27 @@ class AzureFilesRESTClient:
         return account_name
 
     def get_account_url(self) -> str:
-        """Get the account URL"""
+        """The account's file endpoint (sovereign clouds and custom endpoints included), without any SAS."""
         if hasattr(self.config, "get_account_url"):
             return self.config.get_account_url()
-        elif isinstance(self.config, AzureFilesConnectionStringConfig):
-            account_name = self.config.get_account_name()
-            if account_name:
-                return f"https://{account_name}.file.core.windows.net"
-        raise AzureFilesConfigurationError(
-            "Could not determine account URL from configuration"
-        )
+        try:
+            endpoint = self.get_share_service_client().primary_endpoint.split("?", 1)[0].rstrip("/")
+        except Exception as e:
+            raise AzureFilesConfigurationError(
+                "Could not determine account URL from configuration"
+            ) from e
+        if not endpoint:
+            raise AzureFilesConfigurationError(
+                "Could not determine account URL from configuration"
+            )
+        return endpoint
 
     def get_account_key(self) -> Optional[str]:
-        """Get the account key (only for account key config)"""
+        """The account key, if the credentials carry one (account key or key connection string)."""
         if isinstance(self.config, AzureFilesAccountKeyConfig):
             return self.config.accountKey
+        if isinstance(self.config, AzureFilesConnectionStringConfig):
+            return self.config.get_account_key()
         return None
 
     def get_authentication_method(self) -> str:
@@ -320,51 +415,12 @@ class AzureFilesRESTClient:
     async def close_async_client(self) -> None:
         """Close the async share service client"""
         if self._async_share_service_client:
+            credential = self._async_share_service_client.credential
             await self._async_share_service_client.close()
             self._async_share_service_client = None
-
-    async def ensure_share_exists(self, share_name: str) -> AzureFilesResponse:
-        """Ensure the specified share exists, create if it doesn't"""
-        try:
-            async_share_service_client = await self.get_async_share_service_client()
-            share_client = async_share_service_client.get_share_client(share_name)
-
-            if not await share_client.exists():
-                await share_client.create_share()
-                return AzureFilesResponse(
-                    success=True,
-                    data={
-                        "share_name": share_name,
-                        "action": "created",
-                        "message": f'Share "{share_name}" created successfully',
-                    },
-                    message=f'Share "{share_name}" created successfully',
-                )
-            else:
-                return AzureFilesResponse(
-                    success=True,
-                    data={
-                        "share_name": share_name,
-                        "action": "exists",
-                        "message": f'Share "{share_name}" already exists',
-                    },
-                    message=f'Share "{share_name}" already exists',
-                )
-
-        except AzureFilesShareError:
-            raise
-        except AzureError as e:
-            raise AzureFilesShareError(
-                f"Azure error while ensuring share exists: {str(e)}",
-                share_name=share_name,
-                details={"azure_error": str(e)},
-            )
-        except Exception as e:
-            raise AzureFilesShareError(
-                f"Unexpected error while ensuring share exists: {str(e)}",
-                share_name=share_name,
-                details={"unexpected_error": str(e)},
-            )
+            # An Entra ID credential holds its own HTTP session.
+            if hasattr(credential, "close"):
+                await credential.close()
 
 
 class AzureFilesClient(IClient):
@@ -401,10 +457,6 @@ class AzureFilesClient(IClient):
     def get_authentication_method(self) -> str:
         """Get the authentication method being used"""
         return self.client.get_authentication_method()
-
-    async def ensure_share_exists(self, share_name: str) -> AzureFilesResponse:
-        """Ensure the specified share exists, create if it doesn't"""
-        return await self.client.ensure_share_exists(share_name)
 
     async def get_async_share_service_client(self) -> AsyncShareServiceClient:
         """Get or create the AsyncShareServiceClient"""
@@ -491,6 +543,15 @@ class AzureFilesClient(IClient):
             auth_config = config_data.get("auth", {})
             auth_type = auth_config.get("authType", "ACCOUNT_KEY")
             share_name = auth_config.get("shareName")
+
+            if auth_type == "ENTRA_ID":
+                return cls(AzureFilesRESTClient(AzureFilesEntraIdConfig(
+                    accountUrl=auth_config.get("accountUrl", ""),
+                    tenantId=auth_config.get("tenantId", ""),
+                    clientId=auth_config.get("clientId", ""),
+                    clientSecret=auth_config.get("clientSecret", ""),
+                    shareName=share_name,
+                )))
 
             if auth_type == "CONNECTION_STRING":
                 connection_string = auth_config.get("connectionString")

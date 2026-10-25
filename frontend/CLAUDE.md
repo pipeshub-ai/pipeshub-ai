@@ -38,7 +38,7 @@ The feature once called "Knowledge Base" is called "Collections" in the UI. Only
 
 | Context | Name |
 | --- | --- |
-| UI labels and translations | "Collections", "All Records" |
+| UI labels and translations | "Collections", "All records" |
 | Route | `/knowledge-base` |
 | API | `/api/v1/knowledgeBase` |
 | Code (types, stores, variables) | `KnowledgeBase`, `kb`, `kbId` |

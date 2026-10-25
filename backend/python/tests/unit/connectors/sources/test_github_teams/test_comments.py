@@ -511,6 +511,31 @@ class TestReviewCommentThreading:
         other = next(bg for bg in block_groups if bg.name == "File change: untouched.py").data
         assert "Review comments" not in other
 
+    async def test_secrets_in_diffs_and_comments_are_redacted(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        key = "AKIAIOSFODNN7EXAMPLA"
+
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([_conv_comment(1, f"leaked {key}", _dt(1))]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([
+                _review_comment(rc_id=2, path="cfg.py", body=f"use {key}"),
+            ]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="cfg.py", status="modified", patch=f"+AWS_KEY = '{key}'"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        dumped = "".join(bg.model_dump_json() for bg in block_groups)
+        assert key not in dumped
+        assert "«REDACTED:aws-access-key»" in dumped
+
     async def test_review_comments_carry_author_identity(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)
@@ -689,7 +714,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_child_records_reuse_existing_and_create_new(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=[existing, None]
         )
@@ -707,7 +732,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_block_comment_attachments_reuse_existing(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         helper = CommentsHelper(c)
         text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
@@ -716,6 +741,22 @@ class TestAttachmentRecordBuilding:
 
         assert attachments[0].id == "att-1"
         assert remaining == []
+
+
+    async def test_an_attachment_in_the_trash_is_written_again_under_its_own_id(self) -> None:
+        """Linked again after it was removed (trash on): written again so the processor
+        brings it back and indexes it, and the parent's blocks point at that record."""
+        c = make_mock_connector()
+        trashed = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=True)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=trashed)
+        helper = CommentsHelper(c)
+        text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
+
+        children, remaining = await helper.make_child_records_of_attachments(text, _parent_ticket())
+        attachments, review_remaining = await helper.make_block_comment_of_attachments(text, _parent_ticket())
+
+        assert [u.record.id for u in remaining] == ["att-1"] and [ch.child_id for ch in children] == ["att-1"]
+        assert [u.record.id for u in review_remaining] == ["att-1"] and attachments[0].id == "att-1"
 
 
 class TestCommentBlockFailures:
@@ -750,24 +791,40 @@ class TestCommentBlockFailures:
             await helper.build_issue_comment_blocks("acme", "widgets", 1, 0, record)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
-    async def test_reviews_failure_still_builds_conversation(self) -> None:
+    async def test_reviews_failure_fails_the_stream(self) -> None:
+        """Review text is part of the PR's indexed content. Building the PR without
+        it would index it as complete and, its revision unchanged, never again."""
         c = make_mock_connector()
         helper = CommentsHelper(c)
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_issue_comments": ok_response([_conv_comment(1, "hello", _dt(1))]),
-            "get_pull_reviews": failed_response("403"),
-            "get_pull_review_comments": failed_response("403"),
+            "get_pull_reviews": failed_response("503", status_code=503),
+            "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([]),
         })
         record, pull_request = _pr_blocks_fixture()
 
-        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
-            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
-        )
+        with pytest.raises(HTTPException) as exc:
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
+        assert exc.value.status_code >= 500
 
-        assert len(block_groups) == 1
-        assert "hello" in block_groups[0].data
-        assert block_groups[0].data.startswith("**Comment by alice")
+    async def test_review_comments_failure_fails_the_stream(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": failed_response("502", status_code=502),
+            "get_pull_file_changes": ok_response([]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        with pytest.raises(HTTPException):
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
 
     async def test_file_changes_failure_raises(self) -> None:
         c = make_mock_connector()
@@ -1073,15 +1130,13 @@ class TestCommentBlockFailures:
 
         assert helper._decode_content_file(_Bad()) is None
 
-    async def test_commit_fetch_failure_returns_empty(self) -> None:
+    async def test_commit_fetch_failure_fails_the_stream(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500", status_code=500)})
 
-        blocks, bg = await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
-
-        assert blocks == []
-        assert bg is None
+        with pytest.raises(HTTPException):
+            await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
 
 
 async def _single_file_group(file: SimpleNamespace) -> object:

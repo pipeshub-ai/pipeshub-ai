@@ -4,7 +4,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,8 +27,8 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
-from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.models.entities import substitute_user_email
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -47,6 +47,11 @@ from app.modules.retrieval.record_cut import (
     passages_per_record,
     point_record_id,
 )
+from app.modules.retrieval.source_diversity import (
+    SourceDiversity,
+    active_source_diversity,
+    record_source,
+)
 from app.modules.retrieval.selection_scope import (
     SELECTION_EMPTY_MESSAGE,
     SELECTION_NOT_READY_MESSAGE,
@@ -54,6 +59,8 @@ from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
     SelectionScope,
     SelectionTooLargeError,
+    connection_bound_scope,
+    connection_sources_of,
     require_membership_ready,
     resolve_request_scopes,
 )
@@ -74,6 +81,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
+from app.services.model_identity.call_context import narrow_workload
+from app.services.model_identity.workload import Workload
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -100,15 +109,18 @@ from app.utils.aimodels import (
     get_generator_model,
     is_local_cpu_embedding_provider,
 )
-from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
+    describe_search_records,
     get_flattened_results,
     get_record,
     group_child_results,
     valid_group_labels,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.query_instruction import instruct_query
+from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -159,6 +171,87 @@ _OVERFETCH_MAX_MULTIPLIER = 3.0
 # deeper fusion (`record_cut.py`) stays under it as well.
 _OVERFETCH_ABSOLUTE_CAP = 300
 
+# How long a search scope that the container filter could not fill keeps going
+# straight to the record-id filter. Matches the accessible-records cache TTL, so
+# the enumeration it needs is usually still warm.
+NARROW_ACCESS_MEMO_TTL_SECONDS = 300
+_NARROW_ACCESS_MEMO_MAX_ENTRIES = 10_000
+# Share of container-filtered hits the access check must admit for the
+# container search to stand. Below it, the search moves to the record-id filter.
+_NARROW_ACCESS_MIN_SURVIVAL = 0.8
+
+
+def narrow_access_fallback_enabled() -> bool:
+    """``SEARCH_NARROW_ACCESS_FALLBACK``: on unless set to a false value.
+
+    Read on every search, so a change needs no restart. Off restores the plain
+    container search with its single wider retry.
+    """
+    raw = os.getenv("SEARCH_NARROW_ACCESS_FALLBACK", "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+class _NarrowAccessMemo:
+    """Search scopes whose container filter recently came back mostly unreadable.
+
+    A user who can read a small share of the connectors they can enter gets
+    candidates under the container filter that the access check then denies,
+    so a page cannot be filled within the over-fetch cap. For such a scope the
+    record-id filter is both cheaper and complete. This remembers that, per
+    process, for a few minutes.
+
+    It only ever routes a search to the record-id path, which ends in the same
+    access check, so a stale or wrong entry costs latency and never access.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple, float] = {}
+
+    @staticmethod
+    def key(org_id: str, user_id: str, filters: dict[str, Any] | None) -> tuple:
+        scope = requested_scope_ids(filters)
+        return (org_id, user_id, frozenset(scope) if scope is not None else None)
+
+    def mark(self, key: tuple, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        if len(self._entries) >= _NARROW_ACCESS_MEMO_MAX_ENTRIES and key not in self._entries:
+            # Drop the entry closest to expiry; a forgotten entry only costs one
+            # container attempt on that scope's next search.
+            del self._entries[min(self._entries, key=self._entries.__getitem__)]
+        self._entries[key] = now + NARROW_ACCESS_MEMO_TTL_SECONDS
+
+    def is_narrow(self, key: tuple, now: float | None = None) -> bool:
+        expires = self._entries.get(key)
+        if expires is None:
+            return False
+        if (time.monotonic() if now is None else now) >= expires:
+            self._entries.pop(key, None)
+            return False
+        return True
+
+    def forget(self, key: tuple) -> None:
+        self._entries.pop(key, None)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
+narrow_access_memo = _NarrowAccessMemo()
+
+@dataclass
+class _RecordIdSearch:
+    """What the record-id search after a container shortfall found.
+
+    ``empty_scope`` when the user's record list was empty, so no vector query
+    ran: an empty id list would be dropped by every backend and leave an
+    org-wide search.
+    """
+
+    results: list[dict[str, Any]] = field(default_factory=list)
+    accessible: dict[str, str] = field(default_factory=dict)
+    empty_scope: bool = False
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -182,6 +275,10 @@ class _QueryPlan:
     # Collections the kept attempt could not search, of how many it asked.
     failed_collections: list[str] = field(default_factory=list)
     collections_searched: int = 0
+    # Set by `_search_and_adjudicate` when the container filter could not fill
+    # the page because the access check denied too much of it: the caller
+    # searches again with the record-id filter.
+    narrow_shortfall: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -251,6 +348,70 @@ def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
     return record_cut
 
 
+def _vary_sources(
+    diversity: SourceDiversity,
+    hits: list[dict[str, Any]],
+    virtual_to_record_map: dict[str, Any],
+    plain_points: set[Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
+    """The plain search's hits, first page varied across sources.
+
+    ``hits`` are the plain search's hits (point ids in ``plain_points``) and
+    the deeper candidates. Every record of the plain search is kept with the
+    hits it had; a candidate record is kept only when it fills a first-page
+    place a capped source gave up, and brings its own hits. Returns those hits
+    (in their order), the record map narrowed to the records kept, and each
+    kept record's place by record id.
+    """
+    ranked = sorted(
+        (hit for hit in hits if isinstance(hit, dict)),
+        key=lambda hit: hit.get("score") or 0.0,
+        reverse=True,
+    )
+    in_plain = {
+        id(hit) for hit in ranked
+        if (hit.get("metadata") or {}).get("point_id") in plain_points
+    }
+    plain_vids = {
+        vid for hit in ranked
+        if id(hit) in in_plain and (vid := hit_record_id(hit)) is not None
+        and virtual_to_record_map.get(vid)
+    }
+    # Records best first: a plain record placed by its plain hits only.
+    vids: list[str] = []
+    known: set[str] = set()
+    for hit in ranked:
+        vid = hit_record_id(hit)
+        if vid is None or vid in known or not virtual_to_record_map.get(vid):
+            continue
+        if vid in plain_vids and id(hit) not in in_plain:
+            continue
+        known.add(vid)
+        vids.append(vid)
+    order = diversity.order(
+        vids,
+        plain=plain_vids,
+        source_of=lambda vid: record_source(virtual_to_record_map[vid]),
+    )
+    brought_up = set(order) - plain_vids
+    plain_hit_vids = {hit_record_id(hit) for hit in ranked if id(hit) in in_plain}
+    dropped = {
+        hit_record_id(hit) for hit in ranked if id(hit) not in in_plain
+    } - plain_hit_vids - brought_up
+    kept_hits = [
+        hit for hit in hits
+        if not isinstance(hit, dict) or id(hit) in in_plain or hit_record_id(hit) in brought_up
+    ]
+    kept_map = {vid: record for vid, record in virtual_to_record_map.items() if vid not in dropped}
+    if order == [vid for vid in vids if vid in plain_vids]:
+        # No source over its share: the plain result, as it was.
+        return kept_hits, kept_map, {}
+    record_rank: dict[str, int] = {}
+    for vid in order:
+        record_rank.setdefault(virtual_to_record_map[vid].get("_key"), len(record_rank))
+    return kept_hits, kept_map, record_rank
+
+
 def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
     """``filter_groups`` in the shape ``get_accessible_virtual_record_ids`` expects."""
     filters: dict[str, Any] = {}
@@ -288,6 +449,11 @@ _SELECTION_REQUEST_KEYS = frozenset(
 
 # Connector names only label citations; a slow graph must not hold up the search.
 CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
+
+# Connector instance display names for citations. Each search looked up the App
+# of every connector in its results, one query each; a rename shows within a minute.
+_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
+
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -526,28 +692,6 @@ class RetrievalService:
             return sparse
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
-    async def _preprocess_query(self, query: str) -> str:
-        """
-        Preprocess the query text.
-
-        Args:
-            query: Raw query text
-
-        Returns:
-            Preprocessed query text
-        """
-        try:
-            # Get current model name from config
-            model_name = await self.get_current_embedding_model_name(use_cache=False)
-
-            # Check if using BGE model before adding the prefix
-            if model_name and "bge" in model_name.lower():
-                return f"Represent this document for retrieval: {query.strip()}"
-            return query.strip()
-        except Exception as e:
-            self.logger.error(f"Error in query preprocessing: {str(e)}")
-            return query.strip()
-
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
@@ -616,10 +760,45 @@ class RetrievalService:
                     filters = {k: v for k, v in filters.items() if k not in CONTAINER_SCOPE_FILTER_KEYS}
                     filters["apps"] = sorted(selection.connector_ids)
 
+            fallback_on = narrow_access_fallback_enabled()
+            memo_key = narrow_access_memo.key(org_id, user_id, filters)
+            remembered = fallback_on and narrow_access_memo.is_narrow(memo_key)
             try:
-                containers, accessible_virtual_id_to_record_id, user = (
-                    await self._resolve_search_scope(user_id, org_id, filters, time_range)
-                )
+                try:
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(
+                            user_id, org_id, filters, time_range, prefer_record_ids=remembered,
+                        )
+                    )
+                except PermissionVerificationUnavailableError as exc:
+                    if not remembered:
+                        raise
+                    # The remembered record-id route could not read the record
+                    # list; the container route checks hits without it. Forget
+                    # the scope and try that once.
+                    narrow_access_memo.forget(memo_key)
+                    remembered = False
+                    self.logger.warning(
+                        "record list unreadable for remembered scope (user=%s org=%s); "
+                        "trying the container search: %s", user_id, org_id, exc,
+                    )
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                    )
+                if remembered and containers is None and not accessible_virtual_id_to_record_id:
+                    # The remembered route found an empty record list. Access
+                    # changes, and the list can lag a grant: forget the scope and
+                    # let the containers decide, rather than answering "nothing"
+                    # from the memo for minutes. A demo-app exclusion still takes
+                    # the record-id path there, as it does without the memo.
+                    narrow_access_memo.forget(memo_key)
+                    self.logger.info(
+                        "empty record list for remembered scope (user=%s org=%s); "
+                        "trying the container search", user_id, org_id,
+                    )
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                    )
             except PermissionVerificationUnavailableError as exc:
                 self.logger.warning(
                     "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
@@ -693,6 +872,20 @@ class RetrievalService:
             filter, scope_virtual_ids = permission_filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
+            # The search API's first page, varied across sources: the plain
+            # search runs as always, and a deeper read supplies candidates for
+            # the places a capped source gives up (SEARCH_SOURCE_DIVERSITY).
+            diversity = (
+                active_source_diversity(
+                    scope_ids=requested_scope_ids(filters),
+                    scope_virtual_ids=scope_virtual_ids,
+                )
+                if knowledge_search
+                else None
+            )
+            enumerated_map: dict[str, str] | None = None
+            # The narrow-access fallback replaced the container page.
+            replaced_by_record_ids = False
             if use_containers:
                 (
                     search_results,
@@ -714,12 +907,78 @@ class RetrievalService:
                         PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                         Status.PERMISSION_CHECK_UNAVAILABLE,
                     )
-            else:
+                if plan.narrow_shortfall:
+                    # This user reads too small a share of these containers for
+                    # their filter to serve the page. Search again under the
+                    # record-id filter, hits checked the same way; and send this
+                    # scope's next searches straight there for a while. If that
+                    # cannot run, the page the access check already admitted
+                    # stands.
+                    adjudicated = (search_results, accessible_virtual_id_to_record_id)
+                    kept_failed, kept_searched = plan.failed_collections, plan.collections_searched
+                    try:
+                        replacement = await self._search_by_record_ids(
+                            queries, limit, org_id, user_id, user_key, filters, time_range,
+                            virtual_record_ids_from_tool, selection, scopes, plan,
+                        )
+                    except Exception as exc:
+                        if not search_results:
+                            # Nothing was admitted to keep: report the failure as
+                            # the record-id path would, never as "no match".
+                            if isinstance(exc, PermissionVerificationUnavailableError):
+                                self.logger.warning(
+                                    "Could not read what user %s may access in org %s: %s",
+                                    user_id, org_id, exc,
+                                )
+                                return self._create_empty_response(
+                                    PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+                                    Status.PERMISSION_CHECK_UNAVAILABLE,
+                                )
+                            raise
+                        self.logger.warning(
+                            "record-id search after a container shortfall failed "
+                            "(user=%s org=%s); keeping the container results: %s",
+                            user_id, org_id, exc,
+                        )
+                        replacement = None
+                        plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
+                    if replacement is None:
+                        search_results, accessible_virtual_id_to_record_id = adjudicated
+                    elif replacement.empty_scope:
+                        # The record list is empty. No vector query: an empty id
+                        # list is dropped by every backend, which would leave an
+                        # org-wide search. What the access check admitted stands.
+                        if not search_results:
+                            return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    elif not replacement.results:
+                        # The record list over-admits (RESTRICTED pages, a revoked
+                        # grant still cached), so its search can be denied
+                        # wholesale. A servable answer is never replaced by
+                        # nothing, and the scope is not remembered for a route
+                        # that served nothing.
+                        self.logger.info(
+                            "record-id search admitted no hits, the container search %d "
+                            "(user=%s org=%s); keeping the container results",
+                            len(search_results), user_id, org_id,
+                        )
+                        search_results, accessible_virtual_id_to_record_id = adjudicated
+                        plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
+                    else:
+                        search_results = replacement.results
+                        accessible_virtual_id_to_record_id = replacement.accessible
+                        replaced_by_record_ids = True
+                        narrow_access_memo.mark(memo_key)
+                        self.logger.info(
+                            "container search denied too much (user=%s org=%s); "
+                            "using the record-id filter for this scope for %ds",
+                            user_id, org_id, NARROW_ACCESS_MEMO_TTL_SECONDS,
+                        )
+            if not use_containers:
                 search_results = await self._execute_parallel_searches(
                     queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
                 )
                 try:
-                    enumerated = accessible_virtual_id_to_record_id
+                    enumerated = enumerated_map = accessible_virtual_id_to_record_id
                     accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
                         search_results, enumerated, user_key, org_id,
                         scope_connector_ids=requested_scope_ids(filters),
@@ -745,6 +1004,48 @@ class RetrievalService:
             if not search_results:
                 self.logger.debug("No search results found")
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+
+            plain_points: set[Any] = set()
+            if diversity is not None:
+                plain_points = {
+                    (hit.get("metadata") or {}).get("point_id")
+                    for hit in search_results if isinstance(hit, dict)
+                }
+            candidates: list[dict[str, Any]] = []
+            candidate_map: dict[str, str] = {}
+            if diversity is not None and diversity.fetch_limit(limit) > limit:
+                # Read deeper only when the caller asked for less than the pool;
+                # otherwise the plain result is the pool.
+
+                async def read_by_record_ids(depth: int, candidate_plan: _QueryPlan) -> "_RecordIdSearch":
+                    return await self._search_by_record_ids(
+                        queries, depth, org_id, user_id, user_key, filters, time_range,
+                        virtual_record_ids_from_tool, selection, scopes, candidate_plan,
+                    )
+
+                candidates, candidate_map = await self._diversity_candidates(
+                    queries, filter, diversity.fetch_limit(limit), org_id, user_id, plan,
+                    containers=containers if use_containers else None,
+                    enumerated=enumerated_map,
+                    by_record_ids=read_by_record_ids,
+                    record_ids_first=replaced_by_record_ids,
+                    record_cut=record_cut,
+                    allow_requery=not virtual_record_ids_from_tool,
+                    user_key=user_key,
+                    scope_connector_ids=requested_scope_ids(filters),
+                    scopes=scopes,
+                )
+            if candidates:
+                search_results = [
+                    *search_results,
+                    *(
+                        hit for hit in candidates
+                        if (hit.get("metadata") or {}).get("point_id") not in plain_points
+                        and hit_record_id(hit) in candidate_map
+                    ),
+                ]
+                for vid, record_id in candidate_map.items():
+                    accessible_virtual_id_to_record_id.setdefault(vid, record_id)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -792,6 +1093,15 @@ class RetrievalService:
                     )
 
             await self._attach_connector_instance_names(fetched_records)
+            limit_sources = connection_sources_of(filter_groups)
+            if limit_sources is not None:
+                # The app's own name is its source's or collection's name: shown
+                # only when the limit covers that app whole, as the Location
+                # trail and record details show it.
+                whole_apps = set(limit_sources.get("apps") or ())
+                for r in fetched_records:
+                    if r and r.get("connectorId") not in whole_apps:
+                        r.pop("connectorInstanceName", None)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -807,6 +1117,12 @@ class RetrievalService:
             except Exception as e:
                 self.logger.error("Error in _create_virtual_to_record_mapping: %s", e, exc_info=True)
                 raise
+
+            record_rank: dict[str, int] | None = None
+            if plain_points:
+                search_results, virtual_to_record_map, record_rank = _vary_sources(
+                    diversity, search_results, virtual_to_record_map, plain_points,
+                )
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
@@ -977,12 +1293,23 @@ class RetrievalService:
                     if not rids:
                         return {}
 
+                    # A connected app's limit trims the trail to what it shares;
+                    # past it, the trail names nothing rather than everything.
+                    try:
+                        limit_scope = await connection_bound_scope(
+                            self.graph_provider, user_key or "", org_id, filter_groups,
+                        )
+                    except Exception as limit_exc:
+                        self.logger.warning("fetch_locations: limit unresolved — %s", limit_exc)
+                        return {}
+
                     result = await resolve_ancestor_locations(
                         rids,
                         graph_provider=self.graph_provider,
                         org_id=org_id,
                         user_key=user_key or "",
                         record_docs=record_id_to_record_map,
+                        connection_limit=limit_scope,
                     )
                     self.logger.debug(
                         "fetch_locations: %d/%d trails resolved",
@@ -1072,6 +1399,10 @@ class RetrievalService:
                         }
                         for child in child_results:
                             child_index = child.get("block_index")
+                            # RRF scores tie, so two sections of one record can share
+                            # a score; this is what tells their passages apart.
+                            if result.get("block_group_index") is not None:
+                                child["block_group_index"] = result["block_group_index"]
                             if matched and isinstance(child_index, int):
                                 # 0 is a passage the search matched; the per-record
                                 # cap below keeps those first, then their neighbours.
@@ -1089,6 +1420,13 @@ class RetrievalService:
                 key=lambda x: x.get("score") or 0,
                 reverse=True,
             )
+            if record_rank:
+                # The varied first page, then the records it demoted; each
+                # record's passages stay in score order.
+                last = len(record_rank)
+                final_search_results.sort(
+                    key=lambda x: record_rank.get((x.get("metadata") or {}).get("recordId"), last)
+                )
 
             # Filter out incomplete results to prevent citation validation failures
             required_fields = ['origin', 'recordName', 'recordId', 'mimeType', "orgId"]
@@ -1128,6 +1466,13 @@ class RetrievalService:
                         len(omitted_passages),
                         sum(omitted_passages.values()),
                     )
+                # The assistant reads each record's state in its header, and
+                # the records it links to under it; an API caller (the MCP
+                # search tool) gets the same on each record document.
+                await describe_search_records(
+                    records, self.graph_provider, org_id, user_id=user_id,
+                    connection_sources=connection_sources_of(filter_groups),
+                )
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,
@@ -1172,6 +1517,77 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+
+    async def _diversity_candidates(
+        self,
+        queries: list[str],
+        filter: Any,  # noqa: A002, ANN401
+        depth: int,
+        org_id: str,
+        user_id: str,
+        plan: "_QueryPlan",
+        *,
+        containers: "AccessibleContainers | None",
+        enumerated: dict[str, str] | None,
+        by_record_ids: "Callable[[int, _QueryPlan], Awaitable[_RecordIdSearch]]",
+        record_ids_first: bool,
+        record_cut: RecordCut | None,
+        allow_requery: bool,
+        user_key: str | None,
+        scope_connector_ids: "tuple[str, ...] | None",
+        scopes: Sequence[SelectionScope],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Hits from a deeper read of the same search, checked the same way.
+
+        Candidates for the first page only: the plain result is not changed by
+        them. The read takes the path the page took (``record_ids_first`` when
+        the narrow-access fallback replaced a container page, or when this
+        read falls short the same way), with the same record cut and retry.
+        Reuses the plain search's embeddings. Returns the hits the user may
+        read and their ``{vrid: recordId}``; nothing when the read or its
+        check fails, so the plain result stands.
+        """
+        candidate_plan = _QueryPlan(
+            dense=plan.dense, sparse=plan.sparse, collections=plan.collections,
+        )
+        try:
+            if containers is None:
+                if enumerated is None:
+                    return [], {}
+                hits = await self._execute_parallel_searches(
+                    queries, filter, depth, org_id, user_id, plan=candidate_plan,
+                    record_cut=record_cut,
+                )
+                accessible = await self._keep_permitted_hits(
+                    hits, enumerated, user_key, org_id,
+                    scope_connector_ids=scope_connector_ids, scopes=scopes,
+                )
+            else:
+                if not record_ids_first:
+                    hits, accessible, degraded = await self._search_and_adjudicate(
+                        queries, filter, depth, org_id, user_id, containers,
+                        allow_requery=allow_requery,
+                        scope_connector_ids=containers.scope_connector_ids,
+                        record_cut=record_cut,
+                        plan=candidate_plan,
+                        user_key=user_key,
+                        scopes=scopes,
+                    )
+                    if degraded:
+                        return [], {}
+                    record_ids_first = candidate_plan.narrow_shortfall
+                if record_ids_first:
+                    # As for the page: the record-id search, with its own cut and check.
+                    found = await by_record_ids(depth, candidate_plan)
+                    hits, accessible = found.results, found.accessible
+        except Exception as exc:
+            self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
+            return [], {}
+        kept = [
+            hit for hit in hits
+            if isinstance(hit, dict) and hit_record_id(hit) in accessible
+        ]
+        return kept, {vid: accessible[vid] for vid in {hit_record_id(hit) for hit in kept}}
 
     async def _entity_filter_virtual_ids(
         self,
@@ -1259,6 +1675,8 @@ class RetrievalService:
         org_id: str,
         filters: dict[str, list[str]],
         time_range: dict[str, int] | None,
+        *,
+        prefer_record_ids: bool = False,
     ) -> tuple["AccessibleContainers | None", dict[str, str], dict[str, Any] | None]:
         """Decide how this search's permission filter is built.
 
@@ -1281,8 +1699,10 @@ class RetrievalService:
         user_task = self._get_user_cached(user_id)
 
         # A container scope cannot leave one app out, so an exclusion keeps the
-        # record-id path.
-        if excluded:
+        # record-id path. So does a scope the container filter recently could
+        # not serve (``narrow_access_memo``): the record-id path is the exact
+        # one, so preferring it never widens what a search may return.
+        if excluded or prefer_record_ids:
             accessible, user = await asyncio.gather(_legacy(), user_task)
             return None, accessible, user
 
@@ -1506,6 +1926,89 @@ class RetrievalService:
         # records. That is the common shape of a narrow scope.
         return True
 
+    async def _search_by_record_ids(
+        self,
+        queries: list[str],
+        limit: int,
+        org_id: str,
+        user_id: str,
+        user_key: str,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+        virtual_record_ids_from_tool: list[str] | None,
+        selection: "SelectionScope | None",
+        scopes: Sequence[SelectionScope],
+        plan: "_QueryPlan",
+    ) -> "_RecordIdSearch":
+        """The record-id path for a search the container filter could not serve.
+
+        The same steps the record-id path takes: enumerate, filter the vector
+        query by the ids, keep the hits the access check admits. Raises when any
+        step fails; the caller decides what stands instead.
+        """
+        enumerated = await self._get_accessible_virtual_ids_task(
+            user_id, org_id, filters, self.graph_provider, time_range=time_range,
+        )
+        if not enumerated:
+            return _RecordIdSearch(empty_scope=True)
+        permission_filter = await self._permission_filter(
+            org_id, None, enumerated, virtual_record_ids_from_tool, selection,
+        )
+        if permission_filter is None:
+            return _RecordIdSearch(empty_scope=True)
+        id_filter, scope_virtual_ids = permission_filter
+        results = await self._execute_parallel_searches(
+            queries, id_filter, limit, org_id, user_id, plan=plan,
+            record_cut=_record_cut_for(scope_virtual_ids),
+        )
+        accessible = await self._keep_permitted_hits(
+            results, enumerated, user_key, org_id,
+            scope_connector_ids=requested_scope_ids(filters), scopes=scopes,
+        )
+        denied = enumerated.keys() - accessible.keys()
+        results = [
+            result for result in results
+            if not isinstance(result, dict)
+            or (result.get("metadata") or {}).get("virtualRecordId") not in denied
+        ]
+        return _RecordIdSearch(results=results, accessible=accessible)
+
+    @staticmethod
+    def _narrow_shortfall(
+        *,
+        surviving: int,
+        raw: int,
+        fetch_limit: int,
+        max_batch: int,
+        denied: int,
+        allow_requery: bool,
+    ) -> bool:
+        """Whether this search should move to the record-id filter.
+
+        True when the access check admitted less than
+        ``_NARROW_ACCESS_MIN_SURVIVAL`` of what the container filter returned
+        and more was there to fetch. A user who reads a small slice of a large
+        connector cannot be served within the over-fetch cap (measured: 6% of
+        the record-id results at 1% readable, 17% at 5%), and even a full page
+        drifts from the record-id search's order when much was denied (86%
+        overlap at 20% readable, against 98% when nearly everything is).
+
+        The admitted share alone decides. A short page with most hits admitted
+        is the retry's to fill: one denied chunk, or overlap between expanded
+        queries judged against their combined budget, leaves a page short for a
+        user who reads nearly everything, and the retry already stops at the
+        cap.
+
+        Never True when nothing was denied: then the container filter selected
+        what the record-id filter would have. Never True when the corpus is
+        exhausted: the record-id filter selects a subset of the same points.
+        """
+        if not allow_requery or denied <= 0 or raw <= 0:
+            return False
+        if max_batch < fetch_limit:
+            return False
+        return surviving / raw < _NARROW_ACCESS_MIN_SURVIVAL
+
     async def _search_and_adjudicate(
         self,
         queries: list[str],
@@ -1535,6 +2038,7 @@ class RetrievalService:
         ``plan``, when given, is left describing the attempt that was kept.
         """
         plan = plan if plan is not None else _QueryPlan()
+        plan.narrow_shortfall = False
         fetch_limit = self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
@@ -1631,6 +2135,23 @@ class RetrievalService:
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
+                break
+
+            # First attempt only. A page that cleared the share there and was
+            # short is the retry's to fill; the retry reads deeper, where the
+            # share falls, and must not turn that into a move that replaces
+            # the page it widened.
+            if attempt == 0 and narrow_access_fallback_enabled() and self._narrow_shortfall(
+                surviving=surviving,
+                raw=len(search_results),
+                fetch_limit=asked,
+                max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
+                denied=denied,
+                allow_requery=allow_requery,
+            ):
+                # The caller searches again under the record-id filter; the
+                # wider container retry would cost more and still fall short.
+                plan.narrow_shortfall = True
                 break
 
             if not self._should_requery(
@@ -1915,10 +2436,14 @@ class RetrievalService:
             virtual_record_ids=hits.keys(), indexed_only=True,
             connector_ids=connector_ids,
         )
+        # A placeholder is in node_ids so navigate can open it. It is not a
+        # citation: a stub has no content, and a real copy of the same virtual
+        # record id is the one to name.
+        citable = check.node_ids - check.placeholder_ids
         return {
-            vrid: record_id if record_id in check.node_ids else check.records_by_vrid[vrid]
+            vrid: record_id if record_id in citable else check.records_by_vrid[vrid]
             for vrid, record_id in hits.items()
-            if record_id in check.node_ids or vrid in check.records_by_vrid
+            if record_id in citable or vrid in check.records_by_vrid
         }
 
     async def _get_accessible_virtual_ids_task(
@@ -2082,7 +2607,10 @@ class RetrievalService:
 
         dense_tasks = [
             await_with_retry(
-                lambda q=query: asyncio.wait_for(dense_embeddings.aembed_query(q), timeout=attempt_timeout),
+                lambda q=query: asyncio.wait_for(
+                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
+                    timeout=attempt_timeout,
+                ),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
@@ -2091,16 +2619,19 @@ class RetrievalService:
         ]
         supports_sparse = self._capabilities.supports_sparse_vectors
 
-        if sparse_embedder is not None and supports_sparse:
-            # Parallelise dense and sparse embedding generation
-            sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
-            (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
-                asyncio.gather(*dense_tasks),
-                asyncio.gather(*sparse_tasks),
-            )
-        else:
-            dense_query_embeddings = await asyncio.gather(*dense_tasks)
-            sparse_query_embeddings = [None] * len(queries)
+        # The tasks gather() starts copy the context when they are created, so the
+        # scope has to be open across the awaits, not just where the coroutines are built.
+        with narrow_workload(Workload.QUERY_EMBEDDING):
+            if sparse_embedder is not None and supports_sparse:
+                # Parallelise dense and sparse embedding generation
+                sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
+                (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
+                    asyncio.gather(*dense_tasks),
+                    asyncio.gather(*sparse_tasks),
+                )
+            else:
+                dense_query_embeddings = await asyncio.gather(*dense_tasks)
+                sparse_query_embeddings = [None] * len(queries)
 
         if plan is not None:
             plan.dense = dense_query_embeddings
@@ -2318,23 +2849,33 @@ class RetrievalService:
         connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
         if not connector_ids:
             return
-        try:
-            apps = await asyncio.wait_for(
-                asyncio.gather(
-                    *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in connector_ids),
-                    return_exceptions=True,
-                ),
-                timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            # Labels only: search results stay correct, the UI shows the type code.
-            self.logger.warning("Could not resolve connector names for citations: %s", e)
-            return
-        apps_by_id = {cid: app for cid, app in zip(connector_ids, apps) if isinstance(app, dict)}
+        names: dict[str, str | None] = {}
+        for cid in connector_ids:
+            hit, name = _connector_name_cache.get(cid)
+            if hit:
+                names[cid] = name
+        to_fetch = [cid for cid in connector_ids if cid not in names]
+        if to_fetch:
+            try:
+                apps = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
+                        return_exceptions=True,
+                    ),
+                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                # Labels only: search results stay correct, the UI shows the type code.
+                self.logger.warning("Could not resolve connector names for citations: %s", e)
+                apps = []
+            for cid, app in zip(to_fetch, apps):
+                if isinstance(app, dict):
+                    names[cid] = app.get("name")
+                    _connector_name_cache.set(cid, app.get("name"))
         for r in records:
-            app = apps_by_id.get(r.get("connectorId"))
-            if app and app.get("name"):
-                r["connectorInstanceName"] = app["name"]
+            name = names.get(r.get("connectorId"))
+            if name:
+                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,

@@ -711,14 +711,14 @@ class TestGetAdminUsers:
         assert len(admins) == 0
 
     @pytest.mark.asyncio
-    async def test_admin_users_api_failure(self, connector):
+    async def test_admin_users_api_failure(self, connector) -> None:
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "API fail", None)
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        admins = await connector._get_admin_users()
-        assert admins == []
+        with pytest.raises(ServiceNowAPIError):
+            await connector._get_admin_users()
 
 
 # ===========================================================================

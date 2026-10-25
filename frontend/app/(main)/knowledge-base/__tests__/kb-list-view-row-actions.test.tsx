@@ -5,7 +5,7 @@ import { KbListView } from '../components/kb-list-view';
 import type { KnowledgeHubNode } from '../types';
 import { hubNode, installBrowserShims, openRowMenu, renderInTheme, row } from './kb-page-harness';
 
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const SORT = { field: 'name', order: 'asc' } as const;
 

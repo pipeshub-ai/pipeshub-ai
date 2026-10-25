@@ -135,9 +135,8 @@ const nonStreamingTurn =
           },
           userMessage,
         );
-        previousConversations = Array.isArray(body.previousConversations)
-          ? body.previousConversations
-          : [];
+        // A new conversation has no stored history, and history is never taken from the client (CE-19).
+        previousConversations = [];
         project = link.project;
       } else {
         // Project context always comes from the session row, never the

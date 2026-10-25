@@ -21,6 +21,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import string_to_datetime
 
 from .common.utils import parse_item_id_from_url
@@ -29,6 +30,11 @@ from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+def is_internal_note(note: object) -> bool:
+    """Internal notes are for Planner and up. GitLab before 15.0 calls the flag ``confidential``."""
+    return getattr(note, "internal", False) is True or getattr(note, "confidential", False) is True
 
 
 class CommentsHelper:
@@ -70,6 +76,9 @@ class CommentsHelper:
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
 
         for comment in comments:
+            # The issue's readers include Guests; an internal note is not theirs to read.
+            if is_internal_note(comment):
+                continue
             raw_markdown_content: str = getattr(comment, "body", "") or ""
             child_records, remaining_records = await c.attachments.make_child_records_of_attachments(
                 markdown_raw=raw_markdown_content, record=record
@@ -318,6 +327,7 @@ class CommentsHelper:
             data = "\n\n".join(data_parts)
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
+            data = redact_secrets(data).text
 
             file_comments = map_file_r_comments.get(file_path, [])
             comments_list = [file_comments] if file_comments else []

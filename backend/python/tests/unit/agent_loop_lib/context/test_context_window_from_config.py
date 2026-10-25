@@ -61,6 +61,19 @@ class TestBudget:
     def test_current_claude_models_have_table_entries(self, model: str, window: int) -> None:
         assert ContextBudget.for_model(model).max_tokens == window - 8_000
 
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6", "gpt-5.5"])
+    def test_current_openai_models_get_their_input_limit(self, model: str) -> None:
+        assert ContextBudget.for_model(model).max_tokens == 922_000 - 8_000
+
+    def test_gpt_6_1_sol_gets_a_working_budget_below_its_limit(self) -> None:
+        assert ContextBudget.for_model("gpt-6.1-sol").max_tokens == 300_000 - 8_000
+
+    def test_a_configured_window_overrides_the_working_budget(self) -> None:
+        assert ContextBudget.for_model("gpt-6.1-sol", context_window=922_000).max_tokens == 922_000 - 8_000
+
+    def test_a_model_the_table_lacks_uses_its_configured_window(self) -> None:
+        assert ContextBudget.for_model("gpt-7-preview", context_window=400_000).max_tokens == 400_000 - 8_000
+
     def test_model_spec_carries_no_window_by_default(self) -> None:
         assert ModelSpec(model="m").context_window is None
 

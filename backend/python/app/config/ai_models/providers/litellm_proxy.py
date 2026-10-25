@@ -12,7 +12,9 @@ from .common_fields import (
     API_KEY,
     EMBEDDING_COMMON_TAIL,
     FRIENDLY_NAME,
+    GATEWAY_CAPABILITIES,
     LLM_COMMON_TAIL,
+    add_identity_forwarding,
     model_field,
 )
 from .openai import OPENAI_TTS_FORMAT, OPENAI_TTS_VOICE
@@ -27,7 +29,7 @@ _LITELLM_ENDPOINT = AIModelField(
 )
 
 
-@AIModelProviderBuilder("LiteLLM Proxy", "litellmProxy") \
+@add_identity_forwarding(AIModelProviderBuilder("LiteLLM Proxy", "litellmProxy") \
     .with_description("Unified OpenAI-compatible gateway routing to 100+ LLM providers") \
     .with_capabilities([
         ModelCapability.TEXT_GENERATION,
@@ -65,6 +67,6 @@ _LITELLM_ENDPOINT = AIModelField(
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(model_field("e.g. whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
-    .build_decorator()
+    , GATEWAY_CAPABILITIES).build_decorator()
 class LiteLLMProxyProvider:
     pass

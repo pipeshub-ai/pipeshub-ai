@@ -27,7 +27,11 @@ from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protoco
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
-from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.auth import (
+    connection_limit,
+    require_scopes,
+    require_service_token,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -49,6 +53,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
@@ -60,6 +65,13 @@ from app.modules.transformers.transformer import (
 from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import (
+    UNATTRIBUTED_SERVICE,
+    principal_from_request_user,
+)
+from app.services.model_identity.principal import Principal, service_principal
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -72,6 +84,7 @@ from app.utils.attachment_mime_types import (
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
@@ -148,6 +161,7 @@ class ChatQuery(BaseModel):
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_filters = field_validator("filters")(validate_request_filters)
     _validate_run_id = field_validator("runId")(validate_run_id)
 
 
@@ -237,13 +251,24 @@ def _pdf_page_count(file_content: bytes) -> int:
         return len(pdf.pages)
 
 
+# Limits for the copy of an uploaded image kept in its parsed record, which is
+# what the model reads and what every later turn replays. The stored file stays
+# as uploaded; the model's own per-image limits still apply when it is sent.
+_RECORD_IMAGE_MAX_LONG_EDGE_PX = 2048
+_RECORD_IMAGE_MAX_BYTES = 1024 * 1024
+
+
 def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
     mime_lower = mime_type.lower()
     if mime_lower in ("image/jpeg", "image/jpg"):
         media_type = "image/jpeg"
     else:
         media_type = "image/png"
-    data_uri = f"data:{media_type};base64,{base64.b64encode(file_content).decode('utf-8')}"
+    data_uri = downscale_to_limits(
+        f"data:{media_type};base64,{base64.b64encode(file_content).decode('utf-8')}",
+        max_long_edge_px=_RECORD_IMAGE_MAX_LONG_EDGE_PX,
+        max_bytes=_RECORD_IMAGE_MAX_BYTES,
+    )
     block = Block(
         index=0,
         type=BlockType.IMAGE,
@@ -719,7 +744,7 @@ async def upload_chat_attachments(
         parse_mode = "pdfplumber"
         if is_image:
             try:
-                block_containers = _build_image_blocks(file_binary, item.mimeType)
+                block_containers = await asyncio.to_thread(_build_image_blocks, file_binary, item.mimeType)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "image_direct"
             except Exception as e:
@@ -1449,7 +1474,51 @@ async def load_system_prompts(
     return {}
 
 
+def _chat_principal(request: Request) -> Principal:
+    try:
+        return principal_from_request_user(getattr(request.state, "user", None))
+    except Exception:
+        logger.warning("could not derive the caller's identity for the model gateway", exc_info=True)
+        return service_principal(UNATTRIBUTED_SERVICE)
+
+
 async def _generate_chat_stream_via_agent_loop(
+    request: Request,
+    query_info: "ChatQuery",
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    cancellation_registry: RunCancellationRegistry | None = None,
+) -> AsyncGenerator[str, None]:
+    """Run the chat stream with the caller bound as the identity for model calls.
+
+    Bound here, inside the generator, because the binding has to live in the
+    task that iterates it: ``StreamingResponse`` and ``collect_stream_outcome``
+    both drive it from one task, and work the stream spawns (tools, sub-agents)
+    copies the context at creation.
+    """
+    async with call_scope(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+        conversation_id=query_info.conversationId,
+    ):
+        async with aclosing(
+            _stream_chat_via_agent_loop(
+                request=request,
+                query_info=query_info,
+                retrieval_service=retrieval_service,
+                graph_provider=graph_provider,
+                config_service=config_service,
+                cancellation_registry=cancellation_registry,
+            )
+        ) as inner:
+            async for event in inner:
+                yield event
+
+
+async def _stream_chat_via_agent_loop(
     request: Request,
     query_info: "ChatQuery",
     retrieval_service: RetrievalService,
@@ -1554,6 +1623,7 @@ async def _generate_chat_stream_via_agent_loop(
         attachments=query_info.attachments,
         previous_conversations=query_info.previousConversations,
         logger=logger_,
+        connection_sources=connection_limit(user),
     )
     query_dict = {
         "query": query_info.query,
@@ -1561,6 +1631,7 @@ async def _generate_chat_stream_via_agent_loop(
         "previous_conversations": previous_conversations,
         "filters": effective_filters,
         "allowedFilters": query_info.allowedFilters,
+        "connectionLimit": connection_limit(user),
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,
@@ -1698,6 +1769,12 @@ async def askAI(
     `POST /api/v1/conversations/:id/messages`.
     """
     query_info = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    await assert_identity_allowed(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+    )
     stream = _generate_chat_stream_via_agent_loop(
         request=request,
         query_info=query_info,
@@ -1726,6 +1803,12 @@ async def askAIStream(
     for the mode → tool/prefetch behavior.
     """
     query_info = await _parse_chat_query(request, cancellation_registry, streaming=True)
+    await assert_identity_allowed(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+    )
 
     stream = _generate_chat_stream_via_agent_loop(
         request=request,

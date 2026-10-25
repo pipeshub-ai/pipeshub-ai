@@ -574,7 +574,7 @@ describe('ChatInput — attachments', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
     fireEvent.click(screen.getByText('Attach files'));
 
-    expect(screen.getByText('Upload your File')).toBeTruthy();
+    expect(screen.getByText('Upload your file')).toBeTruthy();
     expect(screen.getByText('Up to 10 files per message')).toBeTruthy();
     expect(
       screen.getByText('Supports: PDF, PNG, JPEG, JPG, TXT, MD, DOCX, XLSX, CSV.'),
@@ -583,6 +583,14 @@ describe('ChatInput — attachments', () => {
 });
 
 describe('ChatInput — regenerate and edit a previous message', () => {
+  function openActiveConversation(): string {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    return slotId;
+  }
+
   it('regenerates the chosen answer with the filters it was first asked with', () => {
     const store = useChatStore.getState();
     const slotId = store.createSlot('conv-1');
@@ -616,6 +624,55 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(composer().value).toBe('');
     expect(screen.queryByText('Regenerate response')).toBeNull();
+  });
+
+  it("re-runs a question card's reply with the answers picked again on the card", () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+    expect(useChatStore.getState().regenTargetMessageId).toBe('msg-7');
+
+    const message = 'User selections:\n1. "Which region?" → US';
+    act(() => useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message, answers: {} }));
+    fireEvent.click(sendButton());
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-7', undefined, undefined, undefined, message);
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
+  it('regenerates when the reopened card is submitted', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+
+    act(() => {
+      useCommandStore.getState().dispatch('runRegenerate');
+    });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot.mock.calls[0][1]).toBe('msg-7');
+  });
+
+  it('forgets answers picked on the card when the bar is closed', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+      useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message: 'User selections:', answers: {} });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+
+    expect(useChatStore.getState().regenAnswers).toBeNull();
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
   });
 
   it('leaves regenerate mode on Escape without regenerating', () => {
@@ -653,16 +710,17 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     });
 
     expect(screen.queryByText('Regenerate response')).toBeNull();
-    expect(screen.queryByText('Edit Query')).toBeNull();
+    expect(screen.queryByText('Edit query')).toBeNull();
   });
 
-  it('lets the user edit an earlier question, and says editing is not available yet on send', () => {
+  it('re-asks with the edited question when the user sends an edit', () => {
+    const slotId = openActiveConversation();
     const { onSend } = renderInput();
     act(() => {
       useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
     });
 
-    expect(screen.getByText('Edit Query')).toBeTruthy();
+    expect(screen.getByText('Edit query')).toBeTruthy();
     expect(composer().value).toBe('Original question');
     expect(composer().readOnly).toBe(false);
 
@@ -670,8 +728,316 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(toastTitles()).toEqual(['Coming Soon']);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      slotId, 'msg-3', undefined, undefined, { query: 'Edited question' },
+    );
     expect(composer().value).toBe('');
+    expect(screen.queryByText('Edit query')).toBeNull();
+  });
+
+  it('regenerates without a new question when the edit leaves the text unchanged', () => {
+    const slotId = openActiveConversation();
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-3', undefined, undefined);
+  });
+
+  it('keeps the original filters when editing a question that was scoped', () => {
+    const slotId = openActiveConversation();
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+        appliedFilters: { apps: [{ id: 'app-drive', name: 'Drive' }], kb: [{ id: 'kb-legal', name: 'Legal' }] },
+      });
+    });
+
+    type('Edited question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      slotId, 'msg-3', undefined, { apps: ['app-drive'], kb: ['kb-legal'] }, { query: 'Edited question' },
+    );
+  });
+
+  it('turns @ mentions off while editing, so the question keeps the filters it was asked with', () => {
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+  });
+
+  describe('the files of the edited question', () => {
+    const stored = [ref('rec-a'), ref('rec-b')];
+
+    function startEdit(attachments: AttachmentRef[] = stored) {
+      act(() => {
+        useCommandStore.getState().dispatch('showEditQuery', {
+          messageId: 'msg-3',
+          text: 'Original question',
+          attachments,
+        });
+      });
+    }
+    const chip = (name: string) => screen.queryByText(name)
+
+    it('shows the files stored with the question as chips', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+
+      startEdit();
+
+      expect(chip('rec-a.pdf')).toBeTruthy();
+      expect(chip('rec-b.pdf')).toBeTruthy();
+      expect(screen.getAllByText('PDF')).toHaveLength(2);
+    });
+
+    it('sends only the text when the files are left as they are', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Edited question' },
+      );
+    });
+
+    it('regenerates as it was when neither the text nor the files changed', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-3', undefined, undefined);
+    });
+
+    it('detaches a removed file from the question without deleting the stored file', () => {
+      const slotId = openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile });
+      startEdit();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-a.pdf' }));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(onDeleteFile).not.toHaveBeenCalled();
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Original question', attachments: [ref('rec-b')] },
+      );
+    });
+
+    it('sends an empty list when every file was removed', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-a.pdf' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-b.pdf' }));
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Edited question', attachments: [] },
+      );
+    });
+
+    it('sends the stored files together with a file added in the edit', async () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile: vi.fn() });
+      startEdit();
+
+      await act(async () => pick(pdf()));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined,
+        { query: 'Original question', attachments: [ref('rec-a'), ref('rec-b'), ref('rec-c')] },
+      );
+    });
+
+    it('counts the stored files toward the limit of ten', () => {
+      openActiveConversation();
+      const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
+      renderInput({ onUploadFile, onDeleteFile: vi.fn() });
+      startEdit(Array.from({ length: 9 }, (_, i) => ref(`rec-${i}`)));
+
+      pick(pdf('one.pdf'), pdf('two.pdf'))
+
+      expect(onUploadFile).toHaveBeenCalledTimes(1);
+      expect(toastTitles()).toEqual(['Maximum 10 attachments per message.']);
+    });
+
+    it('waits for a file that is still uploading before it sends the edit', async () => {
+      openActiveConversation();
+      const upload = deferred<AttachmentRef>();
+      renderInput({ onUploadFile: vi.fn(() => upload.promise), onDeleteFile: vi.fn() });
+      startEdit();
+      pick(pdf());
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
+
+      await act(async () => upload.resolve(ref('rec-c')));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops the files picked in an edit that is cancelled, and keeps the stored ones', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(onDeleteFile).toHaveBeenCalledTimes(1);
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+    });
+
+    it('puts back the files the reader had attached when the edit is cancelled', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-mine')), onDeleteFile });
+      await act(async () => pick(pdf('mine.pdf')));
+      expect(chip('mine.pdf')).toBeTruthy();
+
+      startEdit();
+      expect(chip('mine.pdf')).toBeNull();
+      expect(chip('rec-a.pdf')).toBeTruthy();
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(chip('mine.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('puts back the files the reader had attached once the edit is sent', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-mine')), onDeleteFile });
+      await act(async () => pick(pdf('mine.pdf')));
+
+      startEdit();
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(chip('mine.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('keeps a file picked for a sent edit, since the question now holds it', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('leaves the edit, and its files, when the reader opens another conversation', async () => {
+      openActiveConversation();
+      const other = useChatStore.getState().createSlot('conv-2');
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      act(() => useChatStore.getState().setActiveSlot(other));
+
+      expect(screen.queryByText('Edit query')).toBeNull();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+    });
+
+    it('leaves the edit files when a regenerate starts instead', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      act(() => {
+        useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Old question' });
+      });
+
+      expect(screen.getByText('Regenerate response')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+    });
+
+    it('shows the files of the newer edit when the reader switches edits, and drops the earlier new ones', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      startEdit([ref('rec-z')]);
+
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+      expect(onDeleteFile).not.toHaveBeenCalledWith('rec-a');
+      expect(chip('rec-z.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+    });
+
+    it('does not keep the question files after the edit when the question had none', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+
+      startEdit([]);
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(screen.queryByText('Edit query')).toBeNull();
+    });
+  });
+
+  it('does not send an edit that was cleared, and stays in edit mode', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    type('   ');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
+    expect(screen.getByText('Edit query')).toBeTruthy();
+  });
+
+  it('leaves edit mode on Escape without re-asking', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+
+    expect(screen.queryByText('Edit query')).toBeNull();
+    expect(composer().value).toBe('');
+    expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
   });
 });
 
@@ -972,7 +1338,7 @@ describe('ChatInput — model, voice and search view', () => {
     renderInput();
 
     const mic = screen.getByRole('button', {
-      name: 'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
+      name: 'Configure a Speech-to-Text (STT) model in AI models settings to enable voice input.',
     }) as HTMLButtonElement;
     expect(mic.disabled).toBe(true);
   });
@@ -1394,5 +1760,180 @@ describe('ChatInput — keeping an unsent message', () => {
     renderInput({ persistDraft: true, prefill: { text: 'Summarise the handbook', key: 1 } });
 
     expect(composer().value).toBe('Summarise the handbook');
+  });
+});
+
+describe('ChatInput — a sent message is not kept as a draft', () => {
+  const KEY_NEW = 'pipeshub-chat-draft:u1:-:new';
+  const pause = () => act(() => void vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS + 50));
+  const settleHost = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  // The first message of a new chat moves the composer to another place in the page,
+  // so the old composer is unmounted and a new one is mounted as the message is sent.
+  function MovingHost({ answer }: { answer: 'now' | 'later' | 'refused-later' }) {
+    const [moved, setMoved] = React.useState(false);
+    const onSend = () => {
+      setMoved(true);
+      if (answer === 'later') return Promise.resolve(true);
+      if (answer === 'refused-later') return Promise.resolve(false);
+      return undefined;
+    };
+    return (
+      <Theme>
+        {moved ? (
+          <section data-testid="message-list-layout">
+            <ChatInput key="after" onSend={onSend} persistDraft />
+          </section>
+        ) : (
+          <ChatInput key="before" onSend={onSend} persistDraft />
+        )}
+      </Theme>
+    );
+  }
+
+  function StayingHost({ answer }: { answer: 'now' | 'refused' | 'rejected' | 'later' }) {
+    const onSend = () => {
+      if (answer === 'refused') return false;
+      if (answer === 'rejected') return Promise.reject(new Error('network'));
+      if (answer === 'later') return Promise.resolve(true);
+      return undefined;
+    };
+    return (
+      <Theme>
+        <ChatInput onSend={onSend} persistDraft />
+      </Theme>
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    allowChatDraftWrites();
+    useAuthStore.setState({ user: { id: 'u1' } });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useAuthStore.setState({ user: null, accessToken: null });
+    window.localStorage.clear();
+  });
+
+  it('does not bring the first message back when the composer moves as it is sent', async () => {
+    render(<MovingHost answer="now" />);
+    type('hiii, what are u doing');
+    pause();
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not bring it back either when the host only answers after the composer has moved', async () => {
+    render(<MovingHost answer="later" />);
+    type('hiii, what are u doing');
+    pause();
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not bring it back when the message is sent before the draft was ever saved', async () => {
+    render(<MovingHost answer="later" />);
+    type('sent before the pause ended');
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('removes the stored draft the moment the message is sent', () => {
+    render(<StayingHost answer="later" />);
+    type('about to be sent');
+    pause();
+    expect(loadDraft(KEY_NEW)).toBe('about to be sent');
+
+    fireEvent.click(sendButton());
+
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not save the sent text while the host is still answering', async () => {
+    render(<StayingHost answer="later" />);
+    type('about to be sent');
+    fireEvent.click(sendButton());
+
+    pause();
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+    await settleHost();
+  });
+
+  it('keeps the text, and saves it again, when the host refuses the message', async () => {
+    render(<StayingHost answer="refused" />);
+    type('refused message');
+
+    fireEvent.click(sendButton());
+    pause();
+
+    expect(composer().value).toBe('refused message');
+    expect(loadDraft(KEY_NEW)).toBe('refused message');
+  });
+
+  it('keeps the text, and saves it again, when sending fails', async () => {
+    render(<StayingHost answer="rejected" />);
+    type('failed message');
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('failed message');
+    expect(loadDraft(KEY_NEW)).toBe('failed message');
+  });
+
+  it('brings a refused message back after a reload', async () => {
+    const first = render(<StayingHost answer="refused" />);
+    type('refused message');
+    fireEvent.click(sendButton());
+    first.unmount();
+
+    render(<StayingHost answer="refused" />);
+
+    expect(composer().value).toBe('refused message');
+  });
+
+  it('saves what is typed after a send again', async () => {
+    render(<StayingHost answer="now" />);
+    type('first message');
+    fireEvent.click(sendButton());
+    pause();
+
+    type('the next question');
+    pause();
+
+    expect(loadDraft(KEY_NEW)).toBe('the next question');
+  });
+
+  it('saves what is typed while the host is still answering', async () => {
+    render(<StayingHost answer="later" />);
+    type('first message');
+    fireEvent.click(sendButton());
+    type('the next question, typed during the answer');
+
+    pause();
+    await settleHost();
+
+    expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
   });
 });

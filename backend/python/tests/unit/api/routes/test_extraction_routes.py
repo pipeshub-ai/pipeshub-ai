@@ -7,20 +7,22 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import jwt
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import Response
-import jwt
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.extraction import router as extraction_router
-from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.blocks import SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
+    ExtractionLLMError,
     SubCategories,
+    semantic_metadata_from_classification,
 )
-
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,13 +71,15 @@ def _semantic_metadata_dict() -> dict:
 def test_classify_success() -> None:
     mock_extraction = MagicMock()
     mock_extraction.classify = AsyncMock(
-        return_value=MagicMock(
+        return_value=SemanticMetadata(
             departments=["Engineering"],
             languages=["English"],
             topics=["Testing"],
             summary="A test doc.",
-            category="Technical",
-            subcategories=MagicMock(level1="Software", level2="Python", level3="Testing"),
+            categories=["Technical"],
+            sub_category_level_1="Software",
+            sub_category_level_2="Python",
+            sub_category_level_3="Testing",
         )
     )
 
@@ -182,7 +186,8 @@ def test_classify_reports_no_language_for_a_record_in_code_and_formats_only() ->
         languages=["Python", "YAML"], topics=["Testing"], summary="A test doc.",
     )
     mock_extraction = MagicMock()
-    mock_extraction.classify = AsyncMock(return_value=classification)
+    # DocumentExtraction.classify answers with the stored shape.
+    mock_extraction.classify = AsyncMock(return_value=semantic_metadata_from_classification(classification))
     block_container = {
         "blocks": [{
             "index": 0, "type": "text", "format": "txt",
@@ -224,6 +229,26 @@ def test_classify_llm_failure_returns_500() -> None:
     body = response.json()
     assert body["success"] is False
     assert "LLM timeout" in body["error"]
+
+
+def test_classify_refusal_is_not_answered_as_retryable() -> None:
+    """A 5xx makes the extraction client send the whole document again."""
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.base_client import TRANSIENT_STATUS_CODES
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=NonRetryableError("over budget"))
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123"},
+    )
+
+    assert response.status_code == 422
+    assert response.status_code not in TRANSIENT_STATUS_CODES
+    assert response.json() == {
+        "success": False, "classification": None, "error": "over budget", "error_code": None,
+    }
 
 
 def test_classify_invalid_block_container_returns_422() -> None:
@@ -375,6 +400,41 @@ def test_entities_success_releases_the_slot(entities_app) -> None:
     assert not app.state.entity_extraction_semaphore.locked()
 
 
+def test_entities_model_calls_run_as_the_caller_named_in_the_service_token(entities_app) -> None:
+    from app.services.model_identity.call_context import peek_call_context
+
+    app, llm, extract = entities_app
+    seen = {}
+
+    async def as_indexing_with_caller(request: Request) -> Request:
+        request.state.user = {
+            "token_type": "scoped",
+            "scopes": ["document:classify"],
+            "orgId": "org-123",
+            "pcp": {"v": 1, "kind": "service", "sub": "indexing", "org": "org-123", "wl": "indexing"},
+        }
+        return request
+
+    async def load_model(*_a: object, **_k: object) -> tuple[None, None, str, str]:
+        seen["load"] = peek_call_context()
+        return None, None, "fake", "fake-model"
+
+    async def run_extract(*_a: object, **_k: object) -> MagicMock:
+        seen["extract"] = peek_call_context()
+        return MagicMock(model_dump=MagicMock(return_value={"entities": []}))
+
+    llm.side_effect = load_model
+    extract.side_effect = run_extract
+    app.dependency_overrides[authMiddleware] = as_indexing_with_caller
+
+    assert _post_entities(app).status_code == 200
+
+    for step in ("load", "extract"):
+        assert seen[step] is not None, f"the {step} step ran with no caller bound"
+        assert seen[step].principal.service_name == "indexing"
+        assert seen[step].principal.org_id == "org-123"
+
+
 def test_entities_failure_releases_the_slot(entities_app) -> None:
     app, _, extract = entities_app
     extract.side_effect = RuntimeError("extraction broke")
@@ -445,3 +505,67 @@ def test_entities_invalid_budgets_is_422_and_takes_no_slot(entities_app) -> None
     assert response.status_code == 422
     llm.assert_not_awaited()
     assert not app.state.entity_extraction_semaphore.locked()
+
+
+def test_classify_without_a_configured_llm_returns_422_with_error_code() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(
+        side_effect=LLMNotConfiguredError("No LLM is configured for this organization")
+    )
+    client = TestClient(_build_app(mock_extraction))
+
+    response = client.post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == "LLM_NOT_CONFIGURED"
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (LLMUnavailableError("connection refused"), "LLM_UNAVAILABLE"),
+        (ExtractionLLMError("no usable output"), "LLM_FAILED"),
+    ],
+)
+def test_model_failures_answer_424_with_a_code(error: Exception, code: str) -> None:
+    """A dependency failed, not this service: a 5xx would be retried and trip the caller's breaker."""
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error)
+    client = TestClient(_build_app(mock_extraction))
+
+    response = client.post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123"},
+    )
+
+    assert response.status_code == 424
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == code
+
+
+def test_an_open_circuit_tells_the_caller_how_long_to_wait() -> None:
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=ProviderUnavailableError("down", provider="p", retry_after=42.4))
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    )
+    assert response.status_code == 424
+    assert response.headers["Retry-After"] == "43"
+
+
+def test_an_outage_before_the_circuit_opens_names_no_wait() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=LLMUnavailableError("down"))
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    )
+    assert response.status_code == 424
+    assert "Retry-After" not in response.headers

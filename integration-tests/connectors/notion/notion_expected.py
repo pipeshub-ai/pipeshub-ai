@@ -255,17 +255,14 @@ class NotionExpected:
         url_filename = path.split("/")[-1] if "/" in path else ""
         file_name = url_filename or (attachment.get("name") or "attachment")
 
-        category = attachment.get("category") or ""
-        if category:
+        # The file's own type first; Notion's coarse category only for a name without a known extension.
+        mime_type, _ = mimetypes.guess_type(file_name)
+        if not mime_type:
             mime_type = {
-                "productivity": MimeTypes.BIN.value,
                 "image": MimeTypes.PNG.value,
                 "video": "video/mp4",
                 "audio": "audio/mpeg",
-            }.get(category, MimeTypes.BIN.value)
-        else:
-            guessed, _ = mimetypes.guess_type(file_url)
-            mime_type = guessed or MimeTypes.BIN.value
+            }.get(attachment.get("category") or "", MimeTypes.BIN.value)
 
         extension = file_name.split(".")[-1] if "." in file_name else ""
 

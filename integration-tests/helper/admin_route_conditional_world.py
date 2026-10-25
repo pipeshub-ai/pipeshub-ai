@@ -45,6 +45,7 @@ from helper.admin_route_conditional_table import (
     SERVICE_FOR_MEMBER,
     WORLD_GROUPS,
 )
+from helper import suite_extensions
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 from helper.source_credentials import source_unavailable
 
@@ -325,6 +326,15 @@ class World:
     def _fresh_value(self, key: str) -> str:
         if key == "unique_name":
             return self._unique_name()
+        if key == "fresh_toolset":
+            made = self._create_toolset(self._unique_name("toolset"), KEYED_TOOLSET_TYPE, "API_TOKEN", {})
+            # A case may have deleted it already.
+            self._later(f"toolset {made['instanceName']}", lambda: self._delete_toolset(made["_id"]))
+            return str(made["_id"])
+        if key == "fresh_personal_toolset":
+            return str(self._create_toolset(
+                self._unique_name("toolset"), KEYED_TOOLSET_TYPE, "API_TOKEN", {}, caller=CREATOR, scope="personal",
+            )["_id"])
         if key in ("fresh_mcp", "fresh_personal_mcp"):
             self._switch_on(MCP_FLAG)
             if key == "fresh_mcp":
@@ -369,19 +379,40 @@ class World:
         )
         return {"oauth_config": config_id, **made}
 
-    def _create_toolset(self, name: str, toolset_type: str, auth_type: str, auth: dict[str, str]) -> dict[str, Any]:
-        body = self._json(
-            ADMIN, "POST", f"{_TOOLSETS}/instances", f"Creating a {toolset_type} toolset",
-            json={"instanceName": name, "toolsetType": toolset_type, "authType": auth_type, "authConfig": auth},
-        )
+    def _create_toolset(
+        self, name: str, toolset_type: str, auth_type: str, auth: dict[str, str], *,
+        caller: str = ADMIN, scope: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"instanceName": name, "toolsetType": toolset_type, "authType": auth_type, "authConfig": auth}
+        if scope:
+            payload["scope"] = scope
+        body = self._json(caller, "POST", f"{_TOOLSETS}/instances", f"Creating a {toolset_type} toolset", json=payload)
         instance = body.get("instance") or {}
         if not instance.get("_id"):
             raise RuntimeError(f"Creating a {toolset_type} toolset returned no id.")
+        if scope == "personal":
+            self._later(f"personal toolset {name}", lambda: self._delete_personal_toolset(instance["_id"], caller))
         return instance
 
     def _delete_toolset(self, instance_id: str) -> None:
         self._json(ADMIN, "DELETE", f"{_TOOLSETS}/instances/{instance_id}", "Deleting a test toolset",
                    ok=(200, 404))
+
+    def _delete_personal_toolset(self, instance_id: str, owner: str) -> None:
+        """Only its owner can delete it. A case may have deleted it already, and a member who is not
+        an admin is refused with 403 rather than 404 once it is gone, so look before deleting."""
+        path = f"{_TOOLSETS}/instances/{instance_id}"
+        reply = send("GET", f"{self.gateway_url}{path}", self.token(owner), timeout=self._timeout)
+        if reply.status == 404:
+            return
+        if reply.status != 200:
+            raise RuntimeError(f"Looking up a test personal toolset returned HTTP {reply.status}: {reply.text[:300]}")
+        self._json(owner, "DELETE", path, "Deleting a test personal toolset")
+
+    def _build_personal_toolsets(self) -> dict[str, str]:
+        name = f"{PREFIX}-personal-toolset-{uuid.uuid4().hex[:10]}"
+        instance = self._create_toolset(name, KEYED_TOOLSET_TYPE, "API_TOKEN", {}, caller=CREATOR, scope="personal")
+        return {"personal_toolset": str(instance["_id"]), "personal_toolset_name": name}
 
     def _build_toolsets(self) -> dict[str, str]:
         tag = uuid.uuid4().hex[:10]
@@ -593,3 +624,13 @@ class World:
             raise RuntimeError(
                 "The conditional-admin tests left something behind:\n  " + "\n  ".join(problems)
             )
+
+
+# How to make the groups an extension adds to WORLD_GROUPS (helper/suite_extensions.py).
+# Each builder takes the World, as a ``_build_<group>`` method does.
+for _group, _build in suite_extensions.add_items(
+    {}, "BUILDERS", suite_extensions.modules("admin_route_conditional_world"),
+).items():
+    if hasattr(World, f"_build_{_group}"):
+        raise ValueError(f"an extension adds a builder for the {_group!r} group, which World already makes")
+    setattr(World, f"_build_{_group}", _build)

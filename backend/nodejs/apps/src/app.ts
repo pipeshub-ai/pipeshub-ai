@@ -1,3 +1,6 @@
+// The edition seam loads first: an edition's schemas register their model names
+// (org, users) before any shared module imports a schema with the same name.
+import './config';
 import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
@@ -10,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
@@ -23,6 +27,8 @@ import { startOrgMetricsRefresh } from './modules/user_management/services/metri
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
+import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
+import { isApiPath } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -45,9 +51,7 @@ import {
   UserManagerContainer,
   AuthServiceContainer,
   createUserAccountRouter,
-  createSamlRouter,
   createOrgAuthConfigRouter,
-  SamlController,
   MailServiceContainer,
   createMailServiceRouter,
   EnterpriseSearchAgentContainer,
@@ -63,6 +67,7 @@ import {
   createFeatureFlagRouter,
   createOrgConfigRouter,
   createRequestRouter,
+  createDelegationRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
@@ -116,6 +121,8 @@ import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes'
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { ApiToolsetsContainer } from './modules/api_toolsets/container/api_toolsets.container';
+import { createApiToolsetsRouter } from './modules/api_toolsets/routes/api_toolsets.routes';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import {
   createMcpClientMetadataHandler,
@@ -125,6 +132,7 @@ import { ProjectsContainer } from './modules/projects/container/project.containe
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -170,6 +178,7 @@ export class Application {
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
   private mcpServersContainer!: Container;
+  private apiToolsetsContainer!: Container;
   private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -294,6 +303,9 @@ export class Application {
         configurationManagerConfig,
       );
       this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.apiToolsetsContainer = await ApiToolsetsContainer.initialize(
         configurationManagerConfig,
       );
       this.projectsContainer = await ProjectsContainer.initialize(
@@ -493,6 +505,8 @@ export class Application {
               imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
               fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
               mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+              // Answers render model output; a form in one must not post off-origin.
+              formAction: ["'self'"],
             },
           },
         }),
@@ -513,7 +527,10 @@ export class Application {
       }),
     );
 
-    // Body parsing
+    // Body parsing. /mcp has its own, smaller limit, and it must come first:
+    // a JSON parser skips a body an earlier one has read, and one that came
+    // after the shared 10 MB parser would never get to apply its limit.
+    this.app.use('/mcp', ...mcpJsonBodyParser());
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
@@ -542,7 +559,9 @@ export class Application {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
-        skip: (req) => !req.path.startsWith('/api/'),
+        // Evaluated after the response: a mounted router has rewritten req.path
+        // to its own mount-relative path by then, originalUrl keeps the full one.
+        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
       }),
     );
 
@@ -557,6 +576,10 @@ export class Application {
     if (isTelemetryEnabled()) {
       this.app.use(metricsMiddleware());
     }
+    // Registered after the rate limiter: a rejection ends the request through
+    // next(error), which skips every later middleware, so these requests would
+    // otherwise never count towards the limit.
+    this.app.use(operatorKeyGuardMiddleware);
   }
 
   private configureRoutes(): void {
@@ -597,8 +620,6 @@ export class Application {
       '/api/v1/featureFlags',
       createFeatureFlagRouter(this.entityManagerContainer),
     );
-
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
       '/api/v1/userAccount',
@@ -648,6 +669,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // code-graph status for the dashboard (repos and their graph status)
+    this.app.use(
+      '/api/v1/code-graph',
+      createCodeGraphRouter(this.esAgentContainer),
     );
 
     // enterprise search connectors routes — pass the crawling container
@@ -725,6 +752,12 @@ export class Application {
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
     );
+
+    // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
+    this.app.use(
+      '/api/v1/api-toolsets',
+      createApiToolsetsRouter(this.apiToolsetsContainer),
+    );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.
     this.app.get(
@@ -785,6 +818,17 @@ export class Application {
     this.app.use(
       '/api/v1/service-tokens',
       createServiceTokenRouter(this.oauthProviderContainer),
+    );
+
+    // Who each service account may act as, and the record of every time one
+    // tried (the delegation allow-list and its audit log).
+    //
+    // Imported from `./config` rather than the module, because this is one of
+    // the routers that differs by edition: Community gets a stub that
+    // explains the capability is not built in, Enterprise gets the real one.
+    this.app.use(
+      '/api/v1/service-account-delegations',
+      createDelegationRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -862,11 +906,7 @@ export class Application {
           resolve();
         });
       });
-      if (this.authServiceContainer) {
-        await this.updateSamlStrategies();
-      }
       await editionBoot.afterListen(this.logger, this.editionContainers());
-
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1177,16 +1217,6 @@ export class Application {
       this.logger.info('OAuth token service registered for AuthMiddleware factory');
     } catch (error) {
       this.logger.warn('Failed to register OAuth token service', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-  async updateSamlStrategies(): Promise<void> {
-    try {
-      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      await samlController.updateSamlStrategiesWithCallback();
-    } catch (error) {
-      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

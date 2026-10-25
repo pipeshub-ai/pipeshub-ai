@@ -397,6 +397,46 @@ class TestCreateFolderInKbRoot:
         resp = client.post("/api/v1/kb/kb1/folder", json={"name": "F"})
         assert resp.status_code == 500
 
+    def test_reject_parent_id_in_body(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp1 = client.post("/api/v1/kb/kb1/folder", json={"name": "F", "parentId": "p1"})
+        assert resp1.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp1.json()["detail"]
+
+        resp2 = client.post("/api/v1/kb/kb1/folder", json={"name": "F", "parent_id": "p1"})
+        assert resp2.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp2.json()["detail"]
+        kb_svc.create_folder_in_kb.assert_not_called()
+
+    def test_reject_folder_id_in_body(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/folder", json={"name": "F", "folderId": "p1"})
+        assert resp.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp.json()["detail"]
+        kb_svc.create_folder_in_kb.assert_not_called()
+
+    def test_reject_parent_id_in_query(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp1 = client.post("/api/v1/kb/kb1/folder?parentId=p1", json={"name": "F"})
+        assert resp1.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp1.json()["detail"]
+
+        resp2 = client.post("/api/v1/kb/kb1/folder?parent_id=p1", json={"name": "F"})
+        assert resp2.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp2.json()["detail"]
+        kb_svc.create_folder_in_kb.assert_not_called()
+
+    def test_reject_folder_id_in_query(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/folder?folderId=f1", json={"name": "F"})
+        assert resp.status_code == 400
+        assert "Cannot nest folders via the root endpoint" in resp.json()["detail"]
+        kb_svc.create_folder_in_kb.assert_not_called()
+
 
 class TestCreateNestedFolder:
     def test_success(self):
@@ -407,6 +447,59 @@ class TestCreateNestedFolder:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/p1/subfolder", json={"name": "Sub"})
         assert resp.status_code == 200
+
+    def test_reject_conflicting_query_params(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/kb1/folder/p1/subfolder?folderId=other",
+            json={"name": "Sub"}
+        )
+        assert resp.status_code == 400
+        assert "Conflicting folderId" in resp.json()["detail"]
+        kb_svc.create_nested_folder.assert_not_called()
+
+    def test_reject_repeated_conflicting_query_params(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        for query in (
+            "folderId=p1&folderId=other",
+            "folderId=other&folderId=p1",
+            "parentId=other&parentId=p1",
+            "parent_id=p1&parent_id=other",
+        ):
+            resp = client.post(
+                f"/api/v1/kb/kb1/folder/p1/subfolder?{query}",
+                json={"name": "Sub"}
+            )
+            assert resp.status_code == 400
+            assert "Conflicting" in resp.json()["detail"]
+        kb_svc.create_nested_folder.assert_not_called()
+
+    def test_accept_matching_query_params(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_nested_folder = AsyncMock(return_value={
+            "success": True, "id": "f2", "name": "Sub", "webUrl": "/sub"
+        })
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/kb1/folder/p1/subfolder?folderId=p1",
+            json={"name": "Sub"}
+        )
+        assert resp.status_code == 200
+
+    def test_accept_repeated_matching_query_params(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_nested_folder = AsyncMock(return_value={
+            "success": True, "id": "f2", "name": "Sub", "webUrl": "/sub"
+        })
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/kb1/folder/p1/subfolder?folderId=p1&folderId=p1&parentId=p1&parent_id=p1",
+            json={"name": "Sub"}
+        )
+        assert resp.status_code == 200
+        kb_svc.create_nested_folder.assert_called_once()
 
     def test_missing_name(self):
         app, kb_svc, _ = _make_app()

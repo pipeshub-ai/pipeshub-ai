@@ -144,6 +144,7 @@ class _Job:
     args: tuple
     label: str
     size: int
+    timeout: float | None = None
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -289,7 +290,7 @@ class _Lane:
         except OSError as exc:
             raise self._crashed(job) from exc
 
-        timeout = messaging_env.record_processing_timeout
+        timeout = job.timeout if job.timeout is not None else messaging_env.record_processing_timeout
         deadline = time.monotonic() + timeout
         while not worker.reply_ready(_POLL_SECONDS):
             if self._abandoned(job):
@@ -298,8 +299,7 @@ class _Lane:
             if time.monotonic() >= deadline:
                 self._drop_worker()
                 _logger.warning(
-                    "Parsing %s (%d bytes) was stopped after %.0fs "
-                    "(RECORD_PROCESSING_TIMEOUT); its worker was replaced",
+                    "Parsing %s (%d bytes) was stopped after %.0fs; its worker was replaced",
                     job.label, job.size, timeout,
                 )
                 raise ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
@@ -374,20 +374,28 @@ def _pool() -> _ParsePool | None:
         return _State.pool
 
 
-async def submit(fn: Callable[..., T], *args: object, label: str = "", size: int = 0) -> T:
+async def submit(
+    fn: Callable[..., T],
+    *args: object,
+    label: str = "",
+    size: int = 0,
+    timeout: float | None = None,
+) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
     *fn* must be a module-level function, and it, its arguments and its result
     must pickle. Callers check ``should_offload`` first; without a pool this
     runs in a thread, so it is always safe to call.
 
-    Raises ``ParseWorkerError`` when the worker died or ran past
-    ``RECORD_PROCESSING_TIMEOUT``. Only this job fails.
+    Raises ``ParseWorkerError`` when the worker died or ran past *timeout*
+    seconds (``RECORD_PROCESSING_TIMEOUT`` when not given). Only this job
+    fails. A thread cannot be stopped, so without a pool *timeout* is not
+    enforced.
     """
     pool = _pool()
     if pool is not None:
         try:
-            return await pool.submit(_Job(fn, args, label, size))
+            return await pool.submit(_Job(fn, args, label, size, timeout))
         except _PoolClosed:
             pass
     return await asyncio.to_thread(fn, *args)

@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +26,7 @@ from app.agents.actions.storage_search.storage_search import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.models.entities import USER_EMAIL_PLACEHOLDER, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import (
     SelectionScope,
@@ -33,6 +34,11 @@ from app.modules.retrieval.selection_scope import (
     has_selection,
     resolve_request_scopes,
     selection_app_ids,
+)
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
 )
 from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import (
@@ -101,6 +107,8 @@ _PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
 _SCAN_BELOW_CHUNKS_ENV_VAR = "PATTERN_MATCH_SCAN_BELOW_CHUNKS"
 _DEFAULT_SCAN_BELOW_CHUNKS = 200_000
 _MAX_PATTERN_MATCH_RECORDS = 50
+_DEFAULT_FETCH_TOOL_REF = "knowledgegraph__fetch_record"
+_BRIEF_HINT_HEADING = "Also matched (name and Record ID only):"
 _MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
@@ -249,13 +257,12 @@ _STOP_WORDS = frozenset({
 
 _ALLOWED_GREP_BINARIES = frozenset({"grep", "egrep", "fgrep", "rg"})
 _MAX_GREP_COMMAND_LENGTH = 1000
-_MAX_GREP_OUTPUT_LINES = 200
 # Caps the FIRST pipeline stage, which for `grep -rliZ a . | xargs grep b` is the
 # list of every file matching `a`. Too small and stage 2 only ever sees the first
 # few hundred files in directory-walk order; the overall timeout bounds latency.
 _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
-# so the tool's default 8K cap would keep only a few dozen of the 200 lines.
+# so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
@@ -1144,19 +1151,19 @@ def _ensure_null_delimited_pipeline(command: str) -> str:
 
 
 def _cap_grep_output(command: str) -> str:
-    """Drop ``file:0`` lines, then cap at ``_MAX_GREP_OUTPUT_LINES``.
+    """Drop ``file:0`` lines, and any head/tail cut.
 
     ``grep -c`` prints a line for every file it reads, matching or not. Unless
-    those are dropped first, they fill the line and byte caps in directory-walk
-    order and real matches later in the walk are never seen.
+    those are dropped first, they fill the output caps in directory-walk order
+    and real matches later in the walk are never seen.
+
+    find_records refuses a head/tail cut (records the user cannot read could
+    fill it and push readable ones out) and bounds the output itself, ranking
+    every line it keeps by match count.
     """
     stages = [s.strip() for s in _split_pipeline(command)]
-    cut = next(
-        (i for i, s in enumerate(stages) if i > 0 and re.match(r"(head|tail)\b", s)),
-        len(stages),
-    )
-    limit = stages[cut:] or [f"head -{_MAX_GREP_OUTPUT_LINES}"]
-    return " | ".join(stages[:cut] + [_ZERO_COUNT_FILTER] + limit)
+    stages = [s for i, s in enumerate(stages) if i == 0 or not re.match(r"(head|tail)\b", s)]
+    return " | ".join(stages + [_ZERO_COUNT_FILTER])
 
 
 async def run_pattern_match_with_llm_grep(
@@ -1628,7 +1635,6 @@ async def run_pattern_match(
                 max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
-                max_output_lines=_MAX_GREP_OUTPUT_LINES,
             )
         except Exception:
             logger_instance.warning(
@@ -1949,18 +1955,23 @@ def _record_in_time_range(
         except (ValueError, TypeError):
             return None
 
+    # An upload dated only by its upload was written at or before that time:
+    # an after-bound still rules it out, a before-bound cannot.
+    undated = record.get("source_timestamp_origin") == "upload" and upload_times_undated()
+    if undated and time_range.get(DATED_ONLY_TIME_RANGE_KEY):
+        return False
     created = _ts("source_created_at")
     modified = _ts("source_updated_at")
     if "source_created_after_ms" in time_range:
         if created is None or created < time_range["source_created_after_ms"]:
             return False
-    if "source_created_before_ms" in time_range:
+    if "source_created_before_ms" in time_range and not undated:
         if created is None or created > time_range["source_created_before_ms"]:
             return False
     if "source_updated_after_ms" in time_range:
         if modified is None or modified < time_range["source_updated_after_ms"]:
             return False
-    if "source_updated_before_ms" in time_range:
+    if "source_updated_before_ms" in time_range and not undated:
         if modified is None or modified > time_range["source_updated_before_ms"]:
             return False
     return True
@@ -2021,9 +2032,9 @@ async def merge_pattern_match_results(
     # ranked, but concatenation order would otherwise decide who is dropped.
     unique = _best_hit_per_record(raw_records)
     unseen = [r for r in unique if r.get("virtual_record_id") not in virtual_record_id_to_result]
-    if len(unseen) > max_records and coverage is not None:
-        coverage.records_truncated = True
-    new_records = unseen[:max_records]
+    # Not cut here: a cap on records not yet access-checked would let the
+    # caller's coverage depend on records they cannot read.
+    new_records = unseen
 
     if not new_records:
         return []
@@ -2124,7 +2135,16 @@ async def merge_pattern_match_results(
         if not accessible_records:
             return []
 
+    # The cap comes last, over readable records only, so what "more matched
+    # than are listed" says never depends on what the caller cannot read.
+    accessible_records = [r for r in accessible_records if r["virtual_record_id"] in graph_by_vrid]
+    if len(accessible_records) > max_records:
+        if coverage is not None:
+            coverage.records_truncated = True
+        accessible_records = accessible_records[:max_records]
+
     matches = _best_match_by_vrid(raw_records)
+    viewer_email = await _viewer_email_for(graph_by_vrid.values(), graph_provider, user_id, logger_instance)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -2133,6 +2153,10 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
+        if graph_rec.get("webUrl"):
+            graph_rec["webUrl"] = substitute_user_email(
+                graph_rec["webUrl"], viewer_email, graph_rec.get("connectorName")
+            )
         mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
@@ -2154,6 +2178,27 @@ async def merge_pattern_match_results(
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
     return results
+
+
+async def _viewer_email_for(
+    graph_records: Iterable[dict],
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    logger_instance: logging.Logger,
+) -> str | None:
+    """The searcher's email, read only when a record's link waits on it.
+
+    These records come from the graph, not from search, so a shared Gmail
+    link still holds the placeholder search fills in for the viewer.
+    """
+    if not any(USER_EMAIL_PLACEHOLDER in (r.get("webUrl") or "") for r in graph_records):
+        return None
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception:
+        logger_instance.warning("Pattern match: user unreadable; mail links keep the placeholder", exc_info=True)
+        return None
+    return user.get("email") if isinstance(user, dict) else None
 
 
 def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:
@@ -2241,6 +2286,48 @@ def grep_hits_within(
     return kept
 
 
+def split_hint_entries(
+    entries: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+    max_chars: int,
+    *,
+    max_full: int,
+    has_semantic_blocks: bool = True,
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
+) -> tuple[list[dict], list[dict], int]:
+    """``entries``, in order, split into those the hint shows with full
+    metadata, those it names on one line, and how many it leaves out.
+
+    The leading ``max_full`` that fit get full metadata and the rest are
+    named while the room lasts, so a long list of keyword matches takes a
+    bounded share of the result instead of its passages. The hint that
+    ``render_pattern_match_hint`` makes of the split, header, footer and
+    count of the rest included, is at most ``max_chars`` long.
+    """
+    named = [entry for entry in entries if virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))]
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    count_room = len(_unlisted_line(len(named))) + 1
+    full: list[dict] = []
+    brief: list[dict] = []
+    used = len(header) + len(footer)
+    for index, entry in enumerate(named):
+        reserve = count_room if index < len(named) - 1 else 0
+        if not brief and len(full) < max_full:
+            cost = len(_hint_section(entry, virtual_record_id_to_result) or "") + 1
+            if used + cost + reserve <= max_chars:
+                used += cost
+                full.append(entry)
+                continue
+        cost = len(_hint_line(entry, virtual_record_id_to_result) or "") + 1
+        if not brief:
+            cost += len(_BRIEF_HINT_HEADING) + 1
+        if used + cost + reserve > max_chars:
+            return full, brief, len(named) - index
+        used += cost
+        brief.append(entry)
+    return full, brief, 0
+
+
 def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
     """The metadata a semantic search result shows for ``record``."""
     return record.get("context_metadata") or (
@@ -2311,12 +2398,24 @@ def _hint_section(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -
     return f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>"
 
 
+def _hint_line(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record named on a line of the keyword hint, with the id that fetches it."""
+    record = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not record:
+        return None
+    record_id = record.get("id") or record.get("_key") or "N/A"
+    name = record.get("record_name") or record.get("recordName") or record.get("title") or "N/A"
+    return f"- {' '.join(str(name).split())} (Record ID: {record_id})"
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
-    fetch_tool_ref: str = "knowledgegraph__fetch_record",
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     has_semantic_blocks: bool = True,
+    brief_records: list[dict] | None = None,
+    unlisted: int = 0,
 ) -> str:
     """Render pattern-matched records with full metadata and a fetch hint.
 
@@ -2331,21 +2430,30 @@ def render_pattern_match_hint(
     immediately instead of running more searches.
 
     *max_records* caps how many records are rendered (default
-    ``_MAX_PATTERN_MATCH_RECORDS``).
+    ``_MAX_PATTERN_MATCH_RECORDS``). *brief_records* follow them named on
+    one line each, and *unlisted* counts the matches left out of both.
     """
-    if not pm_records:
-        return ""
-
-    capped = pm_records[:max_records]
-
     sections = [
-        section for entry in capped
+        section for entry in pm_records[:max_records]
         if (section := _hint_section(entry, virtual_record_id_to_result)) is not None
     ]
+    lines = [
+        line for entry in brief_records or ()
+        if (line := _hint_line(entry, virtual_record_id_to_result)) is not None
+    ]
+    if not sections and not lines:
+        # No fetch instruction: none of these records is named.
+        return f"\n\n{_unlisted_line(unlisted)}" if unlisted else ""
+    if lines:
+        sections.append(_BRIEF_HINT_HEADING + "\n" + "\n".join(lines))
+    if unlisted:
+        sections.append(_unlisted_line(unlisted))
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    return header + "\n" + "\n".join(sections) + footer
 
-    if not sections:
-        return ""
 
+def _hint_frame(*, has_semantic_blocks: bool, fetch_tool_ref: str) -> tuple[str, str]:
+    """The header and footer around the records the keyword hint names."""
     if has_semantic_blocks:
         header = (
             "\n\nAdditional records found via pattern matching (metadata only — "
@@ -2362,7 +2470,11 @@ def render_pattern_match_hint(
         f"\nTo read the full content of any record above, call "
         f"`{fetch_tool_ref}` with its record_id."
     )
-    return header + "\n" + "\n".join(sections) + footer
+    return header, footer
+
+
+def _unlisted_line(count: int) -> str:
+    return f"{count} more keyword-matched record{'s' if count != 1 else ''} not listed."
 
 
 def cap_pattern_match_blocks(
@@ -2462,6 +2574,7 @@ def _graph_record_in_time_range(
     adapted = {
         "source_created_at": graph_record.get("sourceCreatedAtTimestamp"),
         "source_updated_at": graph_record.get("sourceLastModifiedTimestamp"),
+        "source_timestamp_origin": graph_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
     }
     return _record_in_time_range(adapted, time_range)
 

@@ -109,6 +109,17 @@ def make_mock_connector() -> MagicMock:
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests._prs_indexing_enabled = MagicMock(return_value=True)
+    c.comments.remove_unlinked_attachments = AsyncMock()
+    c.comments.settle_stored_attachments = AsyncMock()
+    c.projects.failures = []  # sync_all_repos fills it; any entry fails the sync
+
+    # Removal of what left GitHub or the sync's scope (wired by the connector).
+    c.repo_scope.remove_out_of_scope = AsyncMock(return_value=True)
+    c.repo_scope.remove_empty_orgs = AsyncMock()
+    c.record_remover.remove_records = AsyncMock()
+    c.record_remover.remove_group = AsyncMock(return_value=0)
+    c.issue_reconciler.source_total = AsyncMock(return_value=0)
+    c.issue_reconciler.reconcile = AsyncMock(return_value=0)
 
     return c
 
@@ -179,6 +190,7 @@ def ok_response(data: object) -> MagicMock:
     res.success = True
     res.data = data
     res.error = None
+    res.next_cursor = None
     return res
 
 

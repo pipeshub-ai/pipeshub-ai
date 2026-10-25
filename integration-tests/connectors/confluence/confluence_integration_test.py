@@ -17,7 +17,7 @@ Execution order:
   6) Stream
 
 Active test cases:
-  TC-SYNC-001, TC-CF-001/002/003/004/005/006/007/008/036/046/052
+  TC-SYNC-001, TC-CF-001/002/003/004/005/006/007/008/036/046/052, TC-CF-AUTH-001
 
 Mutation/resync cases live in ``confluence_mutation_cases.py`` (not collected by pytest).
 """
@@ -42,12 +42,13 @@ from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E40
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]  # noqa: E402
     ConfluenceDataSource,
 )
-from app.config.constants.arangodb import PermissionModel  # noqa: E402
+from app.config.constants.arangodb import MimeTypes, PermissionModel  # noqa: E402
 from helper.assertions import (  # noqa: E402
     ConnectorAssertions,
     RecordAssertion,
     assert_permission_model,
 )
+from connectors.confluence.constants import connector_site_origin  # noqa: E402
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     FOLDER_MIME_TYPE,
     assert_api_content_matches_graph,
@@ -61,6 +62,7 @@ from connectors.confluence.confluence_knowledge_hub_test_utils import (  # noqa:
     assert_kh_space_visible_for_user,
     find_kh_item,
 )
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
@@ -108,7 +110,7 @@ class TestConfluenceValidation:
         expected = RecordAssertion(
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             record_name=page_item.title,
             external_record_group_id=space_id,
         )
@@ -126,7 +128,7 @@ class TestConfluenceValidation:
         )
         
         # Additional checks
-        assert record.weburl is not None and record.weburl.startswith("https://"), "Page should have webUrl"
+        assert record.weburl is not None and record.weburl.startswith(connector_site_origin()), "Page should have webUrl"
         assert record.source_created_at is not None, "Page should have sourceCreatedAtTimestamp"
         assert record.connector_id == connector_id, "Page should have correct connectorId"
         
@@ -287,6 +289,31 @@ class TestConfluenceValidation:
 
         logger.info("✅ TC-CF-001: User %s (accountId=%s) validated with USER_APP_RELATION", test_email, account_id)
 
+    @pytest.mark.order(5)
+    async def test_tc_cf_auth_001_authenticated_identity(
+        self,
+        confluence_connector: Dict[str, Any],
+        confluence_datasource: ConfluenceDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-CF-AUTH-001: the creator is linked to the Confluence account the API token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /wiki/rest/api/user/current``
+        the connector reads.
+        """
+        response = await confluence_datasource.get_current_user_v1()
+        assert response and response.status == 200, (
+            f"get_current_user_v1 failed: HTTP {getattr(response, 'status', None)}"
+        )
+        me = response.json() or {}
+        await assert_authenticated_identity_link(
+            graph_provider, confluence_connector["connector_id"],
+            (me.get("email") or "").strip() or None,
+            me.get("accountId"),
+        )
+        logger.info("TC-CF-AUTH-001 passed: Confluence account %s", me.get("accountId"))
+
     @pytest.mark.order(6)
     async def test_tc_cf_002_group_properties(
         self,
@@ -418,7 +445,7 @@ class TestConfluenceKnowledgeHubAccess:
                 connector_id, folder_item.id, expected
             )
             assert record.size_in_bytes == 0, "Folder sizeInBytes should be 0"
-            assert record.weburl is not None and record.weburl.startswith("https://"), (
+            assert record.weburl is not None and record.weburl.startswith(connector_site_origin()), (
                 "Folder should have webUrl"
             )
 
@@ -676,17 +703,15 @@ class TestConfluenceStream:
         
         # Verify response
         assert response.status_code == 200
-        assert "text/html" in response.headers.get("content-type", "").lower()
-        
-        # Read some content
+        assert MimeTypes.BLOCKS.value in response.headers.get("content-type", "").lower()
+
+        # Pages stream as a blocks document (JSON), their comments included.
         content_chunk = next(response.iter_content(chunk_size=1024))
-        assert len(content_chunk) > 0, "Should have received content"
-        # Content is now in HTML format
-        assert b"<" in content_chunk or b"<!DOCTYPE" in content_chunk.upper(), (
-            "Content should be HTML format"
+        assert content_chunk.lstrip().startswith(b"{"), (
+            f"Content should be a blocks JSON document, got {content_chunk[:80]!r}"
         )
-        
-        logger.info("✅ TC-CF-052: Page content streamed successfully (HTML format)")
+
+        logger.info("✅ TC-CF-052: Page content streamed successfully (blocks)")
 
 
 @pytest.mark.integration

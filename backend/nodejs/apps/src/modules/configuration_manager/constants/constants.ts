@@ -122,6 +122,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable MCP Servers',
     description:
       'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
+    defaultEnabled: true,
+  },
+  {
+    key: 'ENABLE_API_TOOLSETS',
+    label: 'Enable API actions',
+    description:
+      'Allow admins to add actions from the OpenAPI spec of an internal REST API, and agents to call them. Disable to hide API actions everywhere and stop agents from loading them.',
     defaultEnabled: false,
   },
   {
@@ -154,14 +161,6 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: true,
   },
   {
-    key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
-    label: 'Enable Container Permission Filter',
-    description:
-      'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
-    defaultEnabled: false,
-    advanced: true,
-  },
-  {
     key: 'ENABLE_SOFT_DELETE',
     label: 'Move Deleted Records to the Trash',
     description:
@@ -174,6 +173,30 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Extract Named Entities',
     description:
       'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_WRITE',
+    label: 'Store Content Revisions as Files',
+    description:
+      "While indexing, also store each new version of a record's processed content as a set of files (blocks, text, images, metadata) beside the stored record. Search and chat read them only when Read Content Revisions from Files is on; it uses extra storage. Disable to stop writing them; files already written are kept until the record is deleted.",
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ_SHADOW',
+    label: 'Compare Content Revision Files on Read',
+    description:
+      'When chat, agents and the code graph read a record, also read its content revision files and compare them with the stored record. Answers still come from the stored record; differences are counted in metrics and logged without content. Adds storage reads. Needs Store Content Revisions as Files. Ignored while Read Content Revisions from Files is on.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_ARTIFACT_READ',
+    label: 'Read Content Revisions from Files',
+    description:
+      'When chat, agents and the code graph read a record, read its content revision files instead of the stored record. A record without files, or whose files cannot be read or fail their checks, is read from the stored record as before. Needs Store Content Revisions as Files. Disable to read only the stored record.',
     defaultEnabled: false,
     advanced: true,
   },

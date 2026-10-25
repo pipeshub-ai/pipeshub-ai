@@ -27,8 +27,14 @@ from app.modules.agents.capability_summary import (
     format_connector_filter_lines,
 )
 from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.agents.qna.turn_outcome import UNANSWERED_ANSWER, replayed_answer
+from app.modules.artifacts.reader import record_artifact_reader
 
 logger = logging.getLogger(__name__)
+
+# Enough of an earlier answer for a list the next question can point into
+# ("the second one"), while the intent call stays small.
+_PRIOR_ANSWER_CHARS = 1_500
 
 
 class RouteDecision(BaseModel):
@@ -171,10 +177,16 @@ async def build_prior_routing_messages(
     user_id: str = "",
     graph_provider: Any = None,
     is_service_account: bool = False,
+    max_attachment_chars: int | None = None,
 ) -> list:
     """
     Build prior conversation turns as LangChain HumanMessage/AIMessage objects
     for the routing LLM call.
+
+    Attachment text across these turns is bounded by `max_attachment_chars`
+    (by default the agent's own share for earlier attachments,
+    `history_window.earlier_attachment_chars`); past it a turn says the rest
+    of its attachment is not shown.
 
     Each user turn's content list is assembled in document order:
     - Turn text comes first.
@@ -182,7 +194,8 @@ async def build_prior_routing_messages(
       exactly as they appear in the document (images only when multimodal).
     - Standalone image attachments: appended after the turn text (multimodal only).
 
-    Bot turns are truncated to their first line to keep the context compact.
+    Bot turns keep their first `_PRIOR_ANSWER_CHARS` characters, so a follow-up
+    that points into an earlier answer ("the second one") can be resolved.
     Attachment fetching errors are silently swallowed so routing is never blocked.
     """
     from app.utils.attachment_utils import resolve_attachment_blocks_simple
@@ -193,6 +206,9 @@ async def build_prior_routing_messages(
     if not previous:
         return []
 
+    if max_attachment_chars is None:
+        max_attachment_chars = default_earlier_attachment_chars()
+    room = max_attachment_chars
     recent = previous[-6:]
     messages = []
 
@@ -223,11 +239,12 @@ async def build_prior_routing_messages(
                     ):
                         continue
                     try:
-                        record = await blob_store.get_record_from_storage(vrid, org_id)
+                        record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
                         if not record:
                             continue
                         if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:
-                            parts.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
+                            kept, room = _within(resolve_attachment_blocks_simple(record, is_multimodal_llm), room)
+                            parts.extend(kept)
                         elif mime.startswith("image/") and is_multimodal_llm:
                             blocks = (
                                 (record.get("block_containers") or {}).get("blocks") or []
@@ -248,13 +265,60 @@ async def build_prior_routing_messages(
                         pass  # Never let attachment fetching block routing
             # Avoid wrapping in a list when there are no visual blocks
             msg_content: Any = content[:200] if len(parts) == 1 else parts
+            _close_unanswered_question(messages)
             messages.append(HumanMessage(content=msg_content))
 
         elif role == "bot_response":
-            first_line = content.split("\n")[0][:150]
-            messages.append(AIMessage(content=first_line))
+            # Cut before the outcome marker is added, so a long failed or stopped answer keeps it.
+            answer = replayed_answer(content[:_PRIOR_ANSWER_CHARS], conv.get("status"))
+            messages.append(AIMessage(content=answer))
 
+    # The current request comes next.
+    _close_unanswered_question(messages)
     return messages
+
+
+def _close_unanswered_question(messages: list) -> None:
+    """A payload that dropped a failed turn's row (older Node) leaves its question open; two
+    questions in a row would read as one request, so the open one gets a placeholder answer,
+    as agent-loop history seeding does."""
+    if messages and isinstance(messages[-1], HumanMessage):
+        messages.append(AIMessage(content=UNANSWERED_ANSWER))
+
+
+_NOT_SHOWN = "[… the rest of this attachment is not shown here]"
+
+
+def default_earlier_attachment_chars(model: str | None = None, context_window: int | None = None) -> int:
+    """What earlier turns' attachments may render into for `model`, as the agent's history sizes it."""
+    from app.agent_loop_lib.context.base import ContextBudget
+    from app.agents.agent_loop.history_window import (
+        HISTORY_SHARE,
+        earlier_attachment_chars,
+        share_tokens,
+    )
+
+    budget = ContextBudget.for_model(model or None, context_window=context_window).effective_max_tokens
+    return earlier_attachment_chars(share_tokens(budget, HISTORY_SHARE))
+
+
+def _within(blocks: list[dict], room: int) -> tuple[list[dict], int]:
+    """`blocks` with their text cut to `room` characters, and the room left."""
+    kept: list[dict] = []
+    for block in blocks:
+        if block.get("type") != "text":
+            kept.append(block)
+            continue
+        text = block.get("text") or ""
+        if len(text) <= room:
+            room -= len(text)
+            kept.append(block)
+            continue
+        if room > 0:
+            kept.append({"type": "text", "text": text[:room]})
+        kept.append({"type": "text", "text": _NOT_SHOWN})
+        return kept, 0
+    return kept, room
 
 
 def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:

@@ -18,6 +18,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     remember_entities,
 )
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
+from app.models.source_dates import RecordDates
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
@@ -316,9 +317,9 @@ def _preview_row(
     app = context.app_names.get(row.get("connectorId"))
     if app:
         preview["app"] = app
-    modified = _compact_date(row.get("sourceLastModifiedTimestamp") or row.get("updatedAtTimestamp"))
-    if modified:
-        preview["modified"] = modified
+    dated = RecordDates.from_graph(row).listing_date(row.get("updatedAtTimestamp"))
+    if dated:
+        preview[dated[0]] = _compact_date(dated[1])
     return preview
 
 

@@ -126,9 +126,9 @@ export function CreateGroupSidebar({
       onOpenChange={(open) => {
         if (!open) closeCreatePanel();
       }}
-      title={t('workspace.groups.create.title', 'Create Group')}
+      title={t('workspace.groups.create.title', 'Create group')}
       icon="group"
-      primaryLabel={t('workspace.groups.create.submit', 'Create Group')}
+      primaryLabel={t('workspace.groups.create.submit', 'Create group')}
       secondaryLabel={t('workspace.groups.create.cancel', 'Cancel')}
       primaryDisabled={!isFormValid}
       primaryLoading={isCreating}
@@ -218,12 +218,12 @@ export function CreateGroupSidebar({
         {/* Access Permissions (coming soon) */}
         <Flex direction="column" gap="1">
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('workspace.groups.create.accessLabel', 'Access Permissions')}
+            {t('workspace.groups.create.accessLabel', 'Access permissions')}
           </Text>
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
             {t(
               'workspace.groups.create.accessComingSoon',
-              'Access Permissions Coming Soon'
+              'Access permissions coming soon'
             )}
           </Text>
         </Flex>

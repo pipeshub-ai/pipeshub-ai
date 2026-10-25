@@ -27,8 +27,10 @@ _ROUTERS = {
     "toolsets": ("app.api.routes.toolsets", "router"),
     "health": ("app.api.routes.health", "router"),
     "ai_models_registry": ("app.api.routes.ai_models_registry", "router"),
+    "code_graph": ("app.api.routes.code_graph", "router"),
     "entity": ("app.api.routes.entity", "router"),
     "mcp_servers": ("app.api.routes.mcp_servers", "router"),
+    "api_toolsets": ("app.api.routes.api_toolsets", "router"),
     "kb": ("app.connectors.sources.localKB.api.kb_router", "kb_router"),
     "knowledge_hub": (
         "app.connectors.sources.localKB.api.knowledge_hub_router",

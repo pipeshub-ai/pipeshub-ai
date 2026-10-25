@@ -8,6 +8,7 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 const kb = vi.hoisted(() => ({ streamRecord: vi.fn(), streamDownloadRecord: vi.fn(), getRecordDetails: vi.fn() }));
 vi.mock('@/app/(main)/knowledge-base/api', () => ({ KnowledgeBaseApi: kb }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot: vi.fn() }));

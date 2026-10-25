@@ -9,7 +9,11 @@
       "reindexFailedStart": "Přeindexování neúspěšných záznamů…",
       "reindexFailedError": "Nepodařilo se přeindexovat neúspěšné záznamy",
       "manualIndexStart": "Indexování záznamů s ručním indexováním…",
-      "manualIndexError": "Nepodařilo se spustit ruční indexování"
+      "manualIndexError": "Nepodařilo se spustit ruční indexování",
+      "retryClassificationStart": "Opakování klasifikace zařazeno do fronty",
+      "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+      "retryEntitiesStart": "Opakování extrakce entit zařazeno do fronty",
+      "retryEntitiesError": "Extrakci entit se nepodařilo zopakovat"
     },
     "trash": {
       "menuLabel": "Nedávno smazané",
@@ -143,7 +147,8 @@
     "tabYourProjects": "Vaše projekty",
     "tabArchived": "Archivované",
     "archivedEmptyState": "Žádné archivované projekty",
-    "archivedEmptyStateHint": "Projekty, které archivujete, se zobrazí zde."
+    "archivedEmptyStateHint": "Projekty, které archivujete, se zobrazí zde.",
+    "actionsLabel": "Akce projektu"
   },
   "timeGroup": {
     "today": "Dnes",
@@ -232,6 +237,7 @@
   },
   "onboarding": {
     "skipEmbeddingDefault": "Přeskočit",
+    "stepOf": "Krok {{current}} z {{total}}: {{title}}",
     "skipEmbeddingTitle": "Otevře nastavení pro Výchozí (poskytovaný systémem); poté uložte stisknutím Přidat model",
     "nextDisabledEmbeddingHint": "Přidejte níže poskytovatele embeddingů, nebo pomocí Přeskočit otevřete nastavení výchozího modelu",
     "embeddingStepHint": "Přidejte níže poskytovatele embeddingů, abyste zapnuli sémantické vyhledávání, nebo klikněte na Přeskočit, otevřete Výchozí (poskytovaný systémem) a stiskněte Přidat model. Později to můžete změnit v nastavení pracovního prostoru.",
@@ -261,7 +267,7 @@
       }
     },
     "systemConfig": "Konfigurace systému",
-    "stepHeading": "Krok {{current}}/{{total}}: Konfigurace {{name}}",
+    "stepHeading": "Konfigurace {{name}}",
     "stepAiModel": {
       "stepName": "Model AI*",
       "addLlmHint": "Pro pokračování přidejte alespoň jednoho poskytovatele textových modelů (LLM).",
@@ -368,7 +374,6 @@
     "untitledChat": "—",
     "name": "Název",
     "size": "Velikost",
-    "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
     "types": {
       "IMAGE": "Obrázek",
       "CHART": "Graf",
@@ -401,7 +406,6 @@
     "deleteSuccess": "\"{{name}}\" smazáno",
     "preview": "Náhled",
     "moreActionsFor": "Další možnosti pro {{name}}",
-    "pageOf": "{{page}} / {{total}}",
     "loadFailedHint": "Zkontrolujte připojení a zkuste to znovu.",
     "noMatches": "Vašim filtrům neodpovídají žádné artefakty",
     "noMatchesHint": "Zkuste jiné hledání, nebo vymažte filtry a zobrazte všechny artefakty.",
@@ -412,6 +416,7 @@
   },
   "notifications": {
     "title": "Oznámení",
+    "close": "Zavřít oznámení",
     "loading": "Načítání…",
     "empty": "Zatím žádná oznámení",
     "emptyUnread": "Žádná nepřečtená oznámení",
@@ -529,7 +534,10 @@
     "willBeDeleted": "bude smazáno",
     "willBeReindexed": "bude přeindexováno",
     "reindexConfirm": "Přeindexovat {{type}}?",
-    "reindexDescription": "Tím se aktualizuje vyhledávací index pro {{type}} a jeho obsah."
+    "reindexDescription": "Tím se aktualizuje vyhledávací index pro {{type}} a jeho obsah.",
+    "deleteCollectionBody": "'{{name}}' a vše v ní bude smazáno.",
+    "deleteFolderBody": "'{{name}}' a vše v ní bude z této kolekce smazáno.",
+    "deleteFileBody": "'{{name}}' bude z této kolekce smazán."
   },
   "table": {
     "fileName": "Název souboru",
@@ -586,6 +594,12 @@
     }
   },
   "common": {
+    "shiftKey": "Shift",
+    "pagination": {
+      "showing": "Zobrazeno {{start}}-{{end}} z {{total}}",
+      "pageOf": "{{page}} / {{total}}",
+      "perPage": "{{value}} na stránku"
+    },
     "yes": "Ano",
     "no": "Ne",
     "ok": "OK",
@@ -625,6 +639,14 @@
     "enterprise": {
       "label": "K dispozici v EE",
       "tooltip": "Součást edice PipesHub Enterprise"
+    },
+    "errorBoundary": {
+      "title": "Něco se pokazilo",
+      "body": "Tuto část stránky se nepodařilo zobrazit. Zkuste to znovu nebo se vraťte do chatu.",
+      "retry": "Zkusit znovu",
+      "goToChat": "Přejít do chatu",
+      "notFoundTitle": "Stránka nenalezena",
+      "notFoundBody": "Tato stránka neexistuje nebo byla přesunuta."
     }
   },
   "units": {
@@ -670,7 +692,8 @@
     "open": "Otevřít postranní panel",
     "expand": "Rozbalit postranní panel",
     "close": "Zavřít postranní panel",
-    "collapse": "Sbalit postranní panel"
+    "collapse": "Sbalit postranní panel",
+    "navigation": "Navigace"
   },
   "menu": {
     "reindex": "Přeindexovat",
@@ -682,7 +705,8 @@
     "forceReindexing": "Vynutit přeindexování",
     "retryIndexing": "Opakovat indexování",
     "rename": "Přejmenovat",
-    "delete": "Smazat"
+    "delete": "Smazat",
+    "indexAll": "Indexovat vše"
   },
   "reindexScope": {
     "description": "Vyberte, co se má indexovat pro \"{{name}}\".",
@@ -693,6 +717,13 @@
     "title": "Spustit vynucené přeindexování?",
     "message": "Dokument se znovu zaindexuje od začátku, což může znamenat dodatečné náklady. Použijte to, když jsou výsledky vyhledávání zastaralé nebo když dokument nelze vyhledat ani po dokončení indexování.",
     "confirm": "Potvrdit"
+  },
+  "reindexBlocked": {
+    "title": "Tento záznam nelze přeindexovat samostatně",
+    "message": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním jediného souboru by se tento soubor dostal před zbytek repozitáře a vazby mezi soubory by se porušily. Chcete-li jej obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "folderTitle": "Tuto složku nelze přeindexovat samostatně",
+    "folderMessage": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním složky by se aktualizovaly jen její soubory, které by se tak dostaly před zbytek repozitáře, a vazby mezi soubory by se porušily. Chcete-li ji obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "goToConnectors": "Přejít na konektory"
   },
   "kb": {
     "viewToggle": "Přepínač zobrazení",
@@ -720,7 +751,68 @@
     "chatSelectionLimit": "Chat může pracovat nejvýše s {{max}} vybranými položkami. Zrušte výběr některých z nich a zkuste to znovu.",
     "chatTooManyCollections": "Chat může najednou prohledávat nejvýše {{max}} kolekcí a vy jich máte více. Otevřete jednu kolekci, nebo zaškrtněte ty, na které se chcete ptát.",
     "chatCollectionsLoadFailed": "Nepodařilo se načíst vaše kolekce pro chat. Zkuste to znovu.",
-    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát."
+    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát.",
+    "indexingStatus": {
+      "completed": "Dokončeno",
+      "inProgress": "Probíhá",
+      "failed": "Selhalo",
+      "fileTypeNotSupported": "Nepodporovaný typ souboru",
+      "notStarted": "Nezahájeno",
+      "queued": "Ve frontě",
+      "manualIndexing": "Ruční indexování",
+      "empty": "Prázdné",
+      "paused": "Pozastaveno",
+      "needsMultimodalModel": "Vyžaduje multimodální model",
+      "skipped": "Přeskočeno",
+      "pending": "Čeká"
+    },
+    "allRecordsBusy_one": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundu.",
+    "allRecordsBusy_few": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
+    "allRecordsBusy_many": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
+    "allRecordsBusy_other": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekund.",
+    "allRecordsLoadFailed": "Záznamy se nepodařilo načíst",
+    "searchResults": "Výsledky hledání",
+    "clearSearch": "Vymazat hledání",
+    "rowActions": {
+      "open": "Otevřít",
+      "preview": "Náhled",
+      "goToParent": "Přejít na nadřazenou složku",
+      "goToNamed": "Přejít do {{name}}",
+      "moreFor": "Další možnosti pro {{name}}",
+      "select": "Vybrat {{name}}"
+    },
+    "upload": {
+      "title": "Nahrát data",
+      "documentation": "Dokumentace",
+      "filesTitle": "Nahrát soubory",
+      "filesHint": "Až {{maxMb}} MB na soubor. Typ a velikost se kontrolují při nahrání.",
+      "foldersTitle": "Nahrát složky",
+      "foldersHint": "Každý soubor se kontroluje při nahrání (až {{maxMb}} MB na soubor).",
+      "or": "nebo",
+      "fileCount_one": "{{count}} soubor",
+      "fileCount_other": "{{count}} souborů",
+      "fileCount_few": "{{count}} soubory",
+      "fileCount_many": "{{count}} souboru",
+      "folderCount_one": "{{count}} složka",
+      "folderCount_other": "{{count}} složek",
+      "folderCount_few": "{{count}} složky",
+      "folderCount_many": "{{count}} složky",
+      "depthWarning_one": "Sem se vejde už jen {{count}} úroveň složek (složky lze vnořit nejvýše do {{max}} úrovní). Pro pokračování některé složky odeberte.",
+      "depthWarning_other": "Sem se vejde už jen {{count}} úrovní složek (složky lze vnořit nejvýše do {{max}} úrovní). Pro pokračování některé složky odeberte.",
+      "depthWarning_few": "Sem se vejdou už jen {{count}} úrovně složek (složky lze vnořit nejvýše do {{max}} úrovní). Pro pokračování některé složky odeberte.",
+      "depthWarning_many": "Sem se vejde už jen {{count}} úrovně složek (složky lze vnořit nejvýše do {{max}} úrovní). Pro pokračování některé složky odeberte.",
+      "folderLimitReached": "Složky lze vnořit nejvýše do {{max}} úrovní a tato složka už je na limitu, proto sem nelze nahrát složky. Soubory nahrát stále můžete.",
+      "addFiles": "Přidat soubory",
+      "addFolder": "Přidat složku",
+      "moreBelow": "Další níže",
+      "removeNamed": "Odebrat {{name}}",
+      "expandFolder": "Rozbalit složku",
+      "collapseFolder": "Sbalit složku"
+    },
+    "createDialog": {
+      "titlePlaceholder": "např. Vývoj",
+      "descriptionPlaceholder": "např. Dokumenty týmu"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -768,7 +860,7 @@
     "noModelsAvailable": "Zatím nejsou nakonfigurovány žádné modely AI",
     "failedToLoadModels": "Nepodařilo se načíst modely AI",
     "failedToLoadAgentConfig": "Nepodařilo se načíst konfiguraci modelu tohoto agenta",
-    "openModels": "Otevřít modely",
+    "openModels": "Spravovat modely",
     "connectorsCollectionsTitle": "Konektory a kolekce",
     "connectorsTooltip": "Konektory a kolekce",
     "connectorsDefaultScopeHint": "Ve výchozím nastavení se prohledávají všechny konektory a kolekce. Pokud chcete rozsah zúžit, vyberte níže konkrétní položky.",
@@ -821,6 +913,7 @@
     "recents": "Nedávné",
     "sharedChats": "Sdílené chaty",
     "sharedBy": "Sdílí {{name}}",
+    "agentChat": "Chat s agentem",
     "noSharedChats": "Žádné sdílené chaty",
     "yourChats": "Vaše chaty",
     "noChatsFound": "Nebyly nalezeny žádné chaty",
@@ -835,7 +928,6 @@
     "treeExpand": "Zobrazit obsah {{name}}",
     "treeCollapse": "Skrýt obsah {{name}}",
     "noCollectionsAvailable": "Nejsou k dispozici žádné kolekce",
-    "comingSoon": "Již brzy",
     "answer": "Odpověď",
     "sources": "Zdroje",
     "citation": "Citace",
@@ -859,6 +951,8 @@
     "like": "Užitečné",
     "dislike": "Neužitečné",
     "copy": "Kopírovat",
+    "fork": "Rozvětvit chat",
+    "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
@@ -885,6 +979,7 @@
     "backToChatHome": "Všechny chaty",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Načítání…",
+    "sharedAgentChat": "Sdílený chat s agentem",
     "myAgents": "Moji agenti",
     "moreAgents": "Další agenti",
     "agentHeaderMenuAria": "Možnosti agenta",
@@ -904,6 +999,11 @@
     "rename": "Přejmenovat",
     "archive": "Archivovat",
     "deleteChat": "Smazat",
+    "pin": "Připnout",
+    "unpin": "Odepnout",
+    "pinned": "Připnuté",
+    "pinFailed": "Chat se nepodařilo připnout",
+    "unpinFailed": "Chat se nepodařilo odepnout",
     "export": {
       "menuItem": "Exportovat",
       "exporting": "Exportování chatu…",
@@ -944,6 +1044,8 @@
     "stoppedMarker": "Zastaveno",
     "toolCard": {
       "arguments": "Argumenty",
+      "query": "Dotaz",
+      "queryCutOff": "Uložil se jen začátek tohoto dotazu, proto ho nelze zkopírovat.",
       "result": "Výsledek",
       "error": "Chyba",
       "blocked": "Blokováno",
@@ -984,11 +1086,11 @@
     "toasts": {
       "stopStreamTitle": "Zastavování…",
       "stopStreamDescription": "Odpověď se za okamžik zastaví. Případná částečná odpověď zůstane zachována.",
-      "editComingSoonTitle": "Již brzy",
-      "editComingSoonDescription": "Na podpoře úprav pracujeme",
       "deprecatedTools": "Tento agent má nástroje, které už nejsou k dispozici. Otevřete Tvůrce agentů a odeberte je.",
       "openAgentBuilder": "Otevřít Tvůrce agentů",
-      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu."
+      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu.",
+      "forkSuccess": "Zahájena nová konverzace od tohoto místa",
+      "forkError": "Tuto konverzaci se nepodařilo rozvětvit. Zkuste to znovu."
     },
     "queryModes": {
       "chat": {
@@ -1370,12 +1472,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "U tohoto agenta není nakonfigurováno",
       "internalSearch": "Interní vyhledávání",
-      "webSearch": "Vyhledávání na webu",
-      "deepResearch": "Hloubkový průzkum",
-      "deepResearchNeedsWebSearch": "Pro hloubkový průzkum zapněte vyhledávání na webu"
+      "webSearch": "Vyhledávání na webu"
     },
     "resizePanels": "Změnit velikost panelů chatu a náhledu",
-    "mobileProfileComingSoon": "Stránka profilu na mobilních zařízeních bude k dispozici již brzy.",
     "sendMessage": "Odeslat zprávu",
     "demoHide": "Skrýt ukázková data",
     "demoRestrictedHint": "Pouze pro cenovou komisi, takže zde odpověď nedostanete. Takhle fungují oprávnění.",
@@ -1386,7 +1485,7 @@
       "showAll": "Zobrazit vše",
       "showLess": "Zobrazit méně",
       "partial": "Je zobrazen pouze začátek podrobností: celé volání je delší.",
-      "deletesData": "Maže data",
+      "cantBeUndone": "Nelze vrátit zpět",
       "allow": "Povolit",
       "dontAskAgain": "U tohoto nástroje se už znovu neptat",
       "answerFailed": "Vaši odpověď se nepodařilo odeslat. Zkuste to znovu.",
@@ -1533,7 +1632,8 @@
       },
       "roles": {
         "admin": "Správce",
-        "member": "Člen"
+        "member": "Člen",
+        "guest": "Host"
       },
       "statuses": {
         "active": "Aktivní",
@@ -1620,7 +1720,7 @@
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
       "enterpriseMessage": "Chcete-li používat oprávnění skupin, přejděte na edici Enterprise.",
-      "enterpriseContact": "Kontaktovat",
+      "enterpriseContact": "Kontaktujte nás",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -1789,7 +1889,6 @@
       "loading": "Načítání aplikací...",
       "errorGeneric": "OAuth aplikace se nepodařilo načíst",
       "retry": "Zkusit znovu",
-      "docsOpenLabel": "Otevřít dokumentaci OAuth (již brzy)",
       "scopesBadgeOne": "{{count}} rozsah",
       "scopesBadgeMany": "{{count}} rozsahů",
       "manage": "Spravovat",
@@ -1864,7 +1963,14 @@
         "saveErrorTitle": "Změny se nepodařilo uložit",
         "regenerateSuccessTitle": "Tajný klíč byl znovu vygenerován",
         "regenerateErrorTitle": "Tajný klíč se nepodařilo znovu vygenerovat",
-        "errorLifetimeInvalid": "Zadejte platné doby platnosti (celé sekundy, nejméně 1)."
+        "errorLifetimeInvalid": "Zadejte platné doby platnosti (celé sekundy, nejméně 1).",
+        "identityBoundNote": "Tokeny této aplikace jednají jménem přiřazeného servisního účtu. Jeho změna zneplatní již vydané tokeny.",
+        "identityUnboundNote": "Tokeny této aplikace jednají jménem toho, kdo ji vytvořil, s jeho přístupem k dokumentům a jeho rolí — u správce to znamená správcovský přístup. Přiřaďte jí místo toho servisní účet.",
+        "identityAdminOnly": "Servisní účet může této aplikaci přiřadit pouze správce. Požádejte o to některého z nich.",
+        "identityBindAction": "Použít tento účet",
+        "identityBindRevokes": "Tím se zneplatní tokeny, které aplikace již vydala. Vše, co je používá, bude potřebovat nový.",
+        "identityBound": "Aplikace nyní jedná jménem tohoto servisního účtu.",
+        "identityBindFailed": "Servisní účet se nepodařilo změnit. Zkuste to prosím za chvíli znovu."
       },
       "create": {
         "panelTitle": "Vytvořit aplikaci OAuth 2.0",
@@ -1876,6 +1982,7 @@
         "createDisabledScopesTooltip": "Pro vytvoření aplikace vyberte alespoň jeden rozsah oprávnění.",
         "tabGeneral": "Obecné",
         "tabPermissions": "Oprávnění a rozsahy",
+        "tabGranular": "Podrobná oprávnění",
         "appNameLabel": "Název aplikace",
         "appNamePlaceholder": "Moje aplikace",
         "descriptionLabel": "Popis",
@@ -1921,7 +2028,15 @@
         "errorOptionalUrlInvalid": "Pokud volitelné URL vyplníte, musí to být platné http(s) adresy.",
         "grantRequiredTitle": "Typ udělení je povinný",
         "grantRequiredDescription": "Alespoň jeden typ udělení musí zůstat vybraný.",
-        "clientCredentialsWarning": "Tokeny z přihlašovacích údajů klienta přistupují k PipesHub vždy jako uživatel, který tuto aplikaci vytvořil — nikoli jako ten, kdo volá koncový bod pro tokeny. V rámci rozsahů, které jí udělíte, má token přístup ke všemu, k čemu má přístup daná osoba, a dědí její roli, takže aplikace vytvořená správcem má přístup správce. Přestane také fungovat, pokud bude tento účet smazán. Pokud tato aplikace podporuje také tok s autorizačním kódem, uživatelé ji mohou tímto způsobem i nadále autorizovat sami za sebe."
+        "serviceAccountHeading": "Servisní účet, jehož jménem tato aplikace jedná",
+        "clientCredentialsIdentityNote": "Tokeny této aplikace jednají jménem servisního účtu, na který je nasměrována, a pokud žádný nastavený není, jménem toho, kdo ji vytvořil — což u správce znamená správcovský přístup.",
+        "serviceAccountHelper": "Tokeny s přihlašovacími údaji klienta neobsahují žádnou osobu, takže tato aplikace potřebuje vlastní identitu. Servisní účet je vždy člen, nikdy správce, a nemůže se přihlásit. Bez něj by aplikace jednala jménem toho, kdo ji vytvořil.",
+        "serviceAccountPlaceholder": "Vyberte servisní účet",
+        "serviceAccountLoading": "Načítání servisních účtů…",
+        "serviceAccountNone": "Zatím neexistují žádné servisní účty. Vytvořte jeden v Pracovní prostor → Servisní účty a pak se sem vraťte.",
+        "serviceAccountLoadError": "Servisní účty se nepodařilo načíst. Zkuste to za okamžik znovu.",
+        "serviceAccountRetry": "Zkusit znovu",
+        "errorServiceAccountRequired": "Vyberte servisní účet, jehož jménem tato aplikace jedná."
       }
     },
     "personalAccessTokens": {
@@ -1949,7 +2064,7 @@
         "errorTitle": "Token se nepodařilo odvolat"
       },
       "create": {
-        "panelTitle": "Vytvořit osobní přístupový token",
+        "panelTitle": "Nový osobní přístupový token",
         "successPanelTitle": "Token vytvořen",
         "createButton": "Vytvořit token",
         "doneButton": "Hotovo",
@@ -2165,7 +2280,60 @@
       "checkingHint": "Každý model dostane krátké testovací volání. Obvykle to trvá méně než minutu.",
       "checkFailedOne": "{{model}} neprošel kontrolou",
       "checkFailedMany": "{{failed}} z {{total}} modelů neprošlo kontrolou",
-      "checkFailedHint": "Otevřete panel, abyste zjistili proč, a zkuste to znovu."
+      "checkFailedHint": "Otevřete panel, abyste zjistili proč, a zkuste to znovu.",
+      "identity": {
+        "menuItem": "Předávání identity",
+        "title": "Předávání identity",
+        "hint": "Pošle bráně, kdo se ptá, aby mohla uplatnit rozpočty, limity a přístup k modelům pro jednotlivé uživatele. Platí pro všechny modely v tomto připojení.",
+        "enabled": "Předávat identitu uživatele",
+        "format": "Formát",
+        "formatHeaders": "Hlavičky LiteLLM",
+        "formatTemplate": "Šablona hlaviček",
+        "formatSignedJwt": "Podepsaný token (enterprise)",
+        "preset": "Předvolba brány",
+        "presetCustom": "Vlastní hlavičky",
+        "templates": "Šablony hlaviček",
+        "templatesHint": "Jedna na řádek ve tvaru Název-hlavičky: hodnota. Použijte {{placeholders}}.",
+        "serviceKey": "Klíč pro práci na pozadí",
+        "serviceKeyPlaceholder": "Klíč brány pro indexování a extrakci",
+        "serviceKeySaved": "Klíč je uložen. Zadáním ho nahradíte.",
+        "serviceKeyHint": "Indexování a extrakce nemají přihlášenou osobu. Dejte jim vlastní klíč brány, aby se jejich útrata rozpočtovala odděleně od lidí.",
+        "serviceKeyRemove": "Odebrat uložený klíč",
+        "preview": "Náhled",
+        "previewTitle": "Co by se odeslalo za vás",
+        "previewNone": "Nic se neodesílá.",
+        "previewFailed": "Náhled se nepodařilo vytvořit",
+        "save": "Uložit",
+        "saved": "Předávání identity bylo uloženo",
+        "saveFailed": "Předávání identity se nepodařilo uložit"
+      },
+      "identityPolicy": {
+        "open": "Zásady identity",
+        "damaged": "Uložené zásady identity se nepodařilo přečíst, proto se zobrazují výchozí hodnoty. Uložením se nahradí.",
+        "title": "Zásady identity",
+        "hint": "Co smí PipesHub sdělit bráně modelů o osobě, která se ptá. Platí pro každé připojení, které předává identitu.",
+        "subjectSource": "Identifikovat osoby podle",
+        "subjectUserId": "ID uživatele",
+        "subjectEmail": "E-mailová adresa",
+        "subjectIdp": "ID objektu poskytovatele identity",
+        "includeEmail": "Zahrnout e-mailovou adresu",
+        "includeDisplayName": "Zahrnout zobrazované jméno",
+        "pseudonymize": "Skrýt identity za stabilním pseudonymem",
+        "pseudonymizeHint": "Brána vidí neprůhledné ID místo skutečného. Mapování nelze zvrátit.",
+        "groups": "Předávat členství ve skupinách",
+        "groupsHint": "Umožní bráně uplatnit přístup a rozpočty podle skupin.",
+        "allowList": "Předávat pouze tyto skupiny",
+        "allowListHint": "Jedno ID skupiny na řádek. Nechte prázdné, aby se předaly všechny skupiny až do limitu níže.",
+        "maxGroups": "Nejvyšší počet předávaných skupin",
+        "blockMissing": "Odmítnout požadavky bez přihlášené osoby",
+        "blockMissingHint": "Při předávání identity se interaktivní volání, které nelze spojit s osobou, odmítne místo odeslání jako služba.",
+        "embeddingAsService": "Připsat vyhledávací embeddingy službě",
+        "embeddingAsServiceHint": "Vypnuto: embedding dotazu hledání platí rozpočet dané osoby.",
+        "servicePrefix": "Předpona identity služby",
+        "saved": "Zásady identity byly uloženy",
+        "saveFailed": "Zásady identity se nepodařilo uložit",
+        "loadFailed": "Zásady identity se nepodařilo načíst"
+      }
     },
     "common": {
       "loadingUsers": "Načítání uživatelů...",
@@ -2181,8 +2349,14 @@
       "createdBy": "Vytvořil(a)",
       "createdOn": "Vytvořeno dne"
     },
+    "bulk": {
+      "selected": "Vybráno: {{count}} {{label}}"
+    },
     "pagination": {
-      "showing": "Zobrazeno {{from}}-{{to}} z {{total}} položek",
+      "showing_one": "Zobrazeno {{from}}-{{to}} z {{count}} položky",
+      "showing_few": "Zobrazeno {{from}}-{{to}} z {{count}} položek",
+      "showing_many": "Zobrazeno {{from}}-{{to}} z {{count}} položky",
+      "showing_other": "Zobrazeno {{from}}-{{to}} z {{count}} položek",
       "previous": "Předchozí",
       "next": "Další"
     },
@@ -2222,7 +2396,7 @@
         "webSearch": "Vyhledávání na webu",
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
-        "oauthApps": "OAuth aplikace",
+        "oauthApps": "OAuth aplikace konektorů",
         "serviceAccounts": "Servisní účty"
       }
     },
@@ -2230,7 +2404,7 @@
       "title": "Akce",
       "subtitle": "Nakonfigurujte automatizované akce, jako je vytváření záznamů, aktualizace polí nebo spouštění workflow. Každá aplikace má akci přizpůsobenou funkcím, které podporuje.",
       "yourActionsTitle": "Vaše akce",
-      "yourActionsSubtitle": "Ověřte se a spravujte akce, které váš správce zpřístupnil pro váš účet.",
+      "yourActionsSubtitle": "Ověřte se vůči akcím, které zpřístupnil váš správce, nebo přidejte vlastní.",
       "tabs": {
         "all": "Vše",
         "configured": "Nakonfigurované",
@@ -2250,7 +2424,7 @@
         "manage": "Spravovat",
         "unavailable": "Není k dispozici",
         "notConfigured": "Nenakonfigurováno",
-        "adminSetupRequired": "Vyžaduje nastavení správcem"
+        "add": "Přidat"
       },
       "trailingYourActions": "Vaše akce",
       "loading": "Načítání akcí…",
@@ -2310,7 +2484,7 @@
         "refreshingList": "Aktualizace seznamu…",
         "searchInstances": "Hledat instance…",
         "teamInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Ověřené akce lze přidat do vašich agentů.",
-        "personalInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Po ověření můžete tyto akce používat ve svých agentech.",
+        "personalInstanceInfo": "Ověřte se vůči akcím vaší organizace nebo přidejte vlastní. Po ověření je můžete používat ve svých agentech.",
         "instanceTabs": {
           "all": "Vše ({{count}})",
           "authenticated": "Ověřené ({{count}})",
@@ -2374,15 +2548,32 @@
         "numberMin": "Zadejte celé číslo nejméně {{min, number}}.",
         "numberMax": "Zadejte celé číslo nejvýše {{max, number}}."
       },
-      "adminRequiredToast": "Nové akce mohou přidávat pouze správci. Požádejte svého správce, aby tuto akci nejprve nakonfiguroval.",
-      "personalNonAdminHint": "Akce označené jako \"Nenakonfigurováno\" musí nejprve nastavit správce, než je budete moci používat.",
       "toolRules": {
         "open": "Schvalování nástrojů",
         "title": "Schvalování nástrojů: {{name}}",
         "description": "Co se stane, když asistent nebo agent chce použít některý z těchto nástrojů. Stejná pravidla platí pro všechny ve vaší organizaci.",
         "readOnly": "Měnit je může pouze správce.",
-        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst."
-      }
+        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst.",
+        "defaults": "Nástroje, které čtou nebo mění data, se spustí. Nástroj, který maže data, vymaže list nebo odešle e-mail, se nejdřív zeptá v chatu v aplikaci PipesHub a nespustí se tam, kde nikdo nemůže odpovědět, například v botovi pro Slack nebo přes API.",
+        "enterpriseTitle": "Schvalování nástrojů v organizaci",
+        "enterpriseDescription": "Vyberte, které nástroje této sady se spustí, nejdřív se zeptají, nebo se nikdy nespustí, a to pro všechny ve vaší organizaci."
+      },
+      "personal": {
+        "setupCallout": "Tuto akci vidíte a používáte jen vy a nelze ji přidat k agentům sdíleným s vaší organizací. Po přidání se vůči ní ověřte.",
+        "yours": "Vaše",
+        "addOwn": "Přidat vlastní",
+        "added": "Akce byla přidána.",
+        "delete": "Smazat akci",
+        "deleteTitle": "Smazat {{name}}?",
+        "deleteBody": "Smaže se i vaše ověření a schválení nástrojů pro tuto akci. Tuto operaci nelze vrátit zpět.",
+        "deleted": "Akce byla smazána.",
+        "adminOnly": "{{name}} může přidat pouze správce: připojuje se k serveru podle názvu hostitele. Požádejte správce, aby ji přidal pro vaši organizaci."
+      },
+      "enterprise": {
+        "userActionsTitle": "Vlastní akce uživatelů",
+        "userActionsDescription": "Zkontrolujte a odeberte akce, které si lidé ve vaší organizaci přidali sami."
+      },
+      "appsHeading": "Akce aplikací"
     },
     "rightPanel": {
       "primaryDisabledHint": "Pro pokračování posuňte stránku nahoru a vyplňte povinná pole (označená *).",
@@ -2515,7 +2706,7 @@
     "authentication": {
       "loading": "Načítání nastavení ověřování…",
       "configure": "Konfigurovat",
-      "title": "Nastavení ověřování",
+      "title": "Ověřování",
       "subtitle": "Nakonfigurujte, jak se uživatelé přihlašují do vaší aplikace",
       "methodsHeading": "Metody ověřování",
       "methodsSubtitle": "Povolte jednu nebo více metod ověřování. Uživatelé se mohou přihlásit kteroukoli povolenou metodou.",
@@ -2541,17 +2732,11 @@
       "panels": {
         "google": "Konfigurace ověřování Google",
         "microsoft": "Konfigurace ověřování Microsoft",
-        "samlSso": "Konfigurace SAML SSO",
-        "oauth": "Konfigurace OAuth 2.0",
         "github": "Konfigurace ověřování GitHub"
       },
       "jit": {
         "title": "Povolit zřizování účtů Just-In-Time (JIT)",
         "description": "Automaticky vytvářet uživatelské účty při prvním přihlášení pomocí {{providerName}}"
-      },
-      "xmlUpload": {
-        "parseError": "Z tohoto souboru se nepodařilo načíst metadata SAML. Zkontrolujte, zda jde o platný XML soubor s metadaty IdP.",
-        "readError": "Nepodařilo se přečíst soubor."
       },
       "riskDialog": {
         "title": "Potvrďte změny ověřování",
@@ -2564,6 +2749,25 @@
       "userMethods": {
         "heading": "Metody přihlašování uživatelů",
         "subtitle": "Určuje, které metody přihlašování jsou k dispozici všem uživatelům ve všech organizacích."
+      },
+      "signInRemoval": {
+        "title_one": "Přihlášení přes {{methods}} bylo v PipesHub 1.0 odstraněno",
+        "title_few": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "title_many": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "title_other": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "nowSignsInWith": "Tento pracovní prostor se nyní přihlašuje pomocí {{methods}}.",
+        "peopleIntro": "Tito lidé se už přihlásili, ale zatím nemají heslo:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "a {{count}} dalších",
+        "howToSetPassword": "Kdo z nich se nepřihlašuje přes Google, Microsoft nebo OTP zaslané e-mailem, si musí nastavit heslo. Může použít „Zapomenuté heslo“ na přihlašovací stránce, což vyžaduje nastavený e-mail (SMTP), nebo mu ten, kdo spravuje server PipesHub, může vytvořit odkaz pro nastavení hesla podle průvodce upgradem na PipesHub 1.0.",
+        "methodNames": {
+          "password": "heslo",
+          "otp": "OTP zaslané e-mailem",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -2802,6 +3006,45 @@
         "noRecordTypes": "Nejsou k dispozici žádné typy záznamů",
         "localWatcherLabel": "MÍSTNÍ SLEDOVÁNÍ",
         "localWatcherStatus": "{{state}} · {{pending}} čeká · {{failed}} selhalo",
+        "classification": "Klasifikace",
+        "enrichment": {
+          "title": "Extrakce dat pomocí AI",
+          "description": "Běží na pozadí, jakmile je záznam prohledávatelný. Vyhledávání na něj nečeká.",
+          "classificationHint": "Přidává shrnutí, témata a kategorie",
+          "entities": "Extrakce entit",
+          "entitiesHint": "Hledá osoby, organizace a místa",
+          "progress": "{{completed}} z {{total}}",
+          "waiting": "Čeká",
+          "skipped": "Přeskočeno",
+          "notStarted": "Začne, jakmile budou záznamy prohledávatelné",
+          "inProgress": "Probíhá",
+          "done": "Hotovo",
+          "failedCount_one": "{{count}} selhal",
+          "failedCount_few": "{{count}} selhaly",
+          "failedCount_many": "{{count}} selhalo",
+          "failedCount_other": "{{count}} selhalo",
+          "retry": "Zopakovat"
+        },
+        "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
+        "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
+        "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+        "retryFailedEntities": "Zopakovat neúspěšnou extrakci entit",
+        "retryEntitiesSuccess": "Opakování extrakce entit zařazeno do fronty",
+        "retryEntitiesError": "Extrakci entit se nepodařilo zopakovat",
+        "codeGraph": {
+          "title": "Graf kódu",
+          "status": {
+            "never_built": "Zatím nevytvořen",
+            "building": "Vytváří se",
+            "ready": "Připraven",
+            "stale": "Aktualizuje se",
+            "waiting_on_indexing": "Čeká na indexaci",
+            "retrying": "Nový pokus",
+            "failed": "Selhalo",
+            "too_large": "Příliš velký",
+            "unknown": "Neznámý"
+          }
+        },
         "lastRun": {
           "title": "Poslední synchronizace",
           "outcome": {
@@ -3124,7 +3367,7 @@
       "loading": "Načítání MCP serverů…",
       "noResults": "Vašemu hledání neodpovídají žádné MCP servery",
       "replacedNotice": "Již není udržován. Místo něj přidejte {{name}}.",
-      "addServer": "Přidat server",
+      "addServer": "Nový server",
       "custom": "Vlastní",
       "inherited": "Zděděný",
       "inheritedDeleteTooltip": "Spravováno nadřazenou organizací",
@@ -3269,7 +3512,7 @@
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",
-        "createTitle": "Přidat MCP server",
+        "createTitle": "Nový MCP server",
         "tabs": {
           "configuration": "Konfigurace",
           "tools": "Nástroje a schvalování",
@@ -3312,7 +3555,7 @@
           "copyFailed": "URL serveru se nepodařilo zkopírovat",
           "addedBy": "Přidal(a) {{name}}",
           "disconnectHint": "Odhlásí vás. Nastavení a pravidla zůstanou.",
-          "remove": "Odebrat server",
+          "remove": "Smazat server",
           "removeHint": "Smaže jej pro všechny.",
           "removeHintPersonal": "Smaže jej i vaše přihlášení."
         }
@@ -3354,7 +3597,7 @@
       "stdioPolicy": {
         "disabledTitle": "V tomto nasazení zakázáno",
         "disabledDescription": "Vlastní STDIO servery spouštějí příkaz na serveru PipesHub, proto zůstávají vypnuté, dokud operátor nenastaví {{flag}}=true v prostředí nasazení (soubor .env pro Docker Compose nebo config.mcpAllowCustomStdio v Helmu). Do té doby agenti nemohou nástroje tohoto serveru používat. Můžete jej smazat nebo přepnout na vzdálený (HTTP) server.",
-        "unavailableHint": "Servery s místním příkazem (STDIO) jsou v tomto nasazení vypnuté. Pro jejich povolení musí operátor nastavit {{flag}}=true.",
+        "unavailableHint": "Servery s místním příkazem (STDIO) jsou vypnuté. Požádejte správce, aby je povolil.",
         "enabledWarning": "Tento příkaz běží na serveru PipesHub s oprávněními služby, včetně jejího přístupu k síti a přihlašovacích údajů. Přidávejte pouze příkazy, kterým důvěřujete."
       },
       "addDialog": {
@@ -3385,7 +3628,7 @@
           "none": "Server neuvádí, co tento nástroj dělá, proto se považuje za nástroj měnící data."
         },
         "group": {
-          "destructive": "Maže data",
+          "destructive": "Nelze vrátit zpět",
           "write": "Mění data",
           "read": "Pouze pro čtení",
           "notOffered": "Nyní nenabízeno",
@@ -3428,10 +3671,9 @@
       "subtitle": "Nastavte přihlašovací údaje botů a volitelně přiřaďte každého bota k agentovi",
       "loading": "Načítání botů…",
       "defaultAssistant": "Výchozí asistent",
-      "createBot": "Vytvořit bota",
-      "emptyTitle": "Žádní boti",
+      "createBot": "Nový bot",
+      "emptyTitle": "Zatím žádní boti",
       "emptyDescription": "Nastavte svého prvního bota hned teď",
-      "addBot": "Přidat bota",
       "types": {
         "slack": "Slack bot",
         "discord": "Discord bot",
@@ -3474,8 +3716,8 @@
         "deleteBot": "Smazat bota"
       },
       "title": "Boti",
-      "noBots": "Žádní boti",
-      "setupFirstBot": "Nastavte svého prvního bota hned teď",
+      "noBots": "Zatím žádní boti",
+      "setupFirstBot": "Bot umožňuje lidem klást otázky vašim agentům přímo ze Slacku. Začněte přidáním bota.",
       "documentation": "Dokumentace",
       "configPanelTitle": "Konfigurace bota",
       "selectBotSetup": "Vyberte typ bota",
@@ -3515,7 +3757,7 @@
       "subtitle": "Vytvářejte vlastní dovednosti, které mohou vaši agenti používat — pokyny v Markdownu, volitelné skripty a referenční soubory, verzované a spravované jako vše ostatní v Tvůrci agentů.",
       "loading": "Načítání dovedností…",
       "refreshed": "Obnoveno",
-      "createSkill": "Vytvořit dovednost",
+      "createSkill": "Nová dovednost",
       "importSkill": "Importovat",
       "reviewCandidates": "Posoudit kandidáty",
       "searchPlaceholder": "Hledat dovednosti…",
@@ -3531,7 +3773,8 @@
       "availability": {
         "label": "Dostupná agentům",
         "description": "Pokud je vypnuto, dovednost zůstane ve vaší knihovně, ale agenti ji nemohou objevit ani načíst.",
-        "descriptionBuiltin": "Pokud je vypnuto, tato vestavěná dovednost zůstane v knihovně, ale agenti v celé organizaci ji nemohou objevit ani načíst."
+        "descriptionBuiltin": "Pokud je vypnuto, tato vestavěná dovednost zůstane v knihovně, ale agenti v celé organizaci ji nemohou objevit ani načíst.",
+        "short": "Dostupné"
       },
       "cta": {
         "manage": "Spravovat",
@@ -3754,7 +3997,7 @@
       "configCalloutTitle": "Konfigurace promptu",
       "configCalloutDescription": "Vlastní systémový prompt pomáhá definovat chování, tón a způsob, jakým AI odpovídá na otázky. Dbejte na to, aby byl váš prompt jasný a odpovídal potřebám vaší organizace.",
       "resetToDefault": "Obnovit výchozí",
-      "customInstructionsTitle": "Vlastní pokyny",
+      "customInstructionsTitle": "Prompty",
       "customInstructionsDescription": "Přidejte vlastní pokyny pro chatového asistenta — např. odpovídat v určitém jazyce, dodržovat styl formátování nebo uplatňovat jakékoli chování, které si přejete. Každý z níže uvedených režimů má vlastní pokyny, protože na otázky odpovídá jinak.",
       "scopeHint": "Tyto pokyny platí pouze pro <bold>chatového asistenta</bold> (režim Agent níže). Vlastní agenti vytvoření v <bold>Tvůrci agentů</bold> nejsou ovlivněni — každý agent používá vlastní systémový prompt a pokyny nastavené přímo u agenta.",
       "agentTitle": "Agent",
@@ -3764,7 +4007,7 @@
     },
     "webSearch": {
       "loading": "Načítání nastavení vyhledávání na webu…",
-      "title": "Konfigurace vyhledávání na webu",
+      "title": "Vyhledávání na webu",
       "subtitle": "Nastavte poskytovatele vyhledávání na webu, které bude chatbot používat při hledání na webu",
       "methodsHeading": "Různé metody vyhledávání na webu",
       "methodsSubtitle": "Vyberte metodu, kterou budou uživatelé používat pro vyhledávání na webu",
@@ -3796,16 +4039,23 @@
         "default": "Výchozí",
         "configured": "Nakonfigurováno",
         "notConfigured": "Nenakonfigurováno",
-        "active": "Nakonfigurováno"
+        "active": "Nakonfigurováno",
+        "builtIn": "Vestavěný"
       },
-      "heading": "Konfigurace vyhledávání na webu",
+      "heading": "Vyhledávání na webu",
       "methodsSection": "Různé metody vyhledávání na webu",
       "methodsSectionDescription": "Vyberte metodu, kterou budou uživatelé používat pro vyhledávání na webu",
       "policyTitle": "Zásady poskytovatele vyhledávání na webu",
       "verifying": "Ověřování připojení...",
       "disabledReasonConfigure": "Před povolením tohoto poskytovatele jej nejprve nakonfigurujte.",
       "disabledReasonActive": "Před povolením tohoto poskytovatele zakažte aktuálně aktivního poskytovatele.",
-      "configureTip": "Nastavit"
+      "configureTip": "Nastavit",
+      "actions": {
+        "setDefault": "Nastavit jako výchozí",
+        "settingDefault": "Nastavuje se…",
+        "editConfiguration": "Upravit konfiguraci",
+        "deleteConfiguration": "Smazat konfiguraci"
+      }
     },
     "profile": {
       "subtitle": "Zde spravujete všechny údaje svého osobního profilu",
@@ -4000,6 +4250,12 @@
           "label": "Služba Extraction",
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Vyhledávací index se nevejde do paměti vektorové databáze",
+        "message": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; vektorová databáze má asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "messageHost": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; server s vektorovou databází má celkem jen asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "guide": "Průvodce dimenzováním vektorové databáze"
       }
     },
     "tenants": {
@@ -4106,7 +4362,7 @@
       }
     },
     "oauthApps": {
-      "title": "OAuth aplikace",
+      "title": "OAuth aplikace konektorů",
       "subtitle": "Spravujte OAuth přihlašovací údaje pro konektory a akce. Aplikace označené jako \"Výchozí\" se automaticky použijí pro nová připojení, pokud nejsou přepsány.",
       "addButton": "Přidat OAuth aplikaci",
       "tabs": {
@@ -4259,7 +4515,227 @@
       "disableTitle": "Zakázat tento servisní účet?",
       "disableDescription": "{{name}} přestane okamžitě fungovat, včetně všech tokenů, které již má. Každá integrace používající některý z těchto tokenů bude selhávat, dokud účet znovu nepovolíte.",
       "disableConfirm": "Zakázat",
-      "memberBadge": "Servisní účet"
+      "memberBadge": "Servisní účet",
+      "manageDelegations": "Za koho může jednat",
+      "delegations": {
+        "title": "Jednání jménem někoho jiného",
+        "explainer": "Tomuto servisnímu účtu lze povolit, aby jednal jménem konkrétních osob. Když tak činí, čte přesně to, co může číst daná osoba, a token, který obdrží, platí pět minut. Správce zde uvést nelze.",
+        "unavailableTitle": "Jednání jménem osoby je funkce edice Enterprise",
+        "unavailableBody": "Umožnit tomuto servisnímu účtu jednat jménem konkrétního kolegy — seznam povolených osob, pětiminutový token vydaný na jméno dané osoby a záznam o každém pokusu — je součástí edice Enterprise a v této edici není obsaženo.",
+        "unavailableAvailableHere": "Co tato edice obsahuje: samotný servisní účet, jeho vlastní přístup ke znalostním bázím, které mu udělíte, a tokeny, které můžete vydávat a odvolávat. To pokrývá každou integraci, která pracuje s vlastními oprávněními, nikoli s oprávněními někoho jiného.",
+        "addTitle": "Povolit jednat jménem osoby",
+        "subjectLabel": "Osoba",
+        "subjectPlaceholder": "jmeno@example.com",
+        "subjectHelp": "Zadejte e-mailovou adresu osoby, jejímž jménem může tento servisní účet jednat.",
+        "reasonLabel": "Důvod",
+        "reasonPlaceholder": "Proč je to potřeba",
+        "reasonHelp": "Zobrazí se tomu, kdo bude tento seznam později kontrolovat.",
+        "addConfirm": "Povolit",
+        "listTitle": "Smí jednat jménem",
+        "none": "Tento servisní účet nemůže jednat jménem nikoho. Čte pouze s vlastními oprávněními.",
+        "loading": "Načítání…",
+        "inactive": "Již není k dispozici",
+        "revoke": "Odebrat",
+        "revokeTitle": "Odebrat toto oprávnění?",
+        "revokeDescription": "Tento servisní účet již nebude moci jednat jménem {{subject}}.",
+        "revokeSuccessTitle": "Oprávnění odebráno",
+        "revokeErrorTitle": "Oprávnění se nepodařilo odebrat",
+        "grantSuccessTitle": "Oprávnění uděleno",
+        "grantErrorTitle": "Oprávnění se nepodařilo udělit",
+        "loadErrorTitle": "Nastavení delegování se nepodařilo načíst",
+        "logTitle": "Nedávná aktivita",
+        "logHelp": "Každá změna tohoto seznamu a každý případ, kdy servisní účet požádal o jednání jménem někoho jiného — včetně případů, kdy byl odmítnut.",
+        "logNone": "Zatím nic zaznamenáno.",
+        "outcomeIssued": "Povoleno",
+        "outcomeRefused": "Odmítnuto",
+        "outcomeGranted": "Oprávnění přidáno",
+        "outcomeRevoked": "Oprávnění odebráno",
+        "byAdmin": "uživatelem {{admin}}"
+      }
+    },
+    "apiToolsets": {
+      "title": "API akce",
+      "subtitle": "Interní API, která váš správce zpřístupnil agentům. Tam, kde je to vyžadováno, připojte vlastní přihlašovací údaje.",
+      "subtitleAdmin": "Vytvořte z interního REST API akce podle jeho specifikace OpenAPI. Vyberte, které operace smějí agenti volat a jak se PipesHub přihlásí.",
+      "emptyTitle": "Přidejte svou první API akci",
+      "emptyAdmin": "Nahrajte specifikaci OpenAPI 3.0 nebo 3.1 libovolného interního REST API.",
+      "card": {
+        "fallbackDescription": "Interní REST API přidané ze specifikace OpenAPI."
+      },
+      "operationCount_one": "{{count}} operace",
+      "operationCount_few": "{{count}} operace",
+      "operationCount_many": "{{count}} operace",
+      "operationCount_other": "{{count}} operací",
+      "kind": {
+        "read": "Čtení",
+        "write": "Zápis",
+        "destructive": "Mazání"
+      },
+      "authType": {
+        "none": "Bez ověření",
+        "api_key": "API klíč",
+        "http_bearer": "Bearer token",
+        "http_basic": "Uživatelské jméno a heslo",
+        "oauth2_client_credentials": "OAuth 2.0 přihlašovací údaje klienta",
+        "oauth2_authorization_code": "Přihlášení OAuth 2.0"
+      },
+      "status": {
+        "connected": "Připojeno",
+        "notConnected": "Nepřipojeno",
+        "open": "Bez přihlášení",
+        "shared": "Sdílené přihlašovací údaje"
+      },
+      "cta": {
+        "add": "Přidat API akci",
+        "connect": "Připojit",
+        "manageConnection": "Spravovat připojení",
+        "details": "Podrobnosti",
+        "edit": "Upravit",
+        "delete": "Smazat",
+        "more": "Další možnosti pro {{name}}"
+      },
+      "toasts": {
+        "loadError": "API akce se nepodařilo načíst",
+        "created": "API akce byla přidána",
+        "updated": "API akce byla aktualizována",
+        "saveError": "API akci se nepodařilo uložit",
+        "deleted": "API akce byla smazána",
+        "deleteError": "API akci se nepodařilo smazat",
+        "connected": "Připojeno",
+        "disconnected": "Odpojeno"
+      },
+      "deleteDialog": {
+        "title": "Smazat API akci",
+        "body": "Smazat {{name}}? Všechny uložené přihlašovací údaje k ní budou odstraněny. API akci, kterou používá agent, nelze smazat."
+      },
+      "editor": {
+        "addTitle": "Přidat API akci",
+        "editTitle": "Upravit API akci",
+        "spec": "Specifikace OpenAPI",
+        "specHint": "Nahrajte nebo vložte specifikaci OpenAPI 3.0 nebo 3.1 daného API ve formátu JSON nebo YAML. PipesHub z ní načte operace a způsoby přihlášení.",
+        "specEditHint": "Ponechte prázdné, chcete-li zachovat současnou specifikaci. Nahrajte novou, chcete-li vybírat z jejích operací a způsobů ověření.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "Načíst specifikaci",
+        "previewing": "Čtení specifikace…",
+        "validateError": "Specifikaci se nepodařilo přečíst",
+        "warnings": "Některé části specifikace byly přeskočeny:",
+        "operations": "Operace (vybráno {{selected}} z {{total}})",
+        "operationsHint": "Agenti mohou volat jen operace, které vyberete.",
+        "name": "Název",
+        "description": "Popis",
+        "baseUrl": "Základní URL",
+        "baseUrlHint": "Kam PipesHub posílá požadavky. Cesty operací se připojují za ni.",
+        "loopbackHint": "localhost je samotný server PipesHub. Použijte adresu, na které PipesHub API dosáhne, například jeho název hostitele ve vaší síti.",
+        "authScheme": "Ověření",
+        "authSchemeLocked": "Chcete-li změnit, jak se PipesHub ověřuje, nahrajte specifikaci znovu.",
+        "scopes": "Rozsahy",
+        "oauthClientId": "ID klienta aplikace OAuth",
+        "oauthClientSecret": "Tajný klíč klienta aplikace OAuth",
+        "keepSecret": "Ponechte prázdné, chcete-li zachovat uložený tajný klíč",
+        "sharedCredential": "Jedny sdílené přihlašovací údaje",
+        "sharedCredentialHint": "Přihlašovací údaje nastavíte jednou a používají je všichni členové. Když je vypnuto, každý člen připojí své vlastní.",
+        "sharedCredentialForced": "Přihlašovací údaje klienta přihlašují aplikaci, ne člověka, proto všichni sdílejí ty, které nastavíte.",
+        "timeout": "Časový limit (sekundy)",
+        "timeoutHint": "Jak dlouho čekat na API, od 1 do {{max}} sekund.",
+        "problems": {
+          "name": "Zadejte název.",
+          "baseUrl": "Zadejte základní URL.",
+          "operations": "Vyberte alespoň jednu operaci.",
+          "timeout": "Zadejte časový limit od 1 do 120 sekund.",
+          "oauthClientId": "Zadejte ID klienta aplikace OAuth."
+        },
+        "create": "Přidat API akci",
+        "specLoadedHint": "Specifikace, ze které tato API akce vychází. Nahraďte ji, chcete-li vybírat z novější verze.",
+        "replaceSpec": "Nahradit specifikaci",
+        "specUnread": "Nejdřív načtěte novou specifikaci, nebo nahrazení zrušte.",
+        "specSummary_one": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_few": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_many": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_other": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operací",
+        "dropFile": "Přetáhněte sem soubor se specifikací, nebo klikněte a vyberte ho",
+        "dropFileHint": "JSON nebo YAML. Specifikaci můžete také vložit níže.",
+        "sampleHint": "Nemáte specifikaci po ruce? Začněte ukázkou, API helpdesku se všemi typy přihlášení.",
+        "sample": {
+          "yaml": "Ukázka YAML",
+          "json": "Ukázka JSON"
+        },
+        "detailsHeading": "Podrobnosti",
+        "descriptionHint": "Agenti podle tohoto textu rozhodují, kdy API použít.",
+        "authSchemeHint": "Jak se PipesHub přihlásí, když agent volá API.",
+        "redirectUrl": "Adresa přesměrování",
+        "redirectUrlHint": "Zaregistrujte tuto adresu v aplikaci OAuth jako povolené přesměrování.",
+        "noAuthHint": "PipesHub volá API bez přihlašovacích údajů, takže fungují jen operace, které specifikace označuje jako veřejné.",
+        "selectReads": "Jen čtení",
+        "selectAll": "Vše",
+        "selectNone": "Nic",
+        "unreachableWarning_one": "{{count}} vybraná operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_few": "{{count}} vybrané operace vyžadují přihlašovací údaje, takže bez ověření selžou.",
+        "unreachableWarning_many": "{{count}} vybrané operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_other": "{{count}} vybraných operací vyžaduje přihlašovací údaje, takže bez ověření selžou.",
+        "deselectUnreachable": "Zrušit jejich výběr",
+        "needsCredentials": "Vyžaduje přihlašovací údaje",
+        "needsCredentialsHint": "Podle specifikace tato operace vyžaduje přihlašovací údaje. Bez ověření ji API odmítne.",
+        "advancedHeading": "Pokročilé"
+      },
+      "connect": {
+        "mode": {
+          "none": "Toto API nepotřebuje žádné přihlašovací údaje.",
+          "own": "Agenti volají toto API s vašimi vlastními přihlašovacími údaji.",
+          "shared": "Všichni členové používají přihlašovací údaje, které zde nastavíte.",
+          "managed": "Přihlašovací údaje k této API akci spravuje váš správce."
+        },
+        "status": "Stav",
+        "signIn": "Přihlásit se",
+        "signInAgain": "Přihlásit se znovu",
+        "signingIn": "Přihlašování…",
+        "fields": {
+          "apiKey": "API klíč",
+          "token": "Token",
+          "username": "Uživatelské jméno",
+          "password": "Heslo",
+          "clientId": "ID klienta",
+          "clientSecret": "Tajný klíč klienta"
+        },
+        "replaceHint": "Uloženo. Chcete-li hodnotu nahradit, zadejte novou.",
+        "error": "Nepovedlo se. Zkuste to znovu.",
+        "test": "Otestovat připojení",
+        "testing": "Testování…",
+        "testOk": "API odpovědělo.",
+        "testFailed": "API odpovědělo chybou.",
+        "testTruncated": "Zobrazuje se jen začátek odpovědi.",
+        "disconnect": "Odpojit",
+        "disconnecting": "Odpojování…",
+        "panelTitle": "API akce",
+        "connectionHeading": "Připojení",
+        "testHeading": "Otestovat připojení",
+        "testHint": "Zavolá jednu operaci pro čtení, která nevyžaduje žádný vstup.",
+        "testIdle": "Spusťte testovací volání a podívejte se, co API vrátí.",
+        "testNeedsConnection": "Nejprve se připojte, pak spusťte testovací volání.",
+        "operationsHeading_one": "{{count}} operace, kterou mohou agenti volat",
+        "operationsHeading_few": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_many": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_other": "{{count}} operací, které mohou agenti volat"
+      },
+      "sectionTitle": "API akce",
+      "kindCount": {
+        "read_one": "{{count}} čtení",
+        "read_few": "{{count}} čtení",
+        "read_many": "{{count}} čtení",
+        "read_other": "{{count}} čtení",
+        "write_one": "{{count}} zápis",
+        "write_few": "{{count}} zápisy",
+        "write_many": "{{count}} zápisu",
+        "write_other": "{{count}} zápisů",
+        "destructive_one": "{{count}} smazání",
+        "destructive_few": "{{count}} smazání",
+        "destructive_many": "{{count}} smazání",
+        "destructive_other": "{{count}} smazání"
+      },
+      "kindPolicy": {
+        "read": "spustí se hned",
+        "write": "nejprve se zeptá uživatele",
+        "destructive": "blokováno, pokud to pravidla akcí agenta nepovolí"
+      }
     }
   },
   "filePreview": {
@@ -4281,6 +4757,8 @@
     "resizeCitations": "Změnit velikost panelu citací",
     "resizePreview": "Změnit velikost panelu náhledu souboru",
     "viewCitations": "Zobrazit citace",
+    "preview": "Náhled",
+    "fileDetails": "Podrobnosti o souboru",
     "openNamedInSource": "Otevřít {{name}} ve zdroji"
   },
   "agentBuilder": {
@@ -4288,20 +4766,17 @@
     "agentName": "Název",
     "createdBy": "Vytvořil(a)",
     "agentNamePlaceholder": "např. Bot podpory",
-    "serviceAccountBadge": "Servisní agent",
-    "serviceAccountBadgeTooltip": "Tento servisní agent používá vyhrazené přihlašovací údaje sad nástrojů a přístup ke znalostem celé organizace pro každého, kdo jej používá.",
-    "convertToServiceAccount": "Převést na servisního agenta",
-    "convertToServiceAccountTooltip": "Trvalé: sady nástrojů na úrovni agenta a znalosti celé organizace. Nelze vrátit zpět.",
-    "convertToServiceAccountTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta se sadami nástrojů na úrovni agenta a znalostmi celé organizace.",
-    "createAsServiceAccount": "Servisní agent",
-    "createAsServiceAccountTooltip": "Vytvořit se sadami nástrojů na úrovni agenta a plným přístupem ke znalostem.",
+    "serviceAgentBadge": "Servisní agent",
+    "serviceAgentBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
+    "convertToServiceAgentTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
+    "convertToServiceAgentTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
     "agentActionsMenuAria": "Nabídka agenta",
     "agentMenuCreateAsServiceAgent": "Vytvořit jako servisního agenta",
     "agentMenuConvertToServiceAgent": "Převést na servisního agenta",
     "share": "Sdílet",
     "shareWithOrg": "Sdílet se všemi",
     "shareWithOrgTooltip": "Sdílet tohoto agenta se všemi ve vaší organizaci.",
-    "serviceAccountShareTooltip": "Servisní agenti jsou vždy sdíleni s celou organizací.",
+    "serviceAgentShareTooltip": "Servisní agenti jsou vždy sdíleni s celou organizací.",
     "saving": "Ukládání…",
     "saveChanges": "Uložit změny",
     "createAgent": "Vytvořit agenta",
@@ -4310,9 +4785,9 @@
     "userAgent": "Uživatelský agent",
     "userAgentDesc": "Osobní agent s ověřováním sad nástrojů pro každého uživatele zvlášť.",
     "serviceAgent": "Servisní agent",
-    "serviceAgentDesc": "Agent pro celou organizaci s přihlašovacími údaji sad nástrojů na úrovni agenta.",
+    "serviceAgentDesc": "Agent pro celou organizaci s přihlašovacími údaji sad nástrojů na úrovni agenta. Ve znalostech vyhledává s přístupem svého autora.",
     "nameRequired": "Pro pokračování zadejte název.",
-    "saveAsServiceAccountFirst": "Nejprve uložte agenta jako servisního agenta a poté nastavte přihlašovací údaje sad nástrojů.",
+    "saveAsServiceAgentFirst": "Nejprve uložte agenta jako servisního agenta a poté nastavte přihlašovací údaje sad nástrojů.",
     "hidePalette": "Skrýt paletu",
     "showPalette": "Zobrazit paletu",
     "openInChat": "Otevřít v chatu",
@@ -4323,8 +4798,14 @@
     "removeConnectionDesc": "Tím odeberete propojení mezi dvěma uzly. Znovu je můžete propojit pomocí úchytů.",
     "remove": "Odebrat",
     "palette": "Paleta",
+    "addToCanvas": "Přidat na plátno",
     "paletteDragHint": "Přetáhněte bloky na plátno",
-    "paletteViewOnlyServiceAccount": "Pouze pro čtení. Paleta a nastavení sad nástrojů jsou pro tohoto servisního agenta organizace uzamčeny.",
+    "paletteTapHint": "Klepnutím na + přidáte blok na plátno",
+    "loadingAgent": "Načítání agenta…",
+    "agentLoadFailedTitle": "Tohoto agenta se nepodařilo načíst",
+    "agentLoadFailedDescription": "Zkontrolujte připojení a zkuste to znovu. Dokud se agent nenačte, nic se neuloží.",
+    "agentLoadRetry": "Zkusit znovu",
+    "paletteViewOnlyServiceAgent": "Pouze pro čtení. Paleta a nastavení sad nástrojů jsou pro tohoto servisního agenta organizace uzamčeny.",
     "paletteActionBlockedViewOnly": "Pouze pro čtení. Tohoto servisního agenta organizace zde nelze měnit.",
     "viewerPaletteDragBlocked": "Pouze pro čtení. Tok je uzamčen; ověřte sady nástrojů v části Nástroje.",
     "paletteViewerAuthenticateInTools": "Pouze pro čtení. Přetahování na plátno je vypnuto; přihlaste se k sadám nástrojů v části Nástroje.",
@@ -4341,8 +4822,8 @@
     "skillDisabled": "Tato dovednost je zakázána a agentovi nebude k dispozici, dokud ji znovu nepovolíte",
     "collapse": "Sbalit",
     "expand": "Rozbalit",
-    "serviceAccountCreated": "Servisní agent byl vytvořen. Nastavte každou sadu nástrojů pomocí ikony klíče v paletě.",
-    "serviceAccountConverted": "Agent byl převeden na servisního agenta. Nastavte přihlašovací údaje sad nástrojů pomocí ikony klíče v paletě.",
+    "serviceAgentCreated": "Servisní agent byl vytvořen. Nastavte každou sadu nástrojů pomocí ikony klíče v paletě.",
+    "serviceAgentConverted": "Agent byl převeden na servisního agenta. Nastavte přihlašovací údaje sad nástrojů pomocí ikony klíče v paletě.",
     "unsavedChangesConfirm": "Máte neuložené změny. Opravdu chcete odejít?",
     "agentUpdated": "Agent byl aktualizován",
     "agentUpdatedDesc": "Vaše změny byly uloženy.",
@@ -4625,7 +5106,13 @@
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
-    "limitSourceCount": "Omezeno na vybrané položky: {{count}}"
+    "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
+    "apiToolsets": {
+      "section": "API akce",
+      "connectTooltip": "Připojte ji v části Akce",
+      "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen API akce se sdílenými přihlašovacími údaji nebo bez přihlášení."
+    }
   },
   "recordView": {
     "sections": {
@@ -4653,6 +5140,13 @@
       "noRecordMetadata": "K této položce nejsou k dispozici žádná další metadata záznamu."
     },
     "indexingReasonAria": "Podrobnosti o selhání indexování",
+    "stageTrackLabel": "Zpracování",
+    "stageParsed": "Parsováno",
+    "stageSearchable": "Prohledávatelné",
+    "stageClassified": "Klasifikováno",
+    "stageEntities": "Entity",
+    "stageAttempt": "Pokus {{n}}",
+    "stageDetailsAria": "Podrobnosti fází",
     "tabRecordInformation": "Informace o záznamu",
     "tabDocumentDetails": "Podrobnosti dokumentu",
     "chat": "Chat",
@@ -4796,6 +5290,36 @@
     "deniedTitle": "Žádost zamítnuta",
     "deniedLine": "Zařízení nebyl udělen přístup."
   },
+  "knowledgeLimit": {
+    "title": "Co může {{appName}} vidět?",
+    "help": "Může vyhledávat a číst jen to, co zde povolíte, a nikdy víc, než vidíte vy.",
+    "everything": "Vše, co vidím",
+    "everythingHint": "Zahrnuje i zdroje, které přidáte později.",
+    "only": "Jen to, co vyberu",
+    "onlyHint": "Vyberte celé zdroje, nebo otevřete zdroj a vyberte prostory, složky či soubory.",
+    "pickOne": "Vyberte alespoň jeden zdroj, prostor, složku nebo soubor.",
+    "tooMany": "Vyberte nejvýše {{max}} položek, nebo místo toho vyberte celý zdroj.",
+    "selectedCount_one": "Vybrána {{count}} položka",
+    "selectedCount_few": "Vybrány {{count}} položky",
+    "selectedCount_many": "Vybráno {{count}} položky",
+    "selectedCount_other": "Vybráno {{count}} položek",
+    "canSeeEverything": "Vidí: vše, co vidíte vy",
+    "canSeeSome_one": "Vidí: {{count}} vybranou položku",
+    "canSeeSome_few": "Vidí: {{count}} vybrané položky",
+    "canSeeSome_many": "Vidí: {{count}} vybrané položky",
+    "canSeeSome_other": "Vidí: {{count}} vybraných položek",
+    "thisToken": "tento token",
+    "app": {
+      "thisApp": "tato aplikace",
+      "help": "Uživatelé, kteří tuto aplikaci připojí, mohou prohledávat a číst jen to, co zde vyberete, a nikdy víc, než sami vidí.",
+      "everything": "Vše, co vidí každý uživatel",
+      "everythingHint": "Zahrnuje i zdroje přidané později."
+    },
+    "appLimited_one": "{{appName}} vidí jen {{count}} položku vybranou tvůrcem, a jen pokud ji vidíte i vy.",
+    "appLimited_few": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_many": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_other": "{{appName}} vidí jen {{count}} položek vybraných tvůrcem, a jen ty, které vidíte i vy."
+  },
   "auth": {
     "titleSection": {
       "defaultTitle": "Vítejte v Pipeshub",
@@ -4861,9 +5385,6 @@
       "emailVerifiedDescription": "Vaše e-mailová adresa byla aktualizována. Přihlaste se svým novým e-mailem.",
       "emailVerifyFailedTitle": "Ověření e-mailu se nezdařilo",
       "emailVerifyFailedDescription": "Odkaz může být neplatný nebo jeho platnost vypršela.",
-      "samlErrorTitle": "Chyba při přihlašování pomocí SAML",
-      "samlSignInFailedTitle": "Přihlášení se nezdařilo",
-      "samlSignInFailedDescription": "SAML SSO se nepodařilo dokončit. Zkuste to prosím znovu.",
       "orgEmailVerifiedTitle": "Organizace ověřena",
       "orgEmailVerifiedDescription": "Vaše organizace je nyní aktivní. Pokračujte přihlášením.",
       "orgEmailVerifyFailedTitle": "Ověření se nezdařilo",
@@ -4893,13 +5414,10 @@
       "signInWithEmailOtp": "Přihlásit se pomocí OTP zaslaného e-mailem",
       "orContinueWith": "nebo pokračujte přes {{provider}}",
       "orContinueWithAny": "nebo pokračujte kteroukoli z těchto možností",
-      "orContinueWithSso": "nebo pokračujte přes jednotné přihlášení (SSO)",
       "googleNotConfigured": "Přihlášení přes Google není pro vaši organizaci nakonfigurováno.",
       "microsoftNotConfigured": "Přihlášení přes Microsoft není pro vaši organizaci nakonfigurováno.",
-      "oauthNotConfigured": "Přihlášení přes OAuth není pro vaši organizaci nakonfigurováno.",
       "googleUnavailable": "Přihlášení přes Google je momentálně nedostupné. Kontaktujte svého správce.",
       "microsoftUnavailable": "Přihlášení přes Microsoft je momentálně nedostupné. Kontaktujte svého správce.",
-      "oauthUnavailable": "Přihlášení přes OAuth je momentálně nedostupné. Kontaktujte svého správce.",
       "showPassword": "Zobrazit heslo",
       "hidePassword": "Skrýt heslo",
       "accountDisabled": "Váš účet byl deaktivován.",
@@ -4907,6 +5425,7 @@
     },
     "desktopHandoff": {
       "title": "Přihlášení odesláno do PipesHub",
+      "integrationTitle": "Autorizace odeslána do PipesHub",
       "description": "Tuto kartu můžete zavřít a vrátit se do aplikace PipesHub.",
       "openApp": "Otevřít PipesHub"
     }
@@ -4935,7 +5454,24 @@
     "back": "Zpět",
     "skip": "Přeskočit",
     "next": "Další",
-    "submit": "Odeslat"
+    "submit": "Odeslat",
+    "selectOne": "Vyberte jednu možnost",
+    "selectMany": "Vyberte všechny, které platí",
+    "skipAll": "Přeskočit vše",
+    "expired": "Platnost této otázky vypršela. Pokračujte odpovědí v chatu.",
+    "repliedInChat": "Odpověděli jste v chatu."
+  },
+  "errorToast": {
+    "accessDenied": "Přístup odepřen",
+    "invalidRequest": "Neplatný požadavek",
+    "notFound": "Nenalezeno",
+    "actionRequired": "Je vyžadována akce",
+    "connectionError": "Chyba připojení",
+    "serverError": "Chyba serveru",
+    "timedOut": "Vypršel časový limit požadavku",
+    "somethingWentWrong": "Něco se pokazilo",
+    "tryAgainShortly": "Zkuste to prosím za chvíli znovu",
+    "connectedServiceProblem": "Problém s připojenou službou"
   },
   "validation": {
     "password": {

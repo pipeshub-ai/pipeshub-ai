@@ -18,6 +18,9 @@ fields:
       block_groups:
         type: array
         required: true
+      code_facts_version:
+        type: string
+        required: false
   child_record_ids:
     required: false
     type: array
@@ -182,6 +185,9 @@ fields:
   source_created_at:
     required: false
     type: integer
+  source_timestamp_origin:
+    required: false
+    type: string
   source_updated_at:
     required: false
     type: integer

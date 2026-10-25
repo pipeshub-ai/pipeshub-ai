@@ -1,28 +1,59 @@
 import asyncio
 import json
 import re
-from typing import TYPE_CHECKING, Any, Optional
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    OUTSIDE_DATES_SEARCH_LIMIT,
+    outside_dates_payload,
+    pick_outside_dates,
+    quietly,
+    shown_ids,
+    wants_outside_dates,
+)
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
-from app.api.middlewares.auth import deny_service_tokens, require_scopes
+from app.agents.actions.knowledge_graph.ops.timeline import (
+    PERIOD_SEARCH_LIMIT,
+    auto_timeline_field,
+    timeline_search_response,
+    timeline_summaries_enabled,
+)
+from app.api.connection_limit import (
+    hide_record_parents_outside_connection,
+    hide_record_source_paths,
+)
+from app.api.middlewares.auth import (
+    connection_limit,
+    deny_service_tokens,
+    require_scopes,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.retrieval.selection_scope import within_connection
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
+from app.utils.stage_timer import StageTimer
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from langchain_core.runnables import Runnable
@@ -37,9 +68,15 @@ QUERY_TRANSFORM_TIMEOUT_SECONDS = 20.0
 
 
 # Pydantic models
+DEFAULT_SEARCH_RESULT_LIMIT = 10
+MAX_SEARCH_RESULT_LIMIT = 100
+
+
 class SearchQuery(BaseModel):
     query: str
-    limit: Optional[int] = 5
+    # Most passages (entries of ``searchResults``) the response holds, however
+    # many queries and expansions ran. Same default and bounds as the public API.
+    limit: Optional[int] = Field(DEFAULT_SEARCH_RESULT_LIMIT, ge=1, le=MAX_SEARCH_RESULT_LIMIT)
     filters: Optional[dict[str, Any]] = {}
     # Optional date bounds on the source's own created / last-modified time,
     # named as on the knowledge-graph navigate endpoint (createdAfter, modifiedAfter):
@@ -49,6 +86,20 @@ class SearchQuery(BaseModel):
     createdBefore: Optional[str] = None
     modifiedAfter: Optional[str] = None
     modifiedBefore: Optional[str] = None
+    # False searches the query exactly as sent: no model rewrite and no
+    # expanded variants. For callers that write their own search queries,
+    # such as an agent. Left out, the rewrite and expansion run as before.
+    rewriteQuery: bool = True
+    # Set, the search runs period by period over the span the matching date
+    # bounds give (createdAfter/createdBefore for "created"), as the
+    # assistant's timeline tool does, and returns the matches in date order,
+    # each labelled with its period. ``limit`` is then the matches per period.
+    # Left out, bounds on one date over more than a month run as a timeline
+    # on that date, and a plain ranked search otherwise. "off" is always the
+    # plain ranked search.
+    timeline: Literal["created", "modified", "off"] | None = None
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -72,6 +123,14 @@ def _with_request_field_names(message: str) -> str:
     return _RANGE_LABEL.sub(
         lambda m: m.group(1) + _REQUEST_FIELD_NAMES[m.group(2)] + m.group(3), message
     )
+
+
+# The request fields that bound a timeline's span, and the time-range keys
+# they parse to, by the date the timeline places records by.
+_TIMELINE_SPAN = {
+    "created": ("createdAfter", "createdBefore", "source_created_after_ms", "source_created_before_ms"),
+    "modified": ("modifiedAfter", "modifiedBefore", "source_updated_after_ms", "source_updated_before_ms"),
+}
 
 
 def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
@@ -161,6 +220,231 @@ def _queries_for_search(
     return queries
 
 
+def _typed_text_pattern(typed: str) -> re.Pattern[str] | None:
+    words = typed.split()
+    if not words:
+        return None
+    return re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.IGNORECASE)
+
+
+def _apply_result_limit(results: dict[str, Any], limit: int, typed: str = "") -> dict[str, Any]:
+    """Cut ``searchResults`` to ``limit`` passages, best first, and drop what they no longer cite.
+
+    Retrieval over several queries, and the expansion of a matched section into
+    its passages, can return more than ``limit``; ranking is left as it is.
+    A passage holding ``typed`` word for word is kept before one that does not.
+    """
+    hits = results.get("searchResults")
+    if not isinstance(hits, list) or len(hits) <= limit:
+        return results
+    # Children of an expanded section share its score; a matched passage goes
+    # before its own context, so the cut never keeps a neighbour over the match.
+    def ranked(h: dict | None) -> tuple:
+        return (-((h or {}).get("score") or 0), (h or {}).get("distanceFromMatch") or 0)
+
+    hits = sorted(hits, key=ranked)
+    pattern = _typed_text_pattern(typed)
+    if pattern is not None:
+        # Hybrid scores are RRF ranks within each rewritten query, so passages
+        # that rank well for every rewrite outscore the one keyword hit for a
+        # code or name the person typed, and the cut dropped exactly that file.
+        def holds_typed(h: dict | None) -> bool:
+            content = (h or {}).get("content")
+            return isinstance(content, str) and pattern.search(content) is not None
+
+        def section_of(h: dict | None) -> tuple:
+            h = h or {}
+            record_id = (h.get("metadata") or {}).get("recordId")
+            group = h.get("block_group_index")
+            # Equal RRF scores are common, so the score names a section only when
+            # retrieval did not say which group a passage came from.
+            return (record_id, "group", group) if group is not None else (record_id, "score", h.get("score"))
+
+        typed_hits = {id(h) for h in hits if holds_typed(h)}
+        # A neighbour holding the text brings its section's match with it, and
+        # the stable sort keeps that match ahead of the neighbour.
+        typed_sections = {
+            section_of(h) for h in hits
+            if id(h) in typed_hits and ((h or {}).get("distanceFromMatch") or 0) > 0
+        }
+
+        def promoted(h: dict | None) -> bool:
+            return id(h) in typed_hits or (
+                (h or {}).get("distanceFromMatch") == 0 and section_of(h) in typed_sections
+            )
+
+        chosen = sorted(hits, key=lambda h: not promoted(h))[:limit]
+        chosen_ids = {id(h) for h in chosen}
+        kept = [h for h in hits if id(h) in chosen_ids]
+        dropped = [h for h in hits if id(h) not in chosen_ids]
+    else:
+        kept, dropped = hits[:limit], hits[limit:]
+
+    def record_id(hit: dict | None) -> object:
+        return ((hit or {}).get("metadata") or {}).get("recordId")
+
+    kept_ids = {record_id(hit) for hit in kept}
+    omitted = dict(results.get("omittedPassages") or {})
+    for hit in dropped:
+        if record_id(hit) in kept_ids:
+            omitted[record_id(hit)] = omitted.get(record_id(hit), 0) + 1
+    results["searchResults"] = kept
+    if omitted:
+        results["omittedPassages"] = {k: v for k, v in omitted.items() if k in kept_ids}
+    if isinstance(results.get("records"), list):
+        results["records"] = [r for r in results["records"] if (r or {}).get("_key") in kept_ids]
+    if isinstance(results.get("virtual_to_record_map"), dict):
+        results["virtual_to_record_map"] = {
+            vid: r for vid, r in results["virtual_to_record_map"].items()
+            if (r or {}).get("_key") in kept_ids
+        }
+    return results
+
+
+async def _rewritten_queries(
+    request: Request, retrieval_service: RetrievalService, query: str, logger: "Logger"
+) -> list[str]:
+    """The query rewritten and expanded by the model, for retrieval."""
+    llm = await resolve_llm_for_search(request, retrieval_service)
+    rewrite_chain, expansion_chain = setup_query_transformation(llm)
+
+    # OpikTracer is invoke-config only (not a constructor callback); without
+    # this, rewrite/expand LLM calls never appear in Opik.
+    invoke_config = get_llm_invoke_config(llm)
+
+    # Run query transformations in parallel
+    rewritten_query, expanded_queries = await asyncio.gather(
+        _transform_query(rewrite_chain, query, "rewrite", logger, invoke_config),
+        _transform_query(expansion_chain, query, "expansion", logger, invoke_config),
+    )
+
+    queries = _queries_for_search(query, rewritten_query, expanded_queries)
+    logger.debug(
+        "Query transformed: rewritten_len=%d queries=%d",
+        len(rewritten_query or ""), len(queries),
+    )
+    return queries
+
+
+def _timeline_choice(requested: str | None, time_range: dict[str, int] | None) -> tuple[str | None, bool]:
+    """The date the search runs as a timeline by, or None, and whether it
+    was chosen here rather than by the caller."""
+    if requested == "off" or not timeline_summaries_enabled():
+        return None, False
+    if requested:
+        return requested, False
+    date_field = auto_timeline_field(time_range)
+    return date_field, date_field is not None
+
+
+@dataclass(frozen=True)
+class _TimelineSpan:
+    date_field: str
+    start_ms: int | None
+    end_ms: int | None
+    other_bounds: dict[str, int]
+    """Bounds on the other date, kept on every search of the timeline."""
+
+
+def _timeline_span(date_field: str, time_range: dict[str, int] | None) -> _TimelineSpan:
+    """The span the request's bounds on ``date_field`` give, checked before
+    any search runs. An inverted range was already refused by the parser."""
+    after_field, _, after_key, before_key = _TIMELINE_SPAN[date_field]
+    bounds = time_range or {}
+    start_ms = bounds.get(after_key)
+    # A timeline ends today at the latest, so its start cannot be later.
+    if start_ms is not None and start_ms > time.time() * 1000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{after_field} is in the future, so the timeline has no span to search.",
+        )
+    return _TimelineSpan(
+        date_field=date_field,
+        start_ms=start_ms,
+        end_ms=bounds.get(before_key),
+        other_bounds={k: v for k, v in bounds.items() if k not in (after_key, before_key)},
+    )
+
+
+async def _timeline_search(
+    span: _TimelineSpan,
+    period_limit: int,
+    run_search: "Callable[[dict[str, int] | None, int | None], Awaitable[dict[str, Any]]]",
+    logger: "Logger",
+    *,
+    automatic: bool,
+) -> dict[str, Any]:
+    """The timeline tool's period-by-period search, each search being
+    ``run_search``: the plain search, with its permission check and filters."""
+
+    async def search_span(bounds: dict[str, int] | None, limit: int) -> dict[str, Any]:
+        return await run_search({**span.other_bounds, **(bounds or {})} or None, limit)
+
+    results = await timeline_search_response(
+        search_span,
+        start_ms=span.start_ms,
+        end_ms=span.end_ms,
+        date_field=span.date_field,
+        period_limit=period_limit,
+        automatic=automatic,
+        log=logger,
+    )
+    if results is None:
+        raise HTTPException(status_code=500, detail=action_failed("run this search"))
+    return results
+
+
+# A date-bounded search that found nothing in its dates answers 404 (no
+# accessible records); with matches from outside them it answers 200.
+_NOTHING_IN_DATES_STATUS = 404
+_NOTHING_IN_DATES_MESSAGE = (
+    "Nothing in your dates matched. The best matches written outside them are "
+    "in outsideDates."
+)
+
+
+def _with_outside_dates(
+    results: dict[str, Any], unbounded: Any, time_range: dict[str, int],  # noqa: ANN401
+) -> dict[str, Any]:
+    """``results`` with ``outsideDates``: the best matches of ``unbounded``,
+    the same search without dates, that the bounds ``time_range`` left out
+    (``ops/outside_dates``). Unchanged when there are none or either search
+    failed."""
+    status_code = results.get("status_code", 500)
+    if status_code not in (200, _NOTHING_IN_DATES_STATUS):
+        return results
+    shown_virtual_ids, shown_record_ids = shown_ids(
+        results.get("searchResults") or [], results.get("virtual_to_record_map"),
+    )
+    picked = pick_outside_dates(
+        unbounded, time_range, shown_virtual_ids=shown_virtual_ids, shown_record_ids=shown_record_ids,
+    )
+    if not picked:
+        return results
+    payload = {**results, "outsideDates": outside_dates_payload(picked, unbounded)}
+    if status_code == _NOTHING_IN_DATES_STATUS:
+        payload.update(status="success", status_code=200, message=_NOTHING_IN_DATES_MESSAGE)
+    return payload
+
+
+async def _with_search_without_dates(
+    searched: "Awaitable[dict[str, Any]]",
+    run_search: "Callable[[dict[str, int] | None, int | None], Awaitable[dict[str, Any]]]",
+    time_range: dict[str, int] | None,
+    logger: "Logger",
+) -> dict[str, Any]:
+    """``searched``, a ranked or timeline search. With date bounds the same
+    search runs once more without them, one ranked search alongside, and the
+    best matches the dates left out are added (``outsideDates``); a failure of
+    that search leaves the result as it would have been."""
+    if not time_range or not wants_outside_dates(time_range):
+        return await searched
+    results, unbounded = await asyncio.gather(
+        searched, quietly(run_search(None, OUTSIDE_DATES_SEARCH_LIMIT), logger),
+    )
+    return _with_outside_dates(results, unbounded, time_range)
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -173,53 +457,74 @@ async def search(
     container = request.app.container
     logger = container.logger()
     time_range = _search_time_range(body)
+    timeline, automatic = _timeline_choice(body.timeline, time_range)
+    span = _timeline_span(timeline, time_range) if timeline else None
+    timer = StageTimer()
+    limit = body.limit or DEFAULT_SEARCH_RESULT_LIMIT
     try:
-        llm = await resolve_llm_for_search(request, retrieval_service)
+        async with call_scope(
+            principal_from_request_user(request.state.user),
+            Workload.SEARCH,
+            config_service=container.config_service(),
+            container=container,
+        ):
+            if body.rewriteQuery:
+                queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+            else:
+                queries = _queries_for_search(body.query, None, None)
+            timer.mark("query_transform")
+            filter_groups = within_connection(body.filters, connection_limit(request.state.user))
 
-        # Extract KB IDs from filters if present
-        updated_filters = body.filters
+            async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
+                return await retrieval_service.search_with_filters(
+                    queries=queries,
+                    org_id=request.state.user.get("orgId"),
+                    user_id=request.state.user.get("userId"),
+                    limit=limit,
+                    filter_groups=filter_groups,
+                    knowledge_search=True,
+                    time_range=bounds,
+                )
 
-        # Setup query transformation
-        rewrite_chain, expansion_chain = setup_query_transformation(llm)
+            if span is None:
+                searched = run_search(time_range, limit)
+            else:
+                # ``limit`` is the matches per period when the caller set it. A
+                # caller who did not ask for a timeline meant it for the whole
+                # search, so it does not raise each period's above the default.
+                period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
+                if automatic:
+                    period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
+                searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
+            results = await _with_search_without_dates(searched, run_search, time_range, logger)
+            if span is None:
+                # A timeline's ``limit`` is per period, so only a ranked search is cut.
+                results = _apply_result_limit(results, limit, body.query)
+            await hide_record_parents_outside_connection(
+                request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
+            )
+            hide_record_source_paths(request, results)
+            timer.mark("retrieval")
+            timer.emit(
+                logger, "search",
+                rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
+                timeline=timeline, timeline_auto=automatic or None,
+            )
+            custom_status_code = results.get("status_code", 500)
+            logger.info(f"Custom status code: {custom_status_code}")
 
-        # OpikTracer is invoke-config only (not a constructor callback); without
-        # this, rewrite/expand LLM calls never appear in Opik.
-        invoke_config = get_llm_invoke_config(llm)
+            _su_email = request.state.user.get("email")
+            record_event("search_performed", {
+                "orgId": request.state.user.get("orgId"),
+                "userId": request.state.user.get("userId"),
+                "email": _su_email,
+                "domain": domain_from_email(_su_email),
+                "status_code": custom_status_code,
+                "num_queries": len(queries),
+                "search_type": "timeline" if timeline else "search",
+            })
 
-        # Run query transformations in parallel
-        rewritten_query, expanded_queries = await asyncio.gather(
-            _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
-            _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
-        )
-
-        logger.debug(f"Rewritten query: {rewritten_query}")
-        logger.debug(f"Expanded queries: {expanded_queries}")
-
-        queries = _queries_for_search(body.query, rewritten_query, expanded_queries)
-        results = await retrieval_service.search_with_filters(
-            queries=queries,
-            org_id=request.state.user.get("orgId"),
-            user_id=request.state.user.get("userId"),
-            limit=body.limit,
-            filter_groups=updated_filters,
-            knowledge_search=True,
-            time_range=time_range,
-        )
-        custom_status_code = results.get("status_code", 500)
-        logger.info(f"Custom status code: {custom_status_code}")
-
-        _su_email = request.state.user.get("email")
-        record_event("search_performed", {
-            "orgId": request.state.user.get("orgId"),
-            "userId": request.state.user.get("userId"),
-            "email": _su_email,
-            "domain": domain_from_email(_su_email),
-            "status_code": custom_status_code,
-            "num_queries": len(queries),
-            "search_type": "search",
-        })
-
-        return JSONResponse(status_code=custom_status_code, content=results)
+            return JSONResponse(status_code=custom_status_code, content=results)
 
     except HTTPException:
         raise

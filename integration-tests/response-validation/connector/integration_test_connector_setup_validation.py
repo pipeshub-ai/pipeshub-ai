@@ -297,7 +297,7 @@ class TestDocumentedScopes:
 
 @pytest.mark.integration
 class TestMalformedBodies:
-    """A body of the wrong JSON type is answered with the documented 500."""
+    """A body of the wrong JSON type is answered with the documented 500, or 400 where the route checks it."""
 
     @pytest.mark.parametrize(
         ("operation_id", "method", "path"),
@@ -334,8 +334,9 @@ class TestMalformedBodies:
         self, connectors_api: ConnectorsClient, postgres_connector: Any
     ) -> None:
         resp = connectors_api.update_auth_config(postgres_connector.connector_id, {"auth": ["x"]})
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_AUTH, 500)
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["message"] == "Auth configuration must be an object."
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_AUTH, 400)
 
     def test_filters_sync_with_array_filters(
         self, connectors_api: ConnectorsClient, rss_connector: Any

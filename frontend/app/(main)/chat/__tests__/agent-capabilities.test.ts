@@ -44,7 +44,6 @@ function makeHelpers(storage: Storage) {
       return {
         internalSearch: typeof parsed.internalSearch === 'boolean' ? parsed.internalSearch : true,
         webSearch: typeof parsed.webSearch === 'boolean' ? parsed.webSearch : true,
-        deepSearch: typeof parsed.deepSearch === 'boolean' ? parsed.deepSearch : false,
       };
     } catch {
       return { ...DEFAULT_AGENT_CAPABILITIES };
@@ -67,10 +66,9 @@ const h = React.createElement;
 // ---------------------------------------------------------------------------
 
 describe('DEFAULT_AGENT_CAPABILITIES', () => {
-  it('has both search modes enabled and deepSearch off', () => {
+  it('has both search modes enabled', () => {
     expect(DEFAULT_AGENT_CAPABILITIES.internalSearch).toBe(true);
     expect(DEFAULT_AGENT_CAPABILITIES.webSearch).toBe(true);
-    expect(DEFAULT_AGENT_CAPABILITIES.deepSearch).toBe(false);
   });
 });
 
@@ -97,20 +95,20 @@ describe('localStorage agent capabilities helpers', () => {
   });
 
   it('round-trips universal capabilities', () => {
-    const caps: AgentCapabilities = { internalSearch: false, webSearch: true, deepSearch: false };
+    const caps: AgentCapabilities = { internalSearch: false, webSearch: true };
     lsSet(caps);
     expect(lsGet()).toEqual(caps);
   });
 
   it('round-trips scoped capabilities per agentId', () => {
-    const caps: AgentCapabilities = { internalSearch: true, webSearch: false, deepSearch: false };
+    const caps: AgentCapabilities = { internalSearch: true, webSearch: false };
     lsSet(caps, 'agent-42');
     expect(lsGet('agent-42')).toEqual(caps);
   });
 
   it('scoped and universal keys are independent', () => {
-    const universal: AgentCapabilities = { internalSearch: false, webSearch: true, deepSearch: false };
-    const scoped: AgentCapabilities = { internalSearch: true, webSearch: false, deepSearch: false };
+    const universal: AgentCapabilities = { internalSearch: false, webSearch: true };
+    const scoped: AgentCapabilities = { internalSearch: true, webSearch: false };
     lsSet(universal);
     lsSet(scoped, 'agent-abc');
     expect(lsGet()).toEqual(universal);
@@ -127,7 +125,6 @@ describe('localStorage agent capabilities helpers', () => {
     const caps = lsGet();
     expect(caps.internalSearch).toBe(false);
     expect(caps.webSearch).toBe(true);
-    expect(caps.deepSearch).toBe(false);
   });
 
   it('ignores non-boolean values and returns defaults for those fields', () => {
@@ -167,8 +164,8 @@ describe('PlusMenuContent', () => {
       Content,
     );
     expect(screen.getByText('Attach files')).toBeTruthy();
-    expect(screen.getByText('Internal Search')).toBeTruthy();
-    expect(screen.getByText('Web Search')).toBeTruthy();
+    expect(screen.getByText('Internal search')).toBeTruthy();
+    expect(screen.getByText('Web search')).toBeTruthy();
   });
 
   it('calls onAttachFiles when the attach files row is clicked', async () => {
@@ -201,7 +198,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const internalSwitch = screen.getByRole('switch', { name: 'Internal Search' }) as HTMLButtonElement;
+    const internalSwitch = screen.getByRole('switch', { name: 'Internal search' }) as HTMLButtonElement;
     expect(internalSwitch.disabled).toBe(true);
   });
 
@@ -218,7 +215,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const webSwitch = screen.getByRole('switch', { name: 'Web Search' }) as HTMLButtonElement;
+    const webSwitch = screen.getByRole('switch', { name: 'Web search' }) as HTMLButtonElement;
     expect(webSwitch.disabled).toBe(true);
   });
 
@@ -235,7 +232,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
     expect(toggle).toHaveBeenCalled();
   });
 
@@ -253,7 +250,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
     expect(toggle).not.toHaveBeenCalled();
   });
 
@@ -270,7 +267,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Web Search' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Web search' }));
     expect(toggle).toHaveBeenCalled();
   });
 });

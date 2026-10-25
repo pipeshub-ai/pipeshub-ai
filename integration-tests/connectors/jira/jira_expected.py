@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from app.config.constants.arangodb import (
@@ -25,7 +24,8 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
+from connectors.jira.constants import connector_base_url
 from connectors.jira.jira_test_utils import parse_jira_timestamp
 
 
@@ -109,11 +109,13 @@ class JiraExpected:
 
         created_at = parse_jira_timestamp(fields.get("created"))
         updated_at = parse_jira_timestamp(fields.get("updated"))
+        # As the connector maps them: resolved until reopened; the due date is a calendar day.
+        resolved_at = parse_jira_timestamp(fields.get("resolutiondate")) or None
+        due_date = datetime_to_epoch_ms(fields.get("duedate"), "%Y-%m-%d")
 
         base_url = (
             site_base_url
-            or os.getenv("JIRA_TEST_BASE_URL")
-            or ""
+            or connector_base_url()
         ).rstrip("/")
         weburl = f"{base_url}/browse/{key}" if base_url and key else None
 
@@ -149,6 +151,8 @@ class JiraExpected:
             parent_node_id=None,
             status=status,
             source_status=source_status,
+            resolved_at=resolved_at,
+            due_date=due_date,
             priority=priority,
             type=issue_type,
             assignee=assignee_name,
@@ -273,7 +277,7 @@ class JiraExpected:
         if "." in filename:
             extension = filename.split(".")[-1].lower()
 
-        base = (site_base_url or os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base = (site_base_url or connector_base_url()).rstrip("/")
         weburl = f"{base}/browse/{issue_key}" if base and issue_key else None
 
         ts = created_at or get_epoch_timestamp_in_ms()

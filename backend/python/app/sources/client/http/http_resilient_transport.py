@@ -60,7 +60,16 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
             if attempt >= policy.max_retries or not is_retryable_status(response.status_code):
                 return response
 
-            delay = policy.note_retry(attempt, parse_retry_after(response.headers))
+            note_status = getattr(policy, "note_response_status", None)
+            if note_status is not None:
+                note_status(response.status_code)
+            try:
+                delay = policy.note_retry(attempt, parse_retry_after(response.headers))
+            except BaseException:
+                # A policy may refuse to wait (an hourly quota spent); the response still holds a connection.
+                with contextlib.suppress(Exception):
+                    await response.aclose()
+                raise
             policy.logger.warning(
                 "%s %s — HTTP %s (attempt %s/%s), retrying in %.2fs",
                 request.method, redact_sensitive_query_params(str(request.url)), response.status_code,

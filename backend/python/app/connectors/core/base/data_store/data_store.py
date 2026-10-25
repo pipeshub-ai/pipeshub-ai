@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, Optional
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Optional
 
 from app.models.entities import (
     AppMetadata,
@@ -216,7 +216,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Optional[User]:
         pass
 
     @abstractmethod
@@ -285,7 +285,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> None:
         pass
 
     @abstractmethod
@@ -319,6 +319,11 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         pass
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        """Delete the user's own PERMISSION edges to this connector's records, record groups and user groups.
+        Returns how many were deleted."""
+        raise NotImplementedError
 
     @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
@@ -409,7 +414,7 @@ class BaseDataStore(ABC):
         collection: str,
         *,
         raise_on_error: bool = False,
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, Any]]:
         pass
 
     @abstractmethod

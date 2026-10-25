@@ -12,7 +12,7 @@ vi.mock('@/app/components/ui', () => ({ FileIcon: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('../artifact-thumbnail', () => ({ ArtifactThumbnail: () => null }));
 const mobile = vi.hoisted(() => ({ value: false }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value, useIsBelowDesktop: () => mobile.value }));
 
 const PAGINATION = { page: 1, limit: 50, totalCount: 3, totalPages: 1 };
 

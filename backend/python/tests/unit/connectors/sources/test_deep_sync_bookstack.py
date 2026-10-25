@@ -8,6 +8,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.sources.bookstack.access import BookStackGrants, RoleAccess
 from app.models.entities import AppUser, FileRecord, RecordType
 from app.models.permission import PermissionType
 
@@ -225,10 +226,23 @@ class TestProcessBookstackPage:
             })
         )
         fake_perms = [MagicMock()]
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=fake_perms):
+        # Whether the page inherits is the parser's decision, not the raw "inheriting" flag.
+        grants = BookStackGrants(fake_perms, inherit=False, effective=RoleAccess({}, frozenset()))
+        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=grants):
             result = await connector._process_bookstack_page(page, {}, [])
         assert result.record.inherit_permissions is False
-        assert len(result.new_permissions) == 1
+        assert list(result.new_permissions) == fake_perms
+
+    async def test_page_inherits_when_the_parser_says_so(self, connector) -> None:
+        page = _make_page()
+        connector.data_source.get_content_permissions = AsyncMock(
+            return_value=_make_response(data={"fallback_permissions": {"inheriting": False}})
+        )
+        grants = BookStackGrants([], inherit=True, effective=RoleAccess({}, frozenset()))
+        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=grants):
+            result = await connector._process_bookstack_page(page, {}, [])
+        assert result.record.inherit_permissions is True
+        assert result.new_permissions == []
 
     async def test_page_permissions_failure(self, connector):
         page = _make_page()

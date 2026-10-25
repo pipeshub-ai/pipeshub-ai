@@ -4,9 +4,10 @@ which never run.
 Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Block ("Deny"). For an
 MCP tool the rule is the person's own, set for their MCP servers, and it applies in every chat they
 have, agent chats included. For a toolset tool (Jira, Slack, ...) it is the toolset instance's, set
-by an admin for everyone in the organization. Without one, a tool starts from what it does to data
-(`mcp/tool_kind.py`): a read-only tool at Allow, one that changes data at Ask, one that deletes
-data at Block.
+by an admin for everyone in the organization, or by its owner for a personal instance, one a user
+added for themselves. Without one, a tool starts from what it does to data
+(`mcp/tool_kind.py`). An MCP tool: a read-only one at Allow, one that changes data at Ask, one that
+deletes data at Block. A toolset tool: reads and changes at Allow, one that deletes data at Ask.
 
 - **Block**: the call doesn't run, and the model is told why.
 - **Ask**: the call is saved and the turn stops on it, with an approval card on the tool's row.
@@ -14,8 +15,8 @@ data at Block.
   with `toolApproval`, like the ask-user card's `User selections:`): the saved call runs, on the
   server, with the arguments it was asked with, and its result becomes the result of the call the
   model made. The model carries on from there in the same reply; it never re-creates the call.
-  "Don't ask again" also saves the answer as the person's rule for an MCP tool; a toolset's rules
-  change only in its rules editor.
+  "Don't ask again" also saves the answer as the person's rule for an MCP tool or a personal
+  toolset; an org toolset's rules change only in its rules editor.
 - Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
   service account): there, Ask is Block. Only a pre-approved tool runs there.
 
@@ -29,9 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import Field, ValidationError
@@ -52,6 +54,8 @@ from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.agent_loop_lib.agent import Agent
     from app.agent_loop_lib.context.manager import ContextManager
     from app.agent_loop_lib.core.scope import RunScope
@@ -119,6 +123,8 @@ class PendingCall(MCPCamelModel):
     conversation_id: str
     # Calls saved before toolsets were checked are all MCP calls.
     source: Source = "mcp"
+    # A personal toolset instance's rules are its owner's, so an answer may set them.
+    personal: bool = False
     instance_id: str
     server_name: str
     tool_name: str
@@ -154,6 +160,14 @@ def enabled(source: Source = "mcp") -> bool:
     return env_bool(TOOLSET_ENABLED_ENV if source == "toolset" else ENABLED_ENV, True)
 
 
+def organization_toolset_tool_rules() -> bool:
+    """Whether admins set toolset tools' rules for the organization (an edition extension point)."""
+    # Imported late: edition_config imports the routes that import this module.
+    from app import edition_config
+
+    return bool(getattr(edition_config, "organization_toolset_tool_rules", False))
+
+
 @dataclass(frozen=True)
 class ApprovalTarget:
     """A tool the gate checks: where its rule is kept, what it does to data, and the tool itself."""
@@ -167,6 +181,15 @@ class ApprovalTarget:
     kind: ToolKind
     tool: Tool
     title: Optional[str] = None
+    # A personal toolset instance: its rules are the person's own, as an MCP server's are.
+    personal: bool = False
+    # Whose starting rules apply where nobody set one, when not its source's own. An API action's
+    # operation is any REST call an admin picked from a spec, so it starts like an MCP tool.
+    defaults: Source | None = None
+
+    @property
+    def own_rules(self) -> bool:
+        return self.source == "mcp" or self.personal
 
 
 def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
@@ -178,6 +201,99 @@ def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
     )
 
 
+# Only what reads the same in MariaDB and Redshift is stripped: quoted literals, "-- " followed by
+# whitespace, and plain /* */ comments. Any other comment marker left after that makes the call
+# count as destructive, and backticks are kept, so a statement they could hide still counts.
+_SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
+_SQL_LEFTOVER_COMMENT_MARKERS = ("/*", "*/", "#", "--")
+_SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
+_SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
+_SQL_WORD = re.compile(r"[a-z_]+")
+
+
+def sql_keeps_its_kind(sql: str) -> bool:
+    """Whether a statement only reads, or makes an ordinary write (INSERT, UPDATE). Anything else,
+    such as DELETE, DROP, TRUNCATE, ALTER or GRANT, more than one statement, or text that can't be
+    read this way, counts as a call that can't be undone."""
+    if not isinstance(sql, str) or "\\" in sql:
+        # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
+        return False
+    code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
+    if any(marker in code for marker in _SQL_LEFTOVER_COMMENT_MARKERS):
+        # Fail closed: a comment the two dialects read differently (MySQL's /*! */ and /*M! */,
+        # "--" with no space, "#") could hide or change the statement that runs.
+        return False
+    statements = [part for part in code.split(";") if part.strip()]
+    if len(statements) != 1:
+        return False
+    words = _SQL_WORD.findall(statements[0])
+    if not words:
+        return False
+    if {"outfile", "dumpfile"} & set(words) or ("into" in words and words[0] != "insert"):
+        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB). Only an
+        # INSERT's own verb makes INTO safe: "insert" can be an alias on Redshift.
+        return False
+    if words[0] == "with":
+        # A CTE: what runs is what the statement does once its named queries are read.
+        return not ({"delete", "drop", "truncate", "alter", "grant", "revoke", "create", "merge", "replace", "call"} & set(words))
+    return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
+
+
+# Docs batch requests that only add or restyle content. Anything else, a delete, a named-range
+# replace (which drops every range after the first), accepting or rejecting a suggestion, or a
+# request type added to the API later, counts as a call that can't be undone.
+_DOCS_ADDING_REQUESTS = frozenset({
+    "insertText", "insertInlineImage", "insertTable", "insertTableRow", "insertTableColumn",
+    "insertPageBreak", "insertSectionBreak", "insertPerson", "addDocumentTab",
+    "createParagraphBullets", "createNamedRange", "createHeader", "createFooter", "createFootnote",
+    "updateTextStyle", "updateParagraphStyle", "updateTableColumnProperties", "updateTableCellStyle",
+    "updateTableRowStyle", "updateDocumentStyle", "updateSectionStyle", "updateDocumentTabProperties",
+    "pinTableHeaderRows", "mergeTableCells", "unmergeTableCells",
+})
+
+
+def _docs_request_keeps_its_kind(request: Any) -> bool:  # noqa: ANN401
+    if not isinstance(request, dict) or len(request) != 1:
+        return False
+    (name, body), = request.items()
+    if name == "replaceAllText":
+        # The same change replace_text makes; an empty replacement or a regex match can wipe text.
+        if not isinstance(body, dict):
+            return False
+        contains = body.get("containsText")
+        replacement = body.get("replaceText")
+        return (
+            isinstance(replacement, str) and replacement != ""
+            and isinstance(contains, dict) and contains.get("searchByRegex") is not True
+        )
+    return name in _DOCS_ADDING_REQUESTS
+
+
+def docs_requests_keep_their_kind(requests: Any) -> bool:  # noqa: ANN401
+    """Whether a Google Docs batch update only adds or restyles content. Any other request, or
+    requests that aren't a list of request objects, count as a call that can't be undone."""
+    return isinstance(requests, list) and bool(requests) and all(map(_docs_request_keeps_its_kind, requests))
+
+
+# Tools whose one call can do more than the tool's kind says: the argument that decides, and the
+# check that it doesn't. A call that fails the check counts as destructive.
+_CALL_CHECKS: dict[str, tuple[str, Callable[[Any], bool]]] = {
+    "/tools/mariadb/execute_query": ("query", sql_keeps_its_kind),
+    "/tools/redshift/execute_query": ("query", sql_keeps_its_kind),
+    "/tools/docs/batch_update_document": ("requests", docs_requests_keep_their_kind),
+}
+
+
+def call_kind(target: "ApprovalTarget", tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
+    """What this one call does to data: the tool's kind, unless this call can't be undone."""
+    check = _CALL_CHECKS.get(tool_path)
+    if check is None or target.kind == "destructive":
+        return target.kind
+    field, keeps_its_kind = check
+    value = arguments.get(field) if isinstance(arguments, dict) else None
+    return target.kind if keeps_its_kind(value) else "destructive"
+
+
 @dataclass(frozen=True)
 class Verdict:
     rule: Rule
@@ -185,18 +301,25 @@ class Verdict:
     reason: str = ""
 
 
-_STARTING_RULES: dict[str, Rule] = {"read": "allow", "write": "ask", "destructive": "block"}
+# An MCP tool comes from a third-party server; a toolset tool is one of PipesHub's own integrations,
+# set up for the organization, so its writes run and only a deleting call waits for a person.
+_STARTING_RULES: dict[Source, dict[str, Rule]] = {
+    "mcp": {"read": "allow", "write": "ask", "destructive": "block"},
+    "toolset": {"read": "allow", "write": "allow", "destructive": "ask"},
+}
 
 
-def starting_rule(*, kind: ToolKind) -> Rule:
+def starting_rule(*, kind: ToolKind, source: Source) -> Rule:
     """A tool's rule where nobody set one."""
-    return _STARTING_RULES[kind]
+    return _STARTING_RULES[source][kind]
 
 
-def decide(*, own: Optional[Rule], kind: ToolKind, watched: bool, approved_call: bool = False) -> Verdict:
+def decide(
+    *, own: Optional[Rule], kind: ToolKind, source: Source, watched: bool, approved_call: bool = False,
+) -> Verdict:
     """The rule for one call. `approved_call`: this is the call a person just approved (it runs
     unless something now blocks it)."""
-    effective = own or starting_rule(kind=kind)
+    effective = own or starting_rule(kind=kind, source=source)
     if effective == "block":
         return Verdict("block", "own" if own else "default")
     if effective == "allow" or approved_call:
@@ -329,7 +452,7 @@ class _InstanceRules:
     unavailable: bool = False
 
 
-async def _rules_for(context: "AgentContext", source: Source, instance_id: str) -> _InstanceRules:
+async def _rules_for(context: "AgentContext", source: Source, instance_id: str, *, personal: bool = False) -> _InstanceRules:
     """Read once per request and instance; an answer to a card updates it in place."""
     cache: dict[tuple[str, str], _InstanceRules] = context.tool_state.setdefault(_RULES_CACHE, {})
     key = (source, instance_id)
@@ -337,10 +460,12 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str) 
         try:
             if source == "mcp":
                 rules = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
-            elif instance_id:
+            elif instance_id and (personal or organization_toolset_tool_rules()):
+                # A personal instance's rules are its owner's, in every edition.
                 rules = await load_instance_rules(context.config_service, instance_id=instance_id)
             else:
-                # A toolset whose instance couldn't be told apart: nobody could have set its rules.
+                # Without organization rules, or for a toolset whose instance couldn't be told
+                # apart, every tool starts from what it does to data.
                 rules = ToolRules()
         except Exception as e:
             logger.warning(f"Couldn't read the tool rules of {source} instance {instance_id}: {e}")
@@ -352,18 +477,23 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str) 
 
 def _blocked_message(reason: str, target: ApprovalTarget) -> str:
     tool, owner = target.tool_name, target.owner
-    # An MCP tool's rules are the person's own; a toolset's are the organization's, set by an admin.
-    whose, who = ("the user's", "they") if target.source == "mcp" else ("the organization's", "an admin")
+    # An MCP tool's and a personal toolset's rules are the person's own; an org toolset's are the
+    # organization's, set by an admin.
+    whose, who = ("the user's", "they") if target.own_rules else ("the organization's", "an admin")
     if reason == "unattended":
+        can_pre_approve = target.source == "toolset" and not target.personal and organization_toolset_tool_rules()
         return (
             f"{tool} on {owner} needs someone to approve it in the PipesHub app, so it wasn't run here. "
             "Tell the user what you wanted to do"
-            + ("." if target.source == "mcp" else ", and that an admin can pre-approve it.")
+            + (", and that an admin can pre-approve it." if can_pre_approve else ".")
         )
     if reason == "default":
+        # Without organization rules nobody can change an org instance's rule (an API action's).
+        can_change = target.own_rules or organization_toolset_tool_rules()
         return (
             f"{tool} on {owner} can delete data, so it's denied unless {whose} tool approval rules allow it. "
-            f"It wasn't run. Tell the user {who} can change its rule to run it."
+            + (f"It wasn't run. Tell the user {who} can change its rule to run it." if can_change
+               else f"It wasn't run. Tell the user to do it in {owner} itself.")
         )
     return f"{tool} on {owner} is blocked in {whose} tool approval rules, so it wasn't run."
 
@@ -384,7 +514,8 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         if target is None:
             await next_fn()
             return
-        rules = await _rules_for(context, target.source, target.instance_id)
+        target = replace(target, kind=call_kind(target, ctx.tool_path, ctx.tool_input))
+        rules = await _rules_for(context, target.source, target.instance_id, personal=target.personal)
         if rules.unavailable:
             ctx.deny(
                 f"The approval rules for {target.tool_name} on {target.owner} couldn't be checked, "
@@ -395,6 +526,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         verdict = decide(
             own=rules.rules.tools.get(target.tool_name),
             kind=target.kind,
+            source=target.defaults or target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
         )
@@ -421,7 +553,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
     call = getattr(ctx.scope, "call", None)
     pending = PendingCall(
         approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
-        conversation_id=context.conversation_id or "", source=target.source, instance_id=target.instance_id,
+        conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
+        instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
         created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
@@ -447,8 +580,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         details={
             "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
             "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
-            # "Don't ask again" sets the person's own rule; a toolset's rules are the admin's.
-            "canRemember": target.source == "mcp",
+            # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
+            "canRemember": target.own_rules,
             "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
         },
     ))
@@ -600,9 +733,10 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
 
 async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
     """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
-    since the card was shown stands over an Allow. A toolset's rules are the admin's: an answer
+    since the card was shown stands over an Allow. An org toolset's rules are the admin's: an answer
     never changes them, whatever the request says."""
     if pending.source != "mcp":
+        await _remember_for_personal_toolset(context, pending, rule)
         return
     rules = await _rules_for(context, "mcp", pending.instance_id)
     if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
@@ -610,6 +744,30 @@ async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -
     rules.rules.tools[pending.tool_name] = rule
     try:
         await save_own_rules(context.config_service, rules.rules, user_id=context.user_id, instance_id=pending.instance_id)
+    except Exception as e:
+        logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
+
+
+async def _remember_for_personal_toolset(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
+    """A personal toolset instance's rules are its owner's: the answer is saved there, once the
+    instance is confirmed to be this person's own (the saved call alone doesn't prove it)."""
+    if not pending.personal:
+        return
+    from app.agents.toolset_store import get_personal_instance
+
+    try:
+        own = await get_personal_instance(context.config_service, context.org_id, context.user_id, pending.instance_id)
+    except Exception as e:
+        logger.warning(f"Couldn't check the toolset instance of {pending.tool_name}: {e}")
+        return
+    if own is None:
+        return
+    rules = await _rules_for(context, "toolset", pending.instance_id, personal=True)
+    if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
+        return
+    rules.rules.tools[pending.tool_name] = rule
+    try:
+        await save_instance_rules(context.config_service, rules.rules, instance_id=pending.instance_id)
     except Exception as e:
         logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
 

@@ -19,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -41,11 +42,11 @@ import * as healthRoutes from '../src/modules/tokens_manager/routes/health.route
 import * as userRoutes from '../src/modules/user_management/routes/users.routes';
 import * as userGroupRoutes from '../src/modules/user_management/routes/userGroups.routes';
 import * as orgRoutes from '../src/modules/user_management/routes/org.routes';
-import * as samlRoutes from '../src/modules/auth/routes/saml.routes';
 import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.routes';
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
 import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
+import * as codeGraphRoutes from '../src/modules/enterprise_search/routes/code-graph.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
@@ -59,12 +60,17 @@ import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import {
+  MCP_BODY_TOO_LARGE_MESSAGE,
+  MCP_JSON_BODY_LIMIT_BYTES,
+} from '../src/modules/mcp/middlewares/mcp-body.middleware';
 import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.routes';
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -163,7 +169,6 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(userRoutes, 'createUserRouter').returns(dummyRouter);
   sandbox.stub(userGroupRoutes, 'createUserGroupRouter').returns(dummyRouter);
   sandbox.stub(orgRoutes, 'createOrgRouter').returns(dummyRouter);
-  sandbox.stub(samlRoutes, 'createSamlRouter').returns(dummyRouter);
   sandbox.stub(userAccountRoutes, 'createUserAccountRouter').returns(dummyRouter);
   sandbox.stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter').returns(dummyRouter);
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
@@ -171,6 +176,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
+  sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
@@ -191,6 +197,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -251,7 +258,9 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   } as any);
   containers.oauth!.bind('ServiceTokenService').toConstantValue({
     revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
+
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -282,15 +291,7 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     .bind<any>(CrawlingSchedulerService)
     .toConstantValue(mockCrawlingScheduler);
 
-  // SamlController mock — needed for updateSamlStrategies
-  const mockSamlController = {
-    updateSamlStrategiesWithCallback: sandbox.stub(),
-  };
-  containers['auth']
-    .bind<any>('SamlController')
-    .toConstantValue(mockSamlController);
-
-  return { containers, mockNotificationService, mockOAuthTokenService, mockSamlController };
+  return { containers, mockNotificationService, mockOAuthTokenService };
 }
 
 // ---------------------------------------------------------------------------
@@ -493,26 +494,6 @@ describe('Application', () => {
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
     });
 
-    it('should update SAML strategies after server starts listening', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      await app.start();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
     it('should start telemetry and the org metrics refresh loop', async () => {
       const app = new Application();
       stubAllContainers(sandbox);
@@ -604,29 +585,6 @@ describe('Application', () => {
       // so it should NOT throw
       await app.initialize();
     });
-
-    it('should handle SAML strategy update failure gracefully', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      mockSamlController.updateSamlStrategiesWithCallback.throws(
-        new Error('SAML config unavailable'),
-      );
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      // Should NOT throw — updateSamlStrategies has a try/catch
-      await app.start();
-    });
   });
 
   // =========================================================================
@@ -709,6 +667,234 @@ describe('Application', () => {
         restoreEnv('STRICT_MODE', original);
       }
     });
+
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
+    });
+
+    it('writes an access-log line for API requests in any letter case, and none for pages', async () => {
+      const expressApp = (app as any).app as express.Express;
+      const server = http.createServer(expressApp);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const get = (path: string) =>
+        new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      try {
+        for (const path of ['/api/v1/access-log-probe', '/API/v1/access-log-probe-upper', '/access-log-probe-page']) {
+          await get(path);
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('access-log-probe'));
+      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
+
+    it('writes an access-log line for an API request a mounted router answers', async () => {
+      // A mounted router sees req.path relative to its mount point ("/"), and the
+      // log line is written after it answers: the API check must use the full URL.
+      const healthRouter = express.Router();
+      healthRouter.get('/', (_req, res) => {
+        res.json({ status: 'healthy' });
+      });
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+      const mountedApp = new Application();
+      await mountedApp.initialize();
+      const server = http.createServer((mountedApp as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      let status = 0;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path: '/api/v1/health?probe=mounted-router' }, (res) => {
+              status = res.statusCode ?? 0;
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(status).to.equal(200);
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('probe=mounted-router'));
+      expect(accessLines).to.have.length(1);
+      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
+    });
+  });
+
+  // =========================================================================
+  // /mcp body limit — sent through the real middleware stack
+  // =========================================================================
+  describe('/mcp body limit', () => {
+    let server: http.Server;
+    let origin: string;
+
+    /**
+     * A tools/call body of exactly `bytes` bytes, made of 1,000-character ids:
+     * the XSS check refuses any single string over 100,000 characters.
+     */
+    const toolCallOfSize = (bytes: number): string => {
+      const shape = (apps: string[]) =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'pipeshub_search', arguments: { query: 'q', apps } },
+        });
+      const id = 'a'.repeat(1000);
+      // Each id after the first adds its quotes and a comma.
+      const apps = new Array<string>(
+        Math.floor((bytes - shape([]).length) / (id.length + 3)),
+      ).fill(id);
+      const rest = bytes - shape(apps).length;
+      if (rest >= 3) apps.push('a'.repeat(rest - 3));
+      else apps[apps.length - 1] += 'a'.repeat(rest);
+      const body = shape(apps);
+      expect(body.length).to.equal(bytes);
+      return body;
+    };
+
+    const post = (path: string, body: string) =>
+      fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+
+    beforeEach(async () => {
+      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
+      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      stubAllContainers(sandbox);
+
+      const bodySize = (req: express.Request, res: express.Response) => {
+        res.json({ receivedBytes: JSON.stringify(req.body).length });
+      };
+      const mcpRouter = express.Router();
+      mcpRouter.post('/', bodySize);
+      const healthRouter = express.Router();
+      healthRouter.post('/', bodySize);
+      (mcpRoutes.createMCPRouter as sinon.SinonStub).returns(mcpRouter);
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+
+      const app = new Application();
+      await app.initialize();
+      server = http.createServer((app as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('answers a body one byte over 5 MB with a 413 JSON-RPC error that says what to do', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES + 1));
+
+      expect(res.status).to.equal(413);
+      const body = await res.json();
+      expect(body).to.deep.include({ jsonrpc: '2.0', id: null });
+      expect(body.error.code).to.equal(-32000);
+      expect(body.error.message).to.equal(MCP_BODY_TOO_LARGE_MESSAGE);
+      expect(body.error.message).to.include('5 MB');
+      expect(body.error.message).to.include('try again');
+    });
+
+    it('passes a normal MCP request', async () => {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+      const res = await post('/mcp', body);
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(body.length);
+    });
+
+    it('passes a request of about 1 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(1024 * 1024);
+    });
+
+    it('passes a request of exactly 5 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(MCP_JSON_BODY_LIMIT_BYTES);
+    });
+
+    it('leaves the shared 10 MB limit on other routes', async () => {
+      const res = await post('/api/v1/health', toolCallOfSize(6 * 1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(6 * 1024 * 1024);
+    });
   });
 
   // =========================================================================
@@ -735,7 +921,6 @@ describe('Application', () => {
       '/api/v1/teams',
       '/api/v1/userGroups',
       '/api/v1/org',
-      '/api/v1/saml',
       '/api/v1/userAccount',
       '/api/v1/orgAuthConfig',
       '/api/v1/document',
@@ -1310,56 +1495,6 @@ describe('Application', () => {
     });
   });
 
-  // =========================================================================
-  // updateSamlStrategies()
-  // =========================================================================
-  describe('updateSamlStrategies()', () => {
-    it('should call SamlController.updateSamlStrategiesWithCallback', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub(),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      await app.updateSamlStrategies();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
-    it('should warn but not throw if SamlController is not available', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const emptyContainer = new Container();
-      (app as any).authServiceContainer = emptyContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-
-    it('should warn but not throw if updateSamlStrategiesWithCallback throws', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub().throws(new Error('SAML error')),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-  });
 
   // =========================================================================
   // setupApiDocs()

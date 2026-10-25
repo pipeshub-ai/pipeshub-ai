@@ -244,13 +244,13 @@ class TestChatStreamAgentLoopEndToEnd:
         assert "error" not in events
 
     async def test_attachment_upload_then_chat_folds_attachment_into_agent_context(self):
-        """Attachment flow: a document attachment's resolved text context
-        must reach the agent's `Goal.constraints` (see `attachments.py`)
-        so the model can answer from -- and cite -- the attached record,
-        not just the org's ambient knowledge base."""
+        """Attachment flow: the factory gets the attachment to put on the
+        current request (within its budget), and the bridge adds no second,
+        unbounded copy of the document to `Goal.constraints`."""
         captured_goal = {}
 
         async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            captured_goal["attachments"] = context.tool_state.get("attachments")
             agent = MagicMock()
             agent.last_stream_result = _successful_stream_result(
                 "Per the attached deck, revenue is up 12%."
@@ -316,7 +316,8 @@ class TestChatStreamAgentLoopEndToEnd:
         events = _events_by_name(chunks)
         assert "complete" in events
         assert "error" not in events
-        assert any(
+        assert [a["virtualRecordId"] for a in captured_goal["attachments"]] == ["vr-attach-1"]
+        assert not any(
             "Q3 Board Deck" in str(c) for c in captured_goal["goal"].constraints
         )
 

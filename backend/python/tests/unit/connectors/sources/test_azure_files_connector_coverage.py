@@ -95,11 +95,12 @@ def connector(mock_logger, mock_data_entities_processor,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, error_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.error_code = error_code
     return r
 
 
@@ -534,7 +535,8 @@ class TestAzureFilesRunSync:
     async def test_run_sync_with_share_filter(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector._sync_share = AsyncMock()
+        connector.data_source.get_share_properties = AsyncMock(return_value=_make_response(True, {}))
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         # Set share filter
         share_filter = MagicMock()
@@ -557,7 +559,7 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(True, [{"name": "s1"}, {"name": "s2"}])
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         await connector.run_sync()
         assert connector._sync_share.await_count == 2
@@ -574,7 +576,9 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(False, error="Forbidden")
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
-        await connector.run_sync()
+        # A run that read nothing must fail, not finish as a success (PP-360).
+        with pytest.raises(ConnectionError):
+            await connector.run_sync()
         connector._sync_share.assert_not_awaited()

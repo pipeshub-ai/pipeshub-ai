@@ -466,6 +466,17 @@ class TestGetOAuthConfig:
         result = get_oauth_config(auth)
         assert result.additional_params.get("use_basic_auth") is True
 
+    def test_notion_detection_follows_the_api_base_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NOTION_API_BASE_URL", "http://notion-sim.internal/v1")
+        auth = {"clientId": "c", "clientSecret": "s", "tokenUrl": "http://notion-sim.internal/v1/oauth/token"}
+        result = get_oauth_config(auth)
+        assert result.additional_params.get("use_basic_auth") is True
+        assert result.additional_params.get("use_json_body") is True
+        assert result.additional_params.get("notion_version") == "2025-09-03"
+        other = get_oauth_config({"clientId": "c", "clientSecret": "s",
+                                  "tokenUrl": "http://notion-sim.internal/v1x/token"})
+        assert other.additional_params.get("use_basic_auth") is None
+
     def test_non_notion_url_no_basic_auth(self):
         auth = {
             "clientId": "c",

@@ -358,11 +358,11 @@ describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
     return slotId;
   }
 
-  async function regenerate(agentId: string | null): Promise<Record<string, unknown>> {
+  async function regenerate(agentId: string | null, answers?: string): Promise<Record<string, unknown>> {
     const assistant = vi.spyOn(ChatApi, 'streamRegenerate').mockResolvedValue(undefined);
     const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
     try {
-      await streamRegenerateForSlot(regenSlot(agentId), 'a1', model);
+      await streamRegenerateForSlot(regenSlot(agentId), 'a1', model, undefined, undefined, answers);
       if (agentId) {
         expect(assistant).not.toHaveBeenCalled();
         return agent.mock.calls[0][4] as Record<string, unknown>;
@@ -378,6 +378,39 @@ describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
   it('omits reasoningEffort for a reasoning-capable model when the user chose none', async () => {
     registerModel(ASSISTANT_CTX, { isReasoning: true });
     expect(await regenerate(null)).not.toHaveProperty('reasoningEffort');
+  });
+
+  const ANSWERS = 'User selections:\n1. "Which region?" → US';
+
+  it('sends changed question-card answers, for an assistant chat and for an agent', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    expect(await regenerate(null, ANSWERS)).toMatchObject({ answers: ANSWERS });
+    registerModel(ctxKeyFromAgent('agent-1'), { isReasoning: false });
+    expect(await regenerate('agent-1', ANSWERS)).toMatchObject({ answers: ANSWERS });
+  });
+
+  // Python turns web search off when `tools` is a list without a web_search entry; omitted, it keeps every tool.
+  it('leaves the tool list out when every tool is selected, as a normal send does', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    useChatStore.setState({
+      universalAgentStreamTools: null,
+      universalAgentToolCatalogFullNames: ['jira.search_issues', 'slack.send_message'],
+    });
+    expect(await regenerate(null)).not.toHaveProperty('agentStreamTools');
+  });
+
+  it('sends the chosen tools when only some are selected', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    useChatStore.setState({
+      universalAgentStreamTools: ['inst-1:jira.search_issues'],
+      universalAgentToolCatalogFullNames: ['inst-1:jira.search_issues', 'inst-1:slack.send_message'],
+    });
+    expect((await regenerate(null)).agentStreamTools).toEqual(['jira.search_issues']);
+  });
+
+  it('leaves answers out of an ordinary regenerate', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    expect(await regenerate(null)).not.toHaveProperty('answers');
   });
 
   it("sends the user's choice", async () => {

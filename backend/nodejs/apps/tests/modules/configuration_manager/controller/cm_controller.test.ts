@@ -25,16 +25,10 @@ import {
   getPlatformSettings,
   getAvailablePlatformFeatureFlags,
   getEffectivePlatformFeatureFlags,
-  getAzureAdAuthConfig,
-  setAzureAdAuthConfig,
   getMicrosoftAuthConfig,
   setMicrosoftAuthConfig,
   getGoogleAuthConfig,
   setGoogleAuthConfig,
-  getOAuthConfig,
-  setOAuthConfig,
-  getSsoAuthConfig,
-  setSsoAuthConfig,
   getGoogleWorkspaceOauthConfig,
   setGoogleWorkspaceOauthConfig,
   getFrontendUrl,
@@ -291,6 +285,55 @@ describe('ConfigurationManager Controller', () => {
 
       expect(kvs.set.calledOnce).to.be.true
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    describe('local storage with several app replicas (Helm)', () => {
+      const saved = process.env.PIPESHUB_APP_MAX_REPLICAS
+      afterEach(() => {
+        if (saved === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = saved
+      })
+
+      it('is refused, since each pod would keep its own files', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: { storageType: 'local' } }), res, next)
+
+        expect(kvs.set.called).to.be.false
+        expect(next.calledOnce).to.be.true
+        const error = next.firstCall.args[0]
+        expect(error.statusCode ?? error.status).to.equal(400)
+        expect(error.message).to.contain('up to 6 app replicas')
+      })
+
+      it('is still saved for a single replica', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+
+        await handler(createMockRequest({ body: { storageType: 'local' } }), res, createMockNext())
+
+        expect(kvs.set.calledOnce).to.be.true
+        expect(res.status.calledWith(200)).to.be.true
+      })
+
+      it('does not affect S3 with several replicas', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+
+        await handler(createMockRequest({
+          body: { storageType: 's3', s3AccessKeyId: 'a', s3SecretAccessKey: 'b', s3BucketName: 'bucket', s3Region: 'us-east-1' },
+        }), res, createMockNext())
+
+        expect(kvs.set.calledOnce).to.be.true
+      })
     })
 
     it('should save S3 storage config in IAM role mode (no credentials provided)', async () => {
@@ -733,6 +776,21 @@ describe('ConfigurationManager Controller', () => {
       expect(res.json.firstCall.args[0]).to.have.property('flags')
     })
 
+    it('should include ENABLE_MCP, defaulting to enabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const mcpFlag = flags.find((f: any) => f.key === 'ENABLE_MCP')
+      expect(mcpFlag).to.exist
+      expect(mcpFlag.defaultEnabled).to.equal(true)
+      expect(mcpFlag.advanced).to.not.equal(true)
+    })
+
     it('should include ENABLE_SKILLS, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -760,6 +818,38 @@ describe('ConfigurationManager Controller', () => {
       expect(flag).to.exist
       expect(flag.defaultEnabled).to.equal(false)
     })
+
+    it('should include ENABLE_ARTIFACT_WRITE as an advanced flag, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const flag = flags.find((f: any) => f.key === 'ENABLE_ARTIFACT_WRITE')
+      expect(flag).to.exist
+      expect(flag.defaultEnabled).to.equal(false)
+      expect(flag.advanced).to.equal(true)
+    })
+
+    for (const key of ['ENABLE_ARTIFACT_READ_SHADOW', 'ENABLE_ARTIFACT_READ']) {
+      it(`should include ${key} as an advanced flag, defaulting to disabled`, async () => {
+        const handler = getAvailablePlatformFeatureFlags()
+        const req = createMockRequest()
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        const flags = res.json.firstCall.args[0].flags
+        const flag = flags.find((f: any) => f.key === key)
+        expect(flag).to.exist
+        expect(flag.defaultEnabled).to.equal(false)
+        expect(flag.advanced).to.equal(true)
+      })
+    }
 
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
@@ -814,7 +904,6 @@ describe('ConfigurationManager Controller', () => {
       const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
       expect(advancedKeys).to.include.members([
         'ENABLE_VECTOR_STORE_REBUILD',
-        'ENABLE_CONTAINER_PERMISSION_FILTER',
         'ENABLE_SOFT_DELETE',
         'ENABLE_NAMED_ENTITY_EXTRACTION',
         'ENABLE_USER_CONTEXT',
@@ -825,6 +914,19 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('getEffectivePlatformFeatureFlags', () => {
+    it('should default ENABLE_MCP to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_MCP).to.equal(true)
+    })
+
     it('should default ENABLE_SKILLS to true when the store has no entry', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getEffectivePlatformFeatureFlags(kvs)
@@ -895,70 +997,6 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // Azure AD Auth Config
   // -----------------------------------------------------------------------
-  describe('getAzureAdAuthConfig', () => {
-    it('should return empty object when no config exists', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = getAzureAdAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({})
-    })
-
-    it('should decrypt and return config when it exists', async () => {
-      mockEncService.decrypt.returns(JSON.stringify({ clientId: 'cid', tenantId: 'tid' }))
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().resolves('encrypted:data'),
-      })
-      const handler = getAzureAdAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-    })
-  })
-
-  describe('setAzureAdAuthConfig', () => {
-    it('should save Azure AD config successfully', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = setAzureAdAuthConfig(kvs)
-      const req = createMockRequest({
-        body: { clientId: 'cid', tenantId: 'tid', enableJit: true },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0].message).to.equal('Azure AD config created successfully')
-    })
-
-    it('should default enableJit to true when not provided', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = setAzureAdAuthConfig(kvs)
-      const req = createMockRequest({
-        body: { clientId: 'cid', tenantId: 'tid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      const encryptedArg = mockEncService.encrypt.firstCall.args[0]
-      const parsed = JSON.parse(encryptedArg)
-      expect(parsed.enableJit).to.be.true
-    })
-  })
 
   // -----------------------------------------------------------------------
   // Microsoft Auth Config
@@ -1033,111 +1071,10 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // OAuth Config
   // -----------------------------------------------------------------------
-  describe('getOAuthConfig', () => {
-    it('should return empty object when no config exists', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = getOAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({})
-    })
-  })
-
-  describe('setOAuthConfig', () => {
-    it('should save OAuth config with all fields', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = setOAuthConfig(kvs)
-      const req = createMockRequest({
-        body: {
-          providerName: 'custom',
-          clientId: 'cid',
-          clientSecret: 'secret',
-          authorizationUrl: 'https://auth.example.com/authorize',
-          tokenEndpoint: 'https://auth.example.com/token',
-          userInfoEndpoint: 'https://auth.example.com/userinfo',
-          scope: 'openid profile email',
-          redirectUri: 'https://app.example.com/callback',
-          enableJit: false,
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0].message).to.equal('OAuth config created successfully')
-    })
-
-    it('should save OAuth config with only required fields', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = setOAuthConfig(kvs)
-      const req = createMockRequest({
-        body: { providerName: 'minimal', clientId: 'cid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      const encrypted = mockEncService.encrypt.firstCall.args[0]
-      const parsed = JSON.parse(encrypted)
-      expect(parsed.enableJit).to.be.true
-      expect(parsed).not.to.have.property('clientSecret')
-    })
-  })
 
   // -----------------------------------------------------------------------
   // SSO Auth Config
   // -----------------------------------------------------------------------
-  describe('getSsoAuthConfig', () => {
-    it('should return spEntityId when no config exists', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = getSsoAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ spEntityId: 'pipeshub' })
-    })
-  })
-
-  describe('setSsoAuthConfig', () => {
-    it('should save SSO config and clean certificate', async () => {
-      const kvs = createMockKeyValueStore()
-      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
-      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
-      const req = createMockRequest({
-        body: {
-          entryPoint: 'https://sso.example.com/saml',
-          certificate: '-----BEGIN CERTIFICATE-----\nABC123\n-----END CERTIFICATE-----',
-          emailKey: 'email',
-          enableJit: true,
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      expect(res.status.calledWith(200)).to.be.true
-      // Verify certificate was cleaned
-      const encrypted = mockEncService.encrypt.firstCall.args[0]
-      const parsed = JSON.parse(encrypted)
-      expect(parsed.certificate).to.equal('ABC123')
-    })
-  })
 
   // -----------------------------------------------------------------------
   // Google Workspace OAuth Config
@@ -4125,78 +4062,6 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // SSO Auth Config - additional tests
   // -----------------------------------------------------------------------
-  describe('getSsoAuthConfig (additional)', () => {
-    it('should decrypt and return config when it exists', async () => {
-      mockEncService.decrypt.returns(JSON.stringify({ certificate: 'ABC', entryPoint: 'https://sso.example.com', emailKey: 'email' }))
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().resolves('encrypted:sso-config'),
-      })
-      const handler = getSsoAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.have.property('certificate', 'ABC')
-    })
-
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().rejects(new Error('fetch failed')),
-      })
-      const handler = getSsoAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('setSsoAuthConfig (additional)', () => {
-    it('should default enableJit to true when not provided', async () => {
-      const kvs = createMockKeyValueStore()
-      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
-      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
-      const req = createMockRequest({
-        body: {
-          entryPoint: 'https://sso.example.com/saml',
-          certificate: 'ABC123',
-          emailKey: 'email',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(kvs.set.calledOnce).to.be.true
-      const encryptedArg = mockEncService.encrypt.firstCall.args[0]
-      const parsed = JSON.parse(encryptedArg)
-      expect(parsed.enableJit).to.be.true
-    })
-
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        set: sinon.stub().rejects(new Error('store failed')),
-      })
-      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
-      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
-      const req = createMockRequest({
-        body: { entryPoint: 'https://sso.example.com', certificate: 'ABC', emailKey: 'email' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
 
   // -----------------------------------------------------------------------
   // OneDrive Credentials - additional tests
@@ -4454,53 +4319,6 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // OAuth Config - additional tests
   // -----------------------------------------------------------------------
-  describe('getOAuthConfig (additional)', () => {
-    it('should decrypt and return config when it exists', async () => {
-      mockEncService.decrypt.returns(JSON.stringify({ providerName: 'custom', clientId: 'cid' }))
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().resolves('encrypted:oauth'),
-      })
-      const handler = getOAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.have.property('providerName', 'custom')
-    })
-
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().rejects(new Error('fetch failed')),
-      })
-      const handler = getOAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('setOAuthConfig (additional)', () => {
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        set: sinon.stub().rejects(new Error('store failed')),
-      })
-      const handler = setOAuthConfig(kvs)
-      const req = createMockRequest({ body: { providerName: 'custom', clientId: 'cid' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
 
   // -----------------------------------------------------------------------
   // Custom System Prompt - additional tests
@@ -4624,53 +4442,6 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // Azure AD Auth Config - additional error tests
   // -----------------------------------------------------------------------
-  describe('getAzureAdAuthConfig (additional)', () => {
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        get: sinon.stub().rejects(new Error('fetch failed')),
-      })
-      const handler = getAzureAdAuthConfig(kvs)
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('setAzureAdAuthConfig (additional)', () => {
-    it('should call next on error', async () => {
-      const kvs = createMockKeyValueStore({
-        set: sinon.stub().rejects(new Error('store failed')),
-      })
-      const handler = setAzureAdAuthConfig(kvs)
-      const req = createMockRequest({ body: { clientId: 'cid', tenantId: 'tid' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should include authority in encrypted config', async () => {
-      const kvs = createMockKeyValueStore()
-      const handler = setAzureAdAuthConfig(kvs)
-      const req = createMockRequest({
-        body: { clientId: 'cid', tenantId: 'my-tenant' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      const encryptedArg = mockEncService.encrypt.firstCall.args[0]
-      const parsed = JSON.parse(encryptedArg)
-      expect(parsed.authority).to.equal('https://login.microsoftonline.com/my-tenant')
-    })
-  })
 
   // -----------------------------------------------------------------------
   // setPlatformSettings - additional tests
@@ -7595,7 +7366,7 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream' }))).to.be.true
+      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream; charset=utf-8' }))).to.be.true
       expect(res.write.calledOnce).to.be.true
       const written = res.write.firstCall.args[0] as string
       expect(written).to.include('event: progress')

@@ -342,6 +342,21 @@ class TestConnectorDeletion:
         assert await _point(store, org, "record", "rec-0") is None
         assert await _point(store, f"{org}-other", "topic", "elsewhere") is not None
 
+    async def test_an_upsert_after_cleanup_creates_the_exclusive_point_again(self, store: EntityVectorStore) -> None:
+        """Cleanup itself removes the point. A later upsert is a new write, not a survivor."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await self._seed(store, org)
+        await store.delete_entities_by_connector(org, "A", record_group_ids=["ga"])
+        assert await _point(store, org, "topic", "only-a") is None
+
+        await store.upsert_entities_batch([
+            _entity("only-a", org=org, connectors=["A"], groups=["ga"]),
+        ], merge_membership=False)
+        await _publish_writes(store)
+        restored = await _point(store, org, "topic", "only-a")
+        assert restored is not None
+        assert restored["connectorIds"] == ["A"]
+
     async def test_groups_are_recovered_from_points_when_the_graph_gives_none(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await self._seed(store, org, records=1)

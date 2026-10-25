@@ -40,6 +40,7 @@ import datetime
 import logging
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import bcrypt
@@ -57,6 +58,11 @@ for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
 
 from helper.clients.auth_client import UserAccountClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.second_user import (  # noqa: E402
+    SecondUser,
+    create_second_user,
+    delete_second_user,
+)
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -88,6 +94,23 @@ class UserAccountTestBase:
     ) -> None:
         self.account = user_account_client
         self.client = pipeshub_client
+
+
+@pytest.fixture
+def own_account(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
+    """A disposable account for a test that logs out or changes the password.
+
+    Either one ends every session the account holds, and the suite's clients
+    are signed in as the admin test user. Done to that user, it signs every
+    worker out mid-run, and a password change leaves a window in which other
+    workers cannot sign back in.
+    """
+    pipeshub_client._ensure_access_token()
+    user = create_second_user(pipeshub_client)
+    try:
+        yield user
+    finally:
+        delete_second_user(pipeshub_client, user, strict=True)
 
 
 # ====================================================================
@@ -340,9 +363,9 @@ class TestResetPassword(UserAccountTestBase):
     ):
         return self.account.reset_password(access_token, current, new)
 
-    def test_reset_password_response_schema(self) -> None:
+    def test_reset_password_response_schema(self, own_account: SecondUser) -> None:
         """Reset password, validate schema, then restore original password."""
-        email, original_password = require_test_user_credentials()
+        email, original_password = own_account.email, TEST_USER_PASSWORD
 
         # Login with original password
         access_token, _ = login_with_user(self.client, email, original_password)
@@ -435,9 +458,9 @@ class TestResetPassword(UserAccountTestBase):
 class TestLogoutManual(UserAccountTestBase):
     """POST /api/v1/userAccount/logout/manual — logout then re-login."""
 
-    def test_logout_returns_200_empty_body(self) -> None:
+    def test_logout_returns_200_empty_body(self, own_account: SecondUser) -> None:
         """Logout must return 200 with empty body, then re-login succeeds."""
-        email, password = require_test_user_credentials()
+        email, password = own_account.email, TEST_USER_PASSWORD
 
         # Login
         access_token, _ = login_with_user(self.client, email, password)

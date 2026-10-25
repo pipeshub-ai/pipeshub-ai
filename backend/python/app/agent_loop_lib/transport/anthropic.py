@@ -12,6 +12,7 @@ from app.agent_loop_lib.core.messages import (
     MessageRole,
     TextPart,
     ToolCall,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
@@ -24,7 +25,7 @@ from app.agent_loop_lib.core.streaming import (
     StreamEvent,
     TextDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -86,6 +87,7 @@ class AnthropicTransport(LLMTransport):
         model_key: str | None = None,
         cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -110,6 +112,8 @@ class AnthropicTransport(LLMTransport):
             client_kwargs["timeout"] = timeout
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _anthropic.AsyncAnthropic(**client_kwargs)
         # One marker value for the tools, the stable system block and the
         # request's last block; None sends no cache markers at all.
@@ -133,6 +137,7 @@ class AnthropicTransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None, cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AnthropicTransport":
         """Build from an already-configured `ChatAnthropic`.
 
@@ -184,6 +189,7 @@ class AnthropicTransport(LLMTransport):
             model_key=model_key,
             cache_ttl=cache_ttl,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @staticmethod
@@ -218,8 +224,34 @@ class AnthropicTransport(LLMTransport):
     # Message formatting helpers
     # ------------------------------------------------------------------
 
+    def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """Framework messages into the request's ``messages``, one user message
+        per run of tool results.
+
+        The API would accept one user message per result (it merges consecutive
+        user turns), but Anthropic's parallel tool use guide calls that shape
+        wrong: it "teaches" Claude to stop calling tools in parallel, and the
+        loop then takes one round trip per tool.
+        """
+        formatted: list[dict[str, Any]] = []
+        grouped = 0
+        previous_was_tool = False
+        for msg in messages:
+            entry = self._format_message(msg)
+            is_tool = msg.role == MessageRole.TOOL
+            if is_tool and previous_was_tool:
+                formatted[-1]["content"].extend(entry["content"])
+                grouped += 1
+            else:
+                formatted.append(entry)
+            previous_was_tool = is_tool
+        if grouped:
+            logger.debug("anthropic: grouped %d parallel tool result(s) into their run's user message", grouped)
+        return formatted
+
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to Anthropic API message dict."""
+        msg = as_sent(msg)
         if msg.role == MessageRole.TOOL:
             step_footer = getattr(msg, "step_footer", "")
             content = msg.content
@@ -488,8 +520,10 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         kwargs: dict[str, Any] = {
@@ -529,6 +563,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -537,7 +573,7 @@ class AnthropicTransport(LLMTransport):
                 raise self._wrap_error(exc, "complete") from exc
             return await self.complete(
                 messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-                effort=effort, system_blocks=system_blocks,
+                effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
             )
 
         usage = self._usage_from(response)
@@ -559,7 +595,7 @@ class AnthropicTransport(LLMTransport):
             "description": "Return the structured result.",
             "input_schema": output_schema,
         }
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model
@@ -599,8 +635,10 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        formatted = [self._format_message(m) for m in messages]
+        formatted = self._format_messages(messages)
         message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model
@@ -635,6 +673,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         emitted = False
         try:
@@ -662,6 +702,6 @@ class AnthropicTransport(LLMTransport):
             return
         async for event in self.stream(
             messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-            effort=effort, system_blocks=system_blocks,
+            effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
         ):
             yield event

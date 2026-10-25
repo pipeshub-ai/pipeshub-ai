@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent_loop_lib.events.base import (
@@ -234,6 +234,33 @@ class TestQueueEventSinkCoalescing:
 
         assert flushed_snapshot == answer_delta
         assert await queue.get() == artifact_add
+
+    async def test_the_snapshot_marking_a_discard_never_merges_into_the_next(self) -> None:
+        """The client drops answer snapshots after `message_discarded` until it
+        sees the one marked `/discarded`; merged away, the marker is lost and
+        the error answer or retry that follows would be dropped too."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        sink = QueueEventSink(queue)
+        await self._fill_queue(queue)
+
+        cleared = {"event": "STATE_DELTA", "data": {"delta": [
+            {"op": "replace", "path": "/normalizedAnswer", "value": ""},
+            {"op": "replace", "path": "/discarded", "value": True},
+        ]}}
+        error = {"event": "STATE_DELTA", "data": {"delta": [
+            {"op": "replace", "path": "/normalizedAnswer", "value": "The call failed."},
+        ]}}
+        cleared_write = asyncio.ensure_future(sink.write(cleared))
+        await asyncio.sleep(0)
+        assert not cleared_write.done(), "a marked snapshot waits for a slot instead of pending"
+
+        await queue.get()
+        await asyncio.wait_for(cleared_write, timeout=1)
+        await sink.write(error)
+
+        assert await queue.get() == cleared
+        await sink.flush()
+        assert await queue.get() == error
 
     async def test_state_delta_two_adjacent_add_ops_never_merge(self) -> None:
         """Two artifacts registered back-to-back must both survive even
@@ -1431,3 +1458,59 @@ class TestCensusRunsAfterTheIntentCall:
         assert seen == ["no"]
         assert events[-1].startswith("event: complete\n")
 
+
+class TestConnectorFlagsReachChatState:
+    """The agent-loop half of the same wiring `chat_modes/bridge.py` carries.
+
+    `has_code_connector` is keyword-only on `build_initial_state` with a
+    `False` default; neither stream entry point passed it, so
+    `tool_loader`'s `has_code_connector and has_code_knowledge` gate could
+    never open and the code-graph toolset was absent from every request. Both
+    bridges need this pinned, or fixing one leaves the other silently broken.
+    """
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        return {
+            "query_info": {"query": "hello", "chatMode": "react"},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "log": MagicMock(),
+            "retrieval_service": MagicMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": MagicMock(),
+        }
+
+    async def _captured_kwargs(self, instances: list[dict[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _capture(*args, **kwargs) -> Never:
+            seen.update(kwargs)
+            raise RuntimeError("stop here — the call is what is under test")
+
+        # `stream_bridge` imports the fetch inside the function, so the patch
+        # has to land on the defining module rather than on the bridge.
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture),
+            patch(
+                "app.utils.connector_instances.fetch_user_connector_instances",
+                new=AsyncMock(return_value=instances),
+            ),
+        ):
+            [_ async for _ in run_agent_loop_stream(**self._kwargs())]
+        return seen
+
+    async def test_a_configured_repo_connector_reaches_build_initial_state(self) -> None:
+        seen = await self._captured_kwargs([{"type": "GitLab", "isConfigured": True}])
+        assert seen["has_code_connector"] is True
+
+    async def test_an_unconfigured_repo_connector_leaves_the_flag_off(self) -> None:
+        """Present but never set up — the tools would load and find nothing."""
+        seen = await self._captured_kwargs([{"type": "GitLab", "isConfigured": False}])
+        assert seen["has_code_connector"] is False
+
+    async def test_a_non_repo_connector_does_not_open_the_gate(self) -> None:
+        seen = await self._captured_kwargs([{"type": "SLACK", "isConfigured": True}])
+        assert seen["has_code_connector"] is False
+        assert seen["has_slack_connector"] is True, "the other flags still work"

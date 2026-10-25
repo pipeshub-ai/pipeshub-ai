@@ -10,6 +10,7 @@ import {
   HOVER_BACKGROUND,
 } from '@/app/components/sidebar';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import {
   getReindexMenuState,
   getReindexNodeFromHubItem,
@@ -94,7 +95,8 @@ export function FolderTreeItem({
   const hasDescendants = getTreeNodeDescendantsFlag(enhancedNode);
   const isLoading = loadingNodeIds?.has(node.id);
 
-  const showMeatballMenu = (isHovered || isMenuOpen) && !isEditing;
+  const canHover = useCanHover();
+  const showMeatballMenu = (isHovered || isMenuOpen || !canHover) && !isEditing;
 
   const canEdit = enhancedNode.permission?.canEdit ?? false;
   const canDelete = enhancedNode.permission?.canDelete ?? false;

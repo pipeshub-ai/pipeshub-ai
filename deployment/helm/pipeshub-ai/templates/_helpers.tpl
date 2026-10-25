@@ -515,3 +515,15 @@ synced Secret never gets.
   {{- fail "secretManagement.externalSecrets.remoteRefs.secretKey is required when externalSecrets is enabled; the app cannot start without secret-key." -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Most app replicas this release can run: replicaCount, or the autoscaler's
+ceiling when autoscaling is on.
+*/}}
+{{- define "pipeshub-ai.maxReplicas" -}}
+{{- $replicas := .Values.replicaCount | int -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $replicas = max $replicas (.Values.autoscaling.maxReplicas | int) -}}
+{{- end -}}
+{{- $replicas -}}
+{{- end -}}

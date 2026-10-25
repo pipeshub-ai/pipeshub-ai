@@ -1,6 +1,8 @@
 import json
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
 from urllib.parse import urlparse
 
@@ -250,6 +252,52 @@ def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, 
     normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
 
 
+@dataclass(frozen=True)
+class OAuthUrlRule:
+    """A connector's own rule for where its OAuth requests may go.
+
+    The code exchange and refresh send the client secret from the server, so a
+    connector whose endpoints are fixed by its settings registers one of these
+    instead of trusting the saved URL fields. ``check`` runs on save, ``pin``
+    rewrites the flow's URLs before every request; both raise ValueError with a
+    message fit to show the admin. ``settings`` are the keys ``pin`` reads.
+    """
+
+    check: Callable[[dict[str, Any]], None]
+    pin: Callable[[dict[str, Any]], None]
+    settings: tuple[str, ...] = ()
+
+
+_OAUTH_URL_RULES: dict[str, OAuthUrlRule] = {}
+
+
+def _rule_for(connector_type: str) -> OAuthUrlRule | None:
+    return _OAUTH_URL_RULES.get((connector_type or "").replace(" ", "").lower())
+
+
+def register_oauth_url_rule(connector_type: str, rule: OAuthUrlRule) -> None:
+    _OAUTH_URL_RULES[connector_type.replace(" ", "").lower()] = rule
+
+
+def check_oauth_url_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.check(settings or {})
+
+
+def pin_oauth_urls(connector_type: str, flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.pin(flow_config)
+
+
+def carry_oauth_url_settings(connector_type: str, source: dict[str, Any], flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    for key in rule.settings if rule else ():
+        if not flow_config.get(key) and source.get(key):
+            flow_config[key] = source[key]
+
+
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
     # Derive authorize/token URLs from instanceUrl when not explicitly set.
     # This allows self-managed connectors (e.g. GitLab EE) to work without
@@ -308,7 +356,7 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            if _is_host_or_subdomain(hostname, 'notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com') or _is_notion_override(token_url):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
@@ -324,6 +372,17 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
 # Token endpoints whose providers accept client credentials only in a Basic
 # header: their OAuth metadata lists client_secret_basic and no client_secret_post.
 _BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_notion_override(token_url: str) -> bool:
+    """A token URL under NOTION_API_BASE_URL (a test stack's stand-in for Notion) is Notion's too."""
+    from app.sources.client.notion.notion import (
+        DEFAULT_NOTION_API_BASE_URL,
+        notion_api_base_url,
+    )
+
+    base = notion_api_base_url()
+    return base != DEFAULT_NOTION_API_BASE_URL and token_url.startswith(f"{base}/")
 
 
 def _is_host_or_subdomain(hostname: str, domain: str) -> bool:

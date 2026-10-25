@@ -96,8 +96,10 @@ describe('what a row says', () => {
   });
 
   it('gives the date from which it may be removed for good, or the default 14 days', () => {
-    const date = utils.formatTrashDate(DELETED_AT + 14 * DAY, 'en-US');
-    expect(utils.removalLabel(item('r'), t, 'en-US')).toBe(`After ${date}`);
+    const date = utils.formatTrashDate(DELETED_AT + 14 * DAY);
+    expect(utils.removalLabel(item('r'), t)).toBe(`After ${date}`);
+    // The same day-month-year form as the other lists.
+    expect(utils.formatTrashDate(Date.UTC(2026, 9, 23, 12))).toBe('23 Oct 2026');
     expect(utils.removalLabel(item('r', { removableAfterTimestamp: null }), t)).toBe('After 14 days');
   });
 
@@ -209,10 +211,22 @@ describe('the page', () => {
   });
 
   function render(routes: Parameters<typeof fakeApi>[0]) {
-    const api = fakeApi({ [`GET ${KB}/${KB_ID}`]: { status: 200, data: { id: KB_ID, name: 'Handbook' } }, ...routes });
+    const api = fakeApi({
+      [`GET ${KB}/${KB_ID}`]: { status: 200, data: { id: KB_ID, name: 'Handbook' } },
+      // The sidebar's collection list, loaded because the page opened directly.
+      [`GET ${KB}/knowledge-hub/nodes`]: { status: 200, data: { success: true, items: [], pagination: { hasNext: false } } },
+      ...routes,
+    });
     renderInTheme(<RecentlyDeletedView kbId={KB_ID} />);
     return api;
   }
+
+  it('loads the collections sidebar when the page is opened directly', async () => {
+    const api = render({
+      [`GET ${KB}/${KB_ID}/trash`]: { status: 200, data: page([]) },
+    });
+    await waitFor(() => expect(api.sent.some((r) => r.url === `${KB}/knowledge-hub/nodes`)).toBe(true));
+  });
 
   it('lists each delete with where it was, who deleted it and when it goes', async () => {
     const api = render({ [`GET ${KB}/${KB_ID}/trash`]: { status: 200, data: page([docs, inDocs]) } });

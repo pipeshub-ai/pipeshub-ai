@@ -40,7 +40,8 @@ from app.models.blocks import (
     GroupType,
     IndexRange,
 )
-from app.utils.time_conversion import parse_timestamp, string_to_datetime
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
+from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
 
 from app.models.blocks import wire_block_group_parent_children
 
@@ -78,25 +79,20 @@ class MergeRequestsSync:
         updated_before = filter_before
         created_after, created_before = c.datetime_range_from_sync_filter("created")
 
-        prs_res = await c.runtime.ds_call(
+        prs_res = await c.listing.list(
             c.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
             updated_before=updated_before,
             created_after=created_after,
             created_before=created_before,
-            order_by=GitlabLiterals.UPDATED_AT.value,
-            sort="asc",
-            get_all=True,
         )
         if not prs_res.success:
             self.logger.error("Error fetching merge requests for project %s: %s", project_id, prs_res.error)
-            return
-        if not prs_res.data:
-            self.logger.debug("No merge requests found for project %s", project_id)
+            c.note_failed_read(f"merge requests of project {project_id}", prs_res)
             return
 
-        all_prs = prs_res.data
+        all_prs = prs_res.data or []
         self.logger.info("Fetched %s merge requests for project %s; processing in batches", len(all_prs), project_id)
 
         # Checkpoint advancement is deferred to the end of the sweep — see
@@ -111,6 +107,7 @@ class MergeRequestsSync:
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.note_sync_problem(f"merge requests of project {project_id}: a batch could not be stored")
                 return
         if failed.count:
             self.logger.warning(
@@ -118,8 +115,14 @@ class MergeRequestsSync:
                 "stays before the earliest one so the next sync retries them.",
                 failed.count, project_id,
             )
+            c.note_sync_problem(f"{failed.count} merge request(s) of project {project_id} could not be synced")
         for group_id, last_sync_time in watermarks.items():
             await c.issues._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
+        await c.deleted_merge_requests.reconcile(
+            project_id, listed=all_prs,
+            listed_everything=since_dt is None and updated_before is None,
+            created_after=created_after, created_before=created_before,
+        )
 
     # ------------------------------------------------------------------
     # Record building
@@ -233,6 +236,8 @@ class MergeRequestsSync:
                 assignee=assignee_list,
                 merged_by=merged_by,
                 review_name=reviewer_names,
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
             )
             return RecordUpdate(
                 record=merge_request_record,
@@ -344,7 +349,7 @@ class MergeRequestsSync:
                 sub_type=BlockSubType.COMMIT.value,
                 weburl=commit_web_url,
                 format=DataFormat.MARKDOWN,
-                data=commit_message,
+                data=redact_secrets(commit_message or "").text,
                 source_id=commit_id,
                 name=commit_title,
                 source_creation_date=string_to_datetime(commit_committed_date),

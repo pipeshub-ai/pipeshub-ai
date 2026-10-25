@@ -1,7 +1,17 @@
 import axios from 'axios';
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadGatewayError,
+  BadRequestError,
+  HttpError,
+  InternalServerError,
+} from '../../../libs/errors/http.errors';
+import {
+  isReaderWritten,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailProducer } from '../../mail/services/mail.producer';
 import {
@@ -29,6 +39,23 @@ const SEND_MAIL_TIMEOUT_MS = 30_000;
 interface SendMailResponse {
   statusCode: number;
   data: any;
+}
+
+/**
+ * The error to raise when a synchronous send failed. The mail route's own
+ * wording is kept when it names a fault the reader can act on (such as wrong
+ * SMTP credentials); anything else becomes the generic line for `operation`.
+ */
+export function mailFailureError(
+  result: SendMailResponse,
+  operation: string,
+): HttpError {
+  if (typeof result.data === 'string' && isReaderWritten(result.data)) {
+    return markClientSafe(new BadGatewayError(result.data));
+  }
+  return markClientSafe(
+    new InternalServerError(serverFailureMessage(operation)),
+  );
 }
 
 @injectable()
