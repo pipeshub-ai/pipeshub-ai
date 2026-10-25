@@ -13,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -222,9 +223,8 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
-      configureEnvelopeFromSecret(
-        appConfig.scopedJwtSecret,
-        async () => (await loadAppConfig()).scopedJwtSecret,
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
       );
 
       // Ensure message broker topics/streams exist

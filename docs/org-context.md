@@ -4,7 +4,7 @@ Every request, consumed message and job runs inside an **org context**: the org 
 
 ## Where it is set
 
-Only from a verified source, never from a body, query string or header other than `Authorization`:
+Only from a verified source, never from a body, query string or header other than `Authorization`. The one exception is a broker message without a `ctx` (an older producer, or signing switched off): the org then comes from `payload.orgId`, which is a claim, not a verified value, and is logged and counted (see Signed broker envelope):
 
 | Entry point | Binds |
 | --- | --- |
@@ -22,7 +22,7 @@ Outside these, no context is bound and `current()` raises `MissingOrgContext`. I
 
 ## Signed broker envelope (v2)
 
-Wire shape: `{"eventType": "...", "ctx": {v, eventId, orgId, userId, requestId, issuedAt, sig}, "payload": "<JSON string>"}`. `sig` is HMAC-SHA256 over the topic, the message `eventType`, the ctx fields and the SHA-256 of the payload string as transmitted, keyed by HKDF-SHA256 of `scopedJwtSecret`. Re-sending a signed message with a different `eventType`, a different payload, another topic or another org fails verification. `timestamp` and `requestId` (a trace id) are not acted on and stay outside the signature. Consumers dead-letter a bad signature, a future `issuedAt` (more than 300 s) and a `payload.orgId` that differs from `ctx.orgId`. A `ctx` of any other shape, and a top-level `org_ctx` key (which is stripped), never reach a handler.
+Wire shape: `{"eventType": "...", "ctx": {v, eventId, orgId, userId, requestId, issuedAt, sig}, "payload": "<JSON string>"}`. `sig` is HMAC-SHA256 over the topic, the message `eventType`, the ctx fields and the SHA-256 of the payload string as transmitted, keyed by HKDF-SHA256 of `scopedJwtSecret`. Re-sending a signed message with a different `eventType`, a different payload, another topic or another org fails verification. `ctx.requestId` (a trace id) is signed but not acted on. Consumers dead-letter a bad signature, a future `issuedAt` (more than 300 s) and a `payload.orgId` that differs from `ctx.orgId`. A `ctx` of any other shape, and a top-level `org_ctx` key (which is stripped), never reach a handler.
 
 - **Producers.** They sign only when `ENVELOPE_SIGN=true`. A message that cannot be signed (no org bound, or a payload naming another org) is sent unchanged and counted in `pipeshub_envelope_unsigned_total{topic,reason}`; with no key it raises in enforce mode and is counted and logged in shadow mode. Retries re-publish under the message's own org, so they are signed like the original. Enable `ENVELOPE_SIGN` only once every consumer of the topic reads v2.
 - **Unsigned messages.** While `ENVELOPE_SIGN` is off, a message with no `ctx` is v1: it binds from `payload.orgId` (logged, counted in `pipeshub_envelope_ctx_missing_total{topic}`). While it is on, a message with no `ctx` is a stripped message, counted in `pipeshub_envelope_stripped_total{topic}` and logged; `enforce` mode rejects it, shadow mode accepts it through the same fallback. A v2 message that lost its `ctx` is delivered in the v1 shape (decoded payload), or rejected as malformed. With `ENVELOPE_CTX_REQUIRED=true` any message without `ctx` is dead-lettered. A consumer that writes org-scoped tables must call `assert_may_start` / `assertMayStart`, which refuses to start while that flag is false.

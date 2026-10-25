@@ -255,9 +255,10 @@ async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     assert (await _open(_msg(issued_at=int(time.time()) - 600))).ctx.org_id == "org_b"  # inside the default window
     monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "1200")
     assert (await _open(old)).ctx.org_id == "org_b"  # the window is configurable
-    monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", "soon")
-    with pytest.raises(ValueError):
-        envelope.max_age_seconds()
+    for bad in ("soon", "nan", "inf", "0"):
+        monkeypatch.setenv("ENVELOPE_MAX_AGE_SECONDS", bad)
+        with pytest.raises(ValueError):
+            envelope.max_age_seconds()
 
 
 async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypatch) -> None:

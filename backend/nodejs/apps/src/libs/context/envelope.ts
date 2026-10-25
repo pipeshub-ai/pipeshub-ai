@@ -85,7 +85,7 @@ function logLoud(
   const now = Date.now();
   if (now - (lastLogged.get(key) ?? 0) < 30_000) return;
   lastLogged.set(key, now);
-  Logger.getInstance({ service: 'Envelope' }).error(msg, meta);
+  Logger.getInstance().error(msg, { component: 'Envelope', ...meta });
 }
 
 export function signEnabled(): boolean {
@@ -284,9 +284,9 @@ export async function openEnvelope(
         { topic },
       );
     } else {
-      Logger.getInstance({ service: 'Envelope' }).warn(
+      Logger.getInstance().warn(
         'envelope ctx present but no key configured: processing unverified',
-        { topic },
+        { component: 'Envelope', topic },
       );
     }
     return unsigned(message);
@@ -383,8 +383,9 @@ export function configureEnvelopeFromSecret(
     const key = deriveKey(scopedJwtSecret);
     return configureEnvelope(() => Promise.resolve([key]), inbox, key);
   }
-  Logger.getInstance({ service: 'Envelope' }).error(
+  Logger.getInstance().error(
     'envelope: scopedJwtSecret is missing; signing and verification are degraded',
+    { component: 'Envelope' },
   );
   configureEnvelope(null, inbox);
   if (!reload) return;
@@ -398,9 +399,9 @@ export function configureEnvelopeFromSecret(
             keyRetry = null;
             const key = deriveKey(secret);
             configureEnvelope(() => Promise.resolve([key]), inbox, key);
-            Logger.getInstance({ service: 'Envelope' }).warn(
-              'envelope: key loaded after retry',
-            );
+            Logger.getInstance().warn('envelope: key loaded after retry', {
+              component: 'Envelope',
+            });
           })
           .catch(() => {
             delayMs = Math.min(delayMs * 2, 60_000);

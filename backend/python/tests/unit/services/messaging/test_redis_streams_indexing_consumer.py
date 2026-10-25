@@ -653,7 +653,7 @@ class TestStop:
 class TestParseMessage:
     async def test_valid_json(self, consumer):
         fields = _valid_fields("CREATE", {"id": 42})
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.eventType == "CREATE"
         assert result.payload == {"id": 42}
@@ -661,20 +661,20 @@ class TestParseMessage:
     async def test_double_encoded_json(self, consumer):
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
         fields = {"value": json.dumps(inner)}
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "val"}
 
     async def test_missing_value_field_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"_init": "1"})
+        result = await consumer._parse_message("1-0", {"_init": "1"}, "records")
         assert result is None
 
     async def test_empty_fields_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {})
+        result = await consumer._parse_message("1-0", {}, "records")
         assert result is None
 
     async def test_invalid_json_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"value": "not-json{{{"})
+        result = await consumer._parse_message("1-0", {"value": "not-json{{{"}, "records")
         assert result is None
 
     async def test_valid_json_invalid_schema_returns_none(self, consumer):
@@ -684,12 +684,12 @@ class TestParseMessage:
         parser must treat it as unparseable (return None) so the message is
         dropped, not crash the worker into a no-ACK loop.
         """
-        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})}, "records")
         assert result is None
 
     async def test_non_mapping_json_returns_none(self, consumer):
         """JSON decoding to a non-object (list) is poison -> None, not a TypeError."""
-        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
+        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])}, "records")
         assert result is None
 
     async def test_valid_with_timestamp(self, consumer):
@@ -698,7 +698,7 @@ class TestParseMessage:
                 {"eventType": "test", "payload": {"k": "v"}, "timestamp": 12345}
             )
         }
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.timestamp == 12345
 

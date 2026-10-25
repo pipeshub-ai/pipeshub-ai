@@ -226,7 +226,8 @@ export function ambientOrg(
   }
   if (!logged.has(label)) {
     logged.add(label);
-    Logger.getInstance({ service: 'OrgContext' }).warn(`org_context_${kind}`, {
+    Logger.getInstance().warn(`org_context_${kind}`, {
+      component: 'OrgContext',
       site,
       caller: callerSite(),
     });

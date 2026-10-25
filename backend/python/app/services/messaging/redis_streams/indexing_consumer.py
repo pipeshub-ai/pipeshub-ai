@@ -2509,7 +2509,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
 
     async def _parse_message(
-        self, message_id: str, fields: dict[str, str], stream_name: str = ""
+        self, message_id: str, fields: dict[str, str], stream_name: str
     ) -> StreamMessage | None:
         """Parse a Redis stream entry into a ``StreamMessage``.
 

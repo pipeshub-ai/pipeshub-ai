@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -110,7 +111,7 @@ def max_age_seconds() -> float:
         value = float(raw)
     except ValueError:
         value = 0.0
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f"ENVELOPE_MAX_AGE_SECONDS must be a positive number, got {raw!r}")
     return value
 
