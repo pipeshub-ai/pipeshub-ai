@@ -245,8 +245,11 @@ _REVIEWED_STEP_KEYS = frozenset(
      "continue-on-error", "working-directory"}
 )
 _REVIEWED_DEFAULTS_RUN_KEYS = frozenset({"shell", "working-directory"})
-# GitHub-hosted images only, by their documented labels.
-_GITHUB_HOSTED_RUNNER = re.compile(r"^(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)$")
+# GitHub-hosted images only, by their documented labels. Any other suffix is a label
+# a self-hosted runner can register, such as `ubuntu-22.04-selfhosted`.
+_GITHUB_HOSTED_RUNNER = re.compile(
+    r"^(?:ubuntu|windows|macos)-(?:latest|\d+(?:\.\d+)?)(?:-(?:arm|large|xlarge|intel))?$"
+)
 
 # The inputs each reviewed action may be given. Absent from checkout: `repository`,
 # `ref`, `token`, `ssh-key` and `submodules`, which pick the code a reviewed body
@@ -1029,6 +1032,19 @@ class TestPrivilegedWorkflowsFailClosed(unittest.TestCase):
             with self.subTest(runs_on=runs_on):
                 text = self.workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runs_on}")
                 self.assertTrue(self.flagged(text))
+
+    def test_a_hosted_name_with_a_label_github_does_not_reserve_is_flagged(self) -> None:
+        for runs_on in ("ubuntu-22.04-selfhosted", "ubuntu-0owned", "windows-2022.evil", "macos-14-arm64-mine"):
+            with self.subTest(runs_on=runs_on):
+                text = self.workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runs_on}")
+                self.assertTrue(self.flagged(text))
+
+    def test_documented_hosted_runners_pass(self) -> None:
+        for runs_on in ("ubuntu-24.04", "ubuntu-24.04-arm", "windows-2022", "windows-11-arm",
+                        "macos-14-xlarge", "macos-15-intel", "macos-latest-large"):
+            with self.subTest(runs_on=runs_on):
+                text = self.workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runs_on}")
+                self.assertFalse(self.flagged(text))
 
     def test_checkout_inputs_that_pick_other_code_are_flagged(self) -> None:
         for inputs in (
