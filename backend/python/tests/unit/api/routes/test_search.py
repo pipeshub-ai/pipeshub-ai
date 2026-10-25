@@ -419,11 +419,11 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["same query", "different query"]
+        assert queries == ["test", "same query", "different query"]
 
     @pytest.mark.asyncio
     async def test_search_empty_rewritten_query(self):
-        """If rewritten query is blank, only expanded queries are used."""
+        """A blank rewrite adds nothing; the typed query and the expansions are searched."""
         request = self._build_request()
 
         mock_retrieval = _retrieval_with_llm()
@@ -450,7 +450,7 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["q1", "q2"]
+        assert queries == ["test", "q1", "q2"]
 
     @pytest.mark.asyncio
     async def test_search_custom_status_code_from_results(self):
@@ -679,10 +679,10 @@ class TestSearchHonoursLimit:
         retrieval.search_with_filters = AsyncMock(return_value=response)
         chain = lambda v: MagicMock(ainvoke=AsyncMock(return_value=v))  # noqa: E731
         with patch("app.api.routes.search.setup_query_transformation") as setup:
-            # Rewrite plus three expansions: four queries, each adding hits.
+            # The typed query, the rewrite and three expansions: five queries, each adding hits.
             setup.return_value = (chain("rewritten"), chain("e1\ne2\ne3"))
             res = await search(request=request, body=body, retrieval_service=retrieval, graph_provider=MagicMock())
-        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 4
+        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 5
         return json.loads(res.body)
 
     @pytest.mark.asyncio
@@ -792,7 +792,7 @@ class TestSearchHonoursLimit:
 
 
 class TestSearchSurvivesQueryTransformationFailure:
-    """A failed rewrite or expansion falls back to the query the user typed."""
+    """The query the user typed is searched whether the rewrite and expansion work or fail."""
 
     RESULTS = {"searchResults": [{"content": "hit"}], "status_code": 200}
 
@@ -946,6 +946,7 @@ class TestSearchSurvivesQueryTransformationFailure:
         )
 
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            QUERY_TEXT,
             "rewritten",
             "angle one",
             "angle two",
@@ -962,7 +963,36 @@ class TestSearchSurvivesQueryTransformationFailure:
             self._chain(raises=TimeoutError()),
         )
 
-        assert retrieval.search_with_filters.call_args.kwargs["queries"] == ["rewritten"]
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "rewritten"]
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_that_drops_an_identifier_still_searches_it(self) -> None:
+        """A code found in one file only must reach the keyword leg as typed."""
+        request, retrieval = self._build_request(), self._retrieval()
+
+        with patch(
+            "app.api.routes.search.setup_query_transformation",
+            return_value=(
+                self._chain(returns="Marrow Gale financial workbook details"),
+                self._chain(returns="marrow gale spreadsheet\nfinance workbook 2026"),
+            ),
+        ):
+            await search(
+                request=request, body=SearchQuery(query="marrowgale4406"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"][0] == "marrowgale4406"
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_identical_to_the_query_is_searched_once(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+
+        await self._search(
+            request, retrieval, self._chain(returns=f"  {QUERY_TEXT} "), self._chain(returns="angle one")
+        )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "angle one"]
 
     @pytest.mark.asyncio
     async def test_blank_output_from_both_steps_searches_with_the_original_query(self) -> None:
@@ -1086,7 +1116,7 @@ class TestSearchWithoutQueryRewrite:
         setup.assert_called_once()
         rewrite.ainvoke.assert_awaited_once()
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
-            "rewritten q", "variant a", "variant b",
+            "q", "rewritten q", "variant a", "variant b",
         ]
 
     @pytest.mark.asyncio
@@ -1168,7 +1198,7 @@ class TestSearchLogsNoQueryText:
             )
 
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
-            "rewritten nightjar merger", "nightjar terms", "nightjar price",
+            "nightjar merger", "rewritten nightjar merger", "nightjar terms", "nightjar price",
         ]
         logged = " ".join(str(c) for c in logger.mock_calls)
         assert "nightjar" not in logged

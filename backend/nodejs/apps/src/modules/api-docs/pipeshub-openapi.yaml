@@ -10957,8 +10957,10 @@ components:
           type: boolean
           default: true
           description: |
-            Whether the AI model rewrites the query and adds expanded variants before
-            searching. Set it to `false` to search the query exactly as sent, with no
+            Whether the AI model's rewrite of the query and its expanded variants are
+            searched as well. The query as sent is always searched, so an exact code or
+            name in it is never lost to the rewrite. Set it to `false` to search the query
+            exactly as sent and nothing else, with no
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
