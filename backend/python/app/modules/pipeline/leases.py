@@ -46,6 +46,21 @@ class RecordLeases:
     def bind(self, manager: IDistributedLeaseManager | None) -> None:
         self._manager = manager
 
+    async def is_held(self, record_id: str) -> bool:
+        """Whether a live holder has ``record_id``'s lease now. Only meaningful when ``bound``.
+
+        Probes by taking the lease and releasing it at once, when nobody has it.
+        """
+        manager = self._manager
+        if manager is None:
+            return False
+        pool, holder = f"record:{record_id}", f"probe:{uuid4().hex[:8]}"
+        if not await manager.try_acquire(pool, holder, 1, messaging_env.concurrency_lease_seconds):
+            return True
+        with contextlib.suppress(Exception):
+            await manager.release(pool, holder)
+        return False
+
     @contextlib.asynccontextmanager
     async def hold(
         self,

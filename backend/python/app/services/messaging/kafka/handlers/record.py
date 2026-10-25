@@ -117,6 +117,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+    from app.modules.pipeline.leases import RecordLeases
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
@@ -248,6 +249,18 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.IN_PROGRESS.value,
     })
 
+    record_leases: "RecordLeases | None" = None  # bound by the indexing service, next to the lease manager
+
+    async def _another_holds(self, record_id: str) -> bool:
+        """Whether a live holder (a duplicate delivery, a stage) has the record's lease, so its IN_PROGRESS is theirs."""
+        leases = self.record_leases
+        if leases is None or not leases.bound:
+            return True  # cannot tell: leave it to the stale scan
+        try:
+            return await leases.is_held(record_id)
+        except Exception:
+            return True
+
     async def on_message_abandoned(
         self,
         message: StreamMessage | None,
@@ -310,7 +323,10 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
+            # An in-flight record nobody holds: the delivery that was processing it ran out of attempts, nothing will
+            # finish it, and the stale scan would hand it back with a fresh retry budget, for ever.
+            orphaned = current_status in self._IN_FLIGHT_STATUSES and not await self._another_holds(record_id)
+            if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
                     "leaving status %s untouched: %s",
