@@ -60,7 +60,6 @@ export interface UserAddedEvent {
   lastName?: string;
   email: string;
   designation?: string;
-  kind?: 'individual' | 'service';
   syncAction: SyncAction;
   /**
    * What sort of principal this is. Carried so the permission graph can tell a
@@ -97,7 +96,7 @@ export interface UserUpdatedEvent {
   lastName?: string;
   fullName?: string;
   designation?: string;
-  kind?: 'individual' | 'service';
+  kind?: 'human' | 'service';
   email: string;
   /**
    * Whether an administrator has switched this account off. Carried because

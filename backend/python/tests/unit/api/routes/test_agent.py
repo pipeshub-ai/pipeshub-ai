@@ -4818,6 +4818,48 @@ class TestServiceAccountAgentRoutes:
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2
 
+    @pytest.mark.asyncio
+    async def test_get_agents_maps_service_account_id(self) -> None:
+        """get_agents normalizes serviceAccountId from graph key to public userId."""
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(
+            return_value={
+                "agents": [
+                    {"name": "SA Agent", "serviceAccountId": "sa_key_1"},
+                    {"name": "Other Agent", "serviceAccountId": "sa_key_2"},
+                    {"name": "Regular Agent"},
+                ],
+                "totalItems": 3,
+            }
+        )
+        services["graph_provider"].get_nodes_by_field_in = AsyncMock(
+            return_value=[{"id": "sa_key_1", "userId": "sa_public_uuid_1"}]
+        )
+        services["graph_provider"].get_document = AsyncMock(
+            return_value={"_key": "sa_key_2", "userId": "sa_public_uuid_2"}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            result = await get_agents(
+                MagicMock(),
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["agents"][0]["serviceAccountId"] == "sa_public_uuid_1"
+        assert body["agents"][1]["serviceAccountId"] == "sa_public_uuid_2"
+        assert "serviceAccountId" not in body["agents"][2]
+
 
 class TestAgentModelDefaultEffort:
     @pytest.mark.asyncio

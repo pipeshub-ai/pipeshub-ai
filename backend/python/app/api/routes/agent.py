@@ -3201,6 +3201,44 @@ async def get_agents(
                 if doc.get("id") and doc.get("userId"):
                     creators_by_key[str(doc["id"])] = doc
 
+        sa_keys = {
+            str(agent["serviceAccountId"])
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("serviceAccountId")
+        }
+        sa_by_key: dict[str, str] = {}
+        if sa_keys:
+            try:
+                sa_docs = await services["graph_provider"].get_nodes_by_field_in(
+                    CollectionNames.USERS.value,
+                    "id",
+                    list(sa_keys),
+                    return_fields=["id", "userId"],
+                )
+                for doc in sa_docs or []:
+                    user_id = doc.get("userId")
+                    if user_id:
+                        if doc.get("id"):
+                            sa_by_key[str(doc["id"])] = user_id
+                        if doc.get("_key"):
+                            sa_by_key[str(doc["_key"])] = user_id
+            except Exception:
+                pass
+
+            for k in sa_keys:
+                if k in sa_by_key:
+                    continue
+                try:
+                    doc = await services["graph_provider"].get_document(
+                        k, CollectionNames.USERS.value
+                    )
+                    if not doc:
+                        doc = await services["graph_provider"].get_user_by_user_id(k)
+                    if doc and doc.get("userId"):
+                        sa_by_key[k] = doc["userId"]
+                except Exception:
+                    pass
+
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
@@ -3213,6 +3251,9 @@ async def get_agents(
                 creator_doc = creators_by_key.get(str(creator_key))
                 if creator_doc and creator_doc.get("userId"):
                     agent["createdBy"] = creator_doc["userId"]
+            sa_key = agent.get("serviceAccountId")
+            if sa_key and str(sa_key) in sa_by_key:
+                agent["serviceAccountId"] = sa_by_key[str(sa_key)]
 
         # Build pagination envelope
         current_page = page
