@@ -1,5 +1,6 @@
 """Unit tests for app.modules.transformers.block_container_validator."""
 
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -1244,39 +1245,155 @@ class TestStripBase64Images:
         assert stripped == "data:image/png;base64,[image data omitted]\nDone"
         assert contains_base64_image(stripped) is False
 
-    @pytest.mark.parametrize("width", [64, 76])
-    def test_a_digest_after_a_wrap_that_ends_on_a_full_line_is_kept(self, width: int) -> None:
-        import base64
-        import hashlib
-        import textwrap
+    # Base64 lines of 64 and 76 characters hold 48 and 57 bytes, so an image
+    # of a multiple of that many bytes ends on a full line, with no padding.
+    _BYTES_PER_LINE = {64: 48, 76: 57}
+    _AFTER = "NextLineInTheFileHasMixedCaseLetters" * 3
 
-        # No short padded line ends this wrap, so only the digest's look can.
-        encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 80).decode()
-        encoded = encoded[: len(encoded) // width * width]
-        digest = (hashlib.sha256(b"x").hexdigest() * 2)[:width]
-        stripped = strip_base64_images("\n".join(textwrap.wrap(encoded, width)) + "\n" + digest)
-        assert stripped == "[image data omitted]\n" + digest
+    @staticmethod
+    def _fitted(build: Callable[[int], bytes], per_line: int) -> bytes:
+        """The image *build* makes with the filler size that ends it on a full
+        line, two lines or more, so it is long enough to count as an image."""
+        for size in range(per_line * 4):
+            image = build(size)
+            if len(image) % per_line == 0 and len(image) >= 2 * per_line:
+                return image
+        raise AssertionError("no filler size fits")
 
-    def test_a_png_that_ends_on_a_full_line_ends_the_run(self) -> None:
-        import base64
+    @classmethod
+    def _png(cls, filler: int) -> bytes:
         import struct
-        import textwrap
         import zlib
 
         def chunk(kind: bytes, data: bytes) -> bytes:
             body = kind + data
             return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
 
-        head = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-        idat = chunk(b"IDAT", zlib.compress(b"\x00\x00"))
-        size = len(head) + len(idat) + 12 + 12  # IEND, and a tEXt chunk's own 12
-        note = b"k\x00" + b"v" * (-(size + 2) % 48 + 48)  # makes the PNG a multiple of 48 bytes
-        png = head + chunk(b"tEXt", note) + idat + chunk(b"IEND", b"")
-        encoded = base64.b64encode(png).decode()
-        assert len(png) % 48 == 0 and not encoded.endswith("=")
-        # Mixed case, so only the PNG's own end can stop the run before it.
-        after = ("NextLineInTheFileHasMixedCaseLetters" * 2)[:64]
-        stripped = strip_base64_images("\n".join(textwrap.wrap(encoded, 64)) + "\n" + after)
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+            + chunk(b"tEXt", b"k\x00" + b"v" * filler)
+            + chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+            + chunk(b"IEND", b"")
+        )
+
+    @staticmethod
+    def _jpeg(comment: bytes, *, thumbnail_at: int | None = None) -> bytes:
+        """SOI, an optional EXIF APP1 holding a thumbnail with its own EOI, a COM
+        segment, one scan whose data has a stuffed byte and a restart marker,
+        and EOI."""
+        import struct
+
+        out = b"\xff\xd8"
+        if thumbnail_at is not None:
+            thumbnail = b"\xff\xd8\xff\xfe\x00\x04hi\xff\xd9"
+            body = b"Exif\x00\x00" + b"\x11" * thumbnail_at + thumbnail + b"\x22" * 30
+            out += b"\xff\xe1" + struct.pack(">H", len(body) + 2) + body
+        out += b"\xff\xfe" + struct.pack(">H", len(comment) + 2) + comment
+        out += b"\xff\xda" + struct.pack(">H", 8) + b"\x01\x01\x00\x00\x3f\x00"
+        out += b"\x12\x34\xff\x00\x56\xff\xd0\x78\x9a"
+        return out + b"\xff\xd9"
+
+    @staticmethod
+    def _wrap(image: bytes, width: int) -> str:
+        import base64
+        import textwrap
+
+        return "\n".join(textwrap.wrap(base64.b64encode(image).decode(), width))
+
+    @pytest.mark.parametrize("width", [64, 76])
+    def test_a_digest_after_a_finished_image_is_kept(self, width: int) -> None:
+        import hashlib
+
+        image = self._fitted(self._png, self._BYTES_PER_LINE[width])
+        digest = (hashlib.sha256(b"x").hexdigest() * 2)[:width]
+        stripped = strip_base64_images(self._wrap(image, width) + "\n" + digest)
+        assert stripped == "[image data omitted]\n" + digest
+
+    def test_a_png_that_ends_on_a_full_line_ends_the_run(self) -> None:
+        image = self._fitted(self._png, 48)
+        after = self._AFTER[:64]
+        stripped = strip_base64_images(self._wrap(image, 64) + "\n" + after)
+        assert stripped == "[image data omitted]\n" + after
+
+    @pytest.mark.parametrize("width", [64, 76])
+    def test_an_icon_of_zero_pixels_is_replaced_whole(self, width: int) -> None:
+        import struct
+
+        # Zero bytes encode as lines of "A", which are still the image.
+        dib = struct.pack("<IiiHHIIiiII", 40, 16, 32, 1, 32, 0, 0, 0, 0, 0, 0)
+        image = dib + b"\x00" * (16 * 16 * 4 + 16 * 16 // 8)
+        ico = (
+            struct.pack("<HHH", 0, 1, 1)
+            + struct.pack("<BBBBHHII", 16, 16, 0, 0, 1, 32, len(image), 22)
+            + image
+        )
+        stripped = strip_base64_images(self._wrap(ico, width) + "\nkeep")
+        assert stripped == "[image data omitted]\nkeep"
+        assert contains_base64_image(stripped) is False
+
+    @pytest.mark.parametrize("width", [64, 76])
+    def test_a_jpeg_with_a_comment_of_zeros_is_replaced_whole(self, width: int) -> None:
+        stripped = strip_base64_images(self._wrap(self._jpeg(b"\x00" * 200), width) + "\nkeep")
+        assert stripped == "[image data omitted]\nkeep"
+        assert contains_base64_image(stripped) is False
+
+    @pytest.mark.parametrize(("width", "size"), [(76, 114), (64, 96)])
+    def test_the_line_after_a_jpeg_that_ends_on_a_full_line_is_kept(self, width: int, size: int) -> None:
+        image = self._jpeg(bytes((i * 17 + 65) % 256 for i in range(size - len(self._jpeg(b"")))))
+        assert len(image) == size
+        after = self._AFTER[:width]
+        stripped = strip_base64_images(self._wrap(image, width) + "\n" + after + "\nkeep")
+        assert stripped == "[image data omitted]\n" + after + "\nkeep"
+
+    def test_a_jpeg_does_not_end_at_its_thumbnail(self) -> None:
+        # The thumbnail's own EOI lands on a line end; the image goes on after it.
+        prefix = 2 + 4 + 6  # SOI, the APP1 marker and length, "Exif\0\0"
+        thumbnail_at = -(prefix + 10) % 57  # the thumbnail is 10 bytes
+        image = self._fitted(
+            lambda filler: self._jpeg(b"c" * filler, thumbnail_at=thumbnail_at), 57,
+        )
+        after = self._AFTER[:76]
+        stripped = strip_base64_images(self._wrap(image, 76) + "\n" + after)
+        assert stripped == "[image data omitted]\n" + after
+        assert contains_base64_image(stripped) is False
+
+    def test_an_unpadded_short_last_line_that_completes_the_image_goes_with_it(self) -> None:
+        # A multiple of 3 bytes has no padding, so only the image's end shows that
+        # its short last line belongs to it.
+        image = next(
+            png for png in (self._png(filler) for filler in range(200))
+            if len(png) % 3 == 0 and len(png) % 57
+        )
+        stripped = strip_base64_images(self._wrap(image, 76) + "\nkeep")
+        assert stripped == "[image data omitted]\nkeep"
+        assert contains_base64_image(stripped) is False
+
+    def test_the_line_after_a_gif_that_ends_on_a_full_line_is_kept(self) -> None:
+        def gif(filler: int) -> bytes:
+            comment = b"x" * filler
+            blocks = b"".join(bytes([len(comment[i:i + 255])]) + comment[i:i + 255] for i in range(0, len(comment), 255))
+            return (
+                b"GIF89a" + b"\x01\x00\x01\x00\x80\x00\x00" + b"\x00\x00\x00\xff\xff\xff"
+                + b"\x21\xfe" + blocks + b"\x00"
+                + b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00" + b"\x02\x02\x44\x01\x00"
+                + b"\x3b"
+            )
+
+        after = self._AFTER[:76]
+        stripped = strip_base64_images(self._wrap(self._fitted(gif, 57), 76) + "\n" + after)
+        assert stripped == "[image data omitted]\n" + after
+
+    def test_the_line_after_a_webp_that_ends_on_a_full_line_is_kept(self) -> None:
+        import struct
+
+        def webp(filler: int) -> bytes:
+            data = b"\x2f" + b"\x00" * (filler * 2 + 1)  # even, so the chunk needs no pad byte
+            body = b"WEBP" + b"VP8L" + struct.pack("<I", len(data)) + data
+            return b"RIFF" + struct.pack("<I", len(body)) + body
+
+        after = self._AFTER[:64]
+        stripped = strip_base64_images(self._wrap(self._fitted(webp, 48), 64) + "\n" + after)
         assert stripped == "[image data omitted]\n" + after
 
     def test_an_image_past_the_detection_cap_is_replaced_too(self) -> None:

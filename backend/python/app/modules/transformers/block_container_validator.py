@@ -10,7 +10,7 @@ from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType,
 import base64
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
  
 # ── image magic signatures ──────────────────────────────────────────
@@ -206,26 +206,176 @@ BASE64_IMAGE_PLACEHOLDER = "[image data omitted]"
 # A line too short to hold an image by itself is a line of a wrap (MIME wraps at
 # 76, other encoders at 80 or 84); one at least that long is a whole payload.
 _MAX_WRAPPED_LINE_CHARS = _MIN_IMAGE_PAYLOAD_CHARS - 1
-# The last 12 bytes of every PNG: an empty IEND chunk and its CRC.
-_PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
-def _looks_encoded(line: str) -> bool:
-    """Whether a full line could be base64 of binary data. Such a line has
-    upper- and lower-case letters (the odds that 60 random base64 characters
-    lack either are about 1 in 10**15); a hex digest or a run of one letter
-    does not, so it is the text after the payload."""
-    return any(c.isupper() for c in line) and any(c.islower() for c in line)
+def _png_length(data: bytes | bytearray) -> int | None:
+    """Length of the PNG at the start of *data* once its IEND chunk is in, by
+    walking the chunks (length, type, data, CRC)."""
+    pos = 8
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        pos += 12 + length
+        if kind == b"IEND":
+            return pos if pos <= len(data) else None
+    return None
 
 
-def _ends_a_png(line: str) -> bool:
-    """Whether *line*, the last line of a payload that so far is a whole number
-    of quads, finishes a PNG."""
-    try:
-        tail = base64.b64decode(line[-24:].replace("-", "+").replace("_", "/"), validate=True)
-    except Exception:
-        return False
-    return tail.endswith(_PNG_END)
+def _jpeg_length(data: bytes | bytearray) -> int | None:
+    """Length of the JPEG at the start of *data* once its end-of-image marker is
+    in. Segments are skipped by their length, so an EXIF thumbnail's own EOI
+    inside APP1 is passed over; entropy-coded data after SOS runs to the next
+    marker that isn't a stuffed byte or a restart marker."""
+    pos = 2
+    while pos + 2 <= len(data):
+        if data[pos] != 0xFF:
+            return None
+        marker = data[pos + 1]
+        if marker == 0xFF:  # fill byte
+            pos += 1
+            continue
+        pos += 2
+        if marker == 0xD9:
+            return pos
+        if 0xD0 <= marker <= 0xD7 or marker == 0x01:
+            continue
+        if pos + 2 > len(data):
+            return None
+        pos += int.from_bytes(data[pos:pos + 2], "big")
+        if marker == 0xDA:
+            while True:
+                pos = data.find(b"\xff", pos)
+                if pos < 0 or pos + 1 >= len(data):
+                    return None
+                following = data[pos + 1]
+                if following == 0x00 or 0xD0 <= following <= 0xD7:
+                    pos += 2
+                    continue
+                break
+    return None
+
+
+def _gif_length(data: bytes | bytearray) -> int | None:
+    """Length of the GIF at the start of *data* once its trailer is in, by
+    walking the colour tables, extensions and image data sub-blocks."""
+
+    def sub_blocks(pos: int) -> int | None:
+        while pos < len(data):
+            size = data[pos]
+            pos += 1 + size
+            if size == 0:
+                return pos
+        return None
+
+    if len(data) < 13:
+        return None
+    flags = data[10]
+    pos = 13 + (3 * 2 ** ((flags & 7) + 1) if flags & 0x80 else 0)
+    while pos < len(data):
+        block = data[pos]
+        if block == 0x3B:
+            return pos + 1
+        if block == 0x21:
+            pos = sub_blocks(pos + 2)
+        elif block == 0x2C:
+            if pos + 10 > len(data):
+                return None
+            local = data[pos + 9]
+            pos += 10 + (3 * 2 ** ((local & 7) + 1) if local & 0x80 else 0) + 1
+            pos = sub_blocks(pos)
+        else:
+            return None
+        if pos is None:
+            return None
+    return None
+
+
+def _webp_length(data: bytes | bytearray) -> int | None:
+    return int.from_bytes(data[4:8], "little") + 8 if len(data) >= 8 else None
+
+
+def _ico_length(data: bytes | bytearray) -> int | None:
+    """End of the last image an ICO or CUR directory points at."""
+    if len(data) < 6:
+        return None
+    count = int.from_bytes(data[4:6], "little")
+    if not count or len(data) < 6 + 16 * count:
+        return None
+    return max(
+        int.from_bytes(data[at + 8:at + 12], "little") + int.from_bytes(data[at + 12:at + 16], "little")
+        for at in range(6, 6 + 16 * count, 16)
+    )
+
+
+# How to tell the image's length from its first bytes, per format, and the last
+# bytes that can end it (None: its length is in its header). TIFF, AVIF and
+# HEIC have no end that can be read in order, so their runs go on through every
+# line of the wrap.
+_IMAGE_ENDS: tuple[tuple[bytes, Callable[[bytearray], int | None], bytes | None], ...] = (
+    (b"\x89PNG\r\n\x1a\n", _png_length, b"IEND\xaeB`\x82"),
+    (b"\xff\xd8\xff", _jpeg_length, b"\xff\xd9"),
+    (b"GIF8", _gif_length, b"\x3b"),
+    (b"RIFF", _webp_length, None),
+    (b"\x00\x00\x01\x00", _ico_length, None),
+    (b"\x00\x00\x02\x00", _ico_length, None),
+)
+
+
+class _ImageEnd:
+    """Decodes a payload line by line and says when the image is whole.
+
+    Only whole quads are decoded; the rest waits for the next line. A format
+    whose length is in its header is measured once; one that ends with a marker
+    is walked only when the bytes so far end with that marker.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._data = bytearray()
+        self._measure: Callable[[bytearray], int | None] | None = None
+        self._ending: bytes | None = None
+        self._known = False
+        self._length: int | None = None
+
+    def feed(self, line: str) -> None:
+        self._pending += line.rstrip("=").replace("-", "+").replace("_", "/")
+        whole = len(self._pending) // 4 * 4
+        try:
+            self._data += base64.b64decode(self._pending[:whole], validate=True)
+        except Exception:
+            self._measure = None  # not base64 after all: no end can be read
+            self._known = True
+        self._pending = self._pending[whole:]
+        if not self._known:
+            for magic, measure, ending in _IMAGE_ENDS:
+                if self._data[: len(magic)] == magic:
+                    self._measure, self._ending = measure, ending
+                    break
+            self._known = len(self._data) >= 8
+
+    def finished_by(self, line: str) -> bool:
+        """Whether *line*, a short last line, completes the image. Asked once,
+        at the end of a run, so the copy it makes is made once."""
+        probe = _ImageEnd()
+        probe.__dict__.update(self.__dict__)
+        probe._data = bytearray(self._data)
+        probe.feed(line)
+        return probe.whole
+
+    @property
+    def whole(self) -> bool:
+        """Whether the bytes so far hold the whole image."""
+        if self._measure is None or self._pending:
+            return False
+        data = self._data
+        if self._ending is None:
+            if self._length is None:
+                self._length = self._measure(data)
+            return self._length is not None and self._length <= len(data)
+        if not data.endswith(self._ending):
+            return False
+        length = self._measure(data)
+        return length is not None and length <= len(data)
 
 
 def _one_line_break(gap: str) -> bool:
@@ -248,14 +398,18 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
       is the whole of what is left: the run ends with it.
     - Each next line is one line break further on. The second line sets the
       wrap's width; the first can be shorter (the rest of a ``base64,`` line).
-      Every later full line has that width and looks like encoded binary
-      (``_looks_encoded``), so a same-width hash after the payload is not taken.
-    - A PNG ends at its IEND chunk: once the lines so far finish one, the run
-      ends, whatever the next line looks like.
-    - A shorter last line belongs to the run only when it is padded and brings
-      the run to a whole number of base64 quads. An unpadded short line is left
-      as text: it can't be told apart from a word, and it is too short to be an
-      image.
+      Every later full line has that width.
+    - The run ends once the lines so far decode to a whole image of the format
+      its first bytes name (``_ImageEnd``): a PNG at IEND, a JPEG at the EOI
+      after its scans, a GIF at its trailer, WEBP, ICO and CUR at the size in
+      their headers. So a same-width line after an image that ends on a full
+      line is not taken. TIFF, AVIF and HEIC can't be measured that way, so
+      their runs go on through every line of the wrap.
+    - A shorter last line belongs to the run when it is padded and brings the
+      run to a whole number of base64 quads, or when it completes the image. An
+      unpadded short line that doesn't (or follows a format whose end can't be
+      read) is left as text: it can't be told apart from a word, and it is too
+      short to be an image.
     """
     segments = list(_SEGMENT_RE.finditer(raw))
     i = 0
@@ -274,15 +428,17 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
             else None
         )
         start = None
-        is_png = False
+        image = _ImageEnd()
         if lead is not None:
             decoded = _decode_b64_prefix(lead.group() + segment)
             if decoded and _is_image_data(decoded):
-                start, is_png = lead.start(), decoded.startswith(b"\x89PNG")
+                start = lead.start()
+                image.feed(lead.group())
         if start is None:
             decoded = _decode_b64_prefix(segment)
             if decoded and _is_image_data(decoded):
-                start, is_png = m.start(), decoded.startswith(b"\x89PNG")
+                start = m.start()
+        image.feed(segment)
 
         end = m.end()
         total = len(re.sub(r"\s", "", raw[start if start is not None else m.start():end]))
@@ -290,8 +446,7 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
         if len(segment) <= _MAX_WRAPPED_LINE_CHARS and not segment.endswith("="):
             width = None
             for j in range(i + 1, len(segments)):
-                previous_line = segments[j - 1].group()
-                if is_png and total % 4 == 0 and _ends_a_png(previous_line):
+                if image.whole:
                     break
                 line = segments[j]
                 text = line.group()
@@ -302,7 +457,13 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
                     if (total + len(text)) % 4 == 0:
                         end, last = line.end(), j
                     break
-                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit or not _looks_encoded(text):
+                if len(text) < (width or len(segment)):
+                    # A short last line, unpadded: part of the image only if it
+                    # completes it, so a word after the payload stays.
+                    if image.finished_by(text):
+                        end, last = line.end(), j
+                    break
+                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit:
                     break
                 if width is None:
                     if len(text) < len(segment):
@@ -311,6 +472,7 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
                 elif len(text) != width:
                     break
                 total += len(text)
+                image.feed(text)
                 end, last = line.end(), j
 
         chars = len(re.sub(r"[\s=]", "", raw[start:end])) if start is not None else 0
