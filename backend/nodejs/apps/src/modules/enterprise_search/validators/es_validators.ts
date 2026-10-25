@@ -951,43 +951,42 @@ const agentModelsOptionalSchema = z
     }
   });
 
-const createAgentBodySchema = z
-  .object({
-    name: z
-      .string({ required_error: 'Name is required' })
-      .trim()
-      .min(1, { message: 'Name is required' })
-      .max(200, { message: 'Name must be less than 200 characters' }),
-    /**
-     * Optional: an agent created without models uses the organization's
-     * default LLM at chat time (see get_llm_for_chat fallback chain).
-     */
-    models: agentModelsOptionalSchema.optional().default([]),
-    description: agentLongTextSchema.optional(),
-    startMessage: agentLongTextSchema.optional(),
-    systemPrompt: agentLongTextSchema.optional(),
-    instructions: agentLongTextSchema.optional(),
-    tags: z.array(z.string().max(100)).max(50).optional(),
-    shareWithOrg: z.boolean().optional(),
-    isServiceAccount: z.boolean().optional(),
-    /**
-     * The service account this agent searches knowledge as. Carries the
-     * account's `userId`, which is what the service accounts API returns, so
-     * the value a picker sends back is the one it was given. Only meaningful
-     * on a service agent; the Python side refuses it otherwise.
-     */
-    serviceAccountUserId: z.string().trim().min(1).max(128).optional(),
-    toolsets: z.array(agentToolsetSchema).max(100).optional(),
-    mcpServers: agentMcpServersSchema,
-    knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
-    skills: z.array(agentSkillSchema).max(100).optional(),
-    webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-    /** Agent-level fallback applied when a chat request omits its own reasoningEffort. */
-    defaultReasoningEffort: z
-      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
-      .optional(),
-    sendUserContext: z.boolean().optional(),
-  });
+const createAgentBodySchema = z.object({
+  name: z
+    .string({ required_error: 'Name is required' })
+    .trim()
+    .min(1, { message: 'Name is required' })
+    .max(200, { message: 'Name must be less than 200 characters' }),
+  /**
+   * Optional: an agent created without models uses the organization's
+   * default LLM at chat time (see get_llm_for_chat fallback chain).
+   */
+  models: agentModelsOptionalSchema.optional().default([]),
+  description: agentLongTextSchema.optional(),
+  startMessage: agentLongTextSchema.optional(),
+  systemPrompt: agentLongTextSchema.optional(),
+  instructions: agentLongTextSchema.optional(),
+  tags: z.array(z.string().max(100)).max(50).optional(),
+  shareWithOrg: z.boolean().optional(),
+  isServiceAccount: z.boolean().optional(),
+  /**
+   * The service account this agent searches knowledge as. Carries the
+   * account's `userId`, which is what the service accounts API returns, so
+   * the value a picker sends back is the one it was given. Only meaningful
+   * on a service agent; the Python side refuses it otherwise.
+   */
+  serviceAccountUserId: z.string().trim().min(1).max(128).optional(),
+  toolsets: z.array(agentToolsetSchema).max(100).optional(),
+  mcpServers: agentMcpServersSchema,
+  knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+  skills: z.array(agentSkillSchema).max(100).optional(),
+  webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+  /** Agent-level fallback applied when a chat request omits its own reasoningEffort. */
+  defaultReasoningEffort: z
+    .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+    .optional(),
+  sendUserContext: z.boolean().optional(),
+});
 
 export const createAgentSchema = z.object({
   body: createAgentBodySchema
@@ -1016,42 +1015,41 @@ export const createAgentSchema = z.object({
 // Agent update schema (PUT /:agentKey)
 // ---------------------------------------------------------------------------
 
-const updateAgentBodySchema = z
-  .object({
-    name: z
-      .string()
-      .trim()
-      .min(1, { message: 'Name is required' })
-      .max(200, { message: 'Name must be less than 200 characters' })
-      .optional(),
-    /** Optional; when present, an empty array clears the agent's models
-     * and reverts it to the organization default LLM. */
-    models: agentModelsOptionalSchema.optional(),
-    description: agentLongTextSchema.optional(),
-    startMessage: agentLongTextSchema.optional(),
-    systemPrompt: agentLongTextSchema.optional(),
-    instructions: agentLongTextSchema.optional(),
-    tags: z.array(z.string().max(100)).max(50).optional(),
-    shareWithOrg: z.boolean().optional(),
-    isServiceAccount: z.boolean().optional(),
-    /**
-     * The service account this agent searches knowledge as. Nullable, unlike
-     * on create: sending `null` is how a binding is cleared and the agent goes
-     * back to searching as its creator.
-     */
-    serviceAccountUserId: z
-      .union([z.null(), z.string().trim().min(1).max(128)])
-      .optional(),
-    toolsets: z.array(agentToolsetSchema).max(100).optional(),
-    mcpServers: agentMcpServersSchema,
-    knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
-    skills: z.array(agentSkillSchema).max(100).optional(),
-    webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-    defaultReasoningEffort: z
-      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
-      .optional(),
-    sendUserContext: z.boolean().optional(),
-  });
+const updateAgentBodySchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'Name is required' })
+    .max(200, { message: 'Name must be less than 200 characters' })
+    .optional(),
+  /** Optional; when present, an empty array clears the agent's models
+   * and reverts it to the organization default LLM. */
+  models: agentModelsOptionalSchema.optional(),
+  description: agentLongTextSchema.optional(),
+  startMessage: agentLongTextSchema.optional(),
+  systemPrompt: agentLongTextSchema.optional(),
+  instructions: agentLongTextSchema.optional(),
+  tags: z.array(z.string().max(100)).max(50).optional(),
+  shareWithOrg: z.boolean().optional(),
+  isServiceAccount: z.boolean().optional(),
+  /**
+   * The service account this agent searches knowledge as. Nullable, unlike
+   * on create: sending `null` is how a binding is cleared and the agent goes
+   * back to searching as its creator.
+   */
+  serviceAccountUserId: z
+    .union([z.null(), z.string().trim().min(1).max(128)])
+    .optional(),
+  toolsets: z.array(agentToolsetSchema).max(100).optional(),
+  mcpServers: agentMcpServersSchema,
+  knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+  skills: z.array(agentSkillSchema).max(100).optional(),
+  webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+  defaultReasoningEffort: z
+    .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+    .optional(),
+  sendUserContext: z.boolean().optional(),
+});
 
 export const updateAgentSchema = z.object({
   params: z.object(agentKeyParam),
