@@ -287,7 +287,7 @@ class Linear:
         try:
             # Convert string filter (if provided) to dict expected by data source
             filter_dict = None
-            if filter:
+            if filter is not None:
                 try:
                     filter_dict = json.loads(filter)
                 except (ValueError, TypeError, RecursionError):

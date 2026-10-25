@@ -16,7 +16,7 @@ def _tool() -> Linear:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["{not json", "[1, 2]", '"text"', "42", "null", "   ", '"{\\"state\\": 1}"'])
+@pytest.mark.parametrize("bad", ["", "{not json", "[1, 2]", '"text"', "42", "null", "   ", '"{\\"state\\": 1}"'])
 async def test_get_issues_rejects_unparsable_filter(bad: str) -> None:
     tool = _tool()
     ok, out = await tool.get_issues(filter=bad)
