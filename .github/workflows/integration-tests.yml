@@ -438,17 +438,21 @@ jobs:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
 
-      # The runner shares ~15.7 GB with the Docker stack. When memory runs out the kernel
-      # kills the process with the highest score, and when that is the runner the job ends
-      # with no steps, no log and no reports. Shielded, the runner outlives a killed
-      # container, the tests fail with their logs, and the dump steps print the kernel's
-      # out-of-memory lines. Steps inherit the shield; the Docker services do not.
+      # The runner shares ~15.7 GB with the Docker stack. If the kernel's out-of-memory
+      # killer picks the runner, the job ends with no steps, no log and no reports. This
+      # shields Runner.Listener and Runner.Worker only: actions/runner resets every step
+      # process to oom_score_adj 500, so a runaway pytest is still the likelier victim.
       - name: Keep the runner alive when memory runs out
         run: |
+          shielded=0
           for pid in $(pgrep -f 'Runner\.(Listener|Worker)'); do
-            echo -1000 | sudo -n tee "/proc/$pid/oom_score_adj" > /dev/null \
-              || echo "::warning::Could not shield runner process $pid from the out-of-memory killer"
+            if echo -1000 | sudo -n tee "/proc/$pid/oom_score_adj" > /dev/null; then
+              shielded=$((shielded + 1))
+            else
+              echo "::warning::Could not shield runner process $pid from the out-of-memory killer"
+            fi
           done
+          [ "$shielded" -gt 0 ] || echo "::warning::No runner process found to shield from the out-of-memory killer"
           mkdir -p integration-tests/reports
           nohup sh -c 'while :; do date -u +%FT%TZ; free -m | sed -n 2,3p; sleep 60; done' \
             > integration-tests/reports/memory.log 2>&1 &
@@ -763,8 +767,10 @@ jobs:
             docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
-          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill.
-          sudo -n dmesg -T 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' \
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
+          # killer means the runner ran out; a simulator hitting its own cap logs
+          # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
+          sudo -n dmesg -T 2>/dev/null | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
             > ../../integration-tests/reports/docker-logs/neo4j/_oom.txt || true
           if [ -s ../../integration-tests/reports/docker-logs/neo4j/_oom.txt ]; then
             echo "::warning::The runner ran out of memory; the kernel killed these processes:"
@@ -930,8 +936,10 @@ jobs:
             docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
-          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill.
-          sudo -n dmesg -T 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' \
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
+          # killer means the runner ran out; a simulator hitting its own cap logs
+          # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
+          sudo -n dmesg -T 2>/dev/null | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
             > ../../integration-tests/reports/docker-logs/arango/_oom.txt || true
           if [ -s ../../integration-tests/reports/docker-logs/arango/_oom.txt ]; then
             echo "::warning::The runner ran out of memory; the kernel killed these processes:"
