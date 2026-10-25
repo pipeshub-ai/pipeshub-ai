@@ -349,7 +349,7 @@ class TestUserAdded:
         # Should upsert user
         graph_provider.batch_upsert_nodes.assert_awaited()
         user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
-        assert user_data["kind"] == "individual"
+        assert user_data["kind"] == "human"
         # Should create belongs_to edge
         graph_provider.batch_create_edges.assert_awaited()
 
