@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify'
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ScopeValidatorService } from './scope.validator.service'
@@ -27,6 +27,7 @@ import {
   ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
+import { ConflictError } from '../../../libs/errors/http.errors';
 import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
@@ -623,6 +624,16 @@ export class OAuthAppService {
     }
     if (data.knowledgeLimit !== undefined) {
       app.knowledgeLimit = data.knowledgeLimit ?? undefined;
+      // Saved only over the limit read above. Two edits from one snapshot
+      // are each judged against it, so without this the later save could
+      // pass as a widening while dropping what the earlier one added.
+      app.$where = previousLimit
+        ? {
+            'knowledgeLimit.apps': previousLimit.apps,
+            'knowledgeLimit.recordGroups': previousLimit.recordGroups,
+            'knowledgeLimit.records': previousLimit.records,
+          }
+        : { knowledgeLimit: null };
     }
 
     // The knowledge limit rides in each token's claim. A narrowed one may
@@ -645,7 +656,16 @@ export class OAuthAppService {
       );
     }
 
-    await app.save()
+    try {
+      await app.save();
+    } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) {
+        throw new ConflictError(
+          'This application changed while you were editing it. Reload it and save again.',
+        );
+      }
+      throw error;
+    }
 
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
@@ -659,6 +679,7 @@ export class OAuthAppService {
       } catch (error) {
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
+        app.$where = {};
         await app.save()
         throw error
       }

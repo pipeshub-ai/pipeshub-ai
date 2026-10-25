@@ -20870,6 +20870,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '409':
+          description: >-
+            The request changes `knowledgeLimit`, and the app's limit changed after this
+            request read it (another edit saved first). Nothing was saved. Reload the app
+            and save again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
           content:

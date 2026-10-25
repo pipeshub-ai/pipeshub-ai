@@ -1,9 +1,10 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import { ConflictError } from '../../../../src/libs/errors/http.errors';
 
 function makeService() {
   const logger = {
@@ -243,6 +244,47 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
+  it('saves a new limit only over the limit it read', async () => {
+    const { service } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+
+    expect(app.$where).to.deep.equal({
+      'knowledgeLimit.apps': ['app-1'],
+      'knowledgeLimit.recordGroups': [],
+      'knowledgeLimit.records': ['folder-1'],
+    });
+  });
+
+  it('saves a first limit only over none', async () => {
+    const { service } = makeService();
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
+
+    expect(app.$where).to.deep.equal({ knowledgeLimit: null });
+  });
+
+  it('refuses with a conflict, and revokes nothing more, when the limit changed since it was read', async () => {
+    // Another edit from the same snapshot landed first; judged against the
+    // stale limit, this one could pass as a widening while dropping what that
+    // edit added.
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+    app.save.rejects(new mongoose.Error.DocumentNotFoundError({}, 'oauthApp', 0, {}));
+
+    try {
+      await service.updateApp(appId, orgId, userId, true, {
+        knowledgeLimit: { ...limit, apps: ['app-1', 'app-2'] },
+      });
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect(error).to.be.instanceOf(ConflictError);
+    }
+
+    expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+  });
+
   it('keeps the limit when the update does not name it', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };
@@ -250,6 +292,7 @@ describe('updating what an OAuth app can see', () => {
     await service.updateApp(appId, orgId, userId, true, { name: 'Renamed' });
 
     expect(app.knowledgeLimit).to.deep.equal(limit);
+    expect(app.$where).to.equal(undefined);
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
