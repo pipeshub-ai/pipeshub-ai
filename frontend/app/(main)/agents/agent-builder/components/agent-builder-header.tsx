@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { ServiceAgentIdentityControl } from './service-agent-identity-control';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -46,6 +47,9 @@ export function AgentBuilderHeader(props: {
   /** Any other reason save is blocked, shown as the save button's tooltip. */
   saveBlockedReason?: string;
   isServiceAccount: boolean;
+  /** The service account this agent searches as, by `userId`; null means its creator. */
+  serviceAccountUserId?: string | null;
+  onServiceAccountUserIdChange?: (next: string | null) => void;
   editing: boolean;
   /** An existing agent is still loading or failed to load: name, share, convert and save are off. */
   loading?: boolean;
@@ -82,6 +86,8 @@ export function AgentBuilderHeader(props: {
     saveBlockedByDeprecatedTools = false,
     saveBlockedReason,
     isServiceAccount,
+    serviceAccountUserId = null,
+    onServiceAccountUserIdChange,
     editing,
     loading = false,
     onEnableServiceAccount,
@@ -375,6 +381,14 @@ export function AgentBuilderHeader(props: {
             </Flex>
           </Tooltip>
         ))}
+        {isServiceAccount && onServiceAccountUserIdChange ? (
+          <ServiceAgentIdentityControl
+            value={serviceAccountUserId}
+            onChange={onServiceAccountUserIdChange}
+            disabled={isFlowStructureLocked || loading || saving}
+            permissionDenied={serviceAccountPermissionDenied}
+          />
+        ) : null}
         {showConvertOption && !showConvertInMenu ? (
           <Tooltip
             content={

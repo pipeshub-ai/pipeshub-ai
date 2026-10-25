@@ -132,6 +132,18 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   } = useAgentBuilderState(loadedAgent?.name || '', !isMobile);
 
   const [shareWithOrg, setShareWithOrg] = useState(false);
+
+  /**
+
+   * The service account this agent searches knowledge as, by `userId`;
+
+   * null means it searches as its creator, which is the older behaviour
+
+   * and still the default.
+
+   */
+
+  const [serviceAccountUserId, setServiceAccountUserId] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
 
@@ -285,6 +297,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   useEffect(() => {
     if (loadedAgent) {
       setShareWithOrg(isServiceAccount ? true : Boolean(loadedAgent.shareWithOrg));
+      setServiceAccountUserId(loadedAgent.serviceAccountUserId ?? null);
     }
   }, [loadedAgent, isServiceAccount]);
 
@@ -667,7 +680,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           loadedAgent,
           shareWithOrg,
-          isServiceAccount
+          isServiceAccount,
+          serviceAccountUserId
         ),
       };
 
@@ -750,7 +764,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           currentAgent ?? null,
           true,
-          true
+          true,
+          serviceAccountUserId
         ),
       };
 
@@ -937,6 +952,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           saveBlockedByDeprecatedTools={saveBlockedByDeprecatedTools}
           saveBlockedReason={saveBlockedByEmptyMcpServers ? t('agentBuilder.mcpServerNeedsToolsTooltip') : undefined}
           isServiceAccount={isServiceAccount}
+          serviceAccountUserId={serviceAccountUserId}
+          onServiceAccountUserIdChange={canPersist ? setServiceAccountUserId : undefined}
           editing={Boolean(loadedAgent || editingKey)}
           loading={agentLoading || agentLoadFailed}
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
