@@ -14,7 +14,6 @@ import os
 import random
 import threading
 import time
-import weakref
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -70,15 +69,25 @@ def _plain(dsn: str) -> str:
 class RuntimeDb:
     """One KernelDB per event loop for the runtime tables, made on first use. Safe to call from any thread.
 
-    Not ``acquire_db``: its module-level asyncio lock binds to the first loop that contends for it, and this is used from the
-    configuration service's watch thread as well as the main loop.
+    It is used from the configuration service's watch thread as well as the main loop, so it takes a thread lock rather than an
+    asyncio one. Callers that do not hold their own use :meth:`shared`, so a process keeps one set of pools however many
+    components it starts.
     """
+
+    _shared: RuntimeDb | None = None
+    _shared_lock = threading.Lock()
+
+    @classmethod
+    def shared(cls) -> RuntimeDb:
+        """The process-wide instance, configured from the environment on first use."""
+        with cls._shared_lock:
+            if cls._shared is None:
+                cls._shared = cls()
+            return cls._shared
 
     def __init__(self, cfg: DbConfig | None = None) -> None:
         self._cfg = cfg
-        self._dbs: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, asyncio.Task[KernelDB]
-        ] = weakref.WeakKeyDictionary()
+        self._dbs: dict[asyncio.AbstractEventLoop, asyncio.Task[KernelDB]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -90,6 +99,10 @@ class RuntimeDb:
     async def db(self) -> KernelDB:
         loop = asyncio.get_running_loop()
         with self._lock:
+            for old in [lp for lp in self._dbs if lp.is_closed()]:
+                gone = self._dbs.pop(old)  # its loop can run nothing any more: release the pools without awaiting
+                if gone.done() and not gone.cancelled() and gone.exception() is None:
+                    gone.result().terminate()
             task = self._dbs.get(loop)
             if task is None or (
                 task.done() and (task.cancelled() or task.exception() is not None)
@@ -337,10 +350,13 @@ class ListenHub:
                 lost.set()
                 return
 
-    def healthy(self, max_age: float | None = None) -> bool:
-        """True while the connection is up and answered (or delivered) within ``max_age`` seconds (three pings by default). Code that
-        trusts a notification to invalidate something must treat False as "the notification may not arrive"."""
+    def healthy(self, max_age: float | None = None, channel: str | None = None) -> bool:
+        """True while the connection is up and answered (or delivered) within ``max_age`` seconds (three pings by default), and,
+        when ``channel`` is given, that channel is LISTENed on it (a new connection listens channel by channel). Code that trusts
+        a notification to invalidate something must treat False as "the notification may not arrive"."""
         age = max_age if max_age is not None else 3 * _ping_interval() + _ping_timeout()
+        if channel is not None and channel not in self._listened:
+            return False
         return self._con is not None and (time.monotonic() - self.last_ok) <= age
 
     async def _run(self) -> None:
@@ -436,7 +452,7 @@ class PgListener:
 
     def healthy(self) -> bool:
         """The shared connection is up and answering: a notification can be trusted to arrive."""
-        return ListenHub.for_dsn(self._dsn).healthy()
+        return ListenHub.for_dsn(self._dsn).healthy(channel=self._channel)
 
     async def stop(self) -> None:
         if self._sub is not None:

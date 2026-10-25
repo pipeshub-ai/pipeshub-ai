@@ -27,15 +27,16 @@ result = await db.run(fn, write=True)            # re-runs fn on 40001 / 40P01 a
   then raises `FailedTransaction` instead of reporting success. Recover inside a unit only with
   `async with tx.savepoint("name"):` (the error is re-raised after `ROLLBACK TO`). Raw `SAVEPOINT`/`ROLLBACK`/`COMMIT` and
   statements that re-bind `app.*`, `role` or `session_authorization` are refused (runtime `UowUsageError`, and the lint).
-* **The server is asked before COMMIT.** Write units run `SELECT 1` right before COMMIT; an aborted transaction
+* **The server is asked before COMMIT.** Write units run `SELECT now()` right before COMMIT; an aborted transaction
   (`InFailedSQLTransactionError`) raises `FailedTransaction` and rolls back, whatever path caused it (COPY, cancellation,
   anything the flag misses). A unit whose task was cancelled inside it also fails. `BEGIN`/`COMMIT`/`ROLLBACK`/`END`/
   `ABORT`/`SAVEPOINT`/`RELEASE`/`PREPARE TRANSACTION` are refused at runtime (`UowUsageError`), not only by the lint.
 * **Protocol-level check.** After every statement the connection must still report an open transaction. A statement
   that ended it (an early COMMIT or ROLLBACK that slipped past the text guard through E-strings, nested comments or quoted
   identifiers) raises `UowUsageError`, fails the unit and discards the connection. An early COMMIT cannot be undone once it
-  happened; it is detected immediately and the unit fails loudly. (`COMMIT; BEGIN` in one statement string is not detectable
-  this way; the text guard refuses the plain forms.)
+  happened; it is detected immediately and the unit fails loudly. (`COMMIT; BEGIN` in one statement string does not show in
+  the connection status; a write unit still catches it, because the `now()` asked before COMMIT differs from the one the unit
+  started with, and the text guard refuses the plain forms.)
 * **No nesting.** A unit started inside an open one (same task or a child task) raises `UowUsageError` at once; pass `tx`.
   An async generator that holds a unit must be consumed under the org that created it.
 * **Prepared statements:** `statement_cache_size` is 0 for every pooler profile; only `PG_POOLER=none` (direct) caches.

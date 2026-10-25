@@ -7,6 +7,8 @@ when done; the last release closes it.
 from __future__ import annotations
 
 import asyncio
+import threading
+import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,11 +25,19 @@ class _Entry:
 
 
 _entries: dict[tuple[DbConfig, int], _Entry] = {}
-_lock = asyncio.Lock()
+# One asyncio.Lock per event loop (a lock is only safe inside the loop it is used from); the dict of locks is guarded
+# by a thread lock because several loops may ask at once.
+_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()  # weak: a dead loop's address can be reused
+_locks_guard = threading.Lock()
+
+
+def _loop_lock() -> asyncio.Lock:
+    with _locks_guard:
+        return _locks.setdefault(asyncio.get_running_loop(), asyncio.Lock())
 
 
 async def acquire_db(cfg: DbConfig) -> KernelDB:
-    async with _lock:
+    async with _loop_lock():
         key = (cfg, id(asyncio.get_running_loop()))
         entry = _entries.get(key)
         if entry is None:
@@ -39,7 +49,7 @@ async def acquire_db(cfg: DbConfig) -> KernelDB:
 
 
 async def release_db(cfg: DbConfig) -> None:
-    async with _lock:
+    async with _loop_lock():
         key = (cfg, id(asyncio.get_running_loop()))
         entry = _entries.get(key)
         if entry is None:

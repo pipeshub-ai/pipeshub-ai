@@ -273,10 +273,10 @@ class KernelDB:
         name = f"pipeshub-{cfg.service}/{cfg.app_version}"
         self._home_loop = asyncio.get_running_loop()
         self._pool = await create_pool(cfg.dsn, max_size=cfg.pool_max, statement_cache_size=cfg.statement_cache_size, application_name=name)
-        if cfg.jobs_dsn:
-            self._jobs_pool = await create_pool(cfg.jobs_dsn, max_size=cfg.jobs_pool_max, statement_cache_size=cfg.statement_cache_size,
-                                                application_name=name + "/jobs")
         try:
+            if cfg.jobs_dsn:
+                self._jobs_pool = await create_pool(cfg.jobs_dsn, max_size=cfg.jobs_pool_max, statement_cache_size=cfg.statement_cache_size,
+                                                    application_name=name + "/jobs")
             table = caps_mod.load_table()
             async with self._open(self._pool, role=cfg.role, org_id="", request_id="boot", klass=cfg.timeout_class, write=False) as tx:
                 sql, names = caps_mod.probe_sql(table)
@@ -290,6 +290,17 @@ class KernelDB:
         except BaseException:
             await self.close()
             raise
+
+    def terminate(self) -> None:
+        """Release every pool without awaiting, for a database whose event loop has been closed (nothing is left to run ``close``)."""
+        pools, self._pool, self._jobs_pool = [self._pool, self._jobs_pool], None, None
+        for p in pools:
+            if p is not None:
+                with suppress(Exception):
+                    p.terminate()
+        with self._side_lock:
+            for loop in list(self._side_pools):
+                self._drop_side(loop)
 
     async def close(self) -> None:
         pools, self._pool, self._jobs_pool = [self._pool, self._jobs_pool], None, None

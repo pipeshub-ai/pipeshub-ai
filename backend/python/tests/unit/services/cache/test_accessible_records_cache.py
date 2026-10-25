@@ -488,6 +488,26 @@ class TestKillSwitch:
         assert isinstance(cache, NoopAccessibleRecordsCache)
         client.aclose.assert_awaited_once()
 
+    async def test_create_never_raises_when_the_invalidation_bus_cannot_be_set_up(self, monkeypatch) -> None:
+        """With REDIS_MODE=postgres a failure building the NOTIFY bus must give no cache, not an exception, and release the client."""
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        client = AsyncMock()
+        client.ping = AsyncMock()
+
+        with (
+            patch.object(StandaloneRedisProvider, "create_client", lambda self, *a, **k: client),
+            patch("app.services.cache.accessible_records_cache.uses_pg_state", return_value=True),
+            patch("app.services.cache.accessible_records_cache.PgCacheBus", side_effect=RuntimeError("no config")),
+        ):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+
+        assert isinstance(cache, NoopAccessibleRecordsCache)
+        client.aclose.assert_awaited_once()
+
     async def test_create_picks_up_redis_key_namespace(self, monkeypatch) -> None:
         """REDIS_KEY_NAMESPACE (R9) is read from the provider `create()`
         builds and applied by the key builders -- never as a client-level

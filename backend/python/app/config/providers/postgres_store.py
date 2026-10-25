@@ -48,7 +48,7 @@ _RANGE = """/* pipeshub:kv.range */
 SELECT key FROM platform.kv_entries WHERE key >= $1 AND ($2::text IS NULL OR key < $2) AND (expires_at IS NULL OR expires_at > now())
 ORDER BY key"""
 _PURGE = """/* pipeshub:kv.purge */
-DELETE FROM platform.kv_entries WHERE key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000)"""
+DELETE FROM platform.kv_entries WHERE key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)"""
 _NOTIFY = (
     "/* pipeshub:kv.notify */ SELECT pg_notify('pipeshub_kv_changed', $1)"  # KV_CHANNEL
 )
@@ -71,7 +71,7 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
     ) -> None:
         self.serializer = serializer
         self.deserializer = deserializer
-        self._rt = runtime or RuntimeDb()
+        self._rt = runtime or RuntimeDb.shared()
         self._watchers: dict[str, list[tuple[Callable[[T | None], None], str]]] = {}
         self._listeners: dict[int, PgListener] = {}
         self._last_purge = 0.0
@@ -108,10 +108,14 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
         db = await self._rt.db()
         async with db.runtime_uow(write=True) as tx:
             res = await tx.fetchval(sql, *args)
-            if time.monotonic() - self._last_purge > _PURGE_EVERY_S:
-                self._last_purge = time.monotonic()
-                await tx.execute(_PURGE)
-            return res
+        if time.monotonic() - self._last_purge > _PURGE_EVERY_S:
+            self._last_purge = time.monotonic()
+            try:  # housekeeping after the write has committed: a failure here must not fail the caller's write
+                async with db.runtime_uow(write=True) as tx:
+                    await tx.execute(_PURGE)
+            except Exception as e:
+                logger.warning("PostgreSQL KV expired-row purge failed: %s", e)
+        return res
 
     async def create_key(
         self,

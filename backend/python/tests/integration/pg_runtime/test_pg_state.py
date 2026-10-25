@@ -242,3 +242,17 @@ async def test_one_listen_connection_serves_every_subscriber(runtime, uid) -> No
     assert ListenHub.for_dsn(dsn).connections == 1
     for lst in ls:
         await lst.stop()
+
+
+async def test_capacity_pools_leave_no_row_behind(two, runtime, uid) -> None:
+    mgr = PgLeaseManager(two[0])
+    pool = f"nomark{uid}"
+    assert await mgr.try_acquire(pool, "o1", 1, 30) is True
+    await mgr.release(pool, "o1")
+    db = await runtime.db()
+    async with db.runtime_uow() as tx:
+        left = await tx.fetchval(
+            "/* pipeshub:test.poolrows */ SELECT count(*) FROM platform.kv_entries WHERE key LIKE $1",
+            f"state:%{pool}%",
+        )
+    assert left == 0

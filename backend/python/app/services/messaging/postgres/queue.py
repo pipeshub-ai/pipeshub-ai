@@ -131,7 +131,7 @@ class Delivery:
 
 class PgQueue:
     def __init__(self, runtime: RuntimeDb | None = None) -> None:
-        self.rt = runtime or RuntimeDb()
+        self.rt = runtime or RuntimeDb.shared()
 
     async def _write(self):  # noqa: ANN202
         return (await self.rt.db()).runtime_uow(write=True)

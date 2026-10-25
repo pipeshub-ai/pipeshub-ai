@@ -159,3 +159,16 @@ async def test_a_change_published_by_one_store_reaches_a_subscriber_of_another(
     assert make_store.p + "changed" in got
     await a.unsubscribe_changes(handle)
     await a.close()
+
+
+async def test_a_failing_purge_does_not_fail_the_write(runtime, uid) -> None:
+    """Expired rows are removed after the write has committed, in a transaction of their own: if that fails, the write stands."""
+    from app.config.providers import postgres_store
+
+    store = PostgresKeyValueStore(SER, DE, runtime=runtime)
+    key = f"/purge{uid}/k"
+    with patch.object(postgres_store, "_PURGE", "/* pipeshub:kv.purge */ SELECT 1/0"):
+        store._last_purge = 0.0
+        assert await store.create_key(key, {"v": 1}) is True
+    assert await store.get_key(key) == {"v": 1}
+    await store.delete_key(key)

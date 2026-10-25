@@ -194,16 +194,21 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             # ends. No way to deliver one (no direct address to LISTEN on) means no cache; a short TTL bounds what a lost one can cost.
             ttl = min(ttl, cls.PG_STATE_TTL_SECONDS)
             cache = cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace)
-            bus = PgCacheBus(cache._apply_remote, cache._flush_local)
-            if not bus.available:
-                logger.warning(
-                    "Accessible-records cache off: REDIS_MODE=postgres needs a direct PostgreSQL address "
-                    "(PG_LISTEN_URL, or PG_POOLER=none) to invalidate it across processes"
-                )
+            try:
+                bus = PgCacheBus(cache._apply_remote, cache._flush_local)
+                if not bus.available:
+                    logger.warning(
+                        "Accessible-records cache off: REDIS_MODE=postgres needs a direct PostgreSQL address "
+                        "(PG_LISTEN_URL, or PG_POOLER=none) to invalidate it across processes"
+                    )
+                    await clients.aclose()
+                    return NoopAccessibleRecordsCache()
+                cache._bus = bus
+                bus.start()
+            except Exception as e:  # create() never raises: no cache is the safe answer
+                logger.warning("Accessible-records cache off: the invalidation channel could not be set up (%s)", e)
                 await clients.aclose()
                 return NoopAccessibleRecordsCache()
-            cache._bus = bus
-            bus.start()
             logger.info("Accessible-records cache ready (ttl=%ss, invalidated across processes by NOTIFY)", ttl)
             return cache
 

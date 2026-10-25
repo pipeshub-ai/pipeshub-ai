@@ -313,12 +313,12 @@ class Health:
 
         logger = container.logger()
         deadline = asyncio.get_running_loop().time() + HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value * 2.0
-        rt = RuntimeDb()
+        rt = RuntimeDb.shared()
         while True:
             try:
                 db = await rt.db()
                 async with db.runtime_uow() as tx:
-                    await tx.fetchval("SELECT count(*) FROM (SELECT 1 FROM platform.queue_deliveries LIMIT 1) q")
+                    await tx.fetchval("/* pipeshub:health.broker */ SELECT count(*) FROM (SELECT 1 FROM platform.queue_deliveries LIMIT 1) q")
                 logger.info("✅ PostgreSQL message broker is healthy")
                 return
             except Exception as e:

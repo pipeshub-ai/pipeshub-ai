@@ -152,7 +152,7 @@ async def test_probe_connection_dropped(env, make, idem) -> None:
         # not reporting success unless the row is really there exactly once
         assert not (r == "OK" and n != 1)
         assert r != "CommitOutcomeUnknown"  # COMMIT was never sent
-        assert (tries, r) == ((2, "OK") if idem else (1, "ConnectionLost")) or tries >= 1
+        assert (tries, r) == ((2, "OK") if idem else (1, "ConnectionLost"))
     finally:
         await px.stop()
 
@@ -314,7 +314,8 @@ async def test_loss_before_commit_vs_after(env, make) -> None:
             except Exception as e:
                 r = type(e).__name__
         out[mode] = (r, tries, await a.fetchval("SELECT count(*) FROM kx.log WHERE note=$1", mode))
-    print("\nR3 loss-before-COMMIT (kill while body idles; probe notices):", out)
+    # the connection is lost before COMMIT, so the unit re-runs once and the row exists exactly once, whichever way the body idles
+    assert out == {"before_commit": ("OK", 2, 1), "idle_then_return": ("OK", 2, 1)}, out
     await a.execute("DELETE FROM kx.log")
     await a.close()
 

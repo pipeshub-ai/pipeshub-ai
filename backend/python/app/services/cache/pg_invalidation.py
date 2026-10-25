@@ -39,7 +39,7 @@ class PgCacheBus:
         runtime: RuntimeDb | None = None,
     ) -> None:
         self._apply, self._flush = apply, flush
-        self._rt = runtime or RuntimeDb()
+        self._rt = runtime or RuntimeDb.shared()
         self._dsn = listen_dsn(self._rt.cfg)
         self._listener: PgListener | None = None
         self._task: asyncio.Task | None = None
@@ -56,7 +56,7 @@ class PgCacheBus:
         self._task = self._listener.start()
 
     def healthy(self) -> bool:
-        return self._dsn is not None and ListenHub.for_dsn(self._dsn).healthy()
+        return self._dsn is not None and ListenHub.for_dsn(self._dsn).healthy(channel=CHANNEL)
 
     def _on_notify(self, payload: str) -> None:
         try:

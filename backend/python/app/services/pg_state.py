@@ -2,11 +2,11 @@
 
 Everything lives in ``platform.kv_entries`` (bytes + optional expiry), so a second process sees what the first wrote, which an
 in-process Redis cannot do. Expiry is the database clock. Each primitive is one statement (or one short transaction), so it is
-atomic without advisory locks:
+atomic without advisory locks (but for the capacity pools, below):
 
 * a lock row is taken by ``INSERT ... ON CONFLICT DO UPDATE ... WHERE expired OR mine``;
 * a counter is bumped by one upsert, and keeps the expiry it was created with (like INCR);
-* a capacity pool serialises on its own marker row (``SELECT ... FOR UPDATE``), then counts live leases.
+* a capacity pool serialises on a transaction-scoped advisory lock keyed by its name, then counts live leases.
 
 Caches do not belong here: they stay in the process and are dropped by NOTIFY (see ``ConfigurationService``).
 """
@@ -59,10 +59,10 @@ DELETE FROM platform.kv_entries WHERE key = ANY($1::text[])"""
 _ANY_LIVE = """/* pipeshub:state.anylive */
 SELECT count(*) FROM platform.kv_entries WHERE key = ANY($1::text[]) AND (expires_at IS NULL OR expires_at > now())"""
 # capacity leases
-_POOL_MARK = """/* pipeshub:state.poolmark */
-INSERT INTO platform.kv_entries (key, value, expires_at) VALUES ($1, ''::bytea, NULL) ON CONFLICT (key) DO NOTHING"""
+# a pool is serialised by a transaction-scoped advisory lock on a hash of its name: no row is left behind per pool, and it works
+# behind a transaction pooler because it is released at COMMIT (the two-integer lock classes are the kernel's; this one-key form is a different namespace)
 _POOL_LOCK = """/* pipeshub:state.poollock */
-SELECT 1 FROM platform.kv_entries WHERE key = $1 FOR UPDATE"""
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))"""
 _LEASE_RENEW = """/* pipeshub:state.leaserenew */
 UPDATE platform.kv_entries SET expires_at = now() + make_interval(secs => $2::double precision), updated_at = now()
 WHERE key = $1 AND expires_at > now() RETURNING true"""
@@ -86,7 +86,7 @@ def _range(prefix: str) -> tuple[str, str]:
 
 class PgState:
     def __init__(self, runtime: RuntimeDb | None = None) -> None:
-        self.rt = runtime or RuntimeDb()
+        self.rt = runtime or RuntimeDb.shared()
 
     async def _tx(self, *, write: bool = True):  # noqa: ANN202
         return (await self.rt.db()).runtime_uow(write=write)
@@ -197,7 +197,6 @@ class PgLeaseManager(IDistributedLeaseManager):
         mark = POOL_PREFIX + pool
         secs = float(max(lease_seconds, 1))
         async with await self._state._tx() as tx:
-            await tx.execute(_POOL_MARK, mark)
             await tx.fetchval(_POOL_LOCK, mark)  # one acquirer per pool at a time
             if await tx.fetchval(_LEASE_RENEW, self._key(pool, owner), secs):
                 return True  # already ours: a renewal
