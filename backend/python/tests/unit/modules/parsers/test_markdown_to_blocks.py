@@ -44,10 +44,7 @@ def _child_block_indices(group: BlockGroup) -> list[int]:
 
 def _child_group_indices(group: BlockGroup) -> list[int]:
     assert group.children is not None
-    indices: list[int] = []
-    for group_range in group.children.block_group_ranges:
-        indices.extend(range(group_range.start, group_range.end + 1))
-    return indices
+    return [i for r in group.children.block_group_ranges for i in range(r.start, r.end + 1)]
 
 
 def _is_empty_split_container(block: Block) -> bool:
