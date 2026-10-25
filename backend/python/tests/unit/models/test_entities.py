@@ -1174,7 +1174,7 @@ class TestLinkRecordFromArango:
         rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
         assert rec.is_public == LinkPublicStatus.UNKNOWN
 
-    def test_from_arango_record_keeps_its_record_group(self):
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
         # The storage path and access checks read the group; a link read back
         # without it was filed and checked as if it belonged to no group.
         rec = LinkRecord.from_arango_record(
@@ -1409,7 +1409,7 @@ class TestProjectRecordFromArango:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
-    def test_from_arango_record_keeps_its_record_group(self):
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
         rec = ProjectRecord.from_arango_record(
             self._project_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
         )
