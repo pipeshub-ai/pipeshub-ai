@@ -13,7 +13,10 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import {
+  PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
+} from '../../oauth_provider/constants/constants';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   CODE_GRAPH_TOOL_NAMES,
@@ -57,7 +60,13 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     auth_type: authType,
     // Which client and which of our channels: for a stateless transport,
     // every request has to say it, not only initialize.
-    ...(authType === 'oauth' && clientId ? { oauth_client_id: clientId } : {}),
+    // Service tokens are OAuth too, but their client id is an internal
+    // per-org placeholder like the PAT one, not an app.
+    ...(authType === 'oauth' &&
+    clientId &&
+    !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
+      ? { oauth_client_id: clientId }
+      : {}),
     ...(userAgent ? { user_agent: userAgent } : {}),
     ...(channel ? { channel } : {}),
   };
@@ -68,7 +77,10 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
 function productToken(header: unknown): string | undefined {
   if (typeof header !== 'string') return undefined;
   const token = header.trim().split(/\s+/)[0] ?? '';
-  return /^[\w.@/+-]{1,80}$/.test(token) ? token : undefined;
+  // Name with at most one `/version`: no `@` (an address) and no extra path.
+  return /^(?=.{1,80}$)[\w.+-]+(?:\/[\w.+-]+)?$/.test(token)
+    ? token
+    : undefined;
 }
 
 /** `X-PipesHub-Channel`, set by PipesHub's own clients (plugin, CLI, docs

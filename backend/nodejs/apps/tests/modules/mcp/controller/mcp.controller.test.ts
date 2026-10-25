@@ -165,6 +165,28 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(props).to.not.have.any.keys('user_agent', 'channel', 'oauth_client_id')
     })
 
+    it('never records an address or a path as the User-Agent', async () => {
+      for (const ua of ['alice@example.com', 'client/1.0/home/alice']) {
+        arm()
+        const req = toolCallRequest()
+        req.headers = { 'user-agent': ua }
+        const res = { ...createMockResponse(), statusCode: 200 }
+        await handleMCPRequest(appConfig)(req, res as any, createMockNext())
+        expect(eventBuffer.drain()[0].props).to.not.have.property('user_agent')
+      }
+    })
+
+    it('does not tag a service token with its internal client id', async () => {
+      arm()
+      const req = toolCallRequest()
+      req.user = { ...patUser, oauthClientId: 'svc-system:org-1' }
+      const res = { ...createMockResponse(), statusCode: 200 }
+      await handleMCPRequest(appConfig)(req, res as any, createMockNext())
+      const props = eventBuffer.drain()[0].props ?? {}
+      expect(props.auth_type).to.equal('oauth')
+      expect(props).to.not.have.property('oauth_client_id')
+    })
+
     it('records mcp_tool_called only after the transport has served the request', async () => {
       arm()
       let servedBeforeRecorded = false
