@@ -1,10 +1,19 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import crypto from 'crypto';
 import mongoose from 'mongoose';
-import { ServiceAccountKindBackfillMigration } from '../../../../../src/modules/configuration_manager/services/migrations/service_account_kind_backfill.migration';
+import {
+  ServiceAccountKindBackfillMigration,
+  SERVICE_ACCOUNT_KIND_STATE_VERSION,
+  ServiceAccountKindState,
+} from '../../../../../src/modules/configuration_manager/services/migrations/service_account_kind_backfill.migration';
 import { configPaths } from '../../../../../src/modules/configuration_manager/paths/paths';
+import { EncryptionService } from '../../../../../src/libs/encryptor/encryptor';
 import { Users } from '../../../../../src/modules/user_management/schema/users.schema';
+
+const algorithm = 'aes-256-gcm';
+const secretKey = crypto.randomBytes(32).toString('hex');
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -13,84 +22,85 @@ const makeLogger = () => ({
   warn: sinon.stub(),
 });
 
-const makeKvStore = (existingFlag: string | null = null) => ({
-  get: sinon.stub().callsFake((path: string) => {
-    if (path === configPaths.serviceAccountKindBackfill) {
-      return Promise.resolve(existingFlag);
-    }
-    return Promise.resolve(null);
-  }),
+/**
+ * How the connector service stores a value: the ciphertext, JSON-encoded. Its
+ * store JSON-decodes the bytes before handing them to the decrypter.
+ */
+const seal = (state: ServiceAccountKindState): string =>
+  JSON.stringify(
+    EncryptionService.getInstance(algorithm, secretKey).encrypt(
+      JSON.stringify(state),
+    ),
+  );
+
+const unseal = (raw: string): ServiceAccountKindState =>
+  JSON.parse(
+    EncryptionService.getInstance(algorithm, secretKey).decrypt(JSON.parse(raw)),
+  );
+
+const makeKvStore = (stored: string | null = null) => ({
+  get: sinon.stub().callsFake((path: string) =>
+    Promise.resolve(path === configPaths.serviceAccountKindBackfill ? stored : null),
+  ),
   set: sinon.stub().resolves(),
 });
 
-const makeEvents = () => ({
-  start: sinon.stub().resolves(),
-  publishEvent: sinon.stub().resolves(),
-});
-
 /** Stubs the `find().select().batchSize().lean().cursor()` chain. */
-const stubCursor = (accounts: unknown[]) => {
-  const cursor = {
-    async *[Symbol.asyncIterator]() {
-      for (const a of accounts) yield a;
-    },
-  };
-  const find = sinon.stub(Users, 'find').returns({
+const stubCursor = (accounts: unknown[]) =>
+  sinon.stub(Users, 'find').returns({
     select: sinon.stub().returns({
       batchSize: sinon.stub().returns({
-        lean: sinon.stub().returns({ cursor: sinon.stub().returns(cursor) }),
+        lean: sinon.stub().returns({
+          cursor: sinon.stub().returns({
+            async *[Symbol.asyncIterator]() {
+              for (const a of accounts) yield a;
+            },
+          }),
+        }),
       }),
     }),
   } as any);
-  return find;
-};
+
+const run = (kvStore: any) =>
+  new ServiceAccountKindBackfillMigration(
+    makeLogger() as any,
+    kvStore as any,
+    algorithm,
+    secretKey,
+  ).run();
 
 describe('ServiceAccountKindBackfillMigration', () => {
-  const orgId = new mongoose.Types.ObjectId();
-  const accountId = new mongoose.Types.ObjectId();
+  const first = new mongoose.Types.ObjectId();
+  const second = new mongoose.Types.ObjectId();
+  const accounts = [{ _id: first }, { _id: second }];
 
-  const account = {
-    _id: accountId,
-    orgId,
-    fullName: 'Nightly sync',
-    email: `svc-nightly-sync-${orgId}@service.pipeshub.internal`,
-  };
+  beforeEach(() => {
+    (EncryptionService as any).instance = undefined;
+  });
 
   afterEach(() => {
     sinon.restore();
+    (EncryptionService as any).instance = undefined;
   });
 
-  it('republishes every live service account carrying kind', async () => {
-    const kv = makeKvStore(null);
-    const events = makeEvents();
-    stubCursor([account]);
+  it('stages the id of every live service account', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore();
 
-    const result = await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      kv as any,
-      events as any,
-    ).run();
+    const result = await run(kvStore);
 
-    expect(result.accountsFound).to.equal(1);
-    expect(result.accountsRepublished).to.equal(1);
-    expect(result.errored).to.equal(0);
+    expect(result.accountsFound).to.equal(2);
+    expect(result.accountsStaged).to.equal(2);
     expect(result.skipped).to.equal(false);
-
-    expect(events.publishEvent.calledOnce).to.equal(true);
-    const published = events.publishEvent.firstCall.args[0];
-    expect(published.payload.kind).to.equal('service');
-    expect(published.payload.userId).to.equal(String(accountId));
-    expect(published.payload.orgId).to.equal(String(orgId));
+    expect(kvStore.set.calledOnce).to.equal(true);
+    expect(kvStore.set.firstCall.args[0]).to.equal(
+      configPaths.serviceAccountKindBackfill,
+    );
   });
 
-  it('asks only for live service accounts', async () => {
-    const find = stubCursor([]);
-
-    await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      makeKvStore(null) as any,
-      makeEvents() as any,
-    ).run();
+  it('stages only live accounts of kind service', async () => {
+    const find = stubCursor(accounts);
+    await run(makeKvStore());
 
     expect(find.firstCall.args[0]).to.deep.equal({
       kind: 'service',
@@ -98,84 +108,105 @@ describe('ServiceAccountKindBackfillMigration', () => {
     });
   });
 
-  it('records the flag after a clean pass', async () => {
-    const kv = makeKvStore(null);
-    stubCursor([account]);
+  it('writes something the connector service can read back', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore();
 
-    await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      kv as any,
-      makeEvents() as any,
-    ).run();
+    await run(kvStore);
 
-    expect(
-      kv.set.calledWith(configPaths.serviceAccountKindBackfill, 'true'),
-    ).to.equal(true);
+    const state = unseal(kvStore.set.firstCall.args[1]);
+    expect(state.version).to.equal(SERVICE_ACCOUNT_KIND_STATE_VERSION);
+    expect(state.userIds).to.deep.equal([String(first), String(second)]);
+    expect(state.stagedAt).to.be.a('number');
   });
 
-  it('does nothing once the flag is set', async () => {
-    const events = makeEvents();
-    const find = stubCursor([account]);
+  it('never records the work as done itself', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore();
 
-    const result = await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      makeKvStore('true') as any,
-      events as any,
-    ).run();
+    await run(kvStore);
+
+    expect(unseal(kvStore.set.firstCall.args[1]).done).to.equal(undefined);
+  });
+
+  it('does nothing once the connector service has reported done', async () => {
+    const find = stubCursor(accounts);
+    const kvStore = makeKvStore(
+      seal({ version: SERVICE_ACCOUNT_KIND_STATE_VERSION, done: true }),
+    );
+
+    const result = await run(kvStore);
 
     expect(result.skipped).to.equal(true);
     expect(find.called).to.equal(false);
-    expect(events.publishEvent.called).to.equal(false);
+    expect(kvStore.set.called).to.equal(false);
   });
 
-  it('leaves the flag unset when an account could not be republished, so the next boot retries', async () => {
-    const kv = makeKvStore(null);
-    const events = makeEvents();
-    events.publishEvent.rejects(new Error('broker unavailable'));
-    stubCursor([account]);
+  it('does not rewrite a staged list that still matches', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore(
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        userIds: [String(second), String(first)],
+      }),
+    );
 
-    const result = await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      kv as any,
-      events as any,
-    ).run();
+    const result = await run(kvStore);
 
-    expect(result.errored).to.equal(1);
-    expect(result.accountsRepublished).to.equal(0);
-    expect(kv.set.called).to.equal(false);
+    expect(result.accountsStaged).to.equal(0);
+    expect(result.skipped).to.equal(true);
+    expect(kvStore.set.called).to.equal(false);
   });
 
-  it('keeps going after one account fails', async () => {
-    const other = { ...account, _id: new mongoose.Types.ObjectId() };
-    const events = makeEvents();
-    events.publishEvent.onFirstCall().rejects(new Error('transient'));
-    events.publishEvent.onSecondCall().resolves();
-    stubCursor([account, other]);
+  it('stages again once an account has been added', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore(
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        userIds: [String(first)],
+      }),
+    );
 
-    const result = await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      makeKvStore(null) as any,
-      events as any,
-    ).run();
+    const result = await run(kvStore);
 
-    expect(result.accountsFound).to.equal(2);
-    expect(result.accountsRepublished).to.equal(1);
-    expect(result.errored).to.equal(1);
+    expect(result.accountsStaged).to.equal(2);
+    expect(unseal(kvStore.set.firstCall.args[1]).userIds).to.have.members([
+      String(first),
+      String(second),
+    ]);
   });
 
-  it('still runs when the flag cannot be read', async () => {
-    const kv = makeKvStore(null);
-    kv.get.rejects(new Error('store unavailable'));
-    const events = makeEvents();
-    stubCursor([account]);
+  it('stages anyway when the stored state cannot be read', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore('not something we wrote');
 
-    const result = await new ServiceAccountKindBackfillMigration(
-      makeLogger() as any,
-      kv as any,
-      events as any,
-    ).run();
+    const result = await run(kvStore);
 
-    expect(result.skipped).to.equal(false);
-    expect(events.publishEvent.calledOnce).to.equal(true);
+    expect(result.accountsStaged).to.equal(2);
+    expect(kvStore.set.calledOnce).to.equal(true);
+  });
+
+  it('writes nothing when there are no service accounts', async () => {
+    stubCursor([]);
+    const kvStore = makeKvStore();
+
+    const result = await run(kvStore);
+
+    expect(result.accountsFound).to.equal(0);
+    expect(result.skipped).to.equal(true);
+    expect(kvStore.set.called).to.equal(false);
+  });
+
+  it('stages nothing rather than half a list when there are too many', async () => {
+    const tooMany = Array.from({ length: 10_001 }, () => ({
+      _id: new mongoose.Types.ObjectId(),
+    }));
+    stubCursor(tooMany);
+    const kvStore = makeKvStore();
+
+    const result = await run(kvStore);
+
+    expect(result.accountsStaged).to.equal(0);
+    expect(kvStore.set.called).to.equal(false);
   });
 });
