@@ -444,9 +444,16 @@ class EntityEventService(BaseEventService):
                 "designation": payload.get("designation", ""),
                 "businessPhones": payload.get("businessPhones", []),
 
-                "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # Not written when the node already says the user is gone. Soft
+            # delete is `isActive: False` (`_handle_user_deleted`), and these
+            # upserts merge, so an update event still in flight — or one from
+            # a request that raced the delete — would otherwise put a deleted
+            # user back. Restoring has its own event and sets this itself.
+            if existing_user.get("isActive") is not False:
+                user_data["isActive"] = True
 
             # The only signal the graph gets that an account was switched
             # off. Written only when the event carries it, so an update that
