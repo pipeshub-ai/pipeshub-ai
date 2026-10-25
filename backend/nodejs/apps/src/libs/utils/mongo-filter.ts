@@ -9,5 +9,5 @@ import type { QueryFilter } from 'mongoose';
  * Use this for such a filter instead of an `any` or an object-literal assertion.
  */
 export function asQueryFilter<T>(filter: object): QueryFilter<T> {
-  return filter as unknown as QueryFilter<T>;
+  return filter;
 }

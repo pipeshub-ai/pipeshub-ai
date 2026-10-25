@@ -14,6 +14,7 @@ import { Users } from '../../src/modules/user_management/schema/users.schema';
 import { OAuthApp } from '../../src/modules/oauth_provider/schema/oauth.app.schema';
 import { CrawlingManagerConfig } from '../../src/modules/crawling_manager/schema/schema';
 import { UserCredentials } from '../../src/modules/auth/schema/userCredentials.schema';
+import { userActivitiesType } from '../../src/libs/utils/userActivities.utils';
 import { UserActivities } from '../../src/modules/auth/schema/userActivities.schema';
 
 describe('Save hooks against a real MongoDB', function () {
@@ -105,7 +106,7 @@ describe('Save hooks against a real MongoDB', function () {
     const activity = await UserActivities.create({
       userId: orgId,
       orgId,
-      activityType: 'login',
+      activityType: userActivitiesType.LOGIN,
       ipAddress: '1.1.1.1',
     } as never);
     let activityError = '';

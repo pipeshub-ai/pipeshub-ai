@@ -1292,16 +1292,20 @@ export class UserAccountController {
 
       const user = await this.activeAccountForRefresh(userId, orgId);
 
-      const userCredential = await UserCredentials.findOneAndUpdate({
-        userId: userId,
-        orgId: orgId,
-        isDeleted: false,
-      }, {
-        $set: {
-          lastLogin: Date.now(),
-          ipAddress: req.ip,
+      const userCredential = await UserCredentials.findOneAndUpdate(
+        {
+          userId: userId,
+          orgId: orgId,
+          isDeleted: false,
         },
-      }, { returnDocument: 'after', upsert: true });
+        {
+          $set: {
+            lastLogin: Date.now(),
+            ipAddress: req.ip,
+          },
+        },
+        { returnDocument: 'after', upsert: true },
+      );
 
       if (!userCredential) {
         throw new NotFoundError(SESSION_NO_LONGER_VALID);

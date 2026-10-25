@@ -253,7 +253,7 @@ export const appendMessages = async (
   return ChatSessionMessage.insertMany(toInsert, {
     ordered: true,
     session: mongoSession || undefined,
-  }) as unknown as Promise<IChatSessionMessageDocument[]>;
+  });
 };
 
 /**
@@ -286,7 +286,11 @@ export const updateMessageById = async (
       orgId: existing.orgId,
       seq: existing.seq,
     },
-    { returnDocument: 'after', session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
 };
 
@@ -375,7 +379,11 @@ export const appendMessageFeedback = async (
   return ChatSessionMessage.findOneAndUpdate(
     { _id: messageId, orgId },
     { $push: { feedback: feedbackEntry } },
-    { returnDocument: 'after', session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
 };
 
@@ -1147,7 +1155,7 @@ export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
  * `require`d id param.
  */
 export const applyProjectIdQueryFilter = (
-  filter: QueryFilter<IChatSessionDocument>,
+  filter: Record<string, unknown>,
   req: AuthenticatedUserRequest,
 ): void => {
   const projectIdRaw = req.query?.projectId;
@@ -1176,7 +1184,7 @@ export const buildFilter = (
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
   }
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
     isArchived: false,
@@ -1232,20 +1240,21 @@ export const buildFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
@@ -2260,7 +2269,7 @@ export const buildAgentConversationFilter = (
   accessibleProjectIds?: mongoose.Types.ObjectId[],
   includeShared: boolean = false,
 ) => {
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
@@ -2314,20 +2323,21 @@ export const buildAgentConversationFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
