@@ -149,6 +149,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+# Renamed when projects stopped being shared into their non-lead teams: a key with no
+# checkpoint re-lists every project once, and that rewrite drops the old team edges.
+PROJECTS_CHECKPOINT_KEY = "projects-by-lead-team"
 
 # Placeholder ancestor sweep (parent sub-issue hierarchy left out of sync filters)
 PLACEHOLDER_SWEEP_BATCH: int = 50
@@ -840,7 +843,7 @@ class LinearConnector(BaseConnector):
             if full_sync_team_ids:
                 await self._checkpoint(self.attachments_sync_point, "attachments").reset()
                 await self._checkpoint(self.documents_sync_point, "documents").reset()
-                await self._checkpoint(self.projects_sync_point, "projects").reset()
+                await self._checkpoint(self.projects_sync_point, PROJECTS_CHECKPOINT_KEY).reset()
 
             # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
             await self._sync_attachments(team_record_groups)
@@ -2255,7 +2258,7 @@ class LinearConnector(BaseConnector):
             return
 
         try:
-            checkpoint = self._checkpoint(self.projects_sync_point, "projects")
+            checkpoint = self._checkpoint(self.projects_sync_point, PROJECTS_CHECKPOINT_KEY)
             run = await checkpoint.begin()
             total_projects = 0
             failures: list[str] = []

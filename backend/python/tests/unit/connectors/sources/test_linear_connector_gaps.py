@@ -15,7 +15,7 @@ from app.connectors.sources.linear.api_gateway import (
     LinearRateLimited,
     LinearTransientError,
 )
-from app.connectors.sources.linear.connector import LinearConnector, file_record_id
+from app.connectors.sources.linear.connector import PROJECTS_CHECKPOINT_KEY, LinearConnector, file_record_id
 from app.models.blocks import BlockGroup, BlocksContainer, ChildRecord, ChildType, GroupSubType, GroupType
 from app.models.entities import (
     AppUser,
@@ -2065,7 +2065,7 @@ class TestFetchBatchEdgeCases:
         conn.notify = AsyncMock()
         conn.indexing_filters = None
         conn.organization_url_key = "org"
-        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000}
+        conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000}
         rg, perms = _make_team_rg()
         project_summary = {
             "id": "proj-1",
@@ -2090,7 +2090,7 @@ class TestFetchBatchEdgeCases:
         # checkpoint stays and the failure is reported.
         conn.data_entities_processor.on_new_records.assert_not_called()
         conn.notify.assert_awaited_once()
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1700000000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1700000000000
 
 
 class TestApplyDateFiltersExtended:
@@ -2864,7 +2864,7 @@ class TestCoverageBoostFinal:
         conn._now = MagicMock(return_value=1704070000000)
         conn.sync_filters = None
         conn.indexing_filters = None
-        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1704067200000}
+        conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1704067200000}
         rg, perms = _make_team_rg()
         mock_ds = MagicMock()
         mock_ds.projects = AsyncMock(return_value=_projects_resp([]))
@@ -2877,7 +2877,7 @@ class TestCoverageBoostFinal:
             "updatedAt": {"gt": conn._linear_datetime_from_timestamp(1704067200000 - 60_000)},
         })
         conn.data_entities_processor.on_new_records.assert_not_called()
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_process_issue_attachments_creates_record_with_indexing_off(self):
@@ -3213,7 +3213,7 @@ class TestCoverageBoostFinal:
         assert [(type(r).__name__, r.external_record_id, r.external_record_group_id) for r, _ in batch] == [
             ("ProjectRecord", "proj-1", "team-1"),
         ]
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_connection_inits_when_datasource_missing(self):
