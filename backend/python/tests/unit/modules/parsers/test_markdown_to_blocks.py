@@ -43,7 +43,6 @@ def _child_block_indices(group: BlockGroup) -> list[int]:
 
 
 def _child_group_indices(group: BlockGroup) -> list[int]:
-    assert group.children is not None
     return [i for r in group.children.block_group_ranges for i in range(r.start, r.end + 1)]
 
 
