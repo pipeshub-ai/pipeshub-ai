@@ -21,7 +21,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import pdfplumber
@@ -32,6 +32,8 @@ from app.services.resource_governor.probe import effective_cpu_count
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.services.resource_governor import ResourceGovernor
 
 _logger = logging.getLogger(__name__)
