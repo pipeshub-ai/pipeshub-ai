@@ -1123,6 +1123,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
         )
 
+        # COMPOSITE: "did this connector index anything since?", asked for a
+        # record about to fail on its rate-limit wait. The timestamp trails so
+        # a hit and a miss are both a range seek, not a read of the connector.
+        indexes.append(
+            "CREATE INDEX record_connector_status_indexed_at IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.lastIndexTimestamp)"
+        )
+
         # COMPOSITE: "is every record of this repo indexed yet?", asked once per
         # code file that finishes. A repo connector also syncs issues and merge
         # requests into record groups of their own, so the connector-leading
@@ -4675,9 +4683,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
-        # Seeks the connector's records by index and stops at the first match;
-        # only a connector that indexed nothing reads all of them. Asked only
-        # for a record about to fail on its wait.
+        # A range seek on the (connectorId, indexingStatus, lastIndexTimestamp)
+        # index, for a hit and a miss alike. Asked only for a record about to
+        # fail on its wait.
         query = """
         MATCH (r:Record {connectorId: $connector_id, indexingStatus: $completed})
         WHERE r.lastIndexTimestamp > $since_ms

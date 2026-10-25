@@ -647,6 +647,12 @@ _STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (
 # hint it over the primary index, which would also serve `_key > @after` but scan every
 # connector's states.
 _STAGE_STATE_PAGE_INDEX = "stage_state_connector_stage_status_key"
+
+# "Did this connector index anything since?", asked for a record about to fail
+# on its rate-limit wait; named, so the query can hint it over the
+# (connectorId, indexingStatus, reason, _key) index, which the optimizer
+# otherwise takes and then filters every completed record of the connector.
+_INDEXED_SINCE_INDEX = "records_connector_status_indexed_at"
 _STAGE_STATE_PAGE_FIELDS = ["connectorId", "stage", "status", "_key"]
 # Blocks per batch when deleting a connector's or a record set's blocks.
 BLOCK_DELETE_BATCH_SIZE = 1000
@@ -1191,6 +1197,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["connectorId", "indexingStatus", "reason", "_key"],
+        )
+
+        # COMPOUND: "did this connector index anything since?", asked for a
+        # record about to fail on its rate-limit wait. The timestamp trails so
+        # a hit and a miss are both a range seek, not a read of the connector.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "indexingStatus", "lastIndexTimestamp"],
+            name=_INDEXED_SINCE_INDEX,
         )
 
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
@@ -24940,11 +24955,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
-        # Reads the connector's records by index and stops at the first match;
-        # only a connector that indexed nothing reads all of them. Asked only
-        # for a record about to fail on its wait.
+        # A range seek on the (connectorId, indexingStatus, lastIndexTimestamp)
+        # index, for a hit and a miss alike. Asked only for a record about to
+        # fail on its wait.
         query = f"""
-        FOR record IN {CollectionNames.RECORDS.value}
+        FOR record IN {CollectionNames.RECORDS.value} OPTIONS {{ indexHint: "{_INDEXED_SINCE_INDEX}" }}
             FILTER record.connectorId == @connector_id
             AND record.indexingStatus == @completed
             AND record.lastIndexTimestamp > @since_ms
