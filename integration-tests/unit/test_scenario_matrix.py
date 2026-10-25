@@ -72,7 +72,9 @@ def test_unsupported_action_skips_with_the_sources_reason() -> None:
 def test_known_bug_is_a_strict_xfail() -> None:
     marks = static_marks_for(_Matrix, _Matrix.test_matrix_incr_delete)
     assert _names(marks) == ["xfail"]
-    assert marks[0].mark.kwargs == {"reason": "a delete never reaches the graph", "strict": True}
+    assert marks[0].mark.kwargs == {
+        "reason": "a delete never reaches the graph", "strict": True, "raises": AssertionError,
+    }
 
 
 def test_supported_scenario_carries_no_mark() -> None:

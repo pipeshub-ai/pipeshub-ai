@@ -395,7 +395,9 @@ def static_marks_for(cls: type, fn: Callable[..., Any]) -> list[pytest.MarkDecor
     scenario = fn.__name__.removeprefix("test_matrix_")
     bug = getattr(cls, "KNOWN_BUGS", {}).get(scenario)
     if bug:
-        return [pytest.mark.xfail(reason=bug, strict=True)]
+        # Only a failed check is the bug. A probe that crashes (a docker exec, a store
+        # that will not answer) has to fail the run, not pass as the expected failure.
+        return [pytest.mark.xfail(reason=bug, strict=True, raises=AssertionError)]
     return []
 
 
