@@ -27,6 +27,7 @@ import { ServiceAccountConfirmDialog } from './components/service-account-confir
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
+import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 import { normalizeDisplayName } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
@@ -145,6 +146,25 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
    */
 
   const [serviceAccountUserId, setServiceAccountUserId] = useState<string | null>(null);
+  /**
+   * What to send for the binding: the new value when it moved, and nothing at
+   * all when it did not.
+   *
+   * Re-sending an unchanged id is not harmless. The server re-resolves any id
+   * it is given and refuses an account that has been switched off or removed,
+   * so a rename of an agent bound to a disabled account would be rejected —
+   * and told it could not find the account, which is not what the edit was
+   * about. Saying nothing leaves the binding in place to resume if the
+   * account comes back, while chat still refuses it meanwhile.
+   */
+  const bindingToSend = useCallback(
+    (current: AgentDetail | null | undefined): string | null | undefined => {
+      const stored = current?.serviceAccountUserId ?? null;
+      if (serviceAccountUserId === stored) return undefined;
+      return serviceAccountUserId;
+    },
+    [serviceAccountUserId],
+  );
   const [banner, setBanner] = useState<string | null>(null);
   const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
 
@@ -684,10 +704,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           loadedAgent,
           shareWithOrg,
           isServiceAccount,
-          // Only an update can clear a binding. On create there is nothing to
-          // clear, and the create schema takes a string rather than a
-          // nullable one, so null would be refused outright.
-          loadedAgent ? serviceAccountUserId : (serviceAccountUserId ?? undefined)
+          bindingToSend(loadedAgent)
         ),
       };
 
@@ -726,6 +743,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
   }, [
     agentName,
+    bindingToSend,
     edges,
     serviceAccountUserId,
     canPersist,
@@ -774,7 +792,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           currentAgent ?? null,
           true,
           true,
-          currentAgent ? serviceAccountUserId : (serviceAccountUserId ?? undefined)
+          bindingToSend(currentAgent)
         ),
       };
 
@@ -811,6 +829,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
   }, [
     agentName,
+    bindingToSend,
     canPersist,
     edges,
     serviceAccountUserId,

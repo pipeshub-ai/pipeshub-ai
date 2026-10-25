@@ -451,6 +451,25 @@ describe('editing an agent', () => {
     expect(canvas().getAllByText('GPT-4o').length).toBeGreaterThan(0);
   });
 
+  it('leaves an untouched binding off an ordinary edit', async () => {
+    // The server re-resolves any id it is sent and refuses one whose account
+    // has been switched off, so re-sending an unchanged binding would make a
+    // rename fail — and fail saying the account was not found.
+    await renderExistingAgent({
+      isServiceAccount: true,
+      shareWithOrg: true,
+      serviceAccountUserId: 'sa-live',
+    });
+
+    fireEvent.change(nameField(), { target: { value: 'Ops bot v2' } });
+    fireEvent.click(saveButton(/save changes/i));
+
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+    const payload = lastSavedPayload(agentsApi.updateAgent);
+    expect(payload.name).toBe('Ops bot v2');
+    expect('serviceAccountUserId' in payload).toBe(false);
+  });
+
   it('only allows saving once something has changed, then confirms the update', async () => {
     const agent = await renderExistingAgent();
     expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
