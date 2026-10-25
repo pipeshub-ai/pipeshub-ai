@@ -71,6 +71,7 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.env_utils import pdfplumber_enabled
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -284,9 +285,9 @@ class EventProcessor:
         # A PDF with a text layer is never sent to OCR, which costs one model
         # call per page: when Docling is not used or cannot read the file, the
         # local layout parser reads it instead.
-        use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        use_pdfplumber = pdfplumber_enabled()
         if use_pdfplumber:
-            self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
+            self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR is not false)")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
         else:

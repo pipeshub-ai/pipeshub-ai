@@ -76,7 +76,7 @@ from app.services.resource_governor.probe import (
     effective_cpu_count,
     effective_cpu_source,
 )
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import pdfplumber_enabled, uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -164,7 +164,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
     # Same flag as the in-process indexing path (app/events/events.py).
-    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+    use_pdfplumber = pdfplumber_enabled()
     smart_pdf_default = SmartPDFParser(
         pdfplumber_parser if use_pdfplumber else docling_svc_parser, default_ocr_parser
     )

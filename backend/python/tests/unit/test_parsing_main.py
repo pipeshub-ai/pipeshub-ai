@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestHealthCheck:
     async def test_governor_stats_failure_is_not_echoed(self) -> None:
@@ -72,3 +74,34 @@ class TestHealthCheck:
             body = json.loads((await health_check()).body)
 
         assert body["cpu"]["pdf_raster_workers"] == 2
+
+
+class TestPdfDefaultProvider:
+    """The registry's DEFAULT pdf parser is PdfPlumber unless the flag is off."""
+
+    @staticmethod
+    def _default_pdf_primary(env: str | None, monkeypatch: pytest.MonkeyPatch) -> object:
+        import logging
+
+        from app.parsing_main import _build_registry
+        from app.services.parsing.interface import ParserProvider
+
+        monkeypatch.delenv("ENABLE_PDFPLUMBER_PROCESSOR", raising=False)
+        if env is not None:
+            monkeypatch.setenv("ENABLE_PDFPLUMBER_PROCESSOR", env)
+        registry = _build_registry(MagicMock(), logging.getLogger("test"))
+        return registry.resolve("application/pdf", "pdf", ParserProvider.DEFAULT)._primary
+
+    @pytest.mark.parametrize("env", [None, "", "true"])
+    def test_pdfplumber_is_the_default(self, env: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
+
+        assert isinstance(self._default_pdf_primary(env, monkeypatch), PdfPlumberParser)
+
+    @pytest.mark.parametrize("env", ["false", "0", "off"])
+    def test_false_selects_the_docling_service(self, env: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.parsing.providers.docling_service_parser import (
+            DoclingServiceParser,
+        )
+
+        assert isinstance(self._default_pdf_primary(env, monkeypatch), DoclingServiceParser)

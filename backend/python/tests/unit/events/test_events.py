@@ -8,6 +8,7 @@ these tests provide additional coverage for edge cases and boundary conditions.
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -1054,6 +1055,46 @@ class TestOnEventEdgeCases:
 
         assert len(events) == 3
         processor.process_pdf_with_pdf_plumber.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("env", "expect_pdfplumber"),
+        [
+            (None, True),
+            ("", True),
+            ("true", True),
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            ("no", False),
+            ("off", False),
+        ],
+    )
+    async def test_the_pdf_parser_follows_the_env_flag_and_defaults_to_pdfplumber(
+        self, env: str | None, expect_pdfplumber: bool
+    ) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ"), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
+            os.environ.pop("ENABLE_PDFPLUMBER_PROCESSOR", None)
+            if env is not None:
+                os.environ["ENABLE_PDFPLUMBER_PROCESSOR"] = env
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        if expect_pdfplumber:
+            processor.process_pdf_with_pdf_plumber.assert_called_once()
+            processor.process_pdf_with_docling.assert_not_called()
+        else:
+            processor.process_pdf_with_docling.assert_called_once()
+            processor.process_pdf_with_pdf_plumber.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_layout_parser_failure_is_not_sent_to_ocr(self) -> None:

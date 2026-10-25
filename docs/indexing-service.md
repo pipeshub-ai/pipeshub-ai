@@ -453,7 +453,7 @@ Downstream feedback (`resource_governor/feedback.py`) is fed by `BaseServiceClie
 Responsibilities by layer:
 
 - **RecordEventHandler**: routes non-record events (bulk delete, membership sync, collection rebuild), checks connector active, resolves extension/mime, rejects unsupported types, downloads bytes (signed URL, else `GET {connectors}/api/v1/internal/stream/record/{id}` with a scoped JWT), and owns the terminal status write in its `finally` (FAILED vs revert to QUEUED). Implements the `AbandonedMessageSink` the consumer calls before any dead-letter ACK.
-- **EventProcessor**: MD5 dedup against `records` (same content → reuse the duplicate's `virtualRecordId`, skip work), writes IN_PROGRESS with the record's `contentRev`, mints or preserves the `virtualRecordId` (reconciliation-enabled types keep it for diff-based updates), yields `START_PARSING` with tier and size, then dispatches by format. PDFs go through OCR-need detection, then Docling (via the Docling service), OCR, or pdfplumber.
+- **EventProcessor**: MD5 dedup against `records` (same content → reuse the duplicate's `virtualRecordId`, skip work), writes IN_PROGRESS with the record's `contentRev`, mints or preserves the `virtualRecordId` (reconciliation-enabled types keep it for diff-based updates), yields `START_PARSING` with tier and size, then dispatches by format. PDFs go through OCR-need detection, then pdfplumber (the default), OCR, or Docling (via the Docling service) when `ENABLE_PDFPLUMBER_PROCESSOR=false`.
 - **IndexingPipeline / SinkOrchestrator**: validate blocks, optional image description, blob write, reconciliation diff, embed + upsert (`VectorStore`), `indexingStatus=COMPLETED`, cache invalidation, then the hand-off to the stage runtime. The parsing-service path (`_orchestrate_via_services`) ends the same way. A pipeline built without the runtime refuses the record rather than silently skip classification.
 
 ### 4.5 Background loops in the indexing process
@@ -530,11 +530,16 @@ Then the PDF goes to exactly one paid path at most:
 | The PDF | Read by |
 | --- | --- |
 | Needs OCR | VLM OCR, one model call per page; a scan over `VLM_OCR_MAX_PAGES` (default 500) fails as too large |
-| Has a text layer, within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
-| Has a text layer, over 100 MB, or `ENABLE_PDFPLUMBER_PROCESSOR=true` | The PdfPlumber+OpenCV layout parser |
+| Has a text layer (the default: `ENABLE_PDFPLUMBER_PROCESSOR` unset, empty or anything but `false`, `0`, `no`, `off`) | The PdfPlumber+OpenCV layout parser |
+| Has a text layer, with `ENABLE_PDFPLUMBER_PROCESSOR=false`, within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
+| Has a text layer, with `ENABLE_PDFPLUMBER_PROCESSOR=false`, over 100 MB | The PdfPlumber+OpenCV layout parser in-process. With `USE_PARSING_SERVICE=true` the Docling service refuses the file and the parsing service sends it to OCR (unchanged) |
 | Docling unreachable, refusing this service, shedding load, or answering 502/503/504 | Nothing: `DoclingUnavailableError` retries the record later |
 
 A text PDF is never sent to OCR: that fallback once turned every failed Docling parse into a model call per page.
+
+The flag is read by `pdfplumber_enabled()` (`app/utils/env_utils.py`), for the in-process path (`app/events/events.py`) and for the parsing service's `pdf` parser under `ParserProvider.DEFAULT` (`app/parsing_main.py`); `PARSER_BACKEND=docling` still selects the Docling provider there. The layout parser needs the `heron` model (`PDF_TABLE_MODEL`, downloaded from Hugging Face on first use and baked into the runtime image, slim included) and the bundled PP-DocLayout-S gate; with neither available it falls back to rule-based tables. DOCX and PPTX use Docling in-process, not the Docling service; only PDFs with the flag set to `false` call the service. The compose healthcheck (`docker-compose.yml`) still requires the Docling service to be healthy even though nothing needs it by default; that is left as is.
+
+**Upgrading.** Before, only `ENABLE_PDFPLUMBER_PROCESSOR=true` selected PdfPlumber. Now anything except an explicit `false`, `0`, `no` or `off` does, so a deployment that set another value (`disabled`, `n`, a typo) moves from Docling to PdfPlumber. Set `false` to keep Docling. Re-indexing a PDF with the other parser replaces most of its blocks.
 
 What still pauses the loop, measured with a 50 ms heartbeat on a 20 MB CSV and a 4.9 MB source file: one full garbage collection of about 0.3 s when tens of thousands of parsed blocks are rebuilt in the indexing process (the cost of holding that many objects, there before this change too), up to 0.6 s of the same while a 290,000-row CSV becomes row blocks, and 0.1–0.3 s while that CSV's rows are unpickled. Before, the source file held the loop for 3–7 s, reading the CSV for 2 s, and building its row blocks for 9.7 s.
 

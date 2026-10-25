@@ -41,6 +41,20 @@ def enabled_unless_off(name: str) -> bool:
     return os.getenv(name, "").strip().lower() not in _OFF_VALUES
 
 
+PDFPLUMBER_PROCESSOR_ENV_VAR = "ENABLE_PDFPLUMBER_PROCESSOR"
+
+
+def pdfplumber_enabled() -> bool:
+    """Whether text PDFs are read by the PdfPlumber+OpenCV layout parser.
+
+    On unless `ENABLE_PDFPLUMBER_PROCESSOR` is "false", "0", "no" or "off"; unset
+    or blank (Compose and Helm that do not pass it) is on. Off sends text PDFs
+    to the Docling service first. The indexing path (`app/events/events.py`)
+    and the parsing service registry (`app/parsing_main.py`) both read it here.
+    """
+    return enabled_unless_off(PDFPLUMBER_PROCESSOR_ENV_VAR)
+
+
 HIGH_ACCURACY_MODE_ENV_VAR = "HIGH_ACCURACY_MODE"
 
 

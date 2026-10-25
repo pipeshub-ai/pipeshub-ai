@@ -220,7 +220,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      - ENABLE_PDFPLUMBER_PROCESSOR=true
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-true}
 
     depends_on:
       # Blocks until the bucket exists. Without it pytest can start while
