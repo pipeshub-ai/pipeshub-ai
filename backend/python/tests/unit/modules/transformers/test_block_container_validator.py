@@ -1226,6 +1226,59 @@ class TestStripBase64Images:
         stripped = strip_base64_images(body + "\n\n" + "c" * 76)
         assert stripped == "[image data omitted]\n\n" + "c" * 76
 
+    @pytest.mark.parametrize("width", [80, 84])
+    def test_a_payload_wrapped_wider_than_mime_is_replaced(self, width: int) -> None:
+        import textwrap
+
+        stripped = strip_base64_images("\n".join(textwrap.wrap(self._png_b64(), width)))
+        assert stripped == "[image data omitted]"
+        assert contains_base64_image(stripped) is False
+
+    def test_a_data_uri_folded_at_84_columns_is_replaced(self) -> None:
+        import textwrap
+
+        folded = "\n".join(
+            textwrap.wrap("data:image/png;base64," + self._png_b64(), 84, break_long_words=True)
+        )
+        stripped = strip_base64_images(folded + "\nDone")
+        assert stripped == "data:image/png;base64,[image data omitted]\nDone"
+        assert contains_base64_image(stripped) is False
+
+    @pytest.mark.parametrize("width", [64, 76])
+    def test_a_digest_after_a_wrap_that_ends_on_a_full_line_is_kept(self, width: int) -> None:
+        import base64
+        import hashlib
+        import textwrap
+
+        # No short padded line ends this wrap, so only the digest's look can.
+        encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 80).decode()
+        encoded = encoded[: len(encoded) // width * width]
+        digest = (hashlib.sha256(b"x").hexdigest() * 2)[:width]
+        stripped = strip_base64_images("\n".join(textwrap.wrap(encoded, width)) + "\n" + digest)
+        assert stripped == "[image data omitted]\n" + digest
+
+    def test_a_png_that_ends_on_a_full_line_ends_the_run(self) -> None:
+        import base64
+        import struct
+        import textwrap
+        import zlib
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+        head = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        idat = chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        size = len(head) + len(idat) + 12 + 12  # IEND, and a tEXt chunk's own 12
+        note = b"k\x00" + b"v" * (-(size + 2) % 48 + 48)  # makes the PNG a multiple of 48 bytes
+        png = head + chunk(b"tEXt", note) + idat + chunk(b"IEND", b"")
+        encoded = base64.b64encode(png).decode()
+        assert len(png) % 48 == 0 and not encoded.endswith("=")
+        # Mixed case, so only the PNG's own end can stop the run before it.
+        after = ("NextLineInTheFileHasMixedCaseLetters" * 2)[:64]
+        stripped = strip_base64_images("\n".join(textwrap.wrap(encoded, 64)) + "\n" + after)
+        assert stripped == "[image data omitted]\n" + after
+
     def test_an_image_past_the_detection_cap_is_replaced_too(self) -> None:
         # Commas end each run, so every identifier is a candidate of its own.
         identifiers = ", ".join(f"identifier_number_{i:04d}" for i in range(_MAX_CANDIDATES + 5))

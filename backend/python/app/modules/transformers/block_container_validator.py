@@ -203,8 +203,29 @@ def contains_base64_image(text: str) -> bool:
 BASE64_IMAGE_PLACEHOLDER = "[image data omitted]"
 
 
-# The widest line a wrapped payload uses (MIME); a longer line is a whole payload.
-_MAX_WRAPPED_LINE_CHARS = 76
+# A line too short to hold an image by itself is a line of a wrap (MIME wraps at
+# 76, other encoders at 80 or 84); one at least that long is a whole payload.
+_MAX_WRAPPED_LINE_CHARS = _MIN_IMAGE_PAYLOAD_CHARS - 1
+# The last 12 bytes of every PNG: an empty IEND chunk and its CRC.
+_PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+
+def _looks_encoded(line: str) -> bool:
+    """Whether a full line could be base64 of binary data. Such a line has
+    upper- and lower-case letters (the odds that 60 random base64 characters
+    lack either are about 1 in 10**15); a hex digest or a run of one letter
+    does not, so it is the text after the payload."""
+    return any(c.isupper() for c in line) and any(c.islower() for c in line)
+
+
+def _ends_a_png(line: str) -> bool:
+    """Whether *line*, the last line of a payload that so far is a whole number
+    of quads, finishes a PNG."""
+    try:
+        tail = base64.b64decode(line[-24:].replace("-", "+").replace("_", "/"), validate=True)
+    except Exception:
+        return False
+    return tail.endswith(_PNG_END)
 
 
 def _one_line_break(gap: str) -> bool:
@@ -223,15 +244,18 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
     payload does, or it takes the next line of text with it. So a run goes on
     only through the lines of a wrap:
 
-    - A line longer than any wrap, or one that ends in padding, is the whole of
-      what is left: the run ends with it.
+    - A line long enough to be an image by itself, or one that ends in padding,
+      is the whole of what is left: the run ends with it.
     - Each next line is one line break further on. The second line sets the
       wrap's width; the first can be shorter (the rest of a ``base64,`` line).
-      Every later full line has that width.
+      Every later full line has that width and looks like encoded binary
+      (``_looks_encoded``), so a same-width hash after the payload is not taken.
+    - A PNG ends at its IEND chunk: once the lines so far finish one, the run
+      ends, whatever the next line looks like.
     - A shorter last line belongs to the run only when it is padded and brings
       the run to a whole number of base64 quads. An unpadded short line is left
-      as text: it can't be told apart from a word, and under 76 characters of
-      it is no image.
+      as text: it can't be told apart from a word, and it is too short to be an
+      image.
     """
     segments = list(_SEGMENT_RE.finditer(raw))
     i = 0
@@ -250,14 +274,15 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
             else None
         )
         start = None
+        is_png = False
         if lead is not None:
             decoded = _decode_b64_prefix(lead.group() + segment)
             if decoded and _is_image_data(decoded):
-                start = lead.start()
+                start, is_png = lead.start(), decoded.startswith(b"\x89PNG")
         if start is None:
             decoded = _decode_b64_prefix(segment)
             if decoded and _is_image_data(decoded):
-                start = m.start()
+                start, is_png = m.start(), decoded.startswith(b"\x89PNG")
 
         end = m.end()
         total = len(re.sub(r"\s", "", raw[start if start is not None else m.start():end]))
@@ -265,6 +290,9 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
         if len(segment) <= _MAX_WRAPPED_LINE_CHARS and not segment.endswith("="):
             width = None
             for j in range(i + 1, len(segments)):
+                previous_line = segments[j - 1].group()
+                if is_png and total % 4 == 0 and _ends_a_png(previous_line):
+                    break
                 line = segments[j]
                 text = line.group()
                 if not _one_line_break(raw[segments[j - 1].end():line.start()]):
@@ -274,7 +302,7 @@ def _image_payload_spans(raw: str) -> Iterator[tuple[int, int]]:
                     if (total + len(text)) % 4 == 0:
                         end, last = line.end(), j
                     break
-                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit:
+                if not _MIN_WRAPPED_LINE_CHARS <= len(text) <= limit or not _looks_encoded(text):
                     break
                 if width is None:
                     if len(text) < len(segment):
