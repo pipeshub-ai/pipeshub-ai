@@ -327,7 +327,7 @@ dependencies = [
     "requests-toolbelt==1.0.0",
     "requests==2.34.2",
     "selectolax>=0.3.21",
-    "sentence-transformers==5.6.0",
+    "sentence-transformers==6.2.0",
     # Pinned rather than left to sentence-transformers and docling: both still accept 4.x,
     # and an install over the published base image keeps the 4.57 already in it
     # (GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r).
