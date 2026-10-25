@@ -39,7 +39,6 @@ def _blocks_by_type(container: BlocksContainer, block_type: BlockType) -> list[B
 
 
 def _child_block_indices(group: BlockGroup) -> list[int]:
-    assert group.children is not None
     return [i for r in group.children.block_ranges for i in range(r.start, r.end + 1)]
 
 
