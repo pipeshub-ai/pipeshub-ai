@@ -331,7 +331,8 @@ class ConnectorFactory:
             return connector
         except Exception as e:
             logger.error(
-                f"❌ Failed to create {name} {connector_id} connector: {str(e)}"
+                f"❌ Failed to create {name} {connector_id} connector: {str(e)}",
+                exc_info=True,
             )
             return None
 
@@ -372,7 +373,8 @@ class ConnectorFactory:
                 return connector
             except Exception as e:
                 logger.error(
-                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
+                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}",
+                    exc_info=True,
                 )
                 await connector.on_background_init_failed(e)
                 return None
