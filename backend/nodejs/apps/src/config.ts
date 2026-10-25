@@ -35,6 +35,7 @@ export { EnterpriseSearchAgentContainer } from './modules/enterprise_search/cont
 export {
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
 } from './modules/enterprise_search/routes/es.routes';

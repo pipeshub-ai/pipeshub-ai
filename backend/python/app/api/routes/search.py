@@ -37,6 +37,7 @@ from app.api.middlewares.auth import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
+from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import within_connection
@@ -102,6 +103,28 @@ class SearchQuery(BaseModel):
     _validate_filters = field_validator("filters")(validate_request_filters)
 
 
+DEFAULT_RETRIEVE_LIMIT = 8
+MAX_RETRIEVE_LIMIT = 50
+
+
+class RetrieveQuery(BaseModel):
+    """``POST /retrieve``: ranked chunks with citations for a developer's own RAG or agent."""
+
+    query: str = Field(min_length=1)
+    limit: int = Field(DEFAULT_RETRIEVE_LIMIT, ge=1, le=MAX_RETRIEVE_LIMIT)
+    filters: dict[str, Any] | None = {}
+    createdAfter: str | None = None
+    createdBefore: str | None = None
+    modifiedAfter: str | None = None
+    modifiedBefore: str | None = None
+    maxChunksPerRecord: int | None = Field(None, ge=1, le=MAX_RETRIEVE_LIMIT)
+    # Off by default, unlike /search: a retrieval call is latency-bound, and the
+    # caller usually wrote the query itself.
+    rewriteQuery: bool = False
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
+
+
 # The parser names the assistant tool's parameters; this route receives the
 # camelCase fields of the request body.
 _REQUEST_FIELD_NAMES = {
@@ -133,7 +156,7 @@ _TIMELINE_SPAN = {
 }
 
 
-def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
+def _search_time_range(body: "SearchQuery | RetrieveQuery") -> dict[str, int] | None:
     """The request's date bounds as the retrieval service's ``time_range``.
 
     Parsed by the same function as the assistant's search tool and the
@@ -534,3 +557,113 @@ async def search(
 async def health_check() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+_EMPTY_RETRIEVAL_STATUSES = {
+    Status.EMPTY_RESPONSE.value,
+    Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
+    Status.VECTOR_DB_EMPTY.value,
+}
+
+
+def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> list[dict[str, Any]]:
+    """The search response as a flat, ranked chunk list with a citation each."""
+    records = {r.get("_key"): r for r in results.get("records") or [] if isinstance(r, dict)}
+    per_record: dict[str, int] = {}
+    chunks: list[dict[str, Any]] = []
+    for hit in results.get("searchResults") or []:
+        md = hit.get("metadata") or {}
+        record_id = md.get("recordId")
+        if not record_id or not hit.get("content"):
+            continue
+        if max_per_record is not None and per_record.get(record_id, 0) >= max_per_record:
+            continue
+        per_record[record_id] = per_record.get(record_id, 0) + 1
+        doc = records.get(record_id) or {}
+        chunks.append({
+            # Stable across calls for the same indexed block, so callers can dedupe and cache.
+            "id": f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{hit.get('block_index')}",
+            "text": hit["content"],
+            "score": hit.get("score"),
+            "record": {
+                "recordId": record_id,
+                "name": doc.get("recordName") or md.get("recordName"),
+                "connector": doc.get("connectorName") or md.get("connector"),
+                "mimeType": md.get("mimeType"),
+                "updatedAt": md.get("updatedAt"),
+            },
+            "citation": {
+                # Built by app/utils/text_fragments; never rebuilt here.
+                "url": md.get("webUrl"),
+                "recordUrl": doc.get("webUrl") or md.get("webUrl"),
+                "pageNum": md.get("pageNum"),
+                "blockIndex": hit.get("block_index"),
+            },
+        })
+    return chunks
+
+
+@router.post("/retrieve", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
+@inject
+async def retrieve(
+    request: Request,
+    body: RetrieveQuery,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> JSONResponse:
+    """Permission-filtered chunks with citations. Unlike /search, nothing is
+    stored: no search history and no citation documents."""
+    container = request.app.container
+    logger = container.logger()
+    time_range = _search_time_range(body)
+    user = request.state.user
+    try:
+        async with call_scope(
+            principal_from_request_user(user),
+            Workload.SEARCH,
+            config_service=container.config_service(),
+            container=container,
+        ):
+            if body.rewriteQuery:
+                queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+            else:
+                queries = _queries_for_search(body.query, None, None)
+            results = await retrieval_service.search_with_filters(
+                queries=queries,
+                org_id=user.get("orgId"),
+                user_id=user.get("userId"),
+                limit=body.limit,
+                filter_groups=within_connection(body.filters, connection_limit(user)),
+                knowledge_search=True,
+                time_range=time_range,
+            )
+            results = _apply_result_limit(results, body.limit, body.query)
+            await hide_record_parents_outside_connection(
+                request, graph_provider, user.get("orgId"), user.get("userId"), results,
+            )
+            hide_record_source_paths(request, results)
+            status_code = results.get("status_code", 500)
+            record_event("retrieve_performed", {
+                "orgId": user.get("orgId"),
+                "userId": user.get("userId"),
+                "domain": domain_from_email(user.get("email")),
+                "status_code": status_code,
+                "num_queries": len(queries),
+            })
+            if not results.get("searchResults"):
+                # Nothing matched, nothing accessible, nothing indexed yet: still an
+                # answer. A failure (index or permission check down, bad filter) is not.
+                if status_code == 200 or results.get("status") in _EMPTY_RETRIEVAL_STATUSES:
+                    return JSONResponse(status_code=200, content={
+                        "chunks": [], "incomplete": False, "message": results.get("message"),
+                    })
+                return JSONResponse(status_code=status_code, content={"message": results.get("message")})
+            return JSONResponse(status_code=200, content={
+                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord),
+                "incomplete": bool(results.get("searchIncomplete")),
+            })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Retrieve failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("retrieve passages")) from e

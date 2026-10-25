@@ -174,6 +174,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
+  sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);

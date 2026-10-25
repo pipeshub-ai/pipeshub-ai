@@ -1297,6 +1297,24 @@ export const enterpriseSearchSearchSchema = z.object({
   }),
 });
 
+/** POST /api/v1/retrieve: chunks with citations, for a developer's own RAG. */
+export const enterpriseSearchRetrieveSchema = z.object({
+  body: z.object({
+    query: z.string().min(1, { message: 'Query is required' }).max(100000, {
+      message: 'Query exceeds maximum length of 100000 characters',
+    }),
+    filters: filtersSchema,
+    // Chunks, not records; the AI service defaults to 8.
+    limit: z.number().int().min(1).max(50).optional(),
+    createdAfter: searchDateSchema,
+    createdBefore: searchDateSchema,
+    modifiedAfter: searchDateSchema,
+    modifiedBefore: searchDateSchema,
+    maxChunksPerRecord: z.number().int().min(1).max(50).optional(),
+    rewriteQuery: z.boolean().optional(),
+  }),
+});
+
 export const enterpriseSearchSearchHistorySchema = z.object({
   params: z.object({
     limit: limitSchema.optional(),

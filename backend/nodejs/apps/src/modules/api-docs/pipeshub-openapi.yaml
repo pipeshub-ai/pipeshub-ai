@@ -10875,6 +10875,108 @@ components:
           description: IDs of users to share with
           example: ["507f1f77bcf86cd799439011"]
 
+    RetrieveRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: What to find, searched as written unless `rewriteQuery` is true.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 8
+          description: Most chunks to return, best first.
+        filters:
+          $ref: '#/components/schemas/Filters'
+        createdAfter:
+          type: string
+          description: '"YYYY-MM-DD" or an ISO 8601 datetime with an offset, inclusive. When the source record was created.'
+        createdBefore:
+          type: string
+          description: As `createdAfter`, the other end.
+        modifiedAfter:
+          type: string
+          description: As `createdAfter`, on when the source record last changed.
+        modifiedBefore:
+          type: string
+          description: As `modifiedAfter`, the other end.
+        maxChunksPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Most chunks from any one record; left out, no cap beyond `limit`.
+        rewriteQuery:
+          type: boolean
+          default: false
+          description: Rewrite and expand the query with the org's model first (slower).
+    RetrieveChunk:
+      type: object
+      required: [id, text, record, citation]
+      properties:
+        id:
+          type: string
+          description: Stable for the same indexed block, for deduplication and caching.
+        text:
+          type: string
+        score:
+          type: number
+          nullable: true
+        record:
+          type: object
+          properties:
+            recordId:
+              type: string
+            name:
+              type: string
+              nullable: true
+            connector:
+              type: string
+              nullable: true
+            mimeType:
+              type: string
+              nullable: true
+            updatedAt:
+              type: string
+              nullable: true
+        citation:
+          type: object
+          properties:
+            url:
+              type: string
+              nullable: true
+              description: Deep link to the passage (a `#:~:text=` fragment where the source supports one).
+            recordUrl:
+              type: string
+              nullable: true
+              description: Link to the record itself.
+            pageNum:
+              type: array
+              nullable: true
+              items:
+                type: integer
+            blockIndex:
+              type: integer
+              nullable: true
+    RetrieveResponse:
+      type: object
+      required: [chunks, incomplete]
+      properties:
+        requestId:
+          type: string
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveChunk'
+        incomplete:
+          type: boolean
+          description: True when part of the search could not run (for example a source timed out).
+        message:
+          type: string
+          description: Why `chunks` is empty, when it is.
     SemanticSearchRequest:
       type: object
       description: |
@@ -36703,6 +36805,76 @@ paths:
           description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
+  /retrieve:
+    post:
+      tags:
+        - Semantic Search
+      summary: Retrieve chunks with citations
+      description: |
+        Ranked passages ("chunks") for a query, each with its record and a
+        citation link, for building your own RAG pipeline or agent on
+        PipesHub. Results are filtered by the caller's permissions exactly as
+        `POST /search` is, and take the same `filters` and date bounds.
+
+        Unlike `POST /search`, nothing is stored: no search history and no
+        citation documents, so an application can call this on every request
+        it serves. The query is searched as sent unless `rewriteQuery` is
+        true.
+
+        Nothing to find (no match, no accessible records, nothing indexed
+        yet) is a `200` with an empty `chunks` list.
+      operationId: retrieve
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrieveRequest'
+            examples:
+              simple:
+                summary: Chunks from one collection
+                value:
+                  query: "how do we roll back a canary?"
+                  limit: 8
+                  filters:
+                    kb: ["3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"]
+      responses:
+        '200':
+          description: Ranked chunks, each with its record and citation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResponse'
+        '400':
+          description: |
+            Invalid request: `query` missing or empty, `limit` or
+            `maxChunksPerRecord` outside 1-50, a date that does not parse, or
+            a `filters` key the `Filters` schema does not list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:write` scope.
+        '422':
+          description: |
+            The selection cannot be searched as asked (as for `POST /search`);
+            the message says what to change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: The search index or the permission check is temporarily unavailable.
+
   /search:
     post:
       tags:

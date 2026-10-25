@@ -57,6 +57,7 @@ import {
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -669,6 +670,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
     );
 
     // code-graph status for the dashboard (repos and their graph status)

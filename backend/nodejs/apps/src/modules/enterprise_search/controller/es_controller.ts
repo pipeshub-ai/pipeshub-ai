@@ -5559,6 +5559,76 @@ export const search =
     }
   };
 
+/**
+ * POST /api/v1/retrieve: ranked chunks with citations, for a developer's own
+ * RAG or agent. Unlike `search`, nothing is stored: no citation documents and
+ * no search history, since an app may call this on every request it serves.
+ */
+export const retrieve =
+  (
+    appConfig: AppConfig,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
+    const requestId = req.context?.requestId;
+    try {
+      const body = req.body as Record<string, unknown>;
+      if (typeof body.query === 'string') {
+        validateNoFormatSpecifiers(body.query, 'retrieve query');
+      }
+      // Only the fields the caller set, so the AI service's defaults apply.
+      const forwarded: Record<string, unknown> = {};
+      for (const key of [
+        'query',
+        'filters',
+        'limit',
+        'maxChunksPerRecord',
+        'rewriteQuery',
+        ...SEARCH_DATE_BOUNDS,
+      ]) {
+        if (body[key] !== undefined) forwarded[key] = body[key];
+      }
+
+      // The body may be missing on a broken upstream answer, so it is typed so.
+      const aiCommand = new AIServiceCommand<
+        Record<string, unknown> | undefined
+      >({
+        uri: `${appConfig.aiBackend}/api/v1/retrieve`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: forwarded,
+      });
+      let aiResponse: AIServiceResponse<Record<string, unknown> | undefined>;
+      try {
+        aiResponse = await aiCommand.execute();
+      } catch (error: unknown) {
+        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, {
+          cause: error,
+        });
+      }
+      const data = aiResponse.data;
+      if (data === undefined) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(
+          { response: { status: aiResponse.statusCode, data } },
+          'Retrieve',
+        );
+      }
+      res.status(HTTP_STATUS.OK).json({ requestId, ...data });
+    } catch (error: unknown) {
+      logger.error('Error retrieving chunks', {
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(error);
+    }
+  };
+
 export const searchHistory = async (
   req: AuthenticatedUserRequest,
   res: Response,
