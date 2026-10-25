@@ -212,7 +212,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "discord.py==2.6.3",
     "docker>=7.0.0",
-    "docling==2.133.0",
+    "docling==2.142.1",
     "einops>=0.8.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
@@ -222,7 +222,7 @@ dependencies = [
     # Starlette comes in through FastAPI, whose range admits releases with known advisories.
     "starlette==1.7.0",
     "mcp==2.3.0",
-    "fastembed==0.8.0",
+    "fastembed==0.9.1",
     "faster-whisper>=1.0.0",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
@@ -291,7 +291,7 @@ dependencies = [
     "pandas==2.2.3",
     "phonenumbers>=8.13.0",
     "price-parser>=0.3.4",
-    "Pillow>=12.3.0,<13",
+    "Pillow>=13.0.0,<14",
     "pdfplumber==0.11.10",
     "pillow-avif-plugin==1.5.5",
     "pypdfium2==5.14.0",
@@ -300,11 +300,13 @@ dependencies = [
     "py-trello==0.20.1",
     "python-arango==8.1.5",
     "python-docx==1.2.0",
-    "neo4j>=5.0.0",
+    # Pinned: 6.4.0 can spin in pool acquisition without ever yielding, which
+    # freezes the event loop (neo4j-python-driver#1360); 6.4.1 has the fix.
+    "neo4j==6.4.1",
     # Compiled PackStream for the neo4j driver; each release requires its matching
     # driver version. Packing a large list parameter in pure Python costs tens of
     # milliseconds on the event loop per statement.
-    "neo4j-rust-ext>=5.0.0",
+    "neo4j-rust-ext==6.4.1.0",
     "python-dotenv==1.2.2",
     # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
     "PyJWT==2.15.0",

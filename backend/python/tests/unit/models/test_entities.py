@@ -1174,6 +1174,15 @@ class TestLinkRecordFromArango:
         rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
         assert rec.is_public == LinkPublicStatus.UNKNOWN
 
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        # The storage path and access checks read the group; a link read back
+        # without it was filed and checked as if it belonged to no group.
+        rec = LinkRecord.from_arango_record(
+            self._link_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
+
 
 # ============================================================================
 # CommentRecord tests (lines 750-761, 764, 779, 789-795)
@@ -1348,6 +1357,19 @@ class TestTicketRecordFromArango:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    @pytest.mark.parametrize("hidden", [True, False])
+    def test_hidden_emails_survive_the_round_trip(self, hidden: bool) -> None:
+        """With the flag lost, the email fields (the source's user ids) would read as emails."""
+        rec = TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc())
+        rec.is_email_hidden = hidden
+
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+
+        assert back.is_email_hidden is hidden
+
+    def test_a_ticket_doc_without_the_flag_reads_as_not_hidden(self) -> None:
+        assert TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc()).is_email_hidden is False
+
 
 # ============================================================================
 # ProjectRecord.from_arango_record tests (lines 1039-1045)
@@ -1399,6 +1421,13 @@ class TestProjectRecordFromArango:
             self._record_doc(connectorName="NONEXISTENT"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        rec = ProjectRecord.from_arango_record(
+            self._project_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================
@@ -1830,6 +1859,31 @@ class TestAppUser:
         assert arango["email"] == "user@test.com"
         assert arango["fullName"] == "App User"
         assert arango["userId"] == "src-1"
+
+    def test_title_round_trips_through_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", title="Staff Engineer")
+        doc = au.to_arango_base_user()
+        assert doc["designation"] == "Staff Engineer"
+        assert AppUser.from_arango_user(doc).title == "Staff Engineer"
+
+    def test_missing_title_is_omitted_from_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U")
+        assert "designation" not in au.to_arango_base_user()
+
+    def test_title_falls_back_to_legacy_field(self) -> None:
+        from app.models.entities import AppUser
+        doc = {"_key": "k", "email": "u@test.com", "fullName": "U", "userId": "s", "title": "Analyst"}
+        assert AppUser.from_arango_user(doc).title == "Analyst"
+
+    def test_source_role_is_not_stored_as_title(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.DROPBOX, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", source_role="team_admin")
+        assert "designation" not in au.to_arango_base_user()
 
     def test_from_arango_user(self):
         from app.models.entities import AppUser

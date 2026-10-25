@@ -31,8 +31,44 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway"}
+        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu"}
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
         )
+
+
+    async def test_reports_cpu_source_and_pool_sizes(self) -> None:
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", None, create=True),
+            patch("app.parsing_main.effective_cpu_count", return_value=3),
+            patch("app.parsing_main.effective_cpu_source", return_value="cgroup_v2"),
+            patch("app.parsing_main.pdf_raster_pool_size", return_value=2),
+        ):
+            body = json.loads((await health_check()).body)
+
+        assert body["cpu"] == {"effective_cpus": 3, "source": "cgroup_v2", "pdf_raster_workers": 2}
+
+    async def test_reports_scaled_rasterizer_pool_size(self) -> None:
+        from app.modules.parsers.pdf import pdf_rasterizer
+        from app.parsing_main import app as parsing_main_app
+        from app.parsing_main import health_check
+        from app.utils import worker_scaling
+
+        mock_registry = MagicMock()
+        mock_registry.list_all_formats.return_value = {}
+        with (
+            patch.object(parsing_main_app.state, "parser_registry", mock_registry, create=True),
+            patch.object(parsing_main_app.state, "governor", None, create=True),
+            patch.object(pdf_rasterizer, "PDF_RASTER_WORKERS", 6),
+            patch.dict(worker_scaling._state, {"workers": 3}),
+        ):
+            body = json.loads((await health_check()).body)
+
+        assert body["cpu"]["pdf_raster_workers"] == 2

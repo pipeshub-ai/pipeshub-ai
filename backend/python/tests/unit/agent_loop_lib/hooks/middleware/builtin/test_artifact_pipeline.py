@@ -926,6 +926,26 @@ class TestBudgetReductionRespectsItsCap:
         assert self._text_len(capped) <= self.MAX
 
     @pytest.mark.asyncio
+    async def test_a_multipart_result_keeps_the_last_parts_tail(self) -> None:
+        """The cut keeps both ends of the result's whole text, as it does for a
+        string: an oversized first part used to spend the allowance, and the
+        closing instructions in the last part were emptied."""
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+
+        msg = self._parts_msg("HEAD" + "a" * 100_000, "CALL-ME-BACK", with_image=True)
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(shaper, [SystemMessage(content="sys"), msg])
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        texts = [p.text for p in capped.content if isinstance(p, TextPart)]
+        assert texts[0].startswith("HEAD")
+        assert texts[-1] == "CALL-ME-BACK"
+        assert "truncated" in texts[0]
+        assert self._text_len(capped) <= self.MAX
+        assert isinstance(capped.content[-1], ImagePart)
+
+    @pytest.mark.asyncio
     async def test_a_single_string_result_stays_within_the_allowance(self) -> None:
         """The marker counts: a cap that emits `max_result_chars` plus a marker
         is not a cap."""

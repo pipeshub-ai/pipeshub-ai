@@ -72,10 +72,24 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
-            "kind": {
-                "type": ["string", "null"],
-                "enum": ["individual", "service", None],
-            },
+            # What sort of principal this is. Absent on nodes written before
+            # this field existed and on anything an older producer sends, so
+            # readers treat absence as "human" rather than as unknown.
+            #
+            # Always carried on the event, never worked out here. The user
+            # management service decides what is a service account, and a
+            # second rule in this process — reading the address, say — would
+            # be a copy of that one, free to drift. Nodes that predate the
+            # field are stamped by ServiceAccountKindMigrationService from a
+            # list that service stages, which writes this field and nothing
+            # else; replaying the creation event for them would do far more.
+            "kind": {"type": "string", "enum": ["human", "service"]},
+            # Whether an administrator has switched this service account off.
+            # Separate from `isActive`, which soft-delete owns and which a
+            # rename sets back to true — a disable stored there would not
+            # survive one. Absent means not disabled, so a node that predates
+            # this field, or a person, reads as usable.
+            "isDisabled": {"type": "boolean"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry

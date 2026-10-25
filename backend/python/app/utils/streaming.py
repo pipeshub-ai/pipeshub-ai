@@ -47,6 +47,7 @@ from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.opik import get_llm_invoke_config, get_opik_tracer
+from app.utils.url_fetcher import private_addresses_blocked
 from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
@@ -171,8 +172,11 @@ async def stream_content(
         # No total limit: it would cut off a large file that is still downloading.
         timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
 
-        # Create session - AWS presigned URLs must be used exactly as generated
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # The URL comes from the source, whose address a user chose: it gets the deployment's
+        # rule for such hosts. Presigned URLs must be used exactly as generated.
+        from app.connectors.sources.web.address_guard import create_guarded_session
+
+        async with create_guarded_session(allow_private=not private_addresses_blocked(), timeout=timeout) as session:
             # Make request - presigned URLs include all necessary authentication in the URL itself
             # We don't modify headers to avoid breaking the signature
             async with session.get(

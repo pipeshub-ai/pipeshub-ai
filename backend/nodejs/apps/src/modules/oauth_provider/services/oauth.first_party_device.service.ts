@@ -15,8 +15,13 @@ import { AgentMcpScopes } from '../config/scopes.config'
 import { ScopeValidatorService } from './scope.validator.service'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const CLIENT_SECRET_BYTES = 32
+
+// A refresh token is minted only for offline_access, so without it a device
+// login, refresh_token grant and all, would end with its one-hour access token.
+const DEVICE_APP_SCOPES = [...AgentMcpScopes, OAuthScopeNames.OFFLINE_ACCESS];
 
 /**
  * Ensures the official "PipesHub agent" OAuth app exists so coding agents
@@ -47,7 +52,8 @@ export class FirstPartyDeviceAppService {
       clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
     })
     if (existing) {
-      return existing.clientId
+      await this.addNewPresetScopes(existing);
+      return existing.clientId;
     }
 
     const owner = await this.resolveOwner()
@@ -108,12 +114,42 @@ export class FirstPartyDeviceAppService {
     })
   }
 
+  /**
+   * The app is created once, so a scope added to the agent preset later never
+   * reaches it on its own and device logins keep minting tokens without it.
+   * Add what the preset grants now; never remove a scope, and leave tokens
+   * already issued alone (the next consent picks the new scopes up).
+   */
+  private async addNewPresetScopes(app: IOAuthApp): Promise<void> {
+    const held = new Set(app.allowedScopes);
+    const missing = this.resolveScopes().filter((scope) => !held.has(scope));
+    if (missing.length === 0) {
+      return;
+    }
+    try {
+      await OAuthApp.updateOne(
+        { _id: app._id },
+        { $addToSet: { allowedScopes: { $each: missing } } },
+      );
+      this.logger.info('First-party device app gained new preset scopes', {
+        clientId: app.clientId,
+        scopes: missing,
+      });
+    } catch (error) {
+      // Discovery must keep working; the next call retries the update.
+      this.logger.warn('First-party device app scope update failed', {
+        clientId: app.clientId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private resolveScopes(): string[] {
     const mcp = new Set(this.appConfig.mcpScopes || [])
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
-    return AgentMcpScopes.filter((scope) => {
+    return DEVICE_APP_SCOPES.filter((scope) => {
       if (!memberAllowed.has(scope)) {
         return false
       }

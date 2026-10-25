@@ -268,18 +268,26 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
-                if "kind" in payload:
+                # Set on the existing node too: a service account that is
+                # restored, or recreated under an address the graph already
+                # knows, arrives here rather than below. Left alone when
+                # absent, so an older producer cannot blank a value a newer
+                # one has already set. Nodes that predate the field are filled
+                # in by the backfill, not from here.
+                if payload.get("kind"):
                     user_data["kind"] = payload["kind"]
                 elif str(payload.get("email", "")).endswith("@service.pipeshub.internal"):
                     user_data["kind"] = "service"
+                # Sent by restore, which has just switched the account back on
+                # in the collection that owns the answer. Left alone when
+                # absent, so a producer that says nothing cannot change it.
+                if payload.get("isDisabled") is not None:
+                    user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
                 user_key = str(uuid4())
-                kind = payload.get("kind")
-                if not kind:
-                    if str(payload.get("email", "")).endswith("@service.pipeshub.internal"):
-                        kind = "service"
-                    else:
-                        kind = "individual"
+                kind = payload.get("kind") or (
+                    "service" if str(payload.get("email", "")).endswith("@service.pipeshub.internal") else "human"
+                )
                 user_data = {
                     "id": user_key,
                     "userId": payload["userId"],
@@ -291,8 +299,13 @@ class EntityEventService(BaseEventService):
                     "lastName": payload.get("lastName", ""),
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
-                    "kind": kind,
                     "isActive": True,
+                    "kind": kind,
+                    **(
+                        {"isDisabled": True}
+                        if payload.get("isDisabled") is True
+                        else {}
+                    ),
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -435,6 +448,13 @@ class EntityEventService(BaseEventService):
                 "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # The only signal the graph gets that an account was switched
+            # off. Written only when the event carries it, so an update that
+            # says nothing about it — one from a producer that predates the
+            # field — cannot switch an account back on.
+            if payload.get("isDisabled") is not None:
+                user_data["isDisabled"] = bool(payload["isDisabled"])
 
             # Add only non-null optional fields
             optional_fields = [

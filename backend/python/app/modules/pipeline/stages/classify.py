@@ -129,7 +129,7 @@ class ClassifyStage:
     async def restore_output(
         self, job: StageJob, io: ClassifyIO, output: str, *, still_current: Callable[[], Awaitable[bool]] | None = None
     ) -> bool:
-        """Put a kept classification back without a model call; False when it cannot be, or when
+        """Put a kept classification, and its summary point, back without a model call; False when it cannot be, or when
         ``still_current`` (checked under the record lease) says the kept output was superseded."""
         try:
             await io.restore_stored_metadata(

@@ -88,6 +88,9 @@ class GitHubResponse(BaseModel):
     retry_after_seconds: int | None = None
     # A listing cut at the SDK's item cap; more items exist on GitHub.
     truncated: bool = False
+    # The ``after`` cursor from a listing page's ``Link: rel="next"``, when GitHub
+    # offers one. Listings that refuse deep ``page`` numbers are read with it.
+    next_cursor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

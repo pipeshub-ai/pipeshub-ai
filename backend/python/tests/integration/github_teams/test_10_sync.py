@@ -51,6 +51,41 @@ async def test_issue_updated_while_the_listing_is_read_is_not_skipped(world, org
     assert await world.names("TICKET") == expected
 
 
+@pytest.mark.behaviour(issues_page_limit=300)
+async def test_issues_past_the_page_number_limit_are_read_through_the_cursor(world, org) -> None:
+    """GitHub refuses page numbers past 10,000 items on the issues listing (300 here),
+    and pull requests count towards them. A busy repository's older issues must still
+    sync, read through the ``after`` cursor in the listing's Link header."""
+    gh, repo = world.gh, org["repo"]
+    for n in range(250):
+        gh.add_issue(repo, f"Issue {n:03}")
+    for n in range(100):  # newer than every issue, so they fill the first pages
+        gh.add_pull(repo, f"PR {n:03}")
+    await world.sync()
+    assert await world.names("TICKET") == [f"Issue {n:03}" for n in range(250)]
+    diff = await world.diff()
+    assert diff.clean(), diff
+
+
+@pytest.mark.behaviour(issues_page_limit=300)
+async def test_a_full_last_cursor_page_ends_the_issues_listing(world, org) -> None:
+    """Exactly three full pages, the third past the page-number limit. GitHub puts no
+    next link on that last page, so the sync must stop there rather than ask for a
+    page number GitHub would refuse, and must commit its checkpoint."""
+    gh, repo = world.gh, org["repo"]
+    for n in range(200):
+        gh.add_issue(repo, f"Issue {n:03}")
+    for n in range(100):
+        gh.add_pull(repo, f"PR {n:03}")
+    await world.sync()
+    assert await world.names("TICKET") == [f"Issue {n:03}" for n in range(200)]
+    gh.add_issue(repo, "After the checkpoint")
+    await world.sync()  # incremental: reads only past the committed checkpoint
+    assert "After the checkpoint" in await world.names("TICKET")
+    diff = await world.diff()
+    assert diff.clean(), diff
+
+
 async def test_pull_request_updated_in_the_same_second_as_the_watermark(world, org) -> None:
     """GitHub timestamps have one-second resolution. A PR changed in the same second
     as the newest PR the last sync saw, but after that sync read the listing, carries

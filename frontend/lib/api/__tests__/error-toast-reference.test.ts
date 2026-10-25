@@ -2,16 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ErrorType, type ProcessedError } from '../api-error';
 
 const errorToast = vi.fn(() => 'toast-1');
+const openToasts: Array<{ id: string; isExiting: boolean }> = [];
 
 vi.mock('@/lib/store/toast-store', () => ({
   toast: { error: (...args: unknown[]) => errorToast(...args) },
-  useToastStore: { getState: () => ({ toasts: [] }) },
+  useToastStore: { getState: () => ({ toasts: openToasts }) },
 }));
 
 import { showErrorToast } from '../error-toast';
 
 beforeEach(() => {
   errorToast.mockClear();
+  openToasts.length = 0;
 });
 
 function serverError(overrides: Partial<ProcessedError> = {}): ProcessedError {
@@ -78,5 +80,49 @@ describe('the toast title', () => {
     showErrorToast(serverError({ statusCode: 503 }));
 
     expect(errorToast.mock.calls[0][0]).toBe('Please try again shortly');
+  });
+});
+
+describe('the toast title', () => {
+  const titleOf = () => (errorToast.mock.calls[0] as [string])[0];
+
+  it('blames a connected service, not PipesHub, for a 502 our API answered', () => {
+    showErrorToast(serverError({ statusCode: 502, requestId: 'ref-502', message: 'The email wasn\'t sent.' }));
+    expect(titleOf()).toBe('Problem with a connected service');
+  });
+
+  it('stays "Server error" for a bare proxy 502', () => {
+    showErrorToast(serverError({ statusCode: 502 }));
+    expect(titleOf()).toBe('Server error');
+  });
+});
+
+describe('an error toast that is already open', () => {
+  const smtpFailure = (requestId: string) =>
+    serverError({
+      statusCode: 502,
+      requestId,
+      message: "The email wasn't sent because the mail (SMTP) server rejected the username or password.",
+    });
+
+  it('does not hide a different failure behind it', () => {
+    errorToast.mockReturnValueOnce('generic').mockReturnValueOnce('smtp');
+    showErrorToast(serverError({ requestId: 'ref-a' }));
+    openToasts.push({ id: 'generic', isExiting: false });
+
+    showErrorToast(smtpFailure('ref-b'));
+
+    expect(errorToast).toHaveBeenCalledTimes(2);
+    expect((errorToast.mock.calls[1] as [string])[0]).toBe('Problem with a connected service');
+  });
+
+  it('absorbs a repeat of the same failure, whatever its reference', () => {
+    errorToast.mockReturnValueOnce('smtp-1');
+    showErrorToast(smtpFailure('ref-c'));
+    openToasts.push({ id: 'smtp-1', isExiting: false });
+
+    showErrorToast(smtpFailure('ref-d'));
+
+    expect(errorToast).toHaveBeenCalledTimes(1);
   });
 });

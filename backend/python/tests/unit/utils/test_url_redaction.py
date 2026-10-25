@@ -13,6 +13,7 @@ from app.utils.url_redaction import (
     is_sensitive_query_key,
     redact_sensitive_query_params,
     redact_url,
+    redact_urls_in_text,
 )
 
 
@@ -37,6 +38,45 @@ class TestRedactUrl:
 
     def test_unparseable_url(self) -> None:
         assert redact_url("https://[::1/x?token=x") == "<unparseable-url>"
+
+
+class TestRedactUrlsInText:
+    def test_strips_query_and_preserves_surrounding_words(self) -> None:
+        text = "see https://example.com/a?token=secret now"
+        assert redact_urls_in_text(text) == "see https://example.com/a now"
+
+    def test_strips_userinfo_query_and_fragment(self) -> None:
+        text = "https://user:pw@host.example/v1?x=1#f done"
+        assert redact_urls_in_text(text) == "https://host.example/v1 done"
+
+    def test_redacts_both_urls_and_preserves_words_between_them(self) -> None:
+        text = "a https://one.example/p?token=1 b https://two.example/q?sig=2 c"
+        assert redact_urls_in_text(text) == (
+            "a https://one.example/p b https://two.example/q c"
+        )
+
+    def test_preserves_text_without_urls(self) -> None:
+        text = "token=secret is not a url"
+        assert redact_urls_in_text(text) == text
+
+    def test_preserves_parentheses_and_following_period(self) -> None:
+        text = "see (https://example.com/a?token=secret)."
+        assert redact_urls_in_text(text) == "see (https://example.com/a)."
+
+    def test_preserves_trailing_period_in_url_path(self) -> None:
+        text = "end https://example.com/a."
+        assert redact_urls_in_text(text) == text
+
+    def test_preserves_single_quotes_around_url(self) -> None:
+        text = "see 'https://example.com/a?token=secret'"
+        assert redact_urls_in_text(text) == "see 'https://example.com/a'"
+
+    def test_preserves_empty_text(self) -> None:
+        assert redact_urls_in_text("") == ""
+
+    def test_preserves_clean_url_and_surrounding_words(self) -> None:
+        text = "clean https://gitlab.com/api/v4/mcp stays"
+        assert redact_urls_in_text(text) == text
 
 
 class TestRedactSensitiveQueryParams:

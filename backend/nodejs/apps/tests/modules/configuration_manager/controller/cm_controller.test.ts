@@ -5572,6 +5572,76 @@ describe('ConfigurationManager Controller', () => {
       expect(saved.llm[0].configuration).to.deep.equal({ model: 'gpt-4', apiKey: 'rotated' })
     })
 
+    async function updateAzure(configuration: Record<string, unknown>) {
+      let stored = mockEncService.encrypt(JSON.stringify({
+        llm: [{
+          provider: 'azureOpenAI',
+          configuration: { model: 'gpt-5-mini', deploymentName: 'prod-mini', apiKey: 'k', endpoint: 'https://e' },
+          modelKey: 'key-1',
+          isDefault: true,
+        }],
+        embedding: [],
+      }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async () => stored),
+        compareAndSet: sinon.stub().callsFake(async (_key: string, expected: string, next: string) => {
+          if (expected !== stored) return false
+          stored = next
+          return true
+        }),
+      })
+      const checked: Record<string, unknown>[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
+        const body = (this as unknown as { body?: string }).body
+        checked.push(body ? JSON.parse(body).configuration : undefined)
+        return { statusCode: 200, data: { status: 'healthy' } } as any
+      })
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'azureOpenAI', configuration, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+      const saved = JSON.parse(String(stored).replace(/^encrypted:/, '')).llm[0].configuration
+      return { res, checked, saved }
+    }
+
+    it('refuses to move an Azure entry to a new model on the old model\'s deployment', async () => {
+      const { res, checked, saved } = await updateAzure({ model: 'gpt-5.4' })
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.have.length(0)
+      expect(saved).to.include({ model: 'gpt-5-mini', deploymentName: 'prod-mini' })
+    })
+
+    for (const deploymentName of ['', '  ']) {
+      it(`refuses a new Azure model whose deployment is ${JSON.stringify(deploymentName)}`, async () => {
+        const { res, checked, saved } = await updateAzure({ model: 'gpt-5.4', deploymentName })
+
+        expect(res.status.calledWith(400)).to.be.true
+        expect(checked).to.have.length(0)
+        expect(saved).to.include({ model: 'gpt-5-mini', deploymentName: 'prod-mini' })
+      })
+    }
+
+    it('moves an Azure entry to a new model with the deployment sent for it', async () => {
+      const { res, checked, saved } = await updateAzure({ model: 'gpt-5.4', deploymentName: 'gpt-5.4' })
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked[0]).to.include({ model: 'gpt-5.4', deploymentName: 'gpt-5.4', apiKey: 'k' })
+      expect(saved).to.include({ model: 'gpt-5.4', deploymentName: 'gpt-5.4', apiKey: 'k' })
+    })
+
+    it('keeps the stored Azure deployment when the model is unchanged', async () => {
+      const { res, saved } = await updateAzure({ model: 'gpt-5-mini', modelFriendlyName: 'Mini' })
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(saved).to.include({ model: 'gpt-5-mini', deploymentName: 'prod-mini' })
+    })
+
     it('should return 400 when provider is missing', async () => {
       const kvs = createMockKeyValueStore()
       const eventService = createMockEventService()

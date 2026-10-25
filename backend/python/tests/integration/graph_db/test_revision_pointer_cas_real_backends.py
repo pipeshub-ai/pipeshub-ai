@@ -4,7 +4,9 @@ After a record's artifact set is written, indexing moves ``currentRev`` on the
 vrid's mapping node by compare-and-set (``update_node_fields_if_match``). The
 first flip expects the field absent; Neo4j cannot store a null property, so
 "absent" and "null" must read the same on both backends. The stored record's
-own mapping write, which runs on every index, must leave the pointer alone.
+own mapping write, which runs on every index, must leave the pointer alone,
+and records which revision the stored record holds (``storedRev``), which the
+artifact reader compares with the pointer.
 
 Runs on Neo4j and ArangoDB (backend-matrix). Environment: NEO4J_IT_URI,
 NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -79,10 +81,15 @@ async def graph(
             )
 
 
-async def _store_mapping(provider: IGraphDBProvider, vrid: str, doc_id: str = "doc-record") -> None:
+def _blob(provider: IGraphDBProvider) -> BlobStorage:
+    return BlobStorage(logger=logger, config_service=MagicMock(), graph_provider=provider)
+
+
+async def _store_mapping(
+    provider: IGraphDBProvider, vrid: str, doc_id: str = "doc-record", **revision: str | None,
+) -> None:
     """What every index writes for the stored record (``store_virtual_record_mapping``)."""
-    blob = BlobStorage(logger=logger, config_service=MagicMock(), graph_provider=provider)
-    assert await blob.store_virtual_record_mapping("org-it", vrid, doc_id, 42)
+    assert await _blob(provider).store_virtual_record_mapping("org-it", vrid, doc_id, 42, **revision)
 
 
 async def _store_record(provider: IGraphDBProvider, vrid: str, rev: str) -> None:
@@ -236,3 +243,31 @@ async def test_a_run_the_record_has_left_does_not_move_the_pointer(graph: tuple[
 
     doc = await _mapping(provider, vrid)
     assert (doc["currentRev"], doc["manifestDocId"]) == (REV_2, "doc-2222")
+
+
+@pytest.mark.asyncio
+async def test_the_stored_revision_lands_beside_the_pointer(graph: tuple[IGraphDBProvider, str]) -> None:
+    """A stored record of a newer revision than the pointer's set reads as such, on both lookups."""
+    provider, run = graph
+    vrid = f"{run}-vr"
+    sink = _sink(provider)
+    await _store_mapping(provider, vrid, stored_rev=REV_1)
+    await _store_record(provider, vrid, REV_1)
+    await sink._flip_revision_pointer(_record(vrid), _written(vrid, REV_1))
+    doc = await _mapping(provider, vrid)
+    assert (doc["currentRev"], doc["storedRev"]) == (REV_1, REV_1)
+
+    # The stored record moves to REV_2; its artifact set is never written.
+    await _store_mapping(provider, vrid, "doc-record-2", stored_rev=REV_2)
+    one = await _blob(provider).get_document_id_by_virtual_record_id(vrid)
+    many = (await _blob(provider).get_document_ids_by_virtual_record_ids([vrid]))[vrid]
+    for lookup in (one, many):
+        assert (lookup["currentRev"], lookup["storedRev"], lookup["record_doc_id"]) == (REV_1, REV_2, "doc-record-2")
+
+    # A write that does not name a revision leaves it; one without a revision clears it.
+    await _store_mapping(provider, vrid, "doc-record-2")
+    assert (await _mapping(provider, vrid))["storedRev"] == REV_2
+    await _store_mapping(provider, vrid, "doc-record-2", stored_rev=None)
+    cleared = await _mapping(provider, vrid)
+    assert cleared.get("storedRev") is None and cleared["currentRev"] == REV_1
+    assert "storedRev" not in await _blob(provider).get_document_id_by_virtual_record_id(vrid)

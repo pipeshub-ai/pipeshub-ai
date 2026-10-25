@@ -844,10 +844,10 @@ components:
       description: |
         A file inside an artifact set. Only these are accepted: `manifest.json`,
         `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
-        `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `properties.json`, `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
         `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
         Anything else, including `..`, a leading `/` or a backslash, is refused.
-      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
     ArtifactFileUrl:
       type: object
       required:
@@ -10957,8 +10957,10 @@ components:
           type: boolean
           default: true
           description: |
-            Whether the AI model rewrites the query and adds expanded variants before
-            searching. Set it to `false` to search the query exactly as sent, with no
+            Whether the AI model's rewrite of the query and its expanded variants are
+            searched as well. The query as sent is always searched, so an exact code or
+            name in it is never lost to the rewrite. Set it to `false` to search the query
+            exactly as sent and nothing else, with no
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
@@ -11248,6 +11250,13 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        block_group_index:
+          type: integer
+          nullable: true
+          description: |
+            Set on each passage of a section brought back whole (see `distanceFromMatch`): the
+            index of that section in its record, so passages of two sections of one record can be
+            told apart. Absent on a hit that matched directly.
         timelinePeriod:
           type: integer
           minimum: 0
@@ -13404,6 +13413,7 @@ components:
         - clickup
         - confluence
         - confluencedatacenter
+        - docs
         - drive
         - github
         - gmail
@@ -13416,6 +13426,7 @@ components:
         - redshift
         - salesforce
         - sharepoint
+        - sheets
         - slack
         - teams
         - zoom
@@ -23853,6 +23864,15 @@ paths:
             - SMTP config fetch failed
             - Auth methods fetch failed
             - Email sending failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The mail (SMTP) server rejected the configured username or password,
+            or could not be reached. The message says which, so an admin can fix
+            the mail settings.
           content:
             application/json:
               schema:

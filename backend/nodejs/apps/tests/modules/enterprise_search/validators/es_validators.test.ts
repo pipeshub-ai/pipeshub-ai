@@ -41,6 +41,7 @@ import {
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  AGENT_CREATE_TOOLSET_NAMES,
   createAgentSchema,
   getWebSearchProviderUsageRequestSchema,
   getModelUsageRequestSchema,
@@ -2390,6 +2391,29 @@ describe('enterprise_search/validators/es_validators', () => {
         },
       })
       expect(result.success).to.be.false
+    })
+
+    it('should accept the Google Docs and Sheets toolsets', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [
+            { name: 'docs', displayName: 'Docs', tools: [] },
+            { name: 'sheets', displayName: 'Sheets', tools: [] },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should list the same toolset names as the OpenAPI AgentCreateToolsetName enum', () => {
+      const spec = yaml.load(
+        fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+      ) as { components: { schemas: { AgentCreateToolsetName: { enum: string[] } } } }
+      expect([...spec.components.schemas.AgentCreateToolsetName.enum].sort()).to.deep.equal(
+        [...AGENT_CREATE_TOOLSET_NAMES].sort(),
+      )
     })
 
     it('should reject unknown toolset name', () => {

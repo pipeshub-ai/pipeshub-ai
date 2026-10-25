@@ -30,7 +30,8 @@ def record_artifact_write(outcome: str) -> None:
 
 
 # outcome: served, or why the artifact set could not be: no_pointer (no current
-# revision on the mapping), missing (a file or the set is gone), too_large,
+# revision on the mapping), stale (the stored record holds another revision, or
+# the mapping does not say which), missing (a file or the set is gone), too_large,
 # integrity (a file's size or sha256 is not the manifest's), invalid (a manifest
 # or file this reader cannot use), failed (storage or another error).
 ARTIFACT_READS = METRICS_BACKEND.counter(
@@ -64,3 +65,37 @@ def record_artifact_shadow_read(outcome: str, reason: str | None = None) -> None
     ARTIFACT_SHADOW_READS.inc(outcome)
     if reason is not None:
         ARTIFACT_SHADOW_MISMATCHES.inc(reason)
+
+
+# kind=revision: artifact-set revisions the retention sweep looked at, outcome
+# deleted, kept or failed; kind=virtual_record, outcome=skipped_trashed: virtual
+# records left whole because a record holding them is in the trash, or
+# skipped_busy: left for the next pass because a holder's record lease was held;
+# kind=stage_state, outcome=deleted: stage states of revisions no record is on.
+RETENTION = METRICS_BACKEND.counter(
+    "pipeshub_record_retention_total",
+    "What the revision retention sweep removed or kept, by kind and outcome",
+    ["kind", "outcome"],
+)
+
+
+def record_retention(kind: str, outcome: str, count: int = 1) -> None:
+    if count:
+        RETENTION.inc(kind, outcome, value=float(count))
+
+
+# trigger: not_found (the gateway answered 404), signed_url (a 403 or 404 on a URL
+# signed in this call), ranged (a failed ranged download).
+# outcome: served (the mapping named a new document and it was read), unchanged
+# (same document: the original error is re-raised), no_mapping (no mapping any
+# more: the original error is re-raised), lookup_failed (the graph did not answer),
+# failed (the new document could not be read either).
+RECORD_READER_RELOOKUP = METRICS_BACKEND.counter(
+    "pipeshub_record_reader_relookup_total",
+    "Stored-record reads that took one fresh mapping lookup after the document read failed, by outcome",
+    ["outcome", "trigger"],
+)
+
+
+def record_reader_relookup(outcome: str, trigger: str) -> None:
+    RECORD_READER_RELOOKUP.inc(outcome, trigger)

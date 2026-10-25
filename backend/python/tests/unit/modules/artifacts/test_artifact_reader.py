@@ -25,10 +25,10 @@ from app.models.blocks import (
     ImageMetadata,
     SemanticMetadata,
 )
-from app.models.entities import Record, RecordType
+from app.models.entities import Record, RecordType, Status, TicketRecord
 from app.modules.artifacts import reader as reader_module
 from app.modules.artifacts import record_backend as backend_module
-from app.modules.artifacts.models import MANIFEST_PATH, Manifest
+from app.modules.artifacts.models import MANIFEST_PATH, PROPERTIES_PATH, Manifest
 from app.modules.artifacts.reader import (
     ArtifactFirstRecordArtifactReader,
     ConfiguredRecordArtifactReader,
@@ -143,7 +143,10 @@ async def _write(storage: FakeStorage, record: Record) -> dict[str, Any]:
         record, ORG, VRID, REV, record.block_containers, semantic_metadata=record.semantic_metadata,
     )
     assert written is not None
-    return {"record_doc_id": "doc-1", "currentRev": REV, "manifestDocId": written.manifest_ref.document_id}
+    return {
+        "record_doc_id": "doc-1", "currentRev": REV, "storedRev": REV,
+        "manifestDocId": written.manifest_ref.document_id,
+    }
 
 
 async def _write_sidecar(storage: FakeStorage, payload: dict[str, Any]) -> None:
@@ -190,6 +193,26 @@ class TestArtifactRecordBackend:
 
         assert await _backend(storage, mappings).read_record(VRID, ORG) == _as_stored(record)
         mappings.single.assert_awaited_once_with(VRID)
+
+    async def test_a_tickets_properties_file_is_listed_but_not_read(self, storage: FakeStorage) -> None:
+        ticket = TicketRecord(**{
+            **dict(_record()), "record_type": RecordType.TICKET, "connector_name": Connectors.JIRA,
+            "status": Status.OPEN, "assignee": "Ada", "labels": ["auth"],
+        })
+        lookup = await _write(storage, ticket)
+        assert _key(PROPERTIES_PATH) in storage.puts
+        backend = _backend(storage, _Mappings({}))
+        signed: list[str] = []
+        read_urls = backend._store.read_urls
+
+        async def spy(org_id: str, document_id: str, paths: list[str]) -> Any:  # noqa: ANN401
+            signed.extend(paths)
+            return await read_urls(org_id, document_id, paths)
+
+        backend._store.read_urls = spy  # type: ignore[method-assign]
+
+        assert await backend.read_record(VRID, ORG, lookup=lookup) == _as_stored(ticket)
+        assert PROPERTIES_PATH not in signed
 
     @pytest.mark.parametrize("lookup", [None, {"record_doc_id": "doc-1"}, {"record_doc_id": "d", "currentRev": REV}])
     async def test_no_pointer_is_unavailable(self, storage: FakeStorage, outcomes: list[str], lookup: Any) -> None:  # noqa: ANN401
@@ -248,7 +271,7 @@ class TestArtifactRecordBackend:
     async def test_a_manifest_of_another_revision_is_unavailable(
         self, storage: FakeStorage, outcomes: list[str],
     ) -> None:
-        lookup = {**await _write(storage, _record()), "currentRev": "fedcba9876543210"}
+        lookup = {**await _write(storage, _record()), "currentRev": "fedcba9876543210", "storedRev": "fedcba9876543210"}
         # The pointer names a revision the document does not hold.
         storage.roots[lookup["manifestDocId"]] = FakeStorage.root(VRID, REV)
 
@@ -315,7 +338,7 @@ class TestSharedContent:
             stored_record_fields=ctx.settings[STORED_RECORD_FIELDS],
         )
         assert written is not None
-        lookup = {"currentRev": REV, "manifestDocId": written.manifest_ref.document_id}
+        lookup = {"currentRev": REV, "storedRev": REV, "manifestDocId": written.manifest_ref.document_id}
 
         read = await _backend(storage, _Mappings({})).read_record(VRID, ORG, lookup=lookup)
 
@@ -562,6 +585,45 @@ class TestArtifactFirstReader:
         assert await reader.lookup_many(["a"]) == {"a": {"record_doc_id": "doc-a"}}
 
 
+class TestStaleRevision:
+    """The pointer moves only after a revision's set is written, so it can name an older
+    revision than the stored record holds; that set must never be served."""
+
+    @pytest.mark.parametrize("stored_rev", ["fedcba9876543210", None, "absent"])
+    async def test_a_set_of_another_revision_than_the_stored_record_is_stale(
+        self, storage: FakeStorage, outcomes: list[str], stored_rev: str | None,
+    ) -> None:
+        lookup = await _write(storage, _record())
+        if stored_rev == "absent":
+            del lookup["storedRev"]
+        else:
+            lookup["storedRev"] = stored_rev
+
+        with pytest.raises(ArtifactUnavailable) as raised:
+            await _backend(storage, _Mappings({})).read(VRID, ORG, lookup=lookup)
+        assert raised.value.outcome == "stale"
+        assert outcomes == ["stale"]
+
+    async def test_artifact_first_serves_the_stored_record(self, storage: FakeStorage, outcomes: list[str]) -> None:
+        lookup = {**await _write(storage, _record()), "storedRev": "fedcba9876543210"}
+        legacy = _Legacy(STORED)
+        reader = ArtifactFirstRecordArtifactReader(legacy, _backend(storage, _Mappings({VRID: lookup})))  # type: ignore[arg-type]
+
+        assert await reader.read_record(VRID, ORG) is STORED
+        assert legacy.calls == [VRID]
+        assert outcomes == ["stale"]
+
+    async def test_shadow_counts_it_unavailable_not_a_mismatch(
+        self, storage: FakeStorage, outcomes: list[str], shadow_outcomes: list[tuple[str, str | None]],
+    ) -> None:
+        lookup = {**await _write(storage, _record()), "storedRev": "fedcba9876543210"}
+        reader = _shadow(_Legacy(STORED), _backend(storage, _Mappings({VRID: lookup})))  # type: ignore[arg-type]
+
+        assert await reader.read_record(VRID, ORG) is STORED
+        assert outcomes == ["stale"]
+        assert shadow_outcomes == [("unavailable", None)]
+
+
 def _blob(flags: dict[str, bool]) -> MagicMock:
     blob = MagicMock()
     blob.config_service.get_config = AsyncMock(return_value={"featureFlags": flags})
@@ -633,8 +695,9 @@ class TestFirstDifference:
 
 def test_mapping_lookups_carry_the_revision_pointer() -> None:
     shaped = BlobStorage._shape_document_lookup(
-        {"documentId": "d", "fileSizeBytes": 3, "currentRev": REV, "previousRev": "x", "manifestDocId": "m"}
+        {"documentId": "d", "fileSizeBytes": 3, "currentRev": REV, "previousRev": "x", "manifestDocId": "m",
+         "storedRev": REV}
     )
 
-    assert shaped == {"record_doc_id": "d", "fileSizeBytes": 3, "currentRev": REV, "manifestDocId": "m"}
+    assert shaped == {"record_doc_id": "d", "fileSizeBytes": 3, "currentRev": REV, "manifestDocId": "m", "storedRev": REV}
     assert BlobStorage._shape_document_lookup({"documentId": "d"}) == {"record_doc_id": "d", "fileSizeBytes": None}

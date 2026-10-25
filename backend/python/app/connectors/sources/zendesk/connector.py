@@ -107,6 +107,10 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType
+from app.sources.client.http.address_guard import (
+    AddressNotAllowedError,
+    guarded_async_client,
+)
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.zendesk.zendesk import (
@@ -3391,7 +3395,7 @@ class ZendeskConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         # Same host rule as _fetch_asset; httpx drops the header on a cross-host redirect.
         headers = dict(datasource.http.headers) if self._is_tenant_api_url(content_url) else None
-        client = httpx.AsyncClient(
+        client = guarded_async_client(
             follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS, headers=headers
         )
         try:
@@ -3466,7 +3470,7 @@ class ZendeskConnector(BaseConnector):
         if self._is_tenant_api_url(url):
             response = await datasource.http.execute(HTTPRequest(url=url, method="GET"))
             return response.status, response.bytes(), response.content_type
-        async with httpx.AsyncClient(
+        async with guarded_async_client(
             follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS
         ) as cdn_client:
             cdn_response = await cdn_client.get(url)
@@ -3569,7 +3573,7 @@ class ZendeskConnector(BaseConnector):
         host = f"{self._subdomain()}.zendesk.com"
         try:
             response = await self._call_api(self._show_current_token)
-        except ZendeskAuthError as e:
+        except (ZendeskAuthError, AddressNotAllowedError) as e:
             raise ConnectorInitError(str(e)) from e
         except httpx.HTTPStatusError as e:
             raise ConnectorInitError(

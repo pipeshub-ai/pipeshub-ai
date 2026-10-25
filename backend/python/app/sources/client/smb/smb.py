@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 from app.connectors.core.constants import ConfigPaths
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
+STATUS_ACCESS_DENIED = 0xC0000022
 # smbclient waits 60 s by default, longer than a gateway holds a request open.
 CONNECTION_TIMEOUT_SECONDS = 15
 LOOKUP_TIMEOUT_SECONDS = 5
@@ -230,6 +232,10 @@ class SmbClient(IClient):
         except FileNotFoundError:
             raise
         except Exception as exc:
+            # smbclient raises SMBOSError (ntstatus), smbprotocol SMBResponseException (status). The
+            # message reads "Unknown NtStatus error returned 'STATUS_ACCESS_DENIED'", not "access denied".
+            if STATUS_ACCESS_DENIED in (getattr(exc, "ntstatus", None), getattr(exc, "status", None)):
+                raise AccessDeniedError(share, path, str(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(target) from exc

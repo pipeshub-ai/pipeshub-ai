@@ -999,3 +999,59 @@ class TestQueriesDuringIndexing:
             release_bulk.set()
             await asyncio.gather(*batches)
         assert sorted(encoded[1:]) == [f"batch-{i}" for i in range(4)]
+
+
+class TestDefaultEncodeConcurrency:
+    """Without an explicit setting, encode slots follow the container's CPUs."""
+
+    def test_follows_effective_cpu_count_not_host(self) -> None:
+        import os
+
+        from app import embedding_main
+
+        with (
+            patch.object(os, "cpu_count", return_value=64),
+            patch.object(embedding_main, "effective_cpu_count", return_value=4),
+        ):
+            assert embedding_main._default_max_concurrent_embeddings() == 4
+
+    def test_floor_of_two(self) -> None:
+        from app import embedding_main
+
+        with patch.object(embedding_main, "effective_cpu_count", return_value=1):
+            assert embedding_main._default_max_concurrent_embeddings() == 2
+
+    def test_health_reports_cpu_source_and_slots(self, client) -> None:
+        test_client, _ = client
+        with (
+            patch("app.embedding_main.effective_cpu_count", return_value=3),
+            patch("app.embedding_main.effective_cpu_source", return_value="cgroup_v1"),
+        ):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["effective_cpus"] == 3
+        assert body["cpu"]["source"] == "cgroup_v1"
+
+    def test_module_constant_comes_from_helper(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import app.services.resource_governor.probe as p;"
+            "p.effective_cpu_count = lambda: 7;"
+            "import app.embedding_main as m;"
+            "print(m.MAX_CONCURRENT_EMBEDDINGS)"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "EMBEDDING_SERVER_MAX_CONCURRENCY"}
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True, timeout=300
+        )
+        assert out.stdout.strip().splitlines()[-1] == "7"
+
+    def test_health_reports_slot_count(self, client) -> None:
+        from app import embedding_main
+
+        test_client, _ = client
+        with patch.object(embedding_main, "MAX_CONCURRENT_EMBEDDINGS", 11):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["max_concurrent_embeddings"] == 11

@@ -190,6 +190,7 @@ def ok_response(data: object) -> MagicMock:
     res.success = True
     res.data = data
     res.error = None
+    res.next_cursor = None
     return res
 
 

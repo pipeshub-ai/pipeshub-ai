@@ -32,6 +32,7 @@ from app.services.graph_db.arango.arango_http_provider import (
     ArangoHTTPProvider,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
@@ -13514,10 +13515,10 @@ class TestGetAppPermissionRoleAql:
         
         # Check for team KB roles collection
         assert 'team_kb_roles' in aql
-        assert 'user_team_perm.type == "USER"' in aql
-        assert 'STARTS_WITH(user_team_perm._to, "teams/")' in aql
-        assert 'team_app_perm.type == "TEAM"' in aql
-        assert 'user_team_perm.role' in aql
+        assert 'team_member.type == "USER"' in aql
+        assert 'STARTS_WITH(team_member._to, "teams/")' in aql
+        assert 'team_grant.type == "TEAM"' in aql
+        assert aql_team_grant_role("team_grant", "team_member") in aql
         
         # Check for team KB role prioritization
         assert 'team_kb_role' in aql

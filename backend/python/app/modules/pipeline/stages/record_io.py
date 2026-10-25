@@ -149,12 +149,14 @@ class RecordStageIO:
         update: SectionUpdate,
         *,
         still_current: Callable[[], Awaitable[bool]] | None = None,
+        before: Callable[[], Awaitable[object]] | None = None,
         written: Callable[[], Awaitable[object]] | None = None,
         then: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         """Re-read the stored record under the lease and write ``update`` of its metadata, then
         run ``written`` (only when that write happened) and ``then`` (the stage's other writes
-        for ``owner``) while the lease is still held.
+        for ``owner``) while the lease is still held. ``before`` runs under the lease ahead of the
+        write, for an output that must exist before the stored record says it does.
 
         Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease, and
         ``StoredRecordMissing`` when no stored record exists."""
@@ -162,6 +164,8 @@ class RecordStageIO:
             stored = await self._blob_storage.get_record_from_storage(job.virtual_record_id, job.org_id)
             if stored is None:
                 raise StoredRecordMissing(f"no stored record for virtual record {job.virtual_record_id}")
+            if before is not None:
+                _ = await before()
             current = stored.get("semantic_metadata")
             new = update(current if isinstance(current, dict) else None)
             if new is not None:

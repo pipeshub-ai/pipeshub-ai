@@ -81,6 +81,10 @@ class Behaviour:
     # github.com/user-attachments with an API token: live-verified 404 (even on a public
     # repository); without one, 302 to signed storage for a public repository.
     attachment_token_accepted: bool = False
+    # The issues listing refuses ``page`` once page x per_page reaches this many items
+    # (422, "use cursor based pagination"); its Link header carries an ``after`` cursor
+    # instead. Live: apache/airflow at per_page=100, page 99 -> 200, page 100 -> 422.
+    issues_page_limit: int = 10_000
 
 
 @dataclass

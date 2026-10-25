@@ -163,10 +163,17 @@ _RECORD_PARENT_FIELDS = {
 }
 
 
+# Neo4j stores no null property, so a record in no record group and under no
+# parent node comes back without those keys and is known by its source ids.
+_RECORD_DOC_KEYS = frozenset(
+    (*_RECORD_PARENT_FIELDS, *(key for keys in _RECORD_PARENT_FIELDS.values() for key in keys))
+)
+
+
 def _record_docs(value: object) -> Iterable[dict[str, Any]]:
     """Every dict under ``value`` that carries a record's parent fields."""
     if isinstance(value, dict):
-        if any(key in value for key in _RECORD_PARENT_FIELDS):
+        if any(key in value for key in _RECORD_DOC_KEYS):
             yield value
         for child in value.values():
             yield from _record_docs(child)
@@ -188,10 +195,14 @@ async def hide_record_parents_outside_connection(
         return
     docs = list(_record_docs(payload))
     parents = {doc[key] for doc in docs for key in _RECORD_PARENT_FIELDS if isinstance(doc.get(key), str) and doc[key]}
+    # A collection file's source parent is its folder's own id, so it is
+    # checked like a parent node; a connector's is the source's id, which no
+    # node has, so it comes back outside.
+    unplaced = {doc["externalParentId"] for doc in docs if _unplaced_source_parent(doc)}
     holder = payload if isinstance(payload, dict) else {}
     above = {key: holder[key].get("id") for key in containers if isinstance(holder.get(key), dict)}
     outside = await ids_outside_connection(
-        request, graph_provider, org_id, user_id, [*parents, *(i for i in above.values() if i)],
+        request, graph_provider, org_id, user_id, [*parents, *unplaced, *(i for i in above.values() if i)],
     )
     for key, node_id in above.items():
         if node_id in outside:
@@ -203,10 +214,19 @@ async def hide_record_parents_outside_connection(
                 for field in (key, *source_keys):
                     if field in doc:
                         doc[field] = None
-        # A source parent with no parent node to check it by is inside only
-        # when the limit covers the record's whole app.
-        if doc.get("externalParentId") and not doc.get("parentNodeId") and doc.get("connectorId") not in whole_apps:
+        # A source parent with no parent node is inside when the limit covers
+        # the record's whole app, or shares that parent by its id.
+        if (
+            _unplaced_source_parent(doc)
+            and doc.get("connectorId") not in whole_apps
+            and doc["externalParentId"] in outside
+        ):
             doc["externalParentId"] = None
+
+
+def _unplaced_source_parent(doc: dict[str, Any]) -> bool:
+    parent = doc.get("externalParentId")
+    return isinstance(parent, str) and bool(parent) and not doc.get("parentNodeId")
 
 
 def hide_record_parents_unchecked(request: Request, payload: object) -> None:

@@ -270,7 +270,7 @@ export function AgentBuilderSidebar(props: {
             >
               {paletteStructureLocked
                 ? toolsetsOrgCredentialLocked
-                  ? t('agentBuilder.paletteViewOnlyServiceAccount')
+                  ? t('agentBuilder.paletteViewOnlyServiceAgent')
                   : t('agentBuilder.paletteViewerAuthenticateInTools')
                 : inSheet
                   ? t('agentBuilder.paletteTapHint')

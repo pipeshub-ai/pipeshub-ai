@@ -29,10 +29,9 @@ import {
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
-  serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
-import { MailService } from '../services/mail.service';
+import { MailService, mailFailureError } from '../services/mail.service';
 import {
   EntitiesEventProducer,
   Event,
@@ -1869,9 +1868,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1893,9 +1890,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       }
 

@@ -113,6 +113,24 @@ function mayReadCode(user: Record<string, unknown> | undefined): boolean {
   return Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CODE_READ);
 }
 
+/**
+ * The MCP tool scopes to mount for this caller. A token without both
+ * kb:write and kb:upload is offered the read tools only, so an agent is not
+ * shown tools that would answer 403. Session users get every tool, as in
+ * requireScopes; undefined mounts everything.
+ */
+export function mcpToolScopes(
+  user: Record<string, unknown> | undefined,
+): Array<'read'> | undefined {
+  if (!user?.isOAuth) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  const held = Array.isArray(scopes) ? scopes : [];
+  return held.includes(OAuthScopeNames.KB_WRITE) &&
+    held.includes(OAuthScopeNames.KB_UPLOAD)
+    ? undefined
+    : ['read'];
+}
+
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -157,6 +175,7 @@ export const handleMCPRequest =
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        scopes: mcpToolScopes(req.user),
         serverURL,
         getSDK: () =>
           new PipeshubCore({

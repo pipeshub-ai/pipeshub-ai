@@ -8,7 +8,7 @@ interface ErrorToastConfig {
   description: string;
 }
 
-const activeErrorToasts = new Map<ErrorType, string>();
+const activeErrorToasts = new Map<string, string>();
 
 const BUSY_STATUSES = new Set([429, 503, 504]);
 
@@ -65,16 +65,6 @@ export function showErrorToast(error: ProcessedError): void {
   const config = ERROR_TOAST_MAP[error.type];
   if (!config) return;
 
-  // Deduplicate: skip if a toast for this error type is already showing
-  const existingId = activeErrorToasts.get(error.type);
-  if (existingId) {
-    const stillExists = useToastStore.getState().toasts.some(
-      (t) => t.id === existingId && !t.isExiting
-    );
-    if (stillExists) return;
-    activeErrorToasts.delete(error.type);
-  }
-
   // The server's words when they were written for a reader; otherwise the
   // sentence above, which always says what to do next.
   const base = asSentence(getUserFacingErrorMessage(error, config.description));
@@ -82,9 +72,29 @@ export function showErrorToast(error: ProcessedError): void {
   const description = error.requestId
     ? `${base} Reference: ${error.requestId}`
     : base;
-  // Busy or slow is worth a retry, not a "Server error" scare.
-  const titleKey = BUSY_STATUSES.has(error.statusCode ?? 0) ? 'tryAgainShortly' : config.titleKey;
+  // Busy or slow is worth a retry, not a "Server error" scare. A 502 that our
+  // API answered (it carries a reference) means a service it relies on, such as
+  // the mail server, failed; a bare proxy 502 is still a server error.
+  const titleKey = BUSY_STATUSES.has(error.statusCode ?? 0)
+    ? 'tryAgainShortly'
+    : error.statusCode === 502 && error.requestId
+      ? 'connectedServiceProblem'
+      : config.titleKey;
   const title = i18n.t(`errorToast.${titleKey}`);
+
+  // Deduplicate on what the reader sees, not just the error type: a repeat of
+  // the same failure is skipped, but a different one (say, the mail server
+  // rejecting its login while a generic server error is open) still shows.
+  // The reference differs on every request, so it is left out of the key.
+  const dedupeKey = `${title}\n${base}`;
+  const existingId = activeErrorToasts.get(dedupeKey);
+  if (existingId) {
+    const stillExists = useToastStore.getState().toasts.some(
+      (t) => t.id === existingId && !t.isExiting
+    );
+    if (stillExists) return;
+    activeErrorToasts.delete(dedupeKey);
+  }
 
   const id = toast.error(title, {
     description,
@@ -92,5 +102,5 @@ export function showErrorToast(error: ProcessedError): void {
     showCloseButton: true,
   });
 
-  activeErrorToasts.set(error.type, id);
+  activeErrorToasts.set(dedupeKey, id);
 }

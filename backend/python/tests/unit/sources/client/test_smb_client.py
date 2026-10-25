@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.network_share.errors import NetworkShareAuthError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    DirectoryListingError,
+    NetworkShareAuthError,
+)
 from app.sources.client.smb.smb import (
     CONNECTION_TIMEOUT_SECONDS,
     SmbClient,
@@ -180,3 +184,35 @@ def test_a_lookup_that_hangs_times_out() -> None:
     ):
         dial_address("slow.example")
     release.set()
+
+
+def _listing_raising(exc: Exception):  # noqa: ANN202 - a patch context manager
+    fake = MagicMock()
+    fake.scandir.side_effect = exc
+    return fake
+
+
+def test_a_folder_the_account_may_not_list_raises_access_denied() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\10.0.0.5\share\private"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(AccessDeniedError) as raised:
+            client.list_directory("share", "private")
+
+    assert (raised.value.share, raised.value.path) == ("share", "private")
+
+
+def test_another_listing_failure_is_not_access_denied() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = _listing_raising(SMBOSError(NtStatus.STATUS_IO_TIMEOUT, r"\\10.0.0.5\share\slow"))
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(DirectoryListingError) as raised:
+            client.list_directory("share", "slow")
+
+    assert not isinstance(raised.value, AccessDeniedError)

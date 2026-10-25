@@ -92,6 +92,15 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
+
+    // The route schema already forces strings. Checked again so a query
+    // operator ({ "$ne": null }) can never reach the lookup below.
+    if (typeof name !== 'string') {
+      throw new BadRequestError('name must be a string');
+    }
+    if (typeof type !== 'string') {
+      throw new BadRequestError('type must be a string');
+    }
     if (RESERVED_GROUP_NAMES.includes(name) || RESERVED_GROUP_NAMES.includes(type)) {
       throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
     }

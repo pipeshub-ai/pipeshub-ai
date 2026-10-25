@@ -1,0 +1,87 @@
+{
+ "block_groups": [
+  {
+   "index": 0,
+   "type": "table",
+   "parent_index": null,
+   "table": {
+    "rows": 4,
+    "cols": 2
+   }
+  },
+  {
+   "index": 1,
+   "type": "list",
+   "parent_index": null,
+   "table": null
+  }
+ ],
+ "blocks": [
+  {
+   "index": 0,
+   "type": "text",
+   "parent_index": null,
+   "data": "Team"
+  },
+  {
+   "index": 1,
+   "type": "text",
+   "parent_index": null,
+   "data": "Intro paragraph."
+  },
+  {
+   "index": 2,
+   "type": "table_row",
+   "parent_index": 0,
+   "data": {
+    "row_natural_language_text": "Column_1: Name, Column_2: Notes",
+    "row_number": 1
+   }
+  },
+  {
+   "index": 3,
+   "type": "table_row",
+   "parent_index": 0,
+   "data": {
+    "row_natural_language_text": "Column_1: Priya, Column_2: line one   line two",
+    "row_number": 2
+   }
+  },
+  {
+   "index": 4,
+   "type": "table_row",
+   "parent_index": 0,
+   "data": {
+    "row_natural_language_text": "Column_1: Sam, Column_2: use kubectl get pods daily",
+    "row_number": 3
+   }
+  },
+  {
+   "index": 5,
+   "type": "table_row",
+   "parent_index": 0,
+   "data": {
+    "row_natural_language_text": "Column_1: Lee, Column_2: plain",
+    "row_number": 4
+   }
+  },
+  {
+   "index": 6,
+   "type": "text",
+   "parent_index": 1,
+   "data": "first"
+  },
+  {
+   "index": 7,
+   "type": "text",
+   "parent_index": 1,
+   "data": "second"
+  },
+  {
+   "index": 8,
+   "type": "text",
+   "parent_index": null,
+   "data": "After table."
+  }
+ ]
+}

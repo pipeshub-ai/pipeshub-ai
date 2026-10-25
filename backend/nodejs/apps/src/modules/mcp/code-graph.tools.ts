@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { AIServiceCommand } from '../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../libs/enums/http-methods.enum';
+import { integerCheck } from '../../libs/utils/zod-formats';
 
 interface ToolResult {
   [key: string]: unknown;
@@ -24,7 +25,7 @@ export interface ToolRegistrar {
     name: string,
     config: {
       description: string;
-      inputSchema?: z.ZodRawShape;
+      inputSchema?: z.ZodRawShape | z.ZodObject;
       annotations?: Record<string, unknown>;
     },
     handler: (args: Record<string, unknown>) => Promise<ToolResult>,
@@ -186,7 +187,38 @@ export async function callerHasCodeRepos(
   }
 }
 
+/**
+ * Registers the tools with the server. Each tool's input is published as a
+ * closed object (`additionalProperties: false`), as it was under zod 3; zod 4
+ * only writes that for output schemas. Unknown arguments are still dropped
+ * rather than refused.
+ */
 export function registerCodeGraphTools(
+  server: ToolRegistrar,
+  deps: CodeGraphToolDeps,
+): void {
+  registerCodeGraphToolDefinitions(
+    {
+      registerTool: (name, config, handler) =>
+        server.registerTool(
+          name,
+          config.inputSchema
+            ? {
+                ...config,
+                inputSchema: z
+                  .object(config.inputSchema as z.ZodRawShape)
+                  .meta({ additionalProperties: false }),
+              }
+            : config,
+          handler,
+        ),
+    },
+    deps,
+  );
+}
+
+/** The tool definitions, with each input as a plain shape. */
+export function registerCodeGraphToolDefinitions(
   server: ToolRegistrar,
   deps: CodeGraphToolDeps,
 ): void {
@@ -263,7 +295,14 @@ export function registerCodeGraphTools(
           .default(1)
           .describe('Hops to walk.'),
         limit: z.number().int().min(1).max(200).optional(),
-        offset: z.number().int().min(0).default(0),
+        // zod 4 would publish an `int()` without a maximum as capped at 2^53; keep the
+        // published schema as it was, a plain non-negative integer.
+        offset: z
+          .number()
+          .check(integerCheck())
+          .min(0)
+          .default(0)
+          .meta({ type: 'integer' }),
         include_tests: includeTests,
       },
       annotations: READ_ONLY,

@@ -1,6 +1,7 @@
 """Unit tests for the Drupal Wiki client."""
 
 import logging
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -92,7 +93,10 @@ class TestDrupalWikiRESTClientViaToken:
         data_source = DrupalWikiDataSource(
             DrupalWikiClient.build_with_config(DrupalWikiTokenConfig(base_url=BASE_URL, token="pat:t"), policy)
         )
-        with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", wiki):
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", wiki), patch(
+            "socket.getaddrinfo", return_value=public
+        ), patch("urllib.request.getproxies", return_value={}):
             await data_source.list_users(size=1)
             await data_source.list_spaces(size=1)
             await data_source.list_spaces(page=1, size=1)

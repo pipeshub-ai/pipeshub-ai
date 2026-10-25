@@ -1371,3 +1371,34 @@ class TestWebStoragePathCredentials:
         record = _Record(connector_name="WEB", weburl="https://example.com:8443/a")
         path = await build_hierarchical_storage_path(record, _make_graph_provider())
         assert path == "records/conn-1/example.com_8443/a"
+
+
+class TestRecordsReadBackFromTheGraph:
+    """The indexer files content from the record it was handed; later moves and
+    checks read the record back from the graph. Both must name the same folder."""
+
+    @staticmethod
+    def _record_doc(record_type: str) -> dict:
+        return {
+            "_key": "rec-1", "orgId": "org-1", "recordName": "rag link", "recordType": record_type,
+            "externalRecordId": "ext-1", "externalGroupId": "team-1", "recordGroupId": "grp-team",
+            "version": 0, "origin": "CONNECTOR", "connectorName": "LINEAR", "connectorId": "conn-1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("record_type", ["LINK", "PROJECT"])
+    async def test_a_typed_record_read_back_keeps_its_group_folder(self, record_type: str) -> None:
+        from app.models.entities import LinkRecord, ProjectRecord
+
+        typed = {"LINK": (LinkRecord, {"url": "https://example.com", "isPublic": "true"}),
+                 "PROJECT": (ProjectRecord, {})}
+        cls, type_doc = typed[record_type]
+        record = cls.from_arango_record(type_doc, self._record_doc(record_type))
+        gp = _make_graph_provider()
+        gp.get_record_group_path = AsyncMock(return_value=["frontend"])
+        gp.get_record_path_segments = AsyncMock(return_value=["New rag project", "rag link"])
+
+        path = await build_hierarchical_storage_path(record, gp)
+
+        assert path == "records/conn-1/frontend/New rag project/rag link"
