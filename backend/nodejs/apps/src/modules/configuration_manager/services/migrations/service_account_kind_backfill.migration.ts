@@ -106,7 +106,11 @@ export class ServiceAccountKindBackfillMigration {
           'More service accounts than one staged document can hold; nothing staged',
           { limit: MAX_STAGED_ACCOUNTS },
         );
-        return { accountsFound: userIds.length, accountsStaged: 0, skipped: false };
+        return {
+          accountsFound: userIds.length,
+          accountsStaged: 0,
+          skipped: false,
+        };
       }
     }
 
@@ -117,7 +121,11 @@ export class ServiceAccountKindBackfillMigration {
     // Staging the same list again would only churn the key and its cache
     // invalidation; the connector service has not answered either way yet.
     if (this.sameList(state?.userIds, userIds)) {
-      return { accountsFound: userIds.length, accountsStaged: 0, skipped: true };
+      return {
+        accountsFound: userIds.length,
+        accountsStaged: 0,
+        skipped: true,
+      };
     }
 
     await this.writeState({
@@ -134,7 +142,7 @@ export class ServiceAccountKindBackfillMigration {
   }
 
   private sameList(stored: string[] | undefined, found: string[]): boolean {
-    if (!stored || stored.length !== found.length) return false;
+    if (stored?.length !== found.length) return false;
     const have = new Set(stored);
     return found.every((id) => have.has(id));
   }
@@ -144,8 +152,8 @@ export class ServiceAccountKindBackfillMigration {
       const raw = await this.kvStore.get<string>(
         configPaths.serviceAccountKindBackfill,
       );
-      if (!raw) return null;
-      const ciphertext: string = JSON.parse(raw);
+      if (raw === null || raw === '') return null;
+      const ciphertext = JSON.parse(raw) as string;
       const plaintext = EncryptionService.getInstance(
         this.encryptionAlgorithm,
         this.encryptionSecretKey,
