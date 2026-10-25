@@ -968,6 +968,13 @@ const createAgentBodySchema = z
     tags: z.array(z.string().max(100)).max(50).optional(),
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
+    /**
+     * The service account this agent searches knowledge as. Carries the
+     * account's `userId`, which is what the service accounts API returns, so
+     * the value a picker sends back is the one it was given. Only meaningful
+     * on a service agent; the Python side refuses it otherwise.
+     */
+    serviceAccountUserId: z.string().trim().min(1).max(128).optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
@@ -1008,6 +1015,14 @@ const updateAgentBodySchema = z
     tags: z.array(z.string().max(100)).max(50).optional(),
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
+    /**
+     * The service account this agent searches knowledge as. Nullable, unlike
+     * on create: sending `null` is how a binding is cleared and the agent goes
+     * back to searching as its creator.
+     */
+    serviceAccountUserId: z
+      .union([z.null(), z.string().trim().min(1).max(128)])
+      .optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),

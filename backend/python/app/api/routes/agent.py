@@ -491,26 +491,48 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+def _is_live_identity(node: dict[str, Any]) -> bool:
+    """False once an account has been removed.
+
+    Soft-delete leaves the user node and clears `isActive`
+    (`entity.py` `_handle_user_deleted`), so this is the only signal on the
+    graph that an account is gone. Absence is read as live: nodes written
+    before the field was always set carry no `isActive`, and treating those as
+    deleted would cut off agents that work today.
+    """
+    return node.get("isActive", True) is not False
+
+
 async def _resolve_service_account_binding(
     service_account_user_id: str,
     graph_provider: IGraphDBProvider,
     caller_org_id: str,
 ) -> str:
-    """The user node key for a service account an agent is being bound to.
+    """The `userId` of a service account an agent is being bound to.
 
     Takes the account's `userId` — what the service-accounts API hands the
-    screen — and returns the key, because that is how an agent already stores
-    the identity it runs as (`createdBy`).
+    screen — and gives the same `userId` back, so what is stored is what a
+    picker sends and what it reads afterwards. The graph node's own key is
+    deliberately not used: it is minted locally and means nothing to the
+    service-accounts API, so a screen could neither send it nor match an
+    existing binding against the list it shows.
 
     Refuses anything that is not a live service account of the caller's own
-    organisation. `kind` is the only thing trusted for that. It is told to the
-    graph by user management rather than worked out here, and without it this
-    would have to fall back to the reserved address, which would let an
-    administrator aim an agent at a colleague instead — the whole point of
-    binding is to stop one person's reach being lent out.
+    organisation. `kind` is the only thing trusted for "is this a service
+    account". It is told to the graph by user management rather than worked
+    out here, and without it this would have to fall back to the reserved
+    address, which would let an administrator aim an agent at a colleague
+    instead — the whole point of binding is to stop one person's reach being
+    lent out.
 
-    The same 400 covers missing, wrong-org and not-a-service-account, so this
-    cannot be used to find out which user ids exist in another organisation.
+    A deleted account is refused too. Soft-delete leaves the node in place and
+    only clears `isActive` (`entity.py` `_handle_user_deleted`), so `kind`
+    alone would still accept it and an agent would keep searching with the
+    reach of an account an administrator has removed.
+
+    The same 400 covers missing, wrong-org, not-a-service-account and deleted,
+    so this cannot be used to find out which user ids exist in another
+    organisation.
     """
     wanted = str(service_account_user_id or "").strip()
     if not wanted:
@@ -528,18 +550,14 @@ async def _resolve_service_account_binding(
         or not caller_org
         or account_org != caller_org
         or (account or {}).get("kind") != "service"
+        or not _is_live_identity(account)
     ):
         raise InvalidRequestError(
             "That service account was not found in this organisation. Choose one "
             "from Workspace \u2192 Service accounts, or create one there first."
         )
 
-    key = account.get("_key") or account.get("id")
-    if not key:
-        raise InvalidRequestError(
-            "That service account is not usable yet. Try again in a moment."
-        )
-    return str(key)
+    return wanted
 
 
 async def _enrich_user_info_for_service_account_agent_chat(
@@ -570,18 +588,25 @@ async def _enrich_user_info_for_service_account_agent_chat(
     Either way the identity must belong to the caller's own organisation. This
     path skips check_agent_permission, so that is checked here instead.
     """
-    binding_key = agent.get("serviceAccountUserId")
-    identity_key = binding_key or agent.get("createdBy")
-    bound = bool(binding_key)
+    binding_user_id = agent.get("serviceAccountUserId")
+    bound = bool(binding_user_id)
     what = "service account" if bound else "creator"
+    identity_key = binding_user_id or agent.get("createdBy")
 
     if not identity_key:
         raise HTTPException(
             status_code=500,
             detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
         )
-    identity_doc = await graph_provider.get_document(
-        str(identity_key), CollectionNames.USERS.value
+    # A binding stores the account's `userId`, which is what the
+    # service-accounts API speaks; `createdBy` stores the graph node's own key.
+    # Two different identifiers, so two different lookups.
+    identity_doc = (
+        await graph_provider.get_user_by_user_id(str(identity_key), raise_on_error=True)
+        if bound
+        else await graph_provider.get_document(
+            str(identity_key), CollectionNames.USERS.value
+        )
     )
     if not identity_doc:
         raise HTTPException(
@@ -622,6 +647,25 @@ async def _enrich_user_info_for_service_account_agent_chat(
             detail=(
                 "This agent is bound to something that is no longer a service "
                 "account. An administrator needs to point it at one again."
+            ),
+        )
+    # Checked on every run, not only when the binding was set: soft-delete
+    # leaves the node and only clears `isActive`, so without this an agent
+    # would go on searching with the reach of an account an administrator has
+    # removed. Falling back to the creator would be worse for the same reason
+    # as above — it widens the agent's reach at the moment the narrower
+    # identity stopped being allowed.
+    if bound and not _is_live_identity(identity_doc):
+        logger.error(
+            "Agent %s is bound to %s, which has been deleted",
+            agent.get("_key"),
+            identity_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "This agent is bound to a service account that has been "
+                "deleted. An administrator needs to point it at another one."
             ),
         )
     synthetic = {

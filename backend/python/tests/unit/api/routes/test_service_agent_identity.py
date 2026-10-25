@@ -52,13 +52,15 @@ class FakeGraph:
     async def get_document(self, key: str, _collection: str) -> dict[str, Any] | None:
         return self._by_key.get(key)
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False):
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False,
+    ) -> dict[str, Any] | None:
         if self.raised:
             raise RuntimeError("graph unavailable")
         return self._by_user_id.get(user_id)
 
 
-def agent(**overrides: Any) -> dict[str, Any]:
+def agent(**overrides: object) -> dict[str, Any]:
     base = {"_key": "a-1", "isServiceAccount": True, "createdBy": CREATOR["_key"]}
     base.update(overrides)
     return base
@@ -70,10 +72,32 @@ LOG = logging.getLogger("test")
 # --- resolving a binding an administrator is setting -------------------------
 
 @pytest.mark.asyncio
-async def test_binding_resolves_a_service_account_to_its_node_key() -> None:
+async def test_binding_gives_back_the_same_user_id_it_was_given() -> None:
+    """What a picker sends is what gets stored, so what it reads back matches
+    the list it chose from. The node's own key would match nothing there."""
     graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
-    key = await _resolve_service_account_binding(ACCOUNT["userId"], graph, ORG)
-    assert key == ACCOUNT["_key"]
+    bound = await _resolve_service_account_binding(ACCOUNT["userId"], graph, ORG)
+    assert bound == ACCOUNT["userId"]
+    assert bound != ACCOUNT["_key"]
+
+
+@pytest.mark.asyncio
+async def test_binding_refuses_a_deleted_service_account() -> None:
+    """Soft-delete leaves the node and only clears isActive, so kind alone
+    would still accept it."""
+    deleted = {**ACCOUNT, "isActive": False}
+    graph = FakeGraph(by_user_id={deleted["userId"]: deleted})
+    with pytest.raises(InvalidRequestError):
+        await _resolve_service_account_binding(deleted["userId"], graph, ORG)
+
+
+@pytest.mark.asyncio
+async def test_binding_accepts_a_node_that_predates_is_active() -> None:
+    """Absence is read as live; treating it as deleted would refuse accounts
+    that work today."""
+    older = dict(ACCOUNT)
+    graph = FakeGraph(by_user_id={older["userId"]: older})
+    assert await _resolve_service_account_binding(older["userId"], graph, ORG) == older["userId"]
 
 
 @pytest.mark.asyncio
@@ -122,11 +146,42 @@ async def test_binding_lets_a_database_failure_surface() -> None:
 
 @pytest.mark.asyncio
 async def test_bound_agent_searches_as_the_service_account() -> None:
-    graph = FakeGraph(by_key={CREATOR["_key"]: CREATOR, ACCOUNT["_key"]: ACCOUNT})
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={ACCOUNT["userId"]: ACCOUNT},
+    )
     info = await _enrich_user_info_for_service_account_agent_chat(
-        agent(serviceAccountUserId=ACCOUNT["_key"]), graph, LOG, ORG,
+        agent(serviceAccountUserId=ACCOUNT["userId"]), graph, LOG, ORG,
     )
     assert info["userId"] == ACCOUNT["userId"]
+
+
+@pytest.mark.asyncio
+async def test_a_binding_stored_as_a_user_id_is_looked_up_as_one() -> None:
+    """The creator is a node key and a binding is a userId: two identifiers,
+    so two different lookups. Reading a binding by key finds nothing."""
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR, ACCOUNT["_key"]: ACCOUNT}, by_user_id={},
+    )
+    with pytest.raises(HTTPException) as caught:
+        await _enrich_user_info_for_service_account_agent_chat(
+            agent(serviceAccountUserId=ACCOUNT["userId"]), graph, LOG, ORG,
+        )
+    assert caught.value.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_a_binding_to_a_deleted_account_is_refused_on_every_chat() -> None:
+    """Checked on each run, not only when it was set: an account can be
+    deleted long after an administrator bound it."""
+    deleted = {**ACCOUNT, "isActive": False}
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={deleted["userId"]: deleted},
+    )
+    with pytest.raises(HTTPException) as caught:
+        await _enrich_user_info_for_service_account_agent_chat(
+            agent(serviceAccountUserId=deleted["userId"]), graph, LOG, ORG,
+        )
+    assert caught.value.status_code == 500
 
 
 @pytest.mark.asyncio
@@ -145,10 +200,12 @@ async def test_a_binding_that_stopped_being_a_service_account_is_refused() -> No
     """Not quietly used, and not fallen back from: falling back to the creator
     would widen the agent's reach exactly when the narrow identity broke."""
     demoted = {**ACCOUNT, "kind": "human"}
-    graph = FakeGraph(by_key={CREATOR["_key"]: CREATOR, demoted["_key"]: demoted})
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={demoted["userId"]: demoted},
+    )
     with pytest.raises(HTTPException) as caught:
         await _enrich_user_info_for_service_account_agent_chat(
-            agent(serviceAccountUserId=demoted["_key"]), graph, LOG, ORG,
+            agent(serviceAccountUserId=demoted["userId"]), graph, LOG, ORG,
         )
     assert caught.value.status_code == 500
 
@@ -157,10 +214,12 @@ async def test_a_binding_that_stopped_being_a_service_account_is_refused() -> No
 async def test_a_binding_in_another_org_is_refused() -> None:
     """Checked again on every run: an account can be moved after it was bound."""
     foreign = {**ACCOUNT, "orgId": OTHER_ORG}
-    graph = FakeGraph(by_key={CREATOR["_key"]: CREATOR, foreign["_key"]: foreign})
+    graph = FakeGraph(
+        by_key={CREATOR["_key"]: CREATOR}, by_user_id={foreign["userId"]: foreign},
+    )
     with pytest.raises(AgentNotFoundError):
         await _enrich_user_info_for_service_account_agent_chat(
-            agent(serviceAccountUserId=foreign["_key"]), graph, LOG, ORG,
+            agent(serviceAccountUserId=foreign["userId"]), graph, LOG, ORG,
         )
 
 
@@ -169,7 +228,7 @@ async def test_a_binding_that_no_longer_exists_is_refused() -> None:
     graph = FakeGraph(by_key={CREATOR["_key"]: CREATOR})
     with pytest.raises(HTTPException) as caught:
         await _enrich_user_info_for_service_account_agent_chat(
-            agent(serviceAccountUserId="k-gone"), graph, LOG, ORG,
+            agent(serviceAccountUserId="u-gone"), graph, LOG, ORG,
         )
     assert caught.value.status_code == 500
 
