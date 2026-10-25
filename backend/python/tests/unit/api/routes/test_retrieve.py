@@ -170,6 +170,13 @@ class TestRetrieve:
         assert (body["chunks"], body["incomplete"]) == ([], True)
 
     @pytest.mark.asyncio
+    async def test_the_matching_passage_survives_the_cut_ahead_of_same_score_neighbours(self) -> None:
+        before, match = _hit("r1", 3, "context", 0.8), _hit("r1", 4, "the match", 0.8)
+        before["distanceFromMatch"], match["distanceFromMatch"] = 1, 0
+        _, body, _, _ = await _retrieve(RetrieveQuery(query="q", limit=1), _results(before, match))
+        assert [c["text"] for c in body["chunks"]] == ["the match"]
+
+    @pytest.mark.asyncio
     async def test_reports_an_incomplete_search(self) -> None:
         _, body, _, _ = await _retrieve(
             RetrieveQuery(query="q"), _results(_hit("r1", 0, "x"), searchIncomplete="some sources timed out"),
