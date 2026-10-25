@@ -26,6 +26,12 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.mariadb.mariadb.vetted_addresses", AsyncMock(return_value=[]))
+
+
 def _import_real_driver() -> ModuleType:
     # tests/unit/sources/client/test_mariadb_client.py swaps a MagicMock into
     # sys.modules["mariadb"] and into the client module for the whole session.

@@ -844,10 +844,10 @@ components:
       description: |
         A file inside an artifact set. Only these are accepted: `manifest.json`,
         `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
-        `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `properties.json`, `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
         `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
         Anything else, including `..`, a leading `/` or a backslash, is refused.
-      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
     ArtifactFileUrl:
       type: object
       required:
@@ -11248,6 +11248,13 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        block_group_index:
+          type: integer
+          nullable: true
+          description: |
+            Set on each passage of a section brought back whole (see `distanceFromMatch`): the
+            index of that section in its record, so passages of two sections of one record can be
+            told apart. Absent on a hit that matched directly.
         timelinePeriod:
           type: integer
           minimum: 0

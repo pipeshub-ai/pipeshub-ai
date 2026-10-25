@@ -108,13 +108,27 @@ class GraphClassifyIO(RecordStageIO):
         self, job: StageJob, metadata: SemanticMetadata, *, still_current: Callable[[], Awaitable[bool]] | None = None
     ) -> None:
         classification = metadata.model_dump(mode="json")
+        owner = job.record_ids[0]
         await self._write_section(
             job,
-            job.record_ids[0],
+            owner,
             lambda current: with_classification(current, classification),
             still_current=still_current,
+            # Before the classification goes back: once the stored record has it, the job counts
+            # as done, so a summary point that failed after that would stay missing.
+            before=lambda: self._restore_summary_point(owner, metadata),
             written=lambda: self._write_sidecar(job, metadata),
         )
+
+    async def _restore_summary_point(self, record_id: str, metadata: SemanticMetadata) -> None:
+        # The re-index of unchanged content that left the stored record without its
+        # classification also deleted the record's vectors, its summary point among them.
+        # Put that back from the kept classification too; the graph taxonomy survives a re-index.
+        ctx = await self._context(record_id, None)
+        if ctx is None:
+            raise RevisionSuperseded(record_id)
+        ctx.record.semantic_metadata = metadata
+        await self._sink.write_summary_point(ctx)
 
     async def _write_sidecar(self, job: StageJob, metadata: SemanticMetadata) -> None:
         # Under the lease, right after the stored record: the revision's sidecar never says

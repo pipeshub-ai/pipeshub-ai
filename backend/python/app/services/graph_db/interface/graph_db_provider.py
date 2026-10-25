@@ -2441,6 +2441,36 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def get_record_content_revs(
         self,
         record_ids: list[str],
@@ -4334,8 +4364,8 @@ class IGraphDBProvider(ABC):
         over to one of these holders. A trashed holder counts: a restore needs
         the content, and the trash purge releases it later. VRIDs nobody holds
         are absent from the result. Each holder carries ``id``, ``connectorId``,
-        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
-        ``isDeleted`` (a bool).
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.

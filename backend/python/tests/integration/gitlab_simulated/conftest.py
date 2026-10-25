@@ -18,6 +18,7 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 os.environ.setdefault("SECRET_KEY", "gitlab-sim-test-secret-key-0123456789abcdef")
 
 from tests.integration.gitlab_simulated.glsim.model import Behaviour  # noqa: E402
+from tests.integration.gitlab_simulated.helpers import allow_the_simulator  # noqa: E402
 from tests.integration.gitlab_simulated.world import World, acme  # noqa: E402
 
 
@@ -30,6 +31,7 @@ def pytest_collection_modifyitems(items) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request, monkeypatch) -> AsyncIterator[World]:
+    allow_the_simulator(monkeypatch)
     marker = request.node.get_closest_marker("behaviour")
     behaviour = Behaviour(**marker.kwargs) if marker else Behaviour()
     personal = request.node.get_closest_marker("personal") is not None

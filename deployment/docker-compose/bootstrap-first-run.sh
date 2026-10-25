@@ -255,9 +255,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Six-scope agent preset (stock MCP_SCOPES). Do not omit `scopes` on create —
-# the API then grants the full mcpScopes set.
-AGENT_SCOPES='["conversation:chat","semantic:write","kb:read","user:read","connector:read","code:read"]'
+# The agent preset (AgentMcpScopes, all in the stock MCP_SCOPES). Do not omit
+# `scopes` on create — the API then grants the full mcpScopes set.
+AGENT_SCOPES='["conversation:chat","semantic:write","kb:read","kb:write","kb:upload","user:read","connector:read","code:read"]'
 
 json_escape() {
   # Value through the environment, not argv — /proc/<pid>/cmdline is world-readable.

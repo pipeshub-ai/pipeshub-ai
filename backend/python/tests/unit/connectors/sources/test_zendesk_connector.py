@@ -2868,7 +2868,7 @@ class TestStreamRecord:
         def factory(**kwargs):
             return real_client(transport=httpx.MockTransport(handler), **kwargs)
 
-        return patch("app.connectors.sources.zendesk.connector.httpx.AsyncClient", side_effect=factory)
+        return patch("app.connectors.sources.zendesk.connector.guarded_async_client", side_effect=factory)
 
     async def _download(self, zendesk_connector, url, status=200, body=b"filebytes"):
         datasource = _ready(zendesk_connector)

@@ -685,6 +685,32 @@ class TestStageEnrichment:
         orch.graphdb.write_taxonomy.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_the_summary_point_alone_is_written_for_a_restored_classification(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_summary_point(ctx)
+
+        orch.vector_store.index_record_summary.assert_awaited_once()
+        orch.graphdb.write_taxonomy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_summary_point_without_a_summary(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        for metadata in (None, SemanticMetadata(summary="  ")):
+            ctx = _make_ctx()
+            ctx.record.semantic_metadata = metadata
+            await orch.write_summary_point(ctx)
+
+        orch.vector_store.index_record_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_summary_embedding_time_is_counted_once(self) -> None:
         """index_record_summary times its own embed and upsert steps, so a stage
         wrapped around the whole call would count that time twice."""

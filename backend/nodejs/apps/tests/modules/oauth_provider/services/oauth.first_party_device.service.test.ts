@@ -54,12 +54,64 @@ describe('FirstPartyDeviceAppService', () => {
   it('should return the existing client_id without creating another app', async () => {
     sinon.stub(OAuthApp, 'findOne').resolves({
       clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
+      allowedScopes: [...AgentMcpScopes],
     } as any)
     const create = sinon.stub(OAuthApp, 'create')
+    const update = sinon.stub(OAuthApp, 'updateOne')
 
     const clientId = await service.getOrCreate()
     expect(clientId).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
     expect(create.called).to.be.false
+    expect(update.called).to.be.false
+  })
+
+  // An upgraded instance already has the app, stored with the preset of the
+  // release that created it; device logins only get scopes on that row.
+  it('adds preset scopes an existing app was stored without, and removes none', async () => {
+    const appId = new Types.ObjectId()
+    const oldPreset = AgentMcpScopes.filter((s) => s !== 'kb:write' && s !== 'kb:upload')
+    sinon.stub(OAuthApp, 'findOne').resolves({
+      _id: appId,
+      clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
+      allowedScopes: [...oldPreset, 'custom:kept'],
+    } as any)
+    const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
+
+    await service.getOrCreate()
+    expect(update.calledOnce).to.be.true
+    expect(update.firstCall.args).to.deep.equal([
+      { _id: appId },
+      { $addToSet: { allowedScopes: { $each: ['kb:write', 'kb:upload'] } } },
+    ])
+  })
+
+  it('does not add a preset scope the instance MCP_SCOPES leaves out', async () => {
+    service = new FirstPartyDeviceAppService(
+      createMockLogger(),
+      mockEncryptionService,
+      { getAllowedScopeNamesForRole: sinon.stub().returns([...AgentMcpScopes]) } as any,
+      { mcpScopes: AgentMcpScopes.filter((s) => s !== 'kb:write' && s !== 'kb:upload') } as any,
+    )
+    sinon.stub(OAuthApp, 'findOne').resolves({
+      _id: new Types.ObjectId(),
+      clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
+      allowedScopes: AgentMcpScopes.filter((s) => s !== 'kb:write' && s !== 'kb:upload'),
+    } as any)
+    const update = sinon.stub(OAuthApp, 'updateOne')
+
+    await service.getOrCreate()
+    expect(update.called).to.be.false
+  })
+
+  it('still returns the client_id when the scope update fails', async () => {
+    sinon.stub(OAuthApp, 'findOne').resolves({
+      _id: new Types.ObjectId(),
+      clientId: FIRST_PARTY_DEVICE_CLIENT_ID,
+      allowedScopes: [],
+    } as any)
+    sinon.stub(OAuthApp, 'updateOne').rejects(new Error('mongo down'))
+
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
   })
 
   it('should create a public device-only app with the agent preset', async () => {

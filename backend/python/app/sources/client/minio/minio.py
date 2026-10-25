@@ -1,12 +1,17 @@
+import asyncio
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from aiobotocore.config import AioConfig
 from aiobotocore.session import AioSession
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.sources.web.address_guard import GuardedResolver
+from app.sources.client.http.address_guard import check_url_allowed
 from app.sources.client.iclient import IClient
 from app.sources.client.s3.s3 import create_aio_session
+from app.utils.url_fetcher import private_addresses_blocked
 
 
 class MinIORESTClientViaAccessKey:
@@ -63,10 +68,15 @@ class MinIORESTClientViaAccessKey:
         The verify parameter controls SSL certificate verification.
         """
         session = self.get_session()
+        allow_private = not private_addresses_blocked()
+        # A literal address never reaches the resolver, so the URL is checked here; the resolver
+        # checks every name it looks up and the connection goes to that answer.
+        await asyncio.to_thread(check_url_allowed, self.endpoint_url, allow_private=allow_private)
         return session.create_client(
             's3',
             endpoint_url=self.endpoint_url,
-            verify=self.verify_ssl
+            verify=self.verify_ssl,
+            config=AioConfig(connector_args={"resolver": GuardedResolver(allow_private=allow_private)}),
         )
 
     def get_bucket_name(self) -> Optional[str]:

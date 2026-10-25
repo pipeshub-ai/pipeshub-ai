@@ -27,7 +27,7 @@ from app.modules.artifacts.models import ArtifactRef, Manifest, WrittenRevision
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.transformers import sink_orchestrator as sink_module
-from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS
+from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, STORED_REV
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
@@ -178,6 +178,69 @@ class TestWhenItWrites:
         args = orch.artifact_writer.write_revision.await_args
         assert args.args[1:4] == ("org-1", "vr-1", REV)
         assert args.kwargs["reconciliation_metadata"] == reconciliation
+
+    @pytest.mark.parametrize(("content_rev", "expected"), [(REV, REV), (None, None)])
+    async def test_the_stored_record_write_is_told_its_revision(
+        self, content_rev: str | None, expected: str | None,
+    ) -> None:
+        graph = _graph(contentRev=content_rev)
+        orch = _orchestrator(graph)
+        seen: list[Any] = []
+        orch.blob_storage.apply = AsyncMock(side_effect=lambda ctx: seen.append(dict(ctx.settings)))
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert seen[0][STORED_REV] == expected
+        if content_rev:
+            # Recorded before the pointer moves, so a served set is always the stored revision.
+            assert graph.mapping["currentRev"] == REV
+
+    @pytest.mark.parametrize("mapping_write_fails", [False, True])
+    async def test_the_vectors_move_only_after_the_stored_revision_is_recorded(
+        self, mapping_write_fails: bool,
+    ) -> None:
+        """Between the stored record's upload and its mapping write the mapping still says the old
+        revision for both ``storedRev`` and ``currentRev``, so the old set is served. That is the
+        revision the vectors hold until then: they are written after the blob write, and not at all
+        when the mapping write fails. Clearing ``storedRev`` first would serve the new stored
+        record against the old vectors instead."""
+        old = {"id": "vr-1", "record_doc_id": "doc-1", "currentRev": OLD_REV, "storedRev": OLD_REV,
+               "manifestDocId": "doc-old"}
+        graph = _graph(dict(old))
+        orch = _orchestrator(graph)
+        seen_between: list[tuple[dict[str, Any], bool]] = []
+
+        async def blob_write(ctx: TransformContext) -> None:
+            # The new revision is uploaded; the mapping write comes next.
+            seen_between.append((dict(graph.mapping or {}), orch.vector_store.apply.await_count > 0))
+            if mapping_write_fails:
+                raise RuntimeError("Failed to store virtual record mapping")
+            graph.mapping = {**(graph.mapping or {}), "storedRev": ctx.settings[STORED_REV]}
+
+        orch.blob_storage.apply = AsyncMock(side_effect=blob_write)
+
+        if mapping_write_fails:
+            with pytest.raises(RuntimeError):
+                await _index(orch, TransformContext(record=_record()))
+        else:
+            await _index(orch, TransformContext(record=_record()))
+
+        assert seen_between == [(old, False)]
+        if mapping_write_fails:
+            orch.vector_store.apply.assert_not_awaited()
+            assert graph.mapping == old
+        else:
+            orch.vector_store.apply.assert_awaited_once()
+            assert (graph.mapping["storedRev"], graph.mapping["currentRev"]) == (REV, REV)
+
+    async def test_a_re_embed_tells_no_revision(self) -> None:
+        orch = _orchestrator(_graph())
+        ctx = TransformContext(record=_record(), settings={"skip_blob": True})
+
+        await _index(orch, ctx)
+
+        orch.blob_storage.apply.assert_not_awaited()
+        assert STORED_REV not in ctx.settings
 
     async def test_the_stored_copys_identity_goes_to_the_writer(self) -> None:
         orch = _orchestrator(_graph())
