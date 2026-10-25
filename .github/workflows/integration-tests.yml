@@ -770,8 +770,12 @@ jobs:
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
           # killer means the runner ran out; a simulator hitting its own cap logs
           # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
-          sudo -n dmesg -T 2>/dev/null | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
-            > ../../integration-tests/reports/docker-logs/neo4j/_oom.txt || true
+          if kernel_log=$(sudo -n dmesg -T 2>/dev/null); then
+            printf '%s\n' "$kernel_log" | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
+              > ../../integration-tests/reports/docker-logs/neo4j/_oom.txt || true
+          else
+            echo "::warning::Could not read the kernel log, so this run cannot tell whether the runner ran out of memory"
+          fi
           if [ -s ../../integration-tests/reports/docker-logs/neo4j/_oom.txt ]; then
             echo "::warning::The runner ran out of memory; the kernel killed these processes:"
             cat ../../integration-tests/reports/docker-logs/neo4j/_oom.txt
@@ -939,8 +943,12 @@ jobs:
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
           # killer means the runner ran out; a simulator hitting its own cap logs
           # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
-          sudo -n dmesg -T 2>/dev/null | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
-            > ../../integration-tests/reports/docker-logs/arango/_oom.txt || true
+          if kernel_log=$(sudo -n dmesg -T 2>/dev/null); then
+            printf '%s\n' "$kernel_log" | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
+              > ../../integration-tests/reports/docker-logs/arango/_oom.txt || true
+          else
+            echo "::warning::Could not read the kernel log, so this run cannot tell whether the runner ran out of memory"
+          fi
           if [ -s ../../integration-tests/reports/docker-logs/arango/_oom.txt ]; then
             echo "::warning::The runner ran out of memory; the kernel killed these processes:"
             cat ../../integration-tests/reports/docker-logs/arango/_oom.txt
