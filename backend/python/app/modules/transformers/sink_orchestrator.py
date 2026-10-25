@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
     ProgressStatus,
@@ -13,10 +14,12 @@ from app.models.blocks import (
     BlockType,
     GroupSubType,
 )
-from app.models.entities import Record, RecordGroupType
+from app.models.entities import Record, RecordGroupType, TicketRecord
+from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.transformers.blob_storage import (
     STORED_RECORD_FIELDS,
     STORED_REV,
@@ -511,6 +514,7 @@ class SinkOrchestrator(Transformer):
         reconciliation = (
             ctx.reconciliation_context.new_metadata if ctx.reconciliation_context else None
         )
+        properties = await self._provided_properties(record, record_doc)
         try:
             written = await self.artifact_writer.write_revision(
                 record,
@@ -521,6 +525,7 @@ class SinkOrchestrator(Transformer):
                 semantic_metadata=record.semantic_metadata,
                 reconciliation_metadata=reconciliation or None,
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
+                properties=properties,
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -533,6 +538,33 @@ class SinkOrchestrator(Transformer):
             return None
         record_artifact_write("written" if written is not None else "unavailable")
         return written
+
+    async def _provided_properties(
+        self, record: Record, record_doc: dict[str, Any]
+    ) -> RecordMetadata | None:
+        """The values a ticket's source provided, for ``properties.json``.
+
+        Indexing builds a plain ``Record`` from the record document; a ticket's
+        fields are in its tickets document, read here only for a record whose
+        type is stored there. Never fails the write: without them the set is
+        stored without ``properties.json``.
+        """
+        if isinstance(record, TicketRecord):
+            return ticket_metadata(record)
+        tickets = CollectionNames.TICKETS.value
+        if RECORD_TYPE_COLLECTION_MAPPING.get(record_doc.get("recordType")) != tickets:
+            return None
+        try:
+            ticket_doc = await self.graph_provider.get_document(record.id, tickets)
+            if ticket_doc is None:
+                return None
+            return ticket_metadata(TicketRecord.from_arango_record(ticket_doc, record_doc))
+        except Exception as exc:
+            self.logger.warning(
+                "Properties of ticket %s not read; its artifact set goes without them: %s",
+                record.id, type(exc).__name__,
+            )
+            return None
 
     async def _flip_revision_pointer(self, record: Record, written: WrittenRevision) -> None:
         """Point the virtual record's mapping at the revision just written.

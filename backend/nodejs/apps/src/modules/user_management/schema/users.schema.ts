@@ -96,14 +96,10 @@ export const userSchema = new Schema<User>(
   { timestamps: true },
 );
 
-userSchema.pre<User>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('User');
-    }
-    next();
-  } catch (error) {
-    next(error as Error);
+userSchema.pre<User>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('User');
   }
 });
 

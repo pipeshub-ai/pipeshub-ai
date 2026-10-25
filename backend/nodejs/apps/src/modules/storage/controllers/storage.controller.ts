@@ -1950,7 +1950,10 @@ export class StorageController {
         return true;
       }
       try {
-        await DocumentModel.updateOne({ _id: doc._id }, { $set: extraSet });
+        await DocumentModel.updateOne(
+          { _id: doc._id as mongoose.Types.ObjectId },
+          { $set: extraSet },
+        );
         return true;
       } catch (error) {
         this.logger.warn(`relocate: could not update document ${docId}`, {
@@ -2012,7 +2015,10 @@ export class StorageController {
       ...extraSet,
     };
     try {
-      await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
+      await DocumentModel.updateOne(
+        { _id: doc._id as mongoose.Types.ObjectId },
+        { $set: set },
+      );
     } catch (error) {
       // The blob already moved but Mongo didn't take the update -- this
       // document is now genuinely inconsistent and needs manual repair.

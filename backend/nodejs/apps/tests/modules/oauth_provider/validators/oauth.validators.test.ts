@@ -44,7 +44,7 @@ describe('oauth_provider/validators/oauth.validators', () => {
   it('should reject an empty user_code', () => {
     expect(() =>
       deviceUserCodeSchema.parse({ body: { user_code: '' } }),
-    ).to.throw(ZodError)
+    ).to.throw().that.satisfies((e: unknown) => e instanceof ZodError)
   })
 
   it('should reject consent values other than granted or denied', () => {
@@ -52,7 +52,7 @@ describe('oauth_provider/validators/oauth.validators', () => {
       deviceConsentSchema.parse({
         body: { user_code: 'ABCD-EFGH', consent: 'maybe' },
       }),
-    ).to.throw(ZodError)
+    ).to.throw().that.satisfies((e: unknown) => e instanceof ZodError)
   })
 
   it('should accept granted and denied consent', () => {

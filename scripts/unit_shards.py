@@ -13,6 +13,7 @@ makes `core` longer. Glob entries expand to the files they match.
 
 Run (from backend/python): python3 ../../scripts/unit_shards.py args <shard>
 prints the pytest arguments for that shard, one per line.
+`owns <shard> <test file>` prints true or false: whether that shard runs the file.
 
 The run ends when the slowest shard ends. scripts/unit_shard_durations.json
 holds measured minutes per test file, and `balance` prints each shard's total;
@@ -148,6 +149,14 @@ def pytest_args(shard: str, root: Path = PYTHON_ROOT) -> list[str]:
     return positional + sorted(ignores)
 
 
+def shard_owns(shard: str, test_file: str, root: Path = PYTHON_ROOT) -> bool:
+    """Whether `shard` runs `test_file` (a path relative to backend/python)."""
+    if shard not in SHARDS:
+        raise KeyError(f"unknown shard {shard!r}; known: {', '.join(SHARDS)}")
+    owners = owned_paths(root)
+    return owners[nearest_owner(test_file, owners)] == shard
+
+
 def test_files(root: Path = PYTHON_ROOT) -> list[str]:
     """Every file pytest collects under tests/unit (pytest.ini: python_files = test_*.py)."""
     return sorted(
@@ -208,6 +217,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     args_cmd = sub.add_parser("args", help="print the pytest arguments for a shard")
     args_cmd.add_argument("shard", choices=list(SHARDS))
+    owns_cmd = sub.add_parser("owns", help="print true if the shard runs the test file, else false")
+    owns_cmd.add_argument("shard", choices=list(SHARDS))
+    owns_cmd.add_argument("test_file", help="path relative to backend/python")
     sub.add_parser("list", help="print the shard names")
     durations_cmd = sub.add_parser("durations", help="per-file minutes from JUnit reports, as JSON")
     durations_cmd.add_argument("--source", required=True, help="where the reports came from")
@@ -216,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     ns = parser.parse_args(argv)
     if ns.command == "list":
         print("\n".join(SHARDS))
+    elif ns.command == "owns":
+        print("true" if shard_owns(ns.shard, ns.test_file) else "false")
     elif ns.command == "args":
         print("\n".join(pytest_args(ns.shard)))
     elif ns.command == "durations":

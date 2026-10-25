@@ -202,7 +202,7 @@ export class OAuthAppService {
     })
 
     this.logger.info('OAuth app created', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       clientId,
       orgId,
       name: data.name,
@@ -646,7 +646,7 @@ export class OAuthAppService {
         throw error
       }
       this.logger.info('OAuth app access changed; tokens revoked', {
-        appId: (app._id as Types.ObjectId).toString(),
+        appId: app._id.toString(),
         orgId,
         removedScopes,
         limitChanged,
@@ -654,7 +654,7 @@ export class OAuthAppService {
     }
 
     this.logger.info('OAuth app updated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -684,7 +684,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app deleted', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
       userId,
     })
@@ -712,7 +712,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app secret regenerated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -747,7 +747,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app suspended', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -783,7 +783,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app activated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -905,7 +905,9 @@ export class OAuthAppService {
     }
   }
 
-  private validateGrantTypes(grantTypes: string[]): void {
+  private validateGrantTypes(
+    grantTypes: string[],
+  ): asserts grantTypes is OAuthGrantType[] {
     const validGrantTypes = Object.values(OAuthGrantType)
     for (const grantType of grantTypes) {
       if (!validGrantTypes.includes(grantType as OAuthGrantType)) {
@@ -916,7 +918,7 @@ export class OAuthAppService {
 
   private toAppResponse(app: IOAuthApp): OAuthAppResponse {
     return {
-      id: (app._id as Types.ObjectId).toString(),
+      id: app._id.toString(),
       slug: app.slug,
       clientId: app.clientId,
       name: app.name,

@@ -1,5 +1,6 @@
 import type { ClientSession } from 'mongoose';
-import { Users, type UserRole } from '../schema/users.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { Users, type User, type UserRole } from '../schema/users.schema';
 import { Org } from '../schema/org.schema';
 
 /**
@@ -48,12 +49,14 @@ export const UserAdminRepository = {
   async findActiveAdminUserIds(
     orgId: string | { toString(): string },
   ): Promise<Array<{ _id?: unknown }>> {
-    return Users.find({
-      orgId,
-      role: 'admin',
-      isDeleted: { $ne: true },
-      ...NOT_A_SERVICE_ACCOUNT,
-    })
+    return Users.find(
+      asQueryFilter<User>({
+        orgId,
+        role: 'admin',
+        isDeleted: { $ne: true },
+        ...NOT_A_SERVICE_ACCOUNT,
+      }),
+    )
       .select('_id')
       .lean();
   },

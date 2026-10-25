@@ -117,6 +117,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+    from app.modules.pipeline.leases import RecordLeases
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
@@ -248,6 +249,22 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.IN_PROGRESS.value,
     })
 
+    record_leases: "RecordLeases | None" = None  # bound by the indexing service, next to the lease manager
+
+    async def _claim_if_orphaned(self, record_id: str) -> str | None:
+        """The record's lease, taken when no live holder (a duplicate delivery, a stage) has it, else ``None``.
+
+        An IN_PROGRESS record nobody holds is orphaned. Holding the lease until the status write keeps a new delivery from
+        starting on it in between.
+        """
+        leases = self.record_leases
+        if leases is None or not leases.bound:
+            return None  # cannot tell: leave it to the stale scan
+        try:
+            return await leases.claim(record_id)
+        except Exception:
+            return None
+
     async def on_message_abandoned(
         self,
         message: StreamMessage | None,
@@ -286,6 +303,7 @@ class RecordEventHandler(BaseEventService):
             return
 
         record_id = str(record_id)
+        claim: str | None = None
         try:
             record = await self.event_processor.graph_provider.get_document(
                 record_id,
@@ -310,7 +328,12 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
+            # An in-flight record nobody holds: the delivery that was processing it ran out of attempts, nothing will
+            # finish it, and the stale scan would hand it back with a fresh retry budget, for ever.
+            if current_status in self._IN_FLIGHT_STATUSES:
+                claim = await self._claim_if_orphaned(record_id)
+            orphaned = claim is not None
+            if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
                     "leaving status %s untouched: %s",
@@ -375,6 +398,9 @@ class RecordEventHandler(BaseEventService):
             # FAILED is terminal, so this may have been the repo's last file:
             # without asking here, the repo waits for an unrelated change.
             await self._request_code_edge_build_if_repo_drained(record_id, record)
+            if orphaned:
+                # Its queued copies were parked behind it; the next one gets its turn.
+                await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
         except Exception as e:
             self.logger.error(
                 "Error while marking record %s FAILED after its message was "
@@ -384,6 +410,9 @@ class RecordEventHandler(BaseEventService):
                 e,
                 exc_info=True,
             )
+        finally:
+            if claim is not None and self.record_leases is not None:
+                await self.record_leases.release(record_id, claim)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.

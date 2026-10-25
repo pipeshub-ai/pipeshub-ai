@@ -291,11 +291,15 @@ class TokenRefreshService:
                 if oauth_cfg.get("_id") == oauth_config_id:
                     return oauth_cfg
 
-            self.logger.warning(f"OAuth config {oauth_config_id} not found in list")
+            self.logger.warning("Referenced OAuth config not found in the list for connector type %s", connector_type)
             return {}
 
         except Exception as e:
-            self.logger.warning(f"Error fetching shared OAuth config {oauth_config_id}: {e}")
+            self.logger.warning(
+                "Error fetching shared OAuth config for connector type %s: %s",
+                connector_type,
+                type(e).__name__,
+            )
             return {}
 
     def _enrich_from_registry(

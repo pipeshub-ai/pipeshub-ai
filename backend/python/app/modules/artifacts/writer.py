@@ -18,7 +18,8 @@ Files of a revision (paths are relative to its root):
 - ``reconciliation.json``: block hashes to ids and ids to indexes.
 - ``properties.json``: the record's provided property values
   (``RecordMetadata``: ``{"schemaId", "values"}``), for a ticket that sets any
-  of the built-in ticket schema's properties.
+  of the built-in ticket schema's properties. Optional: a storage service that
+  does not take the file yet gets the set without it.
 - ``manifest.json``: what was written, with sizes and sha256s. Written last,
   only once every other file is stored, so a revision without it is incomplete.
 
@@ -39,8 +40,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.config.constants.http_status_code import HttpStatusCode
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.models.blocks import BlocksContainer, BlockType
 from app.models.entities import Record
+from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import (
     ASSET_MEDIA_TYPE,
     MANIFEST_PATH,
@@ -49,9 +53,11 @@ from app.modules.artifacts.models import (
     ArtifactFile,
     ArtifactRef,
     Manifest,
+    RevisionUploadPlan,
     WrittenRevision,
 )
 from app.modules.artifacts.store import (
+    PROPERTIES_FILE,
     ArtifactRoutesUnavailable,
     NodeArtifactStore,
     artifact_writes_available,
@@ -198,6 +204,7 @@ def build_revision(
     semantic_metadata: BaseModel | dict[str, Any] | None = None,
     reconciliation_metadata: dict[str, Any] | None = None,
     stored_record_fields: dict[str, Any] | None = None,
+    properties: RecordMetadata | None = None,
     part_max_bytes: int = PART_MAX_BYTES,
 ) -> BuiltRevision:
     """Every file of the revision but the manifest, and the manifest's entries. Pure.
@@ -205,6 +212,8 @@ def build_revision(
     ``stored_record_fields``: the stored copy's fields outside the shared content
     (``BlobStorage.apply``'s ``STORED_RECORD_FIELDS``); record.json then holds
     them instead of ``record``'s own.
+    ``properties``: the record's provided values; left out, they are
+    ``ticket_metadata(record)``.
     """
     built = BuiltRevision()
     snapshot = record.model_dump(
@@ -266,10 +275,24 @@ def build_revision(
         )
     # The values are this record's; when record.json is another record's (it
     # stored the shared content first), they would not describe it.
-    properties = ticket_metadata(record)
-    if properties is not None and (stored_record_fields or {}).get("id") in (None, record.id):
+    if properties is None:
+        properties = ticket_metadata(record)
+    if (
+        properties is not None
+        and properties.values
+        and (stored_record_fields or {}).get("id") in (None, record.id)
+    ):
         _add_single(built, "properties", PROPERTIES_PATH, properties.to_json_dict(), len(properties.values))
     return built
+
+
+#: What the storage service's validation says of a path an artifact set cannot hold.
+PATH_NOT_HELD_REFUSAL = "Not a file an artifact set can hold"
+
+
+def _drop_properties(built: BuiltRevision) -> None:
+    built.files.pop(PROPERTIES_PATH, None)
+    built.artifacts.pop("properties", None)
 
 
 class ArtifactWriter:
@@ -288,6 +311,36 @@ class ArtifactWriter:
         self.upload_concurrency = upload_concurrency
         self.producer_versions = dict(producer_versions or {})
 
+    async def _presign(
+        self, built: BuiltRevision, org_id: str, virtual_record_id: str, rev: str,
+    ) -> RevisionUploadPlan:
+        def files() -> list[tuple[str, str]]:
+            return [(p, built.files[p].content_type) for p in sorted(built.files)] + [(MANIFEST_PATH, _JSON)]
+
+        try:
+            return await self.store.presign_revision(org_id, virtual_record_id, rev, files())
+        except StorageRequestRejectedError as refused:
+            # A storage service older than properties.json refuses the whole set
+            # (400) over that one path; the rest of the revision is still worth
+            # storing. It names no path, only one line per path it does not know,
+            # so exactly one such line, with the file in the set, is the sign;
+            # any other 400 (a bad revision, a duplicate path, two bad paths) is
+            # raised as before and never turns the file off for the process.
+            if (
+                refused.status != HttpStatusCode.BAD_REQUEST.value
+                or PROPERTIES_PATH not in built.files
+                or (refused.detail or "").splitlines() != [PATH_NOT_HELD_REFUSAL]
+            ):
+                raise
+            _drop_properties(built)
+            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, files())
+            if PROPERTIES_FILE.mark_unavailable(refused.status):
+                self.logger.warning(
+                    "Storage refuses %s (HTTP %d); revisions are stored without it until this "
+                    "service restarts", PROPERTIES_PATH, refused.status,
+                )
+            return plan
+
     async def write_revision(
         self,
         record: Record,
@@ -298,6 +351,7 @@ class ArtifactWriter:
         semantic_metadata: BaseModel | dict[str, Any] | None = None,
         reconciliation_metadata: dict[str, Any] | None = None,
         stored_record_fields: dict[str, Any] | None = None,
+        properties: RecordMetadata | None = None,
     ) -> WrittenRevision | None:
         """Store every file of revision ``rev``, the manifest last.
 
@@ -317,18 +371,16 @@ class ArtifactWriter:
             semantic_metadata=semantic_metadata,
             reconciliation_metadata=reconciliation_metadata,
             stored_record_fields=stored_record_fields,
+            properties=properties,
             part_max_bytes=self.part_max_bytes,
         )
-        paths = sorted(built.files)
+        if not PROPERTIES_FILE.available:
+            _drop_properties(built)
         try:
-            plan = await self.store.presign_revision(
-                org_id,
-                virtual_record_id,
-                rev,
-                [(p, built.files[p].content_type) for p in paths] + [(MANIFEST_PATH, _JSON)],
-            )
+            plan = await self._presign(built, org_id, virtual_record_id, rev)
         except ArtifactRoutesUnavailable:
             return None
+        paths = sorted(built.files)
 
         limit = asyncio.Semaphore(max(1, self.upload_concurrency))
 

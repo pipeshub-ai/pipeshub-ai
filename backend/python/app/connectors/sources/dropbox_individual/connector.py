@@ -313,14 +313,14 @@ class DropboxIndividualConnector(BaseConnector):
         )
 
         if not oauth_config:
-            self.logger.error(f"OAuth config {oauth_config_id} not found for Dropbox Individual connector.")
+            self.logger.error(f"Linked OAuth app not found for Dropbox Individual connector {self.connector_id}.")
             return False
 
         # Use credentials from OAuth config
         oauth_config_data = oauth_config.get("config", {})
         app_key = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
         app_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
-        self.logger.info(f"Using shared OAuth config {oauth_config_id} for Dropbox Individual connector")
+        self.logger.info(f"Using linked OAuth app for Dropbox Individual connector {self.connector_id}")
 
         try:
             config = DropboxTokenConfig(

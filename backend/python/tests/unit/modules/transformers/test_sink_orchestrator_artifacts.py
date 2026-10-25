@@ -297,6 +297,89 @@ class TestWhenItWrites:
         graph.provider.update_node_fields_if_match.assert_not_awaited()
 
 
+def _ticket_graph(ticket_doc: dict[str, Any] | None, **record_doc: Any) -> Graph:  # noqa: ANN401
+    graph = _graph(**{"recordType": RecordType.TICKET.value, **record_doc})
+    plain = graph.provider.get_document.side_effect
+
+    async def get(key: str, collection: str) -> dict[str, Any] | None:
+        if collection == CollectionNames.TICKETS.value:
+            return None if ticket_doc is None else dict(ticket_doc)
+        return await plain(key, collection)
+
+    graph.provider.get_document = AsyncMock(side_effect=get)
+    return graph
+
+
+def _collections_read(graph: Graph) -> list[str]:
+    return [c.args[1] for c in graph.provider.get_document.await_args_list]
+
+
+_BASE_DOC = {"_key": "rec-1", "orgId": "org-1", "recordName": "PA-1", "recordType": "TICKET",
+             "externalRecordId": "PA-1", "version": 1, "origin": "CONNECTOR", "connectorName": "JIRA",
+             "connectorId": "conn-1", "createdAtTimestamp": 1, "updatedAtTimestamp": 2}
+
+
+class TestTicketProperties:
+    async def test_a_ticket_reads_its_tickets_document_once(self) -> None:
+        graph = _ticket_graph({"status": "open", "assignee": "Ada", "assigneeEmail": "ada@example.com"},
+                              **_BASE_DOC)
+        orch = _orchestrator(graph)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert _collections_read(graph).count(CollectionNames.TICKETS.value) == 1
+        properties = orch.artifact_writer.write_revision.await_args.kwargs["properties"]
+        assert {k: v.value for k, v in properties.values.items()} == {
+            "status": "OPEN", "assignee": "Ada", "assigneeEmail": "ada@example.com",
+        }
+
+    async def test_hidden_emails_stay_out(self) -> None:
+        graph = _ticket_graph({"assignee": "Ada", "assigneeEmail": "583231", "is_email_hidden": True}, **_BASE_DOC)
+        orch = _orchestrator(graph)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        properties = orch.artifact_writer.write_revision.await_args.kwargs["properties"]
+        assert set(properties.values) == {"assignee"}
+
+    @pytest.mark.parametrize("record_type", ["FILE", "WEBPAGE", "MAIL", None])
+    async def test_other_records_read_no_tickets_document(self, record_type: str | None) -> None:
+        graph = _graph(recordType=record_type)
+        orch = _orchestrator(graph)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert CollectionNames.TICKETS.value not in _collections_read(graph)
+        assert orch.artifact_writer.write_revision.await_args.kwargs["properties"] is None
+
+    async def test_with_artifact_writes_off_a_ticket_reads_nothing_more(self) -> None:
+        graph = _ticket_graph({"status": "OPEN"}, **_BASE_DOC)
+
+        await _index(_orchestrator(graph, flag=False), TransformContext(record=_record()))
+
+        assert CollectionNames.TICKETS.value not in _collections_read(graph)
+
+    @pytest.mark.parametrize("failure", ["missing", "unreadable", "raises"])
+    async def test_a_ticket_document_it_cannot_use_never_fails_indexing(self, failure: str) -> None:
+        graph = _ticket_graph(None if failure == "missing" else {"status": "OPEN"},
+                              **({**_BASE_DOC, "origin": "NOT AN ORIGIN"} if failure == "unreadable" else _BASE_DOC))
+        if failure == "raises":
+            plain = graph.provider.get_document.side_effect
+
+            async def get(key: str, collection: str) -> dict[str, Any] | None:
+                if collection == CollectionNames.TICKETS.value:
+                    raise ConnectionError("graph down")
+                return await plain(key, collection)
+
+            graph.provider.get_document = AsyncMock(side_effect=get)
+        orch = _orchestrator(graph)
+
+        await _index(orch, TransformContext(record=_record()))
+
+        assert orch.artifact_writer.write_revision.await_args.kwargs["properties"] is None
+        assert graph.provider.batch_update_nodes.await_args.args[0][0]["indexingStatus"] == "COMPLETED"
+
+
 class TestRevisionPointer:
     async def test_flips_when_the_pointer_still_holds_what_was_read(self) -> None:
         graph = _graph({"id": "vr-1", "record_doc_id": "doc-1", "currentRev": OLD_REV, "manifestDocId": "doc-old"})

@@ -37,7 +37,12 @@ class NotModelled(Exception):
 
 @lru_cache(maxsize=1)
 def schema() -> GraphQLSchema:
-    return build_schema(gzip.decompress(SCHEMA_PATH.read_bytes()).decode(), assume_valid_sdl=True)
+    # GitHub's published schema deprecates Project.id while Node.id is not deprecated,
+    # which graphql-core 3.3 rejects as an invalid schema. Queries are still validated
+    # against it.
+    return build_schema(
+        gzip.decompress(SCHEMA_PATH.read_bytes()).decode(), assume_valid_sdl=True, assume_valid=True
+    )
 
 
 def _resolver(ws: World) -> Callable[..., Any]:

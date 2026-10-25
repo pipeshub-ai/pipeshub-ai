@@ -8,6 +8,8 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSessionDocument } from '../../enterprise_search/types/conversation.interfaces';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
@@ -316,14 +318,14 @@ export const getProjectConversations =
       };
 
       const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(filter)
+        ChatSession.find(asQueryFilter<IChatSessionDocument>(filter))
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
           .select('-__v')
           .lean()
           .exec(),
-        ChatSession.countDocuments(filter),
+        ChatSession.countDocuments(asQueryFilter<IChatSessionDocument>(filter)),
       ]);
 
       res.status(200).json({

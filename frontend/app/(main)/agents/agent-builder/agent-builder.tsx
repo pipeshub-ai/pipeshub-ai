@@ -321,6 +321,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [editingKey, loading, setNodes, setEdges]);
 
   const initOnce = useRef(false);
+  // Declared before first use (the reset effect below) so the ref is never read ahead of its declaration.
+  const historyGuardActive = useRef(false);
   useEffect(() => {
     initOnce.current = false;
     historyGuardActive.current = false;
@@ -541,7 +543,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   // popstate guard: browser back/forward button.
   // When dirty, push a guard entry so the first back press hits it (same URL)
   // and fires popstate without actually leaving the page.
-  const historyGuardActive = useRef(false);
   useEffect(() => {
     if (!isDirty) return;
 

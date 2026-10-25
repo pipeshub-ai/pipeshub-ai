@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -82,6 +83,7 @@ def _image_block(index: int, uri: str) -> Block:
 @pytest.fixture(autouse=True)
 def _routes_available() -> None:
     store_module.ARTIFACT_ROUTES.reset()
+    store_module.PROPERTIES_FILE.reset()
 
 
 @pytest.fixture
@@ -307,6 +309,14 @@ class TestProperties:
             built = build_revision(record, record.block_containers)
             assert PROPERTIES_PATH not in built.files and "properties" not in built.artifacts
 
+    def test_values_given_are_the_ones_written(self) -> None:
+        record = _record(_text_blocks(1, 1))
+        values = ticket_metadata(_ticket(status=Status.OPEN))
+
+        built = build_revision(record, record.block_containers, properties=values)
+
+        assert RecordMetadata.model_validate_json(built.files[PROPERTIES_PATH].data) == values
+
     def test_not_written_when_record_json_is_another_records(self) -> None:
         record = _ticket(status=Status.OPEN)
         assert PROPERTIES_PATH in build_revision(record, record.block_containers).files
@@ -316,3 +326,89 @@ class TestProperties:
 
         assert PROPERTIES_PATH in own.files
         assert PROPERTIES_PATH not in owners.files
+
+
+class TestStorageWithoutPropertiesJson:
+    """A storage service older than properties.json refuses any presign naming it, while the
+    indexing service already writes it (either may be upgraded first)."""
+
+    async def test_the_set_is_stored_without_it_and_the_manifest_does_not_list_it(
+        self, storage: FakeStorage, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        storage.refused_paths = {PROPERTIES_PATH}
+        writer = _writer(storage)
+        first, second = _ticket(status=Status.OPEN), _ticket(status=Status.DONE)
+
+        with caplog.at_level(logging.WARNING):
+            written = await writer.write_revision(first, "org-1", "vr-1", REV, first.block_containers)
+            again = await writer.write_revision(second, "org-1", "vr-2", REV, second.block_containers)
+
+        assert written is not None and again is not None
+        for vrid, revision in (("vr-1", written), ("vr-2", again)):
+            root = FakeStorage.root(vrid, REV)
+            assert f"{root}/{PROPERTIES_PATH}" not in storage.puts
+            assert f"{root}/record.json" in storage.puts and storage.put_order.count(MANIFEST_PATH) == 2
+            assert "properties" not in revision.manifest.artifacts
+            assert "properties" not in json.loads(storage.puts[f"{root}/{MANIFEST_PATH}"].data)["artifacts"]
+        # One refused call for the process, then the file is left out up front; one warning.
+        assert [PROPERTIES_PATH in {f["path"] for f in c["files"]} for c in storage.presign_calls] == [
+            True, False, False,
+        ]
+        assert caplog.text.count("refuses properties.json") == 1
+
+    async def test_a_storage_service_that_takes_it_gets_it(self, storage: FakeStorage) -> None:
+        record = _ticket(status=Status.OPEN)
+
+        written = await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert written is not None and "properties" in written.manifest.artifacts
+        assert f"{FakeStorage.root('vr-1', REV)}/{PROPERTIES_PATH}" in storage.puts
+        assert len(storage.presign_calls) == 1
+
+    async def test_a_refusal_of_something_else_still_fails_the_set(self, storage: FakeStorage) -> None:
+        storage.refused_paths = {"record.json"}
+        record = _ticket(status=Status.OPEN)
+
+        with pytest.raises(StorageRequestRejectedError):
+            await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert storage.puts == {}
+        # One unknown path could be properties.json, so it is retried once without it; that
+        # fails too, so the file is not turned off.
+        assert store_module.PROPERTIES_FILE.available
+        assert len(storage.presign_calls) == 2
+
+    async def test_two_unknown_paths_do_not_blame_properties_json(self, storage: FakeStorage) -> None:
+        storage.refused_paths = {PROPERTIES_PATH, "record.json"}
+        record = _ticket(status=Status.OPEN)
+
+        with pytest.raises(StorageRequestRejectedError):
+            await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert store_module.PROPERTIES_FILE.available
+        assert len(storage.presign_calls) == 1
+
+    async def test_a_400_for_another_reason_never_turns_the_file_off(self, storage: FakeStorage) -> None:
+        # The set is accepted without properties.json, so a retry would pass; that alone must
+        # not read as "storage does not know the file" and drop it for the whole process.
+        storage.refuse_other_with_properties = "Request body too large for this route"
+        record = _ticket(status=Status.OPEN)
+
+        with pytest.raises(StorageRequestRejectedError):
+            await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+        assert store_module.PROPERTIES_FILE.available
+        assert len(storage.presign_calls) == 1
+
+        storage.refuse_other_with_properties = ""
+        written = await _writer(storage).write_revision(record, "org-1", "vr-2", REV, record.block_containers)
+
+        assert written is not None and "properties" in written.manifest.artifacts
+
+    async def test_a_record_without_values_is_never_retried(self, storage: FakeStorage) -> None:
+        storage.refused_paths = {"record.json"}
+        record = _record(_text_blocks(1, 1))
+
+        with pytest.raises(StorageRequestRejectedError):
+            await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
+
+        assert len(storage.presign_calls) == 1
