@@ -62,6 +62,7 @@ type CleanSnapshot = {
   edgesJson: string;
   agentName: string;
   shareWithOrg: boolean;
+  serviceAccountUserId: string | null;
 };
 
 function serializeNodes(nodes: Node[]): string {
@@ -364,6 +365,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         edgesJson: serializeEdges(e),
         agentName: agentSrc.name || '',
         shareWithOrg: Boolean(agentSrc.shareWithOrg),
+        serviceAccountUserId: agentSrc.serviceAccountUserId ?? null,
       });
       initOnce.current = true;
       return;
@@ -537,9 +539,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       serializeNodes(nodes) !== cleanSnapshot.nodesJson ||
       serializeEdges(edges) !== cleanSnapshot.edgesJson ||
       agentName.trim() !== cleanSnapshot.agentName ||
-      shareWithOrg !== cleanSnapshot.shareWithOrg
+      shareWithOrg !== cleanSnapshot.shareWithOrg ||
+      serviceAccountUserId !== cleanSnapshot.serviceAccountUserId
     );
-  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot]);
+  }, [nodes, edges, agentName, shareWithOrg, serviceAccountUserId, cleanSnapshot]);
 
   // beforeunload guard: browser tab close / refresh / address-bar navigation.
   useEffect(() => {
@@ -681,7 +684,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           loadedAgent,
           shareWithOrg,
           isServiceAccount,
-          serviceAccountUserId
+          // Only an update can clear a binding. On create there is nothing to
+          // clear, and the create schema takes a string rather than a
+          // nullable one, so null would be refused outright.
+          loadedAgent ? serviceAccountUserId : (serviceAccountUserId ?? undefined)
         ),
       };
 
@@ -696,6 +702,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setShowPostUpdateDialog(true);
       } else {
@@ -706,6 +713,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
@@ -719,6 +727,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [
     agentName,
     edges,
+    serviceAccountUserId,
     canPersist,
     agentLoadFailed,
     saveBlockedByDeprecatedTools,
@@ -765,7 +774,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           currentAgent ?? null,
           true,
           true,
-          serviceAccountUserId
+          currentAgent ? serviceAccountUserId : (serviceAccountUserId ?? undefined)
         ),
       };
 
@@ -779,6 +788,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
         setSuccess(t('agentBuilder.serviceAgentConverted'));
       } else {
@@ -790,6 +800,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
@@ -802,6 +813,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     agentName,
     canPersist,
     edges,
+    serviceAccountUserId,
     hasToolsets,
     loadedAgent,
     nodes,

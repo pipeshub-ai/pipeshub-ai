@@ -73,6 +73,30 @@ describe('the identity control', () => {
     ).toBeTruthy();
   });
 
+  it('names the bound account without being opened', async () => {
+    // The closed button is where an administrator reads what the agent does.
+    // Loading only on open left it saying "a service account", which is the
+    // one thing they already knew.
+    list.mockResolvedValue({ serviceAccounts: [LIVE] });
+    renderControl({ value: 'sa-live' });
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByText(/Searches as Nightly sync/)).toBeTruthy()
+    );
+  });
+
+  it('still names a bound account that has since been disabled', async () => {
+    // It is filtered out of the choices, but going vague about an agent that
+    // is bound right now would hide the thing worth noticing.
+    list.mockResolvedValue({ serviceAccounts: [{ ...DISABLED, id: 'sa-live' }] });
+    renderControl({ value: 'sa-live' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Searches as Retired job/)).toBeTruthy()
+    );
+  });
+
   it('does not offer a disabled service account', async () => {
     list.mockResolvedValue({ serviceAccounts: [LIVE, DISABLED] });
     renderControl();
@@ -115,6 +139,37 @@ describe('the identity control', () => {
         )
       ).toBeTruthy()
     );
+  });
+
+  it('clears the binding when the creator is the current choice', async () => {
+    // The dropdown is a portal jsdom will not open, so this drives the only
+    // other path through confirm(): an unbound agent confirms as null rather
+    // than as the sentinel the Select needs.
+    const onChange = vi.fn();
+    list.mockResolvedValue({ serviceAccounts: [LIVE] });
+    renderControl({ value: null, onChange });
+
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() =>
+      expect(screen.queryByText('Loading service accounts…')).toBeNull()
+    );
+    fireEvent.click(screen.getByText('Choose'));
+
+    expect(onChange).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps the binding when a bound agent is confirmed unchanged', async () => {
+    const onChange = vi.fn();
+    list.mockResolvedValue({ serviceAccounts: [LIVE] });
+    renderControl({ value: 'sa-live', onChange });
+
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() =>
+      expect(screen.queryByText('Loading service accounts…')).toBeNull()
+    );
+    fireEvent.click(screen.getByText('Choose'));
+
+    expect(onChange).toHaveBeenCalledWith('sa-live');
   });
 
   it('offers to try again when the list cannot be loaded', async () => {

@@ -13,6 +13,8 @@ interface ServiceAccountOption {
   id: string;
   fullName: string;
   email: string;
+  /** Only ever true for an account this agent is already bound to. */
+  isDisabled?: boolean;
 }
 
 export interface ServiceAgentIdentityControlProps {
@@ -53,7 +55,10 @@ export function ServiceAgentIdentityControl({
   const [chosen, setChosen] = useState<string>(value ?? CREATOR);
 
   useEffect(() => {
-    if (!open) return;
+    // Also when the agent is already bound and the dialog is shut: the closed
+    // button names the account, and without the list it could only say "a
+    // service account", which is the one thing an administrator already knows.
+    if (!open && value === null) return;
     if (accounts !== null || loadError !== null) return;
 
     let cancelled = false;
@@ -65,8 +70,15 @@ export function ServiceAgentIdentityControl({
           serviceAccounts
             // A disabled account is not offered. It would be refused anyway,
             // and offering it invites a binding that silently reads nothing.
-            .filter((a) => !a.isDisabled)
-            .map((a) => ({ id: a.id, fullName: a.fullName, email: a.email }))
+            // One already bound is kept, so the button can still name it
+            // rather than going vague about an agent that is bound right now.
+            .filter((a) => !a.isDisabled || a.id === value)
+            .map((a) => ({
+              id: a.id,
+              fullName: a.fullName,
+              email: a.email,
+              isDisabled: a.isDisabled,
+            }))
         );
       } catch {
         if (cancelled) return;
@@ -76,7 +88,7 @@ export function ServiceAgentIdentityControl({
     return () => {
       cancelled = true;
     };
-  }, [open, accounts, loadError, t]);
+  }, [open, value, accounts, loadError, t]);
 
   const openDialog = useCallback(() => {
     setChosen(value ?? CREATOR);
@@ -165,11 +177,13 @@ export function ServiceAgentIdentityControl({
                   <Select.Item value={CREATOR}>
                     {t('agentBuilder.identityCreator')}
                   </Select.Item>
-                  {accounts.map((a) => (
-                    <Select.Item key={a.id} value={a.id}>
-                      {a.fullName} ({a.email})
-                    </Select.Item>
-                  ))}
+                  {accounts
+                    .filter((a) => !a.isDisabled)
+                    .map((a) => (
+                      <Select.Item key={a.id} value={a.id}>
+                        {a.fullName} ({a.email})
+                      </Select.Item>
+                    ))}
                 </Select.Content>
               </Select.Root>
               {accounts.length === 0 ? (

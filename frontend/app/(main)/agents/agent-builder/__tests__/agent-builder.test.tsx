@@ -233,6 +233,9 @@ describe('building a new agent', () => {
       knowledge: [{ connectorId: 'kb-1' }],
       webSearch: { provider: 'duckduckgo' },
     });
+    // Create takes a string, not a nullable one, so an unbound new agent must
+    // leave the field off the body rather than send null.
+    expect('serviceAccountUserId' in payload).toBe(false);
     expect(payload.toolsets).toEqual([
       expect.objectContaining({
         instanceId: 'jira-instance-1',
