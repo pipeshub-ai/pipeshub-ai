@@ -1,5 +1,6 @@
 """Tests for thread-safe PDF rasterization helpers."""
 
+import select
 import subprocess
 import sys
 import time
@@ -270,9 +271,9 @@ def test_run_and_release_flags_the_task_for_a_trim_even_when_it_fails() -> None:
     assert rasterizer._task_ended.is_set()
 
 
-def test_housekeeping_trims_after_a_task_and_exits_once_orphaned() -> None:
+def test_housekeeping_trims_twice_after_a_task_and_exits_once_orphaned() -> None:
     rasterizer._task_ended.set()
-    with patch.object(rasterizer.os, "getppid", side_effect=[1, 1, 2]), \
+    with patch.object(rasterizer.os, "getppid", side_effect=[1, 1, 1, 1, 2]), \
             patch.object(rasterizer.time, "sleep"), \
             patch.object(rasterizer, "_release_freed_memory") as trim, \
             patch.object(rasterizer.os, "_exit") as exit_, \
@@ -280,7 +281,8 @@ def test_housekeeping_trims_after_a_task_and_exits_once_orphaned() -> None:
         rasterizer._start_worker_housekeeping(1)
         thread.call_args.kwargs["target"]()
 
-    trim.assert_called_once_with()
+    # Twice for the one task, then no more while idle.
+    assert trim.call_count == 2
     exit_.assert_called_once_with(0)
 
 
@@ -307,6 +309,8 @@ def test_pool_workers_exit_when_their_parent_is_killed() -> None:
         text=True,
     )
     try:
+        ready, _, _ = select.select([parent.stdout], [], [], 20)
+        assert ready, "the pool never reported a worker pid"
         worker_pid = int(parent.stdout.readline())
         assert _alive(worker_pid)
     finally:

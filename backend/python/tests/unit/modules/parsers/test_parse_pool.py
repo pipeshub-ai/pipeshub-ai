@@ -97,10 +97,20 @@ def _spawn_sleeper() -> tuple:
     return os.posix_spawn, sys.executable, [sys.executable, "-c", code], {}
 
 
+def _is_zombie(pid: int) -> bool:
+    """Dead but not yet reaped, as an orphan stays where nothing reaps it (a
+    container without an init)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except OSError:
+        return False
+
+
 async def _wait_until_gone(pid: int, seconds: float = 10.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if not _process_exists(pid):
+        if not _process_exists(pid) or _is_zombie(pid):
             return True
         await asyncio.sleep(0.05)
     return False

@@ -87,18 +87,24 @@ def _release_freed_memory() -> None:
 def _start_worker_housekeeping(parent_pid: int) -> None:
     """Pool initializer: a thread that keeps an idle worker from holding memory.
 
-    glibc keeps freed heap for reuse, so a worker idled at ~1 GB after counting
-    the chars of a 300 MB PDF; it trims once a task's result has been sent.
+    glibc keeps freed heap for reuse, so a worker held ~0.6 GB more than it
+    needed after rendering 32 pages of a 300 MB PDF; it trims after each task.
     A SIGKILLed parent (OOM kill, an idle parse worker being stopped) never
     shuts the pool down, and its workers would block on their call queue
     forever, so a worker exits once it is reparented.
     """
 
     def housekeep() -> None:
+        trims_left = 0
         while os.getppid() == parent_pid:
             time.sleep(_HOUSEKEEPING_SECONDS)
             if _task_ended.is_set():
                 _task_ended.clear()
+                # The pool sends the result after the task returns, so the
+                # first trim can run while the worker still holds it.
+                trims_left = 2
+            if trims_left:
+                trims_left -= 1
                 _release_freed_memory()
         os._exit(0)
 
