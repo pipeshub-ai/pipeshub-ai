@@ -51,3 +51,48 @@ def apply_confluence_jira_scope(
     if include_jira_scope_enabled(settings.get(INCLUDE_JIRA_SCOPE)):
         return scopes if jira_scope in scopes else [*scopes, jira_scope]
     return [scope for scope in scopes if scope != jira_scope]
+
+
+ALLOW_FILE_UPLOADS = "allowFileUploads"
+ALLOW_FILE_UPLOADS_DESCRIPTION = (
+    "Choose Yes only if your Atlassian OAuth app includes the write:attachment:confluence "
+    "scope. Pipeshub will request that scope during authorization so agents can attach "
+    "files to pages. Choose No if you have not added that scope: Atlassian refuses sign-in "
+    "when an app is asked for a scope it does not have."
+)
+
+
+def confluence_allow_file_uploads_field(*, default_value: str = "no") -> AuthField:
+    """The "Allow file uploads" choice on the Confluence agent toolset's OAuth app.
+
+    Not required, so OAuth apps saved before the choice existed keep working as No.
+    """
+    return AuthField(
+        name=ALLOW_FILE_UPLOADS,
+        display_name="Allow file uploads",
+        description=ALLOW_FILE_UPLOADS_DESCRIPTION,
+        field_type="SELECT",
+        required=False,
+        placeholder="Select...",
+        default_value=default_value,
+        options=["no", "yes"],
+        usage="CONFIGURE",
+        is_secret=False,
+    )
+
+
+def apply_confluence_upload_scope(
+    toolset_type: str,
+    settings: dict[str, Any],
+    scopes: list[str],
+) -> list[str]:
+    """Add or remove write:attachment:confluence on a Confluence consent request, per allowFileUploads.
+
+    A missing setting counts as No. Other toolset types are left alone.
+    """
+    if (toolset_type or "").replace(" ", "").upper() != Connectors.CONFLUENCE.value:
+        return scopes
+    upload_scope = AtlassianScope.CONFLUENCE_ATTACHMENT_WRITE.value
+    if include_jira_scope_enabled(settings.get(ALLOW_FILE_UPLOADS)):
+        return scopes if upload_scope in scopes else [*scopes, upload_scope]
+    return [scope for scope in scopes if scope != upload_scope]

@@ -14,6 +14,7 @@ import {
   isSlackSupportedAttachment,
   isSlackOversizedAttachment,
   classifySlackFiles,
+  collectThreadFilesSinceLastBotReply,
   extractSupportedAttachments,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_MB,
@@ -225,6 +226,61 @@ describe('slack-bot/helpers', () => {
         const result = classifySlackFiles([null, 42, 'string']);
         expect(result.supported).to.have.length(0);
         expect(result.unsupported).to.have.length(0);
+      });
+    });
+
+    describe('collectThreadFilesSinceLastBotReply', () => {
+      const png = (id: string) => ({ id, mimetype: 'image/png', size: 100, url_private_download: `https://files.slack.com/${id}` });
+
+      it('takes supported files from every message when the bot has not replied', () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('root')] },
+          { ts: '2', user: 'U2', files: [png('reply')] },
+        ];
+        const files = collectThreadFilesSinceLastBotReply(prior, 'UBOT');
+        expect(files.map((f) => f.id)).to.deep.equal(['root', 'reply']);
+      });
+
+      it('skips files posted before the bot last replied', () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('old')] },
+          { ts: '2', user: 'UBOT', bot_id: 'B1', text: 'answer' },
+          { ts: '3', user: 'U1', files: [png('new')] },
+        ];
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['new']);
+      });
+
+      it("ignores another bot's replies when the bot user id is known", () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('a')] },
+          { ts: '2', user: 'UOTHER', bot_id: 'B9', text: 'other bot' },
+        ];
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['a']);
+      });
+
+      it('treats any bot message as a reply when the bot user id is unknown', () => {
+        const prior = [
+          { ts: '1', user: 'U1', files: [png('a')] },
+          { ts: '2', bot_id: 'B1', subtype: 'bot_message', text: 'answer' },
+        ];
+        expect(collectThreadFilesSinceLastBotReply(prior)).to.deep.equal([]);
+      });
+
+      it('drops unsupported and oversized files silently', () => {
+        const prior = [{
+          ts: '1',
+          user: 'U1',
+          files: [
+            png('ok'),
+            { id: 'zip', mimetype: 'application/zip', size: 100, url_private: 'https://files.slack.com/zip' },
+            { id: 'big', mimetype: 'image/png', size: MAX_ATTACHMENT_BYTES + 1, url_private: 'https://files.slack.com/big' },
+          ],
+        }];
+        expect(collectThreadFilesSinceLastBotReply(prior, 'UBOT').map((f) => f.id)).to.deep.equal(['ok']);
+      });
+
+      it('returns nothing for an empty thread', () => {
+        expect(collectThreadFilesSinceLastBotReply([], 'UBOT')).to.deep.equal([]);
       });
     });
 

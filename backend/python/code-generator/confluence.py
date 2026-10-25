@@ -1,6 +1,10 @@
 # ruff: noqa
 
 # NOTE — Development-only generator (Confluence)
+#
+# NOTE: the v2 spec has no attachment upload. ``upload_content_attachment`` (v1 multipart) is
+# hand-maintained in app/sources/external/confluence/confluence.py and must be re-applied after
+# regeneration.
 
 import sys
 from pathlib import Path

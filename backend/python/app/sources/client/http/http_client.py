@@ -80,7 +80,16 @@ class HTTPClient(IClient):
             **kwargs
         }
 
-        if isinstance(request.body, dict):
+        if request.files is not None:
+            # httpx writes the multipart boundary into Content-Type itself; a caller-set
+            # "multipart/form-data" without one makes the server reject the body.
+            request_kwargs["headers"] = {
+                k: v for k, v in merged_headers.items() if k.lower() != "content-type"
+            }
+            request_kwargs["files"] = request.files
+            if isinstance(request.body, dict):
+                request_kwargs["data"] = request.body
+        elif isinstance(request.body, dict):
             # Check if Content-Type indicates form data
             content_type = request.headers.get("Content-Type", "").lower()
             if "application/x-www-form-urlencoded" in content_type:

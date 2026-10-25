@@ -332,6 +332,9 @@ class TestAttachmentRehydration:
         assert "resume.pdf" in goal.constraints[0]
         assert "knowledgegraph__fetch_record" in goal.constraints[0]
         assert "rec-vrid-1" in goal.constraints[0]
+        for app in ("Slack", "Outlook", "Gmail", "Salesforce", "Jira", "Confluence"):
+            assert app in goal.constraints[0]
+        assert "any tool that has that parameter" in goal.constraints[0]
 
     async def test_skips_already_populated_vrids(self):
         blob = AsyncMock()

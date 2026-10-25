@@ -40,7 +40,10 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import OAuthScopeType
-from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
+from app.connectors.sources.atlassian.core.auth_fields import (
+    apply_confluence_jira_scope,
+    apply_confluence_upload_scope,
+)
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
     REDACTED_PLACEHOLDER,
@@ -680,6 +683,7 @@ async def _build_oauth_config(
     if not scopes:
         scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
     scopes = apply_confluence_jira_scope(toolset_type, auth_config, list(scopes))
+    scopes = apply_confluence_upload_scope(toolset_type, auth_config, scopes)
 
 
     # If a tenantId is supplied in the auth config, substitute it into the

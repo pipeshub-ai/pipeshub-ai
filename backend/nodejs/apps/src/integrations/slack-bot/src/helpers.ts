@@ -379,6 +379,36 @@ export function extractSupportedAttachments(files: unknown[] | undefined): Slack
   return classifySlackFiles(files).supported;
 }
 
+/** Most files sent with one question; the chat attachment upload route accepts 10. */
+export const MAX_ATTACHMENTS_PER_QUESTION = 10;
+
+function isOwnBotMessage(message: SlackMessagePayload, botUserId?: string): boolean {
+  if (botUserId) return message.user === botUserId;
+  return Boolean(message.bot_id) || message.subtype === "bot_message";
+}
+
+/**
+ * Supported files posted in the thread after the bot's last reply, oldest first.
+ *
+ * Files from before that reply went out with an earlier question in this thread and
+ * stay in the conversation's history, so starting here sends each file once.
+ * Unsupported and oversized files are dropped without a notice: the user didn't
+ * attach them to this question.
+ */
+export function collectThreadFilesSinceLastBotReply(
+  priorMessages: SlackMessagePayload[],
+  botUserId?: string,
+): SlackFile[] {
+  let start = 0;
+  priorMessages.forEach((message, index) => {
+    if (isOwnBotMessage(message, botUserId)) start = index + 1;
+  });
+  const files = priorMessages
+    .slice(start)
+    .flatMap((message) => (Array.isArray(message.files) ? message.files : []));
+  return classifySlackFiles(files).supported;
+}
+
 export class SlackFileTooLargeError extends Error {
   constructor(fileId: string) {
     super(`Slack file ${fileId} is larger than ${MAX_ATTACHMENT_BYTES} bytes`);

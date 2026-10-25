@@ -322,6 +322,38 @@ class ConfluenceDataSource:
             
         return f"{parsed.scheme}://{parsed.netloc}{path}"
 
+    async def upload_content_attachment(
+        self,
+        content_id: str,
+        filename: str,
+        content: bytes,
+        mime_type: str,
+        comment: str | None = None,
+    ) -> HTTPResponse:
+        """Add one new attachment to a page: POST /rest/api/content/{id}/child/attachment (v1).
+
+        The v2 API has no upload endpoint, so Cloud and Data Center both go through v1. POST (not
+        PUT) so an existing attachment with the same name is never given a new version: Confluence
+        answers 400 instead, and the caller picks another name. Without
+        ``X-Atlassian-Token: nocheck`` the request is rejected as an XSRF attempt.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        url = f"{self._v1_rest_api_base()}/content/{quote(str(content_id), safe='')}/child/attachment"
+        form: dict[str, Any] = {"minorEdit": "true"}
+        if comment:
+            form["comment"] = comment
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers={'X-Atlassian-Token': 'nocheck', 'Accept': 'application/json'},
+            body=form,
+            files=[('file', (filename, content, mime_type))],
+        )
+        return await self._client.execute(
+            req, timeout=httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=30.0),
+        )
+
     async def get_spaces_v1(
         self,
         keys: Optional[list[str]] = None,
