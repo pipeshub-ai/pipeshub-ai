@@ -19,18 +19,25 @@ checks what they do.
 from __future__ import annotations
 
 import base64
+import logging
 import os
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 from pipeshub_client import PipeshubClient
 
+from helper.clients.kb_client import KBClient
+from helper.indexing_progress import POLL, RECOVERY_TIMEOUT
 from helper.mcp_client import McpToolResult, call_mcp_tool
+from helper.stored_names import stored_name
 
 pytestmark = [pytest.mark.integration, pytest.mark.mcp]
 
 CallTool = Callable[..., McpToolResult]
+
+logger = logging.getLogger("mcp-tools")
 
 
 @pytest.fixture(scope="module")
@@ -327,3 +334,97 @@ class TestChat:
         assert body["conversationId"] == first_turn["conversationId"]
         assert body.get("answer"), body
         assert body["messageCount"] > first_turn["messageCount"], body
+
+
+# ====================================================================
+# Filling a workspace: pipeshub_create_collection, pipeshub_upload,
+# pipeshub_indexing_status, pipeshub_connect_source
+# ====================================================================
+@pytest.fixture(scope="module")
+def filled(call: CallTool, kb_client: KBClient, ai_models_configured) -> Iterator[dict]:
+    """A collection an agent made and filled through MCP alone, polled until indexed.
+
+    The suite's OAuth app holds every scope, so its token carries kb:write and
+    kb:upload and /mcp serves the write tools.
+    """
+    del ai_models_configured
+    token = uuid.uuid4().hex[:12]
+    needle = f"marrowfinch {token} failover rehearsal"
+    created = _ok(call("pipeshub_create_collection", name=f"mcp-fill-{token}"))
+    try:
+        name = f"runbook-{token}.md"
+        uploaded = _ok(call(
+            "pipeshub_upload",
+            collectionId=created["collectionId"],
+            documents=[{"name": name, "text": f"# Runbook {token}\n\nThe {needle} happens every quarter.\n"}],
+        ))
+        statuses = []
+        deadline = time.monotonic() + RECOVERY_TIMEOUT
+        while True:
+            status = _ok(call("pipeshub_indexing_status", collectionId=created["collectionId"]))
+            statuses.append(status)
+            if status["done"] or time.monotonic() >= deadline:
+                break
+            time.sleep(POLL)
+        yield {
+            "created": created,
+            "uploaded": uploaded,
+            "status": status,
+            "polls": len(statuses),
+            "name": name,
+            "needle": needle,
+        }
+    finally:
+        try:
+            kb_client.delete_kb(created["collectionId"])
+        except Exception:  # noqa: BLE001 - teardown must not mask test results
+            logger.warning("could not delete the collection %s", created["collectionId"])
+
+
+class TestFillAWorkspace:
+    def test_create_returns_the_id_and_a_link_to_it(self, filled: dict) -> None:
+        created = filled["created"]
+
+        assert created["collectionId"], created
+        assert created["name"].startswith("mcp-fill-"), created
+        assert created["url"].endswith(f"/knowledge-base?nodeType=app&nodeId={created['collectionId']}"), created
+
+    def test_upload_reports_the_stored_record(self, filled: dict) -> None:
+        uploaded = filled["uploaded"]
+
+        assert [u["name"] for u in uploaded["uploaded"]] == [filled["name"]], uploaded
+        assert uploaded["uploaded"][0]["recordId"], uploaded
+        assert uploaded["failed"] == [], uploaded
+        assert uploaded["summary"] is not None, uploaded
+
+    def test_indexing_status_reaches_done(self, filled: dict) -> None:
+        status = filled["status"]
+
+        assert status["done"] is True, f"not done after {filled['polls']} polls: {status}"
+        assert status["total"] == 1, status
+        assert (status["pendingCount"], status["failedCount"]) == (0, 0), status
+
+    def test_search_finds_what_was_uploaded(self, call: CallTool, filled: dict) -> None:
+        body = _ok(call(
+            "pipeshub_search", query=filled["needle"], kb=[filled["created"]["collectionId"]], limit=5,
+        ))
+
+        assert [r["recordId"] for r in body["records"]] == [filled["uploaded"]["uploaded"][0]["recordId"]], body
+        assert body["records"][0]["recordName"] == stored_name(filled["name"])
+
+    def test_upload_of_an_unsupported_type_is_refused_before_sending(self, call: CallTool, filled: dict) -> None:
+        result = call(
+            "pipeshub_upload",
+            collectionId=filled["created"]["collectionId"],
+            documents=[{"name": "tool.exe", "text": "MZ"}],
+        )
+
+        assert result.is_error
+        assert "unsupported extension" in result.text
+
+    def test_connect_source_links_to_the_connector_page(self, call: CallTool) -> None:
+        # The origin is the instance's configured backend URL, which need not be the one this run dials.
+        body = _ok(call("pipeshub_connect_source", connector="Jira"))
+
+        assert body["url"].endswith("/workspace/connectors/personal/?connectorType=Jira"), body
+        assert body["adminUrl"].endswith("/workspace/connectors/team/?connectorType=Jira"), body
