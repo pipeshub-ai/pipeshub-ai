@@ -663,7 +663,15 @@ async def _enrich_user_info_for_service_account_agent_chat(
     # worse for the same reason as above — it widens the agent's reach at the
     # moment the narrower identity stopped being allowed.
     if bound and not _is_live_identity(identity_doc):
-        switched_off = identity_doc.get("isDisabled") is True
+        # Deleted wins when both are set. Soft-delete only merges `isActive`
+        # and leaves `isDisabled` as it found it, so an account switched off
+        # and then removed still carries the flag — and telling an
+        # administrator to switch it back on would send them after something
+        # that cannot work, since the account is gone from the list too.
+        switched_off = (
+            identity_doc.get("isDisabled") is True
+            and identity_doc.get("isActive") is not False
+        )
         logger.error(
             "Agent %s is bound to %s, which has been %s",
             agent.get("_key"),
