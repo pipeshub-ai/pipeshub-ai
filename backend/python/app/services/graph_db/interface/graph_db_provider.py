@@ -4436,6 +4436,26 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_accessible_connector_types(
         self,
         user_id: str,

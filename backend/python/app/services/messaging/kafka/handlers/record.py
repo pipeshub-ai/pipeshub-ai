@@ -973,7 +973,8 @@ class RecordEventHandler(BaseEventService):
 
         True when the record was handled: left QUEUED until the source's
         Retry-After for the stranded sweep to re-send, or, once it has waited
-        longer than allowed, FAILED. False leaves ``exc`` to the ordinary retry
+        longer than allowed while its connector got nothing indexed, FAILED.
+        False leaves ``exc`` to the ordinary retry
         path. See ``app/modules/indexing/rate_limit_deferral.py``.
         """
         retry_after = rate_limit_retry_after(exc)
@@ -993,6 +994,17 @@ class RecordEventHandler(BaseEventService):
         now = get_epoch_timestamp_in_ms()
         plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total)
         graph = self.event_processor.graph_provider
+        if plan.give_up and await self._connector_indexed_since(record["connectorId"], plan.since_ms):
+            # The source has been serving this connector all along; the record
+            # is behind the connector's own backlog, not refused.
+            self.logger.info(
+                "Record %s has been rate-limited since %s while its connector kept "
+                "indexing, so it is waiting its turn: its wait starts again",
+                record_id, plan.since_ms,
+            )
+            plan = plan_deferral(
+                record, retry_after, now_ms=now, max_total_seconds=max_total, new_run=True
+            )
         try:
             if plan.give_up:
                 reason = rate_limited_gave_up(source, plan.not_before_ms, now, max_total / 3600)
@@ -1030,6 +1042,24 @@ class RecordEventHandler(BaseEventService):
             record_id, retry_after, plan.not_before_ms,
         )
         return True
+
+    async def _connector_indexed_since(self, connector_id: str, since_ms: int) -> bool:
+        """Whether a record of the connector finished indexing after ``since_ms``.
+
+        False when that cannot be read, so the record fails as it would have
+        before the check, rather than waiting on an answer that never comes.
+        """
+        try:
+            return await self.event_processor.graph_provider.has_records_indexed_since(
+                connector_id, since_ms
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not tell whether connector %s indexed anything since %s, so a "
+                "record waiting that long on its rate limit is failed: %s",
+                connector_id, since_ms, exc,
+            )
+            return False
 
     async def _end_rate_limit_wait(self, record_id: str) -> None:
         """The source served the record, so its run of rate-limit waits is over."""

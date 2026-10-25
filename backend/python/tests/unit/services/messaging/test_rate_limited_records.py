@@ -459,3 +459,93 @@ class TestAServedRecordEndsItsWait:
 
         assert RETRY_NOT_BEFORE_FIELD not in setup.graph.records["r"]
         assert RATE_LIMITED_SINCE_FIELD not in setup.graph.records["r"]
+
+
+def _waited_a_day(setup: Setup, record_id: str, now: int) -> int:
+    """A record whose run of waits began 23h45m ago; returns when it began."""
+    since = now - 23 * HOUR_MS - 45 * 60_000
+    setup.graph.add_queued(
+        record_id, CONNECTOR, queued_at_ms=now - 2 * 60_000,
+        **{RATE_LIMITED_SINCE_FIELD: since, RETRY_NOT_BEFORE_FIELD: now - 60_000},
+    )
+    return since
+
+
+def _indexed(setup: Setup, record_id: str, connector_id: str, at_ms: int) -> None:
+    setup.graph.add_queued(record_id, connector_id, queued_at_ms=at_ms - 60_000)
+    setup.graph.mark_indexed(record_id, at_ms=at_ms)
+
+
+class TestARecordWaitingBehindItsConnectorsBacklog:
+    """A day of 429s while the connector's other records are being indexed
+    means the source is serving the connector and the record is only waiting
+    its turn: the quota each window brings back went to the records ahead of
+    it. That record waits again; only one whose connector got nothing indexed
+    for the whole day fails."""
+
+    async def test_its_wait_starts_again_and_it_is_sent_once_that_has_passed(
+        self, setup: Setup, broker: RedisBroker | KafkaBroker
+    ) -> None:
+        now = get_epoch_timestamp_in_ms()
+        since = _waited_a_day(setup, "gh-3", now)
+        _indexed(setup, "gh-ahead", CONNECTOR, at_ms=since + 2 * HOUR_MS)
+
+        await broker.deliver(_envelope("gh-3"))
+
+        stored = setup.graph.records["gh-3"]
+        assert stored["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert "Engineering GitHub is limiting" in stored["reason"]
+        assert stored[RATE_LIMITED_SINCE_FIELD] >= now, "a new run of waits, from now"
+        not_before = stored[RETRY_NOT_BEFORE_FIELD]
+        assert not_before >= now + RETRY_AFTER_S * 1000
+        assert setup.retries.counted == []
+        assert setup.retry_producer.sent == []
+        assert setup.sink.abandoned == []
+        setup.graph.find_next_queued_duplicate.assert_not_awaited()
+
+        resent = await setup.sweep(at_ms=not_before + 60_000)
+        assert [e["payload"]["recordId"] for e in resent.sent] == ["gh-3"]
+
+    async def test_records_indexed_before_its_wait_began_do_not_count(self, setup: Setup) -> None:
+        now = get_epoch_timestamp_in_ms()
+        since = _waited_a_day(setup, "gh-4", now)
+        _indexed(setup, "gh-earlier", CONNECTOR, at_ms=since - HOUR_MS)
+
+        await _run(setup, "gh-4")
+
+        stored = setup.graph.records["gh-4"]
+        assert stored["indexingStatus"] == ProgressStatus.FAILED.value
+        assert "kept limiting" in stored["reason"]
+
+    async def test_another_connectors_records_do_not_count(self, setup: Setup) -> None:
+        now = get_epoch_timestamp_in_ms()
+        _waited_a_day(setup, "gh-5", now)
+        _indexed(setup, "other", "conn-other", at_ms=now - HOUR_MS)
+
+        await _run(setup, "gh-5")
+
+        assert setup.graph.records["gh-5"]["indexingStatus"] == ProgressStatus.FAILED.value
+
+    async def test_when_the_graph_cannot_say_it_fails_as_before(self, setup: Setup) -> None:
+        now = get_epoch_timestamp_in_ms()
+        since = _waited_a_day(setup, "gh-6", now)
+        _indexed(setup, "gh-ahead", CONNECTOR, at_ms=since + 2 * HOUR_MS)
+        setup.graph.has_records_indexed_since = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        await _run(setup, "gh-6")
+
+        assert setup.graph.records["gh-6"]["indexingStatus"] == ProgressStatus.FAILED.value
+        setup.graph.has_records_indexed_since.assert_awaited_once_with(CONNECTOR, since)
+
+    async def test_a_wait_still_inside_the_day_does_not_ask(self, setup: Setup) -> None:
+        now = get_epoch_timestamp_in_ms()
+        setup.graph.add_queued(
+            "gh-7", CONNECTOR, queued_at_ms=now - 2 * 60_000,
+            **{RATE_LIMITED_SINCE_FIELD: now - 5 * HOUR_MS, RETRY_NOT_BEFORE_FIELD: now - 60_000},
+        )
+        setup.graph.has_records_indexed_since = AsyncMock(return_value=True)
+
+        await _run(setup, "gh-7")
+
+        assert setup.graph.records["gh-7"][RATE_LIMITED_SINCE_FIELD] == now - 5 * HOUR_MS
+        setup.graph.has_records_indexed_since.assert_not_awaited()

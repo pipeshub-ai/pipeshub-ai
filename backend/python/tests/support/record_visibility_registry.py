@@ -166,6 +166,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a storage move takes every stored file under the group, or a restored record would lose its content",
     ),
+    "has_records_indexed_since": (
+        Rule.ALL,
+        "asks whether the source served the connector; a record trashed after it was indexed still shows it did",
+    ),
     # Writes.
     "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),

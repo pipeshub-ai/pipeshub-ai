@@ -4667,6 +4667,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return {row["vrid"] for row in results or [] if row.get("vrid")}
 
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
+        # Seeks the connector's records by index and stops at the first match;
+        # only a connector that indexed nothing reads all of them. Asked only
+        # for a record about to fail on its wait.
+        query = """
+        MATCH (r:Record {connectorId: $connector_id, indexingStatus: $completed})
+        WHERE r.lastIndexTimestamp > $since_ms
+        RETURN 1 AS hit
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            txn_id=transaction,
+        )
+        return bool(results)
+
     def _create_typed_record_from_neo4j(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
         Factory method to create properly typed Record instances from Neo4j data.

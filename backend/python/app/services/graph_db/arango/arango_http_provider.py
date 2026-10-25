@@ -24932,6 +24932,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return {vrid for vrid in results or [] if vrid}
 
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
+        # Reads the connector's records by index and stops at the first match;
+        # only a connector that indexed nothing reads all of them. Asked only
+        # for a record about to fail on its wait.
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.connectorId == @connector_id
+            AND record.indexingStatus == @completed
+            AND record.lastIndexTimestamp > @since_ms
+            LIMIT 1
+            RETURN 1
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            {
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            transaction,
+        )
+        return bool(results)
+
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,

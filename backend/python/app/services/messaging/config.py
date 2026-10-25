@@ -419,7 +419,9 @@ class MessagingEnvConfig:
         back in line until then, and the stranded sweep re-sends it (see
         ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
         such wait; a limit that would carry the record past this ends it FAILED
-        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        instead, unless the connector's other records were indexed meanwhile,
+        which means the record is only waiting its turn and its count starts
+        again. Zero turns deferral off, as does a disabled stranded sweep,
         which is what re-sends the record.
         """
         return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
