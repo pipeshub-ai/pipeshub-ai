@@ -254,11 +254,12 @@ async def _seed(w: _World) -> None:
         collection=teams,
     )
     await g.batch_create_edges(
-        # Membership role and grant role deliberately disagree in both
-        # directions: the grant is what the member gets on the knowledge base,
-        # and their role inside the team is about managing the team.
+        # Nothing this user is a member of is worth more than READER, and
+        # neither is their direct grant. The only WRITER anywhere is on team
+        # A's grant, so the expected role is unreachable unless the grant is
+        # what counts — which is the rule this is here to hold.
         [edge(w.team_user_key, users, w.team_ids[0], teams, role="READER", type="USER"),
-         edge(w.team_user_key, users, w.team_ids[1], teams, role="WRITER", type="USER"),
+         edge(w.team_user_key, users, w.team_ids[1], teams, role="READER", type="USER"),
          edge(w.team_user_key, users, w.kb_id, apps, role="FILEORGANIZER", type="USER"),
          edge(w.team_ids[0], teams, w.kb_id, apps, role="WRITER", type="TEAM"),
          edge(w.team_ids[1], teams, w.kb_id, apps, role="READER", type="TEAM")],
@@ -348,15 +349,17 @@ async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World)
 
     The strongest of them wins, and what a team grant is worth is the role on
     the team's own grant rather than the member's role inside the team (see
-    graph_db/common/team_grant_role.py). This user reaches the same knowledge
-    base four ways, and each is worth something different:
+    graph_db/common/team_grant_role.py).
 
-    * team A, where they are only a READER, grants WRITER -> WRITER
-    * team B, where they are a WRITER, grants READER -> READER, because
-      being senior in a team is not a claim on what the team was given
-    * directly, as FILEORGANIZER, a retired role that reads as READER
+    This user reaches the same knowledge base three ways, and is a READER
+    everywhere they could be read as one: a READER in both teams, and directly
+    a FILEORGANIZER, a retired role that reads as READER. The only WRITER in
+    reach is on team A's grant.
 
-    So WRITER, from a team they are merely a member of.
+    So WRITER is the answer only if the grant is what counts. Read the
+    member's role instead, as this did before #4626, and every path gives
+    READER and this fails — which is the point, since that reading is what let
+    a team OWNER own every knowledge base shared with the team.
     """
     listing = await _all_records(world, user_id=world.team_user_id)
     ids = [item.id for item in listing.items]
