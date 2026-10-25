@@ -5582,13 +5582,20 @@ class TestOnMessageAbandoned:
         gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
         gp.update_node = AsyncMock(return_value=True)
         gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
-        handler.record_leases = MagicMock(bound=bound, is_held=AsyncMock(return_value=held))
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        handler.record_leases = MagicMock(
+            bound=bound, claim=AsyncMock(return_value=None if held else "holder-1"), release=AsyncMock()
+        )
 
         await handler.on_message_abandoned(self._message(), reason="delivered 10 times", attempts=10)
 
         assert gp.compare_and_set_indexing_status.await_count == int(marked)
+        assert handler._trigger_next_queued_duplicate.await_count == int(marked)
         if marked:
             assert gp.update_node.await_args.args[2]["indexingStatus"] == ProgressStatus.FAILED.value
+            handler.record_leases.release.assert_awaited_once_with("r1", "holder-1")
+        else:
+            handler.record_leases.release.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_tolerates_a_deleted_record(self):
