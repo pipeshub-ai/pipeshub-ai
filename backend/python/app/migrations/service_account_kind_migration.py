@@ -146,6 +146,14 @@ class ServiceAccountKindMigrationService:
                 {
                     "version": self.STATE_VERSION,
                     "done": True,
+                    # Kept, not replaced by the flag. The user management
+                    # service compares these against the collection on every
+                    # boot: `done` says these accounts were marked, not that
+                    # the answer has not moved since, and during a rolling
+                    # upgrade an older consumer can swallow the event for one
+                    # that changed in between.
+                    "userIds": processed,
+                    "disabledUserIds": sorted(disabled),
                     "stamped": stamped,
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },

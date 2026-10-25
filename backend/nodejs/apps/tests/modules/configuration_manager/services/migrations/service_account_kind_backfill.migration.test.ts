@@ -129,17 +129,65 @@ describe('ServiceAccountKindBackfillMigration', () => {
     expect(unseal(kvStore.set.firstCall.args[1]).done).to.equal(undefined);
   });
 
-  it('does nothing once the connector service has reported done', async () => {
-    const find = stubCursor(accounts);
+  it('writes nothing once the answer it reported done still holds', async () => {
+    stubCursor(accounts);
     const kvStore = makeKvStore(
-      seal({ version: SERVICE_ACCOUNT_KIND_STATE_VERSION, done: true }),
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        done: true,
+        userIds: [String(first), String(second)],
+        disabledUserIds: [],
+      }),
     );
 
     const result = await run(kvStore);
 
     expect(result.skipped).to.equal(true);
-    expect(find.called).to.equal(false);
     expect(kvStore.set.called).to.equal(false);
+  });
+
+  it('stages again when an account appears after done', async () => {
+    // `done` says the accounts staged then were marked, not that the answer
+    // has not moved. A rolling upgrade can finish the backfill in a new pod
+    // while an older one still drops the fields from the events it consumes.
+    stubCursor(accounts);
+    const kvStore = makeKvStore(
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        done: true,
+        userIds: [String(first)],
+        disabledUserIds: [],
+      }),
+    );
+
+    const result = await run(kvStore);
+
+    expect(result.skipped).to.equal(false);
+    const state = unseal(kvStore.set.firstCall.args[1]);
+    expect(state.done).to.equal(undefined);
+    expect(state.userIds).to.have.members([String(first), String(second)]);
+    // The one already marked is named, so only the newcomer is written.
+    expect(state.stampedUserIds).to.deep.equal([String(first)]);
+  });
+
+  it('stages again when an account is switched off after done', async () => {
+    stubCursor([{ _id: first }, { _id: second, isDisabled: true }]);
+    const kvStore = makeKvStore(
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        done: true,
+        userIds: [String(first), String(second)],
+        disabledUserIds: [],
+      }),
+    );
+
+    const result = await run(kvStore);
+
+    expect(result.skipped).to.equal(false);
+    const state = unseal(kvStore.set.firstCall.args[1]);
+    expect(state.disabledUserIds).to.deep.equal([String(second)]);
+    // Its answer changed, so it is not treated as already written.
+    expect(state.stampedUserIds).to.deep.equal([String(first)]);
   });
 
   it('does not rewrite a staged list that still matches', async () => {

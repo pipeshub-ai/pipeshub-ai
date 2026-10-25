@@ -355,3 +355,33 @@ async def test_progress_does_not_write_a_stale_list_back() -> None:
 
     assert (result["stamped"], result["missing"]) == (1, 1)
     config.set_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_done_document_keeps_the_lists_it_applied() -> None:
+    """The user management service compares them against the collection on
+    every boot. Replacing them with a bare flag leaves it unable to tell a
+    later change from the set this pass marked."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    service, config = _service(provider, _staged("u1", "u2", disabled=["u2"]))
+
+    await service.migrate()
+
+    written = config.set_config.await_args.args[1]
+    assert written["done"] is True
+    assert written["userIds"] == ["u1", "u2"]
+    assert written["disabledUserIds"] == ["u2"]
+
+
+@pytest.mark.asyncio
+async def test_only_what_is_new_is_written_after_a_restage() -> None:
+    """Re-staged with the accounts already marked named, so a boot that found
+    one newcomer does not rewrite every other node."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    staged = {**_staged("u1", "u2"), "stampedUserIds": ["u1"]}
+    service, _ = _service(provider, staged)
+
+    assert (await service.migrate())["stamped"] == 1
+    assert [d["id"] for d in provider.batch_upsert_nodes.await_args.args[0]] == [
+        "node-2"
+    ]
