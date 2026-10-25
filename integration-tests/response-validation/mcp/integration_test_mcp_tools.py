@@ -42,8 +42,9 @@ logger = logging.getLogger("mcp-tools")
 
 @pytest.fixture(scope="module")
 def call(mcp_base_url: str, mcp_access_token: str) -> CallTool:
-    def _call(name: str, **arguments: object) -> McpToolResult:
-        return call_mcp_tool(mcp_base_url, mcp_access_token, name, arguments)
+    # Positional-only, so a tool argument called `name` (pipeshub_create_collection) is not taken for the tool.
+    def _call(tool: str, /, **arguments: object) -> McpToolResult:
+        return call_mcp_tool(mcp_base_url, mcp_access_token, tool, arguments)
 
     return _call
 
