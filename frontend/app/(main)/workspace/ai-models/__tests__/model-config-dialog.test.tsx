@@ -322,19 +322,30 @@ describe('ModelConfigDialog without a model list', () => {
     expect(api.batchAddModels).not.toHaveBeenCalled();
   });
 
+  const AZURE_MANUAL_PROVIDER = {
+    ...MANUAL_PROVIDER,
+    providerId: 'azureOpenAI',
+    fields: {
+      text_generation: [
+        ...MANUAL_PROVIDER.fields.text_generation,
+        field('deploymentName', { required: true, placeholder: 'Deployment' }),
+      ],
+    },
+  } as unknown as AIModelProvider;
+
+  it('keeps a typed Azure deployment name that matches the picked model when the model changes', () => {
+    renderDialog(vi.fn(), vi.fn(), { provider: AZURE_MANUAL_PROVIDER });
+    const deployment = screen.getByPlaceholderText('Deployment') as HTMLInputElement;
+
+    fireEvent.change(deployment, { target: { value: 'gpt-6-luna' } });
+    addModelIds(['gpt-6-luna']);
+    addModelIds(['gpt-5.4-mini']);
+    expect(deployment.value).toBe('gpt-6-luna');
+  });
+
   it('fills the Azure deployment name from the model until the user types their own', async () => {
     api.addProvider.mockResolvedValue({});
-    const azure = {
-      ...MANUAL_PROVIDER,
-      providerId: 'azureOpenAI',
-      fields: {
-        text_generation: [
-          ...MANUAL_PROVIDER.fields.text_generation,
-          field('deploymentName', { required: true, placeholder: 'Deployment' }),
-        ],
-      },
-    } as unknown as AIModelProvider;
-    renderDialog(vi.fn(), vi.fn(), { provider: azure });
+    renderDialog(vi.fn(), vi.fn(), { provider: AZURE_MANUAL_PROVIDER });
     const deployment = screen.getByPlaceholderText('Deployment') as HTMLInputElement;
 
     addModelIds(['gpt-6-luna']);

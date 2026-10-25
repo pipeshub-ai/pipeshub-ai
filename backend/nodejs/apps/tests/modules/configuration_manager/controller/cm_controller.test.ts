@@ -5600,6 +5600,16 @@ describe('ConfigurationManager Controller', () => {
       expect(saved).to.include({ model: 'gpt-5-mini', deploymentName: 'prod-mini' })
     })
 
+    for (const deploymentName of ['', '  ']) {
+      it(`refuses a new Azure model whose deployment is ${JSON.stringify(deploymentName)}`, async () => {
+        const { res, checked, saved } = await updateAzure({ model: 'gpt-5.4', deploymentName })
+
+        expect(res.status.calledWith(400)).to.be.true
+        expect(checked).to.have.length(0)
+        expect(saved).to.include({ model: 'gpt-5-mini', deploymentName: 'prod-mini' })
+      })
+    }
+
     it('moves an Azure entry to a new model with the deployment sent for it', async () => {
       const { res, checked, saved } = await updateAzure({ model: 'gpt-5.4', deploymentName: 'gpt-5.4' })
 

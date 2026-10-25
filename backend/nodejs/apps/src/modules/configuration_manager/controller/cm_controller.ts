@@ -3401,14 +3401,19 @@ export const updateAIModelProvider =
         return;
       }
 
-      // A deployment serves one model: carrying the stored one to a new model saves a label
-      // that disagrees with the traffic, and the health check passes on the old deployment.
-      const stored = (targetModel.configuration ?? {}) as Record<string, unknown>;
+      // A deployment serves one model: carrying the stored one to a new model
+      // saves a label that disagrees with the traffic, and the health check
+      // passes on the old deployment.
+      const incoming = configuration as Record<string, unknown>;
+      const stored = targetModel.configuration as
+        Record<string, unknown> | undefined;
+      const trimmed = (value: unknown): string =>
+        typeof value === 'string' ? value.trim() : '';
       if (
-        'deploymentName' in stored &&
-        'model' in configuration &&
-        String(configuration.model ?? '').trim() !== String(stored.model ?? '').trim() &&
-        !('deploymentName' in configuration)
+        trimmed(stored?.deploymentName) !== '' &&
+        'model' in incoming &&
+        trimmed(incoming.model) !== trimmed(stored?.model) &&
+        trimmed(incoming.deploymentName) === ''
       ) {
         res.status(400).json({
           status: 'error',
