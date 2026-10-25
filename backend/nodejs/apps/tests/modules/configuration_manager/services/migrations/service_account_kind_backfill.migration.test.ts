@@ -148,6 +148,7 @@ describe('ServiceAccountKindBackfillMigration', () => {
       seal({
         version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
         userIds: [String(second), String(first)],
+        disabledUserIds: [],
       }),
     );
 
@@ -186,6 +187,48 @@ describe('ServiceAccountKindBackfillMigration', () => {
     expect(kvStore.set.calledOnce).to.equal(true);
   });
 
+
+  it('names the accounts an administrator has switched off', async () => {
+    // They emit no event of their own, so the staged list is the only way the
+    // connector service learns about them.
+    stubCursor([{ _id: first }, { _id: second, isDisabled: true }]);
+    const kvStore = makeKvStore();
+
+    const result = await run(kvStore);
+
+    expect(result.disabledStaged).to.equal(1);
+    const state = unseal(kvStore.set.firstCall.args[1]);
+    expect(state.userIds).to.deep.equal([String(first), String(second)]);
+    expect(state.disabledUserIds).to.deep.equal([String(second)]);
+  });
+
+  it('stages an empty disabled list when none are switched off', async () => {
+    stubCursor(accounts);
+    const kvStore = makeKvStore();
+
+    await run(kvStore);
+
+    expect(unseal(kvStore.set.firstCall.args[1]).disabledUserIds).to.deep.equal([]);
+  });
+
+  it('stages again when an account has since been switched off', async () => {
+    stubCursor([{ _id: first }, { _id: second, isDisabled: true }]);
+    const kvStore = makeKvStore(
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        userIds: [String(first), String(second)],
+        disabledUserIds: [],
+      }),
+    );
+
+    const result = await run(kvStore);
+
+    expect(result.skipped).to.equal(false);
+    expect(unseal(kvStore.set.firstCall.args[1]).disabledUserIds).to.deep.equal([
+      String(second),
+    ]);
+  });
+
   it('stages an explicit empty list when there are no service accounts', async () => {
     // Otherwise the connector service cannot tell "none to mark" from "not
     // written yet", and waits for a list that is never coming.
@@ -202,7 +245,11 @@ describe('ServiceAccountKindBackfillMigration', () => {
   it('does not restage an empty list it has already written', async () => {
     stubCursor([]);
     const kvStore = makeKvStore(
-      seal({ version: SERVICE_ACCOUNT_KIND_STATE_VERSION, userIds: [] }),
+      seal({
+        version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
+        userIds: [],
+        disabledUserIds: [],
+      }),
     );
 
     const result = await run(kvStore);

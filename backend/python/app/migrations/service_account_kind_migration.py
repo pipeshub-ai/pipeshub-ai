@@ -144,6 +144,10 @@ class ServiceAccountKindMigrationService:
             return {"success": True, "stamped": 0, "skipped": True}
 
         processed = [str(user_id) for user_id in (state.get("userIds") or [])]
+        # Only the ones switched off are named. Absence already reads as not
+        # disabled, and an account disabled before any of this shipped emits
+        # no event of its own, so this is its only chance to be marked.
+        disabled = {str(user_id) for user_id in (state.get("disabledUserIds") or [])}
         if not processed:
             # Staged explicitly as empty: this deployment has no service
             # accounts, so there is nothing to mark and the backfill is done.
@@ -155,12 +159,21 @@ class ServiceAccountKindMigrationService:
             found, missing = await self._resolve_nodes(processed)
 
             node_keys = [found[user_id] for user_id in processed if user_id in found]
+            disabled_keys = {
+                found[user_id]: user_id in disabled
+                for user_id in processed
+                if user_id in found
+            }
             for start in range(0, len(node_keys), _BATCH):
                 batch = [
                     {
                         "id": node_key,
                         "kind": "service",
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        # Written both ways rather than only when true: an
+                        # account enabled again before this ran would
+                        # otherwise keep a stale flag from an earlier pass.
+                        "isDisabled": disabled_keys.get(node_key, False),
                     }
                     for node_key in node_keys[start : start + _BATCH]
                 ]

@@ -20,8 +20,12 @@ def _service(provider, state=None) -> tuple[ServiceAccountKindMigrationService, 
     return ServiceAccountKindMigrationService(provider, config, MagicMock()), config
 
 
-def _staged(*user_ids) -> dict:
-    return {"version": 1, "userIds": list(user_ids)}
+def _staged(*user_ids, disabled=()) -> dict:
+    return {
+        "version": 1,
+        "userIds": list(user_ids),
+        "disabledUserIds": list(disabled),
+    }
 
 
 def _provider(keys: dict) -> MagicMock:
@@ -57,7 +61,12 @@ async def test_a_staged_account_is_marked_a_service_account() -> None:
 
     written = provider.batch_upsert_nodes.await_args.args[0]
     assert written == [
-        {"id": "node-1", "kind": "service", "updatedAtTimestamp": written[0]["updatedAtTimestamp"]}
+        {
+            "id": "node-1",
+            "kind": "service",
+            "updatedAtTimestamp": written[0]["updatedAtTimestamp"],
+            "isDisabled": False,
+        }
     ]
     assert config.set_config.await_args.args[0] == FLAG
     assert config.set_config.await_args.args[1]["done"] is True
@@ -76,6 +85,7 @@ async def test_nothing_but_kind_is_written() -> None:
         "id",
         "kind",
         "updatedAtTimestamp",
+        "isDisabled",
     }
 
 
@@ -119,13 +129,13 @@ async def test_one_straggler_does_not_cost_the_accounts_that_do_have_nodes() -> 
     result = await service.migrate()
 
     assert (result["success"], result["stamped"], result["missing"]) == (True, 1, 1)
-    assert provider.batch_upsert_nodes.await_args.args[0] == [
+    written = provider.batch_upsert_nodes.await_args.args[0]
+    assert written == [
         {
             "id": "node-1",
             "kind": "service",
-            "updatedAtTimestamp": provider.batch_upsert_nodes.await_args.args[0][0][
-                "updatedAtTimestamp"
-            ],
+            "updatedAtTimestamp": written[0]["updatedAtTimestamp"],
+            "isDisabled": False,
         }
     ]
     config.set_config.assert_not_called()
@@ -248,3 +258,27 @@ async def test_a_second_run_over_marked_nodes_is_harmless() -> None:
     # The same node, marked the same way; only the timestamp moves.
     assert [doc["id"] for batch in both for doc in batch] == ["node-1", "node-1"]
     assert {doc["kind"] for batch in both for doc in batch} == {"service"}
+
+
+@pytest.mark.asyncio
+async def test_an_account_already_switched_off_is_marked_disabled() -> None:
+    """It emits no event of its own, so the backfill is its only chance."""
+    provider = _provider({"u1": "node-1", "u2": "node-2"})
+    service, _ = _service(provider, _staged("u1", "u2", disabled=["u2"]))
+
+    await service.migrate()
+
+    written = {d["id"]: d["isDisabled"] for d in provider.batch_upsert_nodes.await_args.args[0]}
+    assert written == {"node-1": False, "node-2": True}
+
+
+@pytest.mark.asyncio
+async def test_the_flag_is_written_both_ways_not_only_when_true() -> None:
+    """An account enabled again before this ran would otherwise keep a stale
+    flag from an earlier pass."""
+    provider = _provider({"u1": "node-1"})
+    service, _ = _service(provider, _staged("u1"))
+
+    await service.migrate()
+
+    assert provider.batch_upsert_nodes.await_args.args[0][0]["isDisabled"] is False

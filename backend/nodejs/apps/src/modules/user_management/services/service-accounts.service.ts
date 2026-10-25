@@ -214,6 +214,7 @@ export class ServiceAccountsService {
       // work this out from the address would be guessing at a rule this
       // service owns.
       kind: 'service',
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -370,6 +371,10 @@ export class ServiceAccountsService {
       email: finished.email,
       syncAction: SyncAction.Immediate,
       kind: 'service',
+      // Mongo was switched back on a few lines above. Saying so explicitly is
+      // what stops a disable, delete and restore coming back enabled here and
+      // still switched off on the graph.
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -407,6 +412,10 @@ export class ServiceAccountsService {
     input: UpdateServiceAccountInput,
   ): Promise<ServiceAccountView> {
     const account = await this.findOrThrow(orgId, id);
+    // Read before anything below mutates it, so the graph is told only when
+    // the answer actually moved. Enabling and disabling are written on
+    // different paths, and neither alone says whether anything changed.
+    const wasDisabled = account.isDisabled === true;
 
     // Enabling is a conditional write, not an assignment to the document read
     // a moment ago. While a restore is in flight the account is deliberately
@@ -476,14 +485,28 @@ export class ServiceAccountsService {
       );
     }
 
-    // The graph keeps its own copy of the display name, so a rename has to
-    // reach it too or search results will go on showing the old one.
-    if (input.fullName !== undefined) {
+    // Two reasons the graph has to hear about this.
+    //
+    // It keeps its own copy of the display name, so a rename has to reach it
+    // or search results will go on showing the old one.
+    //
+    // And it has no other way to learn that an account was switched off. The
+    // token paths all re-read this collection, but an agent bound to a service
+    // account searches as that identity on the graph alone — so without this
+    // it would go on reading with the reach of an account an administrator has
+    // just switched off. Published on enabling too: a flag written only on the
+    // way down would stay set after the account came back.
+    const isDisabledNow = account.isDisabled === true;
+    const disabledChanged = isDisabledNow !== wasDisabled;
+    if (input.fullName !== undefined || disabledChanged) {
       const updatedPayload: UserUpdatedEvent = {
         orgId,
         userId: idOf(account),
         fullName: account.fullName,
         email: account.email,
+        // Always sent on this event, so a rename cannot leave the graph
+        // holding a stale answer it was never told to update.
+        isDisabled: isDisabledNow,
       };
       await this.publish({
         eventType: EventType.UpdateUserEvent,

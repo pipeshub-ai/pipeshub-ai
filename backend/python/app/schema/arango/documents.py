@@ -82,6 +82,12 @@ user_schema = {
             # be a copy of that one, free to drift. Existing nodes are filled
             # in by that service republishing them, for the same reason.
             "kind": {"type": "string", "enum": ["human", "service"]},
+            # Whether an administrator has switched this service account off.
+            # Separate from `isActive`, which soft-delete owns and which a
+            # rename sets back to true — a disable stored there would not
+            # survive one. Absent means not disabled, so a node that predates
+            # this field, or a person, reads as usable.
+            "isDisabled": {"type": "boolean"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry

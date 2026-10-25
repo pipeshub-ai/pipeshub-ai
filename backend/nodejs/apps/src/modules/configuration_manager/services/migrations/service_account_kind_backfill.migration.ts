@@ -30,12 +30,20 @@ export interface ServiceAccountKindState {
   done?: boolean;
   /** The `userId` of every live service account, awaiting its `kind`. */
   userIds?: string[];
+  /**
+   * The subset of those that an administrator has switched off. Only the
+   * subset, because absence of the flag already reads as not disabled — and
+   * an account disabled before this shipped emits no event of its own, so
+   * without this it would stay usable on the graph for good.
+   */
+  disabledUserIds?: string[];
   stagedAt?: number;
 }
 
 export interface ServiceAccountKindBackfillResult {
   accountsFound: number;
   accountsStaged: number;
+  disabledStaged: number;
   skipped: boolean;
 }
 
@@ -89,18 +97,21 @@ export class ServiceAccountKindBackfillMigration {
   async run(): Promise<ServiceAccountKindBackfillResult> {
     const state = await this.readState();
     if (state?.done === true) {
-      return { accountsFound: 0, accountsStaged: 0, skipped: true };
+      return { accountsFound: 0, accountsStaged: 0, disabledStaged: 0, skipped: true };
     }
 
     const userIds: string[] = [];
+    const disabledUserIds: string[] = [];
     const cursor = Users.find({ kind: 'service', isDeleted: false })
-      .select('_id')
+      .select('_id isDisabled')
       .batchSize(BATCH_SIZE)
       .lean()
       .cursor();
 
     for await (const account of cursor) {
-      userIds.push(String(account._id));
+      const userId = String(account._id);
+      userIds.push(userId);
+      if (account.isDisabled === true) disabledUserIds.push(userId);
       if (userIds.length > MAX_STAGED_ACCOUNTS) {
         this.logger.error(
           'More service accounts than one staged document can hold; nothing staged',
@@ -109,6 +120,7 @@ export class ServiceAccountKindBackfillMigration {
         return {
           accountsFound: userIds.length,
           accountsStaged: 0,
+          disabledStaged: 0,
           skipped: false,
         };
       }
@@ -121,10 +133,14 @@ export class ServiceAccountKindBackfillMigration {
     //
     // Staging the same list again would only churn the key and its cache
     // invalidation; the connector service has not answered either way yet.
-    if (this.sameList(state?.userIds, userIds)) {
+    if (
+      this.sameList(state?.userIds, userIds) &&
+      this.sameList(state?.disabledUserIds, disabledUserIds)
+    ) {
       return {
         accountsFound: userIds.length,
         accountsStaged: 0,
+        disabledStaged: 0,
         skipped: true,
       };
     }
@@ -132,12 +148,14 @@ export class ServiceAccountKindBackfillMigration {
     await this.writeState({
       version: SERVICE_ACCOUNT_KIND_STATE_VERSION,
       userIds,
+      disabledUserIds,
       stagedAt: Date.now(),
     });
 
     return {
       accountsFound: userIds.length,
       accountsStaged: userIds.length,
+      disabledStaged: disabledUserIds.length,
       skipped: false,
     };
   }
