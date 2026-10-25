@@ -114,13 +114,15 @@ class ConfigurationService:
             if value is None:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
+                # No key in these two lines either, for the same reason as the
+                # cache hit above.
                 if env_fallback is not None:
-                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.logger.debug("📦 Using environment variable fallback for a config key")
                     with self._cache_lock:
                         self.cache[key] = env_fallback
                     return env_fallback
 
-                self.logger.debug("📦 Cache miss for key: %s", key)
+                self.logger.debug("📦 Config cache miss")
                 return default
             if keep_in_cache:
                 with self._cache_lock:
@@ -133,7 +135,8 @@ class ConfigurationService:
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:
-                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                # The error line above already names the key.
+                self.logger.debug("📦 Using environment variable fallback after the error")
                 return env_fallback
             return default
 

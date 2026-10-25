@@ -287,3 +287,35 @@ async def test_configuration_service_get_failure_logs_type_not_message(
     with pytest.raises(_LeakyDecodeError):
         await svc.get_config(SECRET_PATH, use_cache=False, raise_on_error=True)
     _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")
+
+
+async def test_configuration_service_miss_and_env_fallback_log_no_key(captured, monkeypatch) -> None:
+    store = AsyncMock()
+    store.get_key = AsyncMock(return_value=None)
+    svc = _build_service(store=store)
+    svc.logger = STORE_LOGGER
+
+    assert await svc.get_config(SECRET_PATH, default="d", use_cache=False) == "d"
+    with patch.object(svc, "_get_env_fallback", return_value={"password": SENTINEL}):
+        assert (await svc.get_config(SECRET_PATH, use_cache=False))["password"] == SENTINEL
+
+    messages = [r.getMessage() for r in captured.records]
+    assert any("cache miss" in m for m in messages)
+    assert any("environment variable fallback" in m for m in messages)
+    assert SECRET_PATH not in captured.text
+    assert SENTINEL not in captured.text
+
+
+async def test_configuration_service_error_fallback_debug_line_has_no_key(captured, monkeypatch) -> None:
+    store = AsyncMock()
+    store.get_key = AsyncMock(side_effect=RuntimeError("down"))
+    svc = _build_service(store=store)
+    svc.logger = STORE_LOGGER
+
+    with patch.object(svc, "_get_env_fallback", return_value={"password": SENTINEL}):
+        assert (await svc.get_config(SECRET_PATH, use_cache=False))["password"] == SENTINEL
+
+    fallback = [r.getMessage() for r in captured.records if "fallback after the error" in r.getMessage()]
+    assert fallback, "the error fallback path did not log"
+    assert all(SECRET_PATH not in m for m in fallback)
+    assert SENTINEL not in captured.text
