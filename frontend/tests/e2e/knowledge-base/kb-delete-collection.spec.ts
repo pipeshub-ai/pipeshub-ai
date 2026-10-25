@@ -18,7 +18,7 @@ test.describe('Delete a collection from the Collections list', () => {
     const row = page.getByRole('row').filter({ hasText: kb.name }).first();
     await expect(row).toBeVisible({ timeout: 30_000 });
     await row.hover();
-    await row.getByRole('button', { name: 'more_horiz' }).click();
+    await row.getByRole('button', { name: `More options for ${kb.name}`, exact: true }).click();
     await page.getByRole('menuitem', { name: /Delete/ }).click();
 
     const dialog = page.getByRole('dialog');
