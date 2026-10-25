@@ -205,18 +205,15 @@ async def _transform_query(
 def _queries_for_search(
     original: str, rewritten: str | None, expanded: str | None
 ) -> list[str]:
-    """The queries to retrieve with; what the user typed covers a failed step."""
-    original = original.strip()
-    # A rewrite that failed is replaced by the original; one that came back
-    # blank is not, so the expansions stand alone as they always have.
-    first = original if rewritten is None else rewritten.strip()
-    queries = [first] if first else []
-    for line in (expanded or "").split("\n"):
-        q = line.strip()
+    """The queries to retrieve with: what the user typed, then the model's versions."""
+    # The typed query is always searched. A rewrite can paraphrase away an
+    # exact identifier (an invoice number, a ticket key, a made-up word), and
+    # then no leg of the hybrid search matches the one file that holds it.
+    queries: list[str] = []
+    for candidate in [original, rewritten or "", *(expanded or "").split("\n")]:
+        q = candidate.strip()
         if q and q not in queries:
             queries.append(q)
-    if not queries and original:
-        queries = [original]
     return queries
 
 

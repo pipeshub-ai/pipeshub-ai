@@ -85,6 +85,32 @@ describe('FirstPartyDeviceAppService', () => {
     ])
   })
 
+  // Refresh tokens are minted only for offline_access: without it every device
+  // login ends when its first access token does.
+  it('grants offline_access so device logins get a refresh token, on new and existing apps', async () => {
+    const withOffline = [...AgentMcpScopes, 'offline_access']
+    service = new FirstPartyDeviceAppService(
+      createMockLogger(),
+      mockEncryptionService,
+      { getAllowedScopeNamesForRole: sinon.stub().returns(withOffline) } as any,
+      { mcpScopes: withOffline } as any,
+    )
+    const findOne = sinon.stub(OAuthApp, 'findOne')
+    findOne.onFirstCall().resolves(null)
+    const create = sinon.stub(OAuthApp, 'create').resolves({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID } as any)
+    await service.getOrCreate()
+    expect((create.firstCall.args[0] as Record<string, unknown>).allowedScopes).to.include('offline_access')
+
+    const appId = new Types.ObjectId()
+    findOne.onSecondCall().resolves({ _id: appId, clientId: FIRST_PARTY_DEVICE_CLIENT_ID, allowedScopes: [...AgentMcpScopes] } as any)
+    const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
+    await service.getOrCreate()
+    expect(update.firstCall.args).to.deep.equal([
+      { _id: appId },
+      { $addToSet: { allowedScopes: { $each: ['offline_access'] } } },
+    ])
+  })
+
   it('does not add a preset scope the instance MCP_SCOPES leaves out', async () => {
     service = new FirstPartyDeviceAppService(
       createMockLogger(),

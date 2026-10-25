@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderScope
 from app.connectors.sources.network_share.entry import DirectoryEntry
-from app.connectors.sources.network_share.errors import DirectoryListingError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    DirectoryListingError,
+)
 from app.connectors.sources.network_share.filters import (
     date_bounds,
     passes_date_filters,
@@ -48,6 +51,9 @@ class WalkResult:
     seen: set[str]
     complete: bool
     max_timestamp_ms: int = 0
+    # External ids of the folders and files that failed to be read. What was
+    # stored under them is still on the share as far as this walk knows.
+    unread: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -78,6 +84,7 @@ class ShareWalker:
             IndexingFilterKey.FILES, default=True
         )
         seen: set[str] = {share}
+        unread: set[str] = set()
         complete = True
         max_ts = 0
         upserts: list[tuple[FileRecord, list[Permission]]] = []
@@ -87,6 +94,11 @@ class ShareWalker:
         # The folders the walk is inside right now, outermost first.
         open_dirs: list[tuple[int, datetime | None, datetime | None, str]] = []
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
+
+        def mark_unread(server_path: str) -> None:
+            nonlocal complete
+            complete = False
+            unread.add(f"{share}/{identity_rel_path(server_path)}" if server_path else share)
 
         async def flush() -> None:
             nonlocal upserts, moves
@@ -195,8 +207,9 @@ class ShareWalker:
                     await flush()
             return server_path if entry.is_directory else None
 
-        async def traverse(directory_path: str, *, prefix: bool = False) -> None:
-            nonlocal complete
+        async def traverse(
+            directory_path: str, *, prefix: bool = False, start: bool = False
+        ) -> None:
             try:
                 entries = await self.data_source.list_directory(share, directory_path)
             except FileNotFoundError:
@@ -207,13 +220,28 @@ class ShareWalker:
                         directory_path,
                     )
                     return
-                complete = False
+                mark_unread(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: not found", share, directory_path
                 )
                 return
+            except AccessDeniedError as exc:
+                # Where the walk starts, a denial is more likely the account's
+                # session or the connector's settings than a folder it lost.
+                if start:
+                    mark_unread(directory_path)
+                    self.logger.error(
+                        "Failed to list %s/%s: %s", share, directory_path, exc
+                    )
+                    return
+                # Below that it is the folder's own permissions: what the account
+                # cannot list is not synced, and what was synced from it goes.
+                self.logger.info(
+                    "Not syncing %s/%s: the account may not list it", share, directory_path
+                )
+                return
             except (DirectoryListingError, OSError, ConnectionError) as exc:
-                complete = False
+                mark_unread(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: %s", share, directory_path, exc
                 )
@@ -249,7 +277,7 @@ class ShareWalker:
                             if tracked:
                                 open_dirs.pop()
                 except Exception:
-                    complete = False
+                    mark_unread(join_rel_path(directory_path, entry.name) or directory_path)
                     self.logger.exception(
                         "Error processing %s in %s/%s",
                         entry.name,
@@ -266,7 +294,6 @@ class ShareWalker:
             the child check, and neither the chosen folder nor the folders above it
             are ever listed as entries. A failed stat must not prune.
             """
-            nonlocal complete
             along: list[tuple[int, datetime | None, datetime | None, str]] = []
             parts = [part for part in directory_path.split("/") if part]
             for index in range(len(parts)):
@@ -274,7 +301,7 @@ class ShareWalker:
                 try:
                     info = await self.data_source.stat(share, path, follow=False)
                 except Exception as exc:
-                    complete = False
+                    mark_unread(directory_path)
                     self.logger.error(
                         "Failed to stat %s/%s before walking a selected folder: %s",
                         share,
@@ -316,7 +343,7 @@ class ShareWalker:
                 continue
             open_dirs.extend(along)
             try:
-                await traverse(directory, prefix=bool(prefix))
+                await traverse(directory, prefix=bool(prefix), start=True)
             finally:
                 del open_dirs[len(open_dirs) - len(along) :]
 
@@ -344,7 +371,9 @@ class ShareWalker:
                 await flush()
 
         await flush()
-        return WalkResult(seen=seen, complete=complete, max_timestamp_ms=max_ts)
+        return WalkResult(
+            seen=seen, complete=complete, max_timestamp_ms=max_ts, unread=unread
+        )
 
     async def _materialize_ancestors(
         self,

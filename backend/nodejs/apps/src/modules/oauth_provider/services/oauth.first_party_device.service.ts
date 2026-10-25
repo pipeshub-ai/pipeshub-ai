@@ -15,8 +15,13 @@ import { AgentMcpScopes } from '../config/scopes.config'
 import { ScopeValidatorService } from './scope.validator.service'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const CLIENT_SECRET_BYTES = 32
+
+// A refresh token is minted only for offline_access, so without it a device
+// login, refresh_token grant and all, would end with its one-hour access token.
+const DEVICE_APP_SCOPES = [...AgentMcpScopes, OAuthScopeNames.OFFLINE_ACCESS];
 
 /**
  * Ensures the official "PipesHub agent" OAuth app exists so coding agents
@@ -144,7 +149,7 @@ export class FirstPartyDeviceAppService {
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
-    return AgentMcpScopes.filter((scope) => {
+    return DEVICE_APP_SCOPES.filter((scope) => {
       if (!memberAllowed.has(scope)) {
         return false
       }

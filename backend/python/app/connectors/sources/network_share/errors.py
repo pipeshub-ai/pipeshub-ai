@@ -9,6 +9,11 @@ class DirectoryListingError(Exception):
         self.message = message
 
 
+class AccessDeniedError(DirectoryListingError):
+    """The account may not list this folder. It stays that way until someone changes its
+    permissions, unlike a dropped connection or a busy server."""
+
+
 class ShareListingError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
