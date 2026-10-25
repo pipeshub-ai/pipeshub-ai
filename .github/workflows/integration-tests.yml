@@ -612,6 +612,11 @@ jobs:
           go-version: '1.23'
           cache: false
 
+      # setup-go v6+ exports GOTOOLCHAIN=local for the rest of the job, which stops the Go SDK's
+      # go.mod from switching to the newer Go it requires. Restore Go's default.
+      - name: Let go.mod select a newer Go toolchain
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |

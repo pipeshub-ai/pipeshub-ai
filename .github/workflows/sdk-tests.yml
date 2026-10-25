@@ -105,6 +105,11 @@ jobs:
           go-version: '1.24'
           cache: false
 
+      # setup-go v6+ exports GOTOOLCHAIN=local for the rest of the job, which stops the Go SDK's
+      # go.mod from switching to the newer Go it requires. Restore Go's default.
+      - name: Let go.mod select a newer Go toolchain
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       # The CLI version comes from generate-sdks.yml at OPEN_API_REF, so the two cannot drift.
       - name: Install Speakeasy CLI
         run: |
