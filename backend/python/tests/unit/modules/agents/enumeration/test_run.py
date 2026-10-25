@@ -155,8 +155,16 @@ class TestAScopedQuestionIsLeftToTheAgent:
              "allowedRecordGroups": [], "allowedRecords": []},
             {"apps": ["conn-1"], "allowedApps": ["conn-1", "conn-2"],
              "allowedRecordGroups": [], "allowedRecords": []},
+            # A Collection agent names its Collection under `kb`, not `apps`.
+            # The read scopes by both, so this bound matches the read exactly.
+            {"apps": [], "kb": ["kb-1"], "allowedApps": ["kb-1"],
+             "allowedRecordGroups": [], "allowedRecords": []},
         ],
-        ids=["agent-on-whole-apps", "agent-allows-more-than-is-asked"],
+        ids=[
+            "agent-on-whole-apps",
+            "agent-allows-more-than-is-asked",
+            "collection-agent-named-under-kb",
+        ],
     )
     async def test_a_saved_agent_bound_only_to_apps_is_still_counted(self, filters: dict) -> None:
         """Every saved-agent turn carries these keys, so treating their presence
@@ -187,8 +195,17 @@ class TestAScopedQuestionIsLeftToTheAgent:
             {"apps": ["conn-1", "conn-2"], "allowedApps": ["conn-1"],
              "allowedRecordGroups": [], "allowedRecords": []},
             {"allowedApps": ["conn-1"], "allowedRecordGroups": [], "allowedRecords": []},
+            # The Collection under `kb` is outside the bound. The read covers
+            # `apps` and `kb` together, so counting here would tell the reader
+            # about documents this connection is not allowed to see.
+            {"apps": ["conn-1"], "kb": ["kb-outside"], "connectionApps": ["conn-1"],
+             "connectionRecordGroups": [], "connectionRecords": []},
         ],
-        ids=["bound-narrower-than-asked", "bound-with-nothing-asked"],
+        ids=[
+            "bound-narrower-than-asked",
+            "bound-with-nothing-asked",
+            "collection-under-kb-outside-the-bound",
+        ],
     )
     async def test_a_bound_the_read_would_overshoot_still_defers(self, filters: dict) -> None:
         """The read scopes by `apps`. If the bound admits fewer apps than that

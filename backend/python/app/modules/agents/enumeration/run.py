@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.agents.enumeration.answer import RecordLookup, build_enumeration_answer
 from app.modules.agents.enumeration.policy import is_enumeration_query
+from app.modules.agents.knowledge_scope import NO_KB_SELECTED_FILTER
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.selection_scope import allowed_filters, has_selection
+from app.services.graph_db.interface.graph_db_provider import requested_scope_ids
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -141,13 +143,23 @@ async def _record_lookup_factory(
 
 
 def _bound_the_read_would_miss(filters: dict[str, Any] | None) -> bool:
-    """Whether a server-set bound is not already reflected in `apps` and `kb`.
+    """Whether a server-set bound is not already reflected in what will be read.
 
     Every saved-agent turn carries these bounds, and most of them only say
-    which apps the agent may read — which `apps` already says too, so the
-    count is right and the census can answer. Treating their mere presence as
-    a reason to decline turned the census off for every saved agent, which is
-    the custom-agent case it exists for.
+    which apps the agent may read — which the read is already scoped to, so
+    the count is right and the census can answer. Treating their mere presence
+    as a reason to decline turned the census off for every saved agent, which
+    is the custom-agent case it exists for.
+
+    What the read will cover is `requested_scope_ids`, which is `apps` and `kb`
+    together: a Collection id is honoured under either key, so comparing the
+    bound against `apps` alone gets it wrong twice over. A Collection agent
+    sends its Collection under `kb` with `apps` empty, and would be declined
+    although its bound matches exactly; and a Collection named under `kb` but
+    outside the bound would be counted, telling the reader about documents the
+    agent is not allowed to see. `NO_KB_SELECTED` is left out because it names
+    no app — it is how an agent says it has no Collection, not a Collection the
+    bound has to admit.
 
     Three bounds are not reflected and must decline: one that names particular
     record groups or records, since the read counts whole apps; one that lists
@@ -155,12 +167,11 @@ def _bound_the_read_would_miss(filters: dict[str, Any] | None) -> bool:
     admits fewer apps than the read is about to count, the unscoped read
     included, since the read would then count outside it.
     """
-    raw = (filters or {}).get("apps")
-    asked = (
-        {app for app in raw if isinstance(app, str) and app}
-        if isinstance(raw, (list, tuple))
-        else set()
-    )
+    asked = {
+        app
+        for app in (requested_scope_ids(filters) or ())
+        if app != NO_KB_SELECTED_FILTER
+    }
     for bound in allowed_filters(filters):
         if bound.get("recordGroups") or bound.get("records"):
             return True
