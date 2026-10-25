@@ -388,7 +388,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             await Health.health_check_kafka(container)
 
@@ -415,7 +415,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
         ):
             await Health.health_check_kafka(container)
 
@@ -445,7 +445,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
         ):
             await Health.health_check_kafka(container)
 
@@ -469,7 +469,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
         ):
             await Health.health_check_kafka(container)
 
@@ -490,7 +490,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             with pytest.raises(Exception, match="no broker"):
                 await Health.health_check_kafka(container)
@@ -512,7 +512,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             await Health.health_check_kafka(container)
 
@@ -533,7 +533,7 @@ class TestHealthCheckKafka:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             await Health.health_check_kafka(container)
 
@@ -878,7 +878,7 @@ class TestHealthCheckKafkaAdditional:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             # Should not raise despite stop failure
             await Health.health_check_kafka(container)
@@ -899,7 +899,7 @@ class TestHealthCheckKafkaAdditional:
 
         with (
             patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
-            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+            patch("aiokafka.AIOKafkaConsumer", return_value=mock_consumer),
         ):
             with pytest.raises(Exception, match="start fail"):
                 await Health.health_check_kafka(container)

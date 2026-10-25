@@ -88,6 +88,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
@@ -1796,6 +1797,12 @@ def _indexing_worker_count() -> int:
     return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
 
 
+def _distributed_leases_wanted() -> bool:
+    """On PostgreSQL state the leases are rows in the database, so they are always kept: a stage and a re-index of one record
+    exclude each other (``record:<id>``) whatever the capacity switch says."""
+    return messaging_env.distributed_concurrency_enabled or uses_pg_state()
+
+
 async def _start_stages_when_topics_exist(
     admin: IMessageAdmin,
     topics: list[str],
@@ -1846,16 +1853,8 @@ async def start_kafka_consumers(
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
 
-        if messaging_env.distributed_concurrency_enabled:
-            concurrency_manager = DistributedConcurrencyManager(
-                logger,
-                redis_config,
-                key_prefix=messaging_env.concurrency_key_prefix,
-                operation_timeout_seconds=(
-                    messaging_env.concurrency_redis_timeout_seconds
-                ),
-                max_connections=messaging_env.concurrency_redis_max_connections,
-            )
+        if _distributed_leases_wanted():
+            concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
             # Fails the startup, like the RetryManager ping above: Redis is a
             # hard requirement for this service on either broker, so degrading
             # here would only mask a Redis that the line above already proved

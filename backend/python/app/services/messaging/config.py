@@ -16,6 +16,7 @@ class MessageBrokerType(str, Enum):
 
     KAFKA = "kafka"
     REDIS = "redis"
+    POSTGRES = "postgres"
 
 
 class ConsumerType(str, Enum):

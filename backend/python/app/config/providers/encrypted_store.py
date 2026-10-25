@@ -107,6 +107,10 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         if store_type_str == "redis":
             return self._create_redis_store(serialize, deserialize)
+        elif store_type_str == "postgres":
+            return KeyValueStoreFactory.create_store(
+                store_type=StoreType.POSTGRES, serializer=serialize, deserializer=deserialize, config=StoreConfig(host="", port=0),
+            )
         else:
             return self._create_etcd_store(serialize, deserialize)
 

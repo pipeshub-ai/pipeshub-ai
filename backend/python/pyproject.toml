@@ -208,6 +208,8 @@ dependencies = [
     "curl-cffi==0.16.3",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.49.1",
+    # REDIS_MODE=postgres|inprocess: the in-process caches of a deployment without a Redis server
+    "fakeredis[lua]>=2.37",
     # Site-supplied XML (sitemaps): refuses entity expansion and external entities.
     "defusedxml>=0.7.1",
     "discord.py==2.7.1",
@@ -386,7 +388,7 @@ parsing-service = "app.parsing_main:app"
 extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
-dev = ["ruff==0.17.2", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
+dev = ["ruff==0.17.2", "pyright", "sqlglot>=27,<28", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"
