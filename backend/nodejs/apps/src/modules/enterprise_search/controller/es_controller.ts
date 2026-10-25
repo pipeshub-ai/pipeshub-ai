@@ -27,7 +27,7 @@ import {
 } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -2633,7 +2633,7 @@ const deleteConversation = async (
       if (citationIds.length > 0) {
         await Citation.updateMany(
           {
-            _id: { $in: citationIds },
+            _id: { $in: citationIds as Types.ObjectId[] },
             orgId,
             isDeleted: false,
           },
@@ -3585,7 +3585,7 @@ async function regenerateAnswersInternal(
         orgId as string | undefined,
         userId as string | undefined,
         agentKey,
-      ) as FilterQuery<IChatSessionDocument>,
+      ) as QueryFilter<IChatSessionDocument>,
     );
 
     // Validate conversation and message
@@ -4634,7 +4634,7 @@ export const forkConversation =
             conversationId,
             true,
             false,
-          ) as FilterQuery<IChatSessionDocument>),
+          ) as QueryFilter<IChatSessionDocument>),
           ...EXCLUDE_AGENT,
         }),
     });
@@ -4666,7 +4666,7 @@ export const forkAgentConversation =
             userId,
             agentKey,
             conversationId,
-          ) as FilterQuery<IChatSessionDocument>,
+          ) as QueryFilter<IChatSessionDocument>,
         ),
     });
   };

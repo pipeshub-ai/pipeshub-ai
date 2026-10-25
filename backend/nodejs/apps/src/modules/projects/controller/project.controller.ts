@@ -316,14 +316,14 @@ export const getProjectConversations =
       };
 
       const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(filter)
+        ChatSession.find(filter as mongoose.QueryFilter<any>)
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
           .select('-__v')
           .lean()
           .exec(),
-        ChatSession.countDocuments(filter),
+        ChatSession.countDocuments(filter as mongoose.QueryFilter<any>),
       ]);
 
       res.status(200).json({

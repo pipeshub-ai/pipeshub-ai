@@ -44,7 +44,7 @@ export async function resolveRoleRecipientUserIds(
       orgId,
       type: { $in: groupRoles },
       isDeleted: { $ne: true },
-    })
+    } as mongoose.QueryFilter<any>)
       .select('users')
       .lean();
 

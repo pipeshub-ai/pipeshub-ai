@@ -156,14 +156,10 @@ OAuthAppSchema.index({ orgId: 1, isDeleted: 1 })
 OAuthAppSchema.index({ orgId: 1, createdBy: 1, isDeleted: 1, createdAt: -1 })
 OAuthAppSchema.index({ clientId: 1, status: 1 })
 
-OAuthAppSchema.pre<IOAuthApp>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('OAuthApp')
-    }
-    next()
-  } catch (error) {
-    next(error as Error)
+OAuthAppSchema.pre<IOAuthApp>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('OAuthApp')
   }
 })
 

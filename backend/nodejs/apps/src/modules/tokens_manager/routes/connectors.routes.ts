@@ -89,7 +89,7 @@ import {
   Event,
 } from '../services/entity_event.service';
 import { integerCheck } from '../../../libs/utils/zod-formats';
-import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
+import { ConnectorId, ConnectorIdToNameMap, ConnectorNames } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
@@ -1110,7 +1110,7 @@ export function createConnectorRouter(
 
         // Find or create connector in database
         let connector = await ConnectorsConfig.findOne({
-          name: ConnectorIdToNameMap[connectorId],
+          name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
           orgId: req.user.orgId,
         });
 
@@ -1168,7 +1168,7 @@ export function createConnectorRouter(
           await connector.save();
 
           connector = await ConnectorsConfig.findOne({
-            name: ConnectorIdToNameMap[connectorId],
+            name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
             orgId: req.user.orgId,
           });
 

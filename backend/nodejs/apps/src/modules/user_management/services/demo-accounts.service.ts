@@ -64,6 +64,6 @@ export async function clearRemovedSampleAccount(
     })
       .select('_id')
       .lean();
-    if (removed) await UserCredentials.deleteMany({ userId: _id });
+    if (removed) await UserCredentials.deleteMany({ userId: String(_id) });
   }
 }

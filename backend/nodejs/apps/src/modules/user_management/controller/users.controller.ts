@@ -790,7 +790,7 @@ export class UserController {
         }
         try {
           if (hashedPassword !== undefined) {
-            await UserCredentials.deleteOne({ userId: newUser._id });
+            await UserCredentials.deleteOne({ userId: String(newUser._id) });
           }
           await Users.deleteOne({ _id: newUser._id });
         } catch (cleanupError) {
@@ -1658,7 +1658,7 @@ export class UserController {
       user.deletedBy = req.user.userId ?? req.user._id;
 
       await UserCredentials.updateOne(
-        { userId },
+        { userId: String(userId) },
         { $unset: { hashedPassword: '' } },
       );
 

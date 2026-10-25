@@ -12,7 +12,7 @@ import {
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
 import { randomUUID } from 'crypto';
-import mongoose, { ClientSession, FilterQuery } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -1147,7 +1147,7 @@ export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
  * `require`d id param.
  */
 export const applyProjectIdQueryFilter = (
-  filter: FilterQuery<IChatSessionDocument>,
+  filter: QueryFilter<IChatSessionDocument>,
   req: AuthenticatedUserRequest,
 ): void => {
   const projectIdRaw = req.query?.projectId;
@@ -1771,7 +1771,7 @@ export interface RunReservation {
  * purpose: inside a transaction snapshot the status would never change.
  */
 export const reserveRun = async (
-  filter: FilterQuery<IChatSessionDocument>,
+  filter: QueryFilter<IChatSessionDocument>,
   settleMs: number = ACTIVE_RUN_SETTLE_MS,
 ): Promise<RunReservation | null> => {
   const deadline = Date.now() + settleMs;

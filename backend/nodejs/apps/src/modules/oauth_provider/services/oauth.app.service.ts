@@ -190,7 +190,7 @@ export class OAuthAppService {
       createdBy: new Types.ObjectId(createdBy),
       tokenIdentityUserId,
       redirectUris,
-      allowedGrantTypes,
+      allowedGrantTypes: allowedGrantTypes as OAuthGrantType[],
       allowedScopes: data.allowedScopes,
       homepageUrl: data.homepageUrl,
       privacyPolicyUrl: data.privacyPolicyUrl,

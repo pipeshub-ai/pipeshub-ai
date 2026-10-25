@@ -1,4 +1,4 @@
-import type { ClientSession } from 'mongoose';
+import type { ClientSession, QueryFilter } from 'mongoose';
 import { Users, type UserRole } from '../schema/users.schema';
 import { Org } from '../schema/org.schema';
 
@@ -53,7 +53,7 @@ export const UserAdminRepository = {
       role: 'admin',
       isDeleted: { $ne: true },
       ...NOT_A_SERVICE_ACCOUNT,
-    })
+    } as QueryFilter<any>)
       .select('_id')
       .lean();
   },

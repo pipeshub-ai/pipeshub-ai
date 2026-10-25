@@ -27,7 +27,9 @@ const orgSchema = new Schema<IOrg>(
     registeredName: {
       type: String,
       validate: {
-        validator: function (this: IOrg, value: string) {
+        // `this` is the document on save and the Query for update validators.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        validator: function (this: any, value: string) {
           // Required only when accountType is 'business'
           return this.accountType === 'business' ? !!value : true;
         },
@@ -72,14 +74,10 @@ const orgSchema = new Schema<IOrg>(
   { timestamps: true },
 );
 
-orgSchema.pre<IOrg>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('Org');
-    }
-    next();
-  } catch (error) {
-    next(error as Error);
+orgSchema.pre<IOrg>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('Org');
   }
 });
 

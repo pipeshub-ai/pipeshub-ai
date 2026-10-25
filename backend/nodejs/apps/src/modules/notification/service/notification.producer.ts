@@ -41,7 +41,7 @@ export class NotificationProducer {
 
   async publishEvent(event: Event): Promise<void> {
     const message: StreamMessage<INotification> = {
-      key: event.payload.id,
+      key: (event.payload as INotification & { id: string }).id,
       value: event.payload,
       headers: {
         eventType: event.eventType,

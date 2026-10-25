@@ -157,12 +157,12 @@ export class UserGroupController {
     }
 
     const [groups, totalCount] = await Promise.all([
-      UserGroups.find(filter)
+      UserGroups.find(filter as mongoose.QueryFilter<any>)
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      UserGroups.countDocuments(filter),
+      UserGroups.countDocuments(filter as mongoose.QueryFilter<any>),
     ]);
 
     // Return userCount instead of the full users array
@@ -380,13 +380,13 @@ export class UserGroupController {
     }
 
     const [userDocs, totalCount] = await Promise.all([
-      Users.find(userFilter)
+      Users.find(userFilter as mongoose.QueryFilter<any>)
         .select('fullName firstName lastName email')
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      Users.countDocuments(userFilter),
+      Users.countDocuments(userFilter as mongoose.QueryFilter<any>),
     ]);
 
     // Bulk-fetch DPs for this page of users
@@ -431,7 +431,7 @@ export class UserGroupController {
       orgId,
       users: { $in: [userId] },
       isDeleted: false,
-    }).select('name type');
+    } as mongoose.QueryFilter<any>).select('name type');
 
     res.status(200).json(groups);
   }
