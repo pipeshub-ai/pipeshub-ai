@@ -68,7 +68,9 @@ def record_artifact_shadow_read(outcome: str, reason: str | None = None) -> None
 
 
 # kind=revision: artifact-set revisions the retention sweep looked at, outcome
-# deleted, kept or failed; kind=virtual_record, outcome=skipped_trashed: virtual
+# deleted, kept, unfenced (storage does not report the delete fence), changed (storage refused the delete: written again since it
+# was listed), gone (already removed when the delete arrived) or failed;
+# kind=virtual_record, outcome=skipped_trashed: virtual
 # records left whole because a record holding them is in the trash, or
 # skipped_busy: left for the next pass because a holder's record lease was held;
 # kind=stage_state, outcome=deleted: stage states of revisions no record is on.

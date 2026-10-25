@@ -129,11 +129,25 @@ export const ArtifactFileParams = z.object({
   }),
 });
 
-export const ArtifactSetParams = z.object({
+export const PurgeArtifactSetSchema = z.object({
   headers: Headers,
   params: z.object({
     documentId: documentIdSchema,
   }),
+  // Strict: a misspelt `ifunchangedsince` must be refused, not read as no
+  // stamp (an unfenced delete).
+  query: z
+    .object({
+      // Epoch ms: the write stamp the caller listed the revision with.
+      // A string of digits only: coercion would read '' as 0 and ['1'] as 1.
+      ifUnchangedSince: z
+        .string()
+        .regex(/^\d+$/)
+        .transform(Number)
+        .refine(Number.isSafeInteger)
+        .optional(),
+    })
+    .strict(),
 });
 
 export const ListArtifactSetsSchema = z.object({
