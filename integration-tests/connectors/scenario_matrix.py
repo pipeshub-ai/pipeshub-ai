@@ -99,13 +99,6 @@ SCHEDULED_ELSEWHERE = (
     "every connector type, and each run waits on a real scheduler tick"
 )
 
-FILTER_KEEPS_EXCLUDED_ITEM = (
-    "a narrowed sync filter must remove the excluded item from every store (record, "
-    "vectors, stored files). This connector's full sync only unlinks what it did not see "
-    "(sync_runner.py, unlink_nodes_missed_by_full_sync) and never deletes it, so its record "
-    "and vectors stay behind where nobody can find them"
-)
-
 INDEXED = "COMPLETED"
 NOT_INDEXED = "AUTO_INDEX_OFF"
 MANUAL_INDEXING_FILTER = {

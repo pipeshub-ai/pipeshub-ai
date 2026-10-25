@@ -40,7 +40,6 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (
     wait_until_drive_files_listed,
 )
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     ConnectorScenarioMatrix,
     Role,
     ScenarioAdapter,
@@ -239,4 +238,3 @@ async def scenario_adapter(
 class TestDriveWorkspaceScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Google Drive Workspace"
     TREE_MOVES = True
-    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
