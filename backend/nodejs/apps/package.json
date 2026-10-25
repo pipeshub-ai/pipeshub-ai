@@ -84,7 +84,7 @@
     "google-auth-library": "^11.3.1",
     "handlebars": "^4.7.10",
     "helmet": "^8.3.0",
-    "inversify": "^6.2.1",
+    "inversify": "^8.2.3",
     "ioredis": "^5.9.2",
     "js-yaml": "^5.5.0",
     "jsonwebtoken": "^9.0.3",
