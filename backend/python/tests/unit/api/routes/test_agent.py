@@ -4539,6 +4539,140 @@ class TestServiceAccountAgentRoutes:
         services["graph_provider"].check_agent_permission.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_chat_stream_service_account_rejects_disabled_account(self) -> None:
+        """chat_stream rejects a service-account agent when its bound account is disabled."""
+        from app.api.routes.agent import AgentNotFoundError, chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+            "entity_vector_store": None,
+        }
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "_key": "sa-disabled-agent",
+            "name": "Disabled SA Agent",
+            "isServiceAccount": True,
+            "serviceAccountId": "sa-user-node-key",
+            "createdBy": "creator-key-1",
+            "knowledge": [],
+            "toolsets": [],
+            "models": ["mk1_mn1"],
+        })
+        services["graph_provider"].get_document = AsyncMock(return_value={
+            "_key": "sa-user-node-key",
+            "userId": "sa-public-uuid",
+            "orgId": "org-a",
+            "email": "sa@service.pipeshub.internal",
+            "isDisabled": True,
+        })
+        services["config_service"].get_config = AsyncMock(return_value={"llm": []})
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"hello"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "org-a-user", "orgId": "org-a", "email": "a@example.com"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_org_info",
+                 new_callable=AsyncMock,
+                 return_value={"orgId": "org-a", "accountType": "enterprise"},
+             ), \
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ):
+            with pytest.raises(AgentNotFoundError):
+                await chat_stream(request, "sa-disabled-agent")
+
+    @pytest.mark.asyncio
+    async def test_enrich_user_info_creator_fallback_ignores_disabled(self) -> None:
+        """Unmigrated agent falling back to creator is not rejected by SA disabled check."""
+        from app.api.routes.agent import (
+            _enrich_user_info_for_service_account_agent_chat,
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "creator-key",
+            "userId": "creator-user-id",
+            "orgId": "org-a",
+            "email": "creator@example.com",
+            "isDisabled": True,
+        })
+
+        agent = {
+            "_key": "unmigrated-agent",
+            "createdBy": "creator-key",
+        }
+        res = await _enrich_user_info_for_service_account_agent_chat(
+            agent, graph_provider, MagicMock(), "org-a"
+        )
+        assert res["userId"] == "creator-user-id"
+
+    @pytest.mark.asyncio
+    async def test_assert_agent_belongs_to_caller_org_sa_present_and_matches(self) -> None:
+        """_assert_agent_belongs_to_caller_org succeeds when service account belongs to caller org."""
+        from app.api.routes.agent import _assert_agent_belongs_to_caller_org
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "sa-1", "orgId": "org-1"
+        })
+        agent = {"serviceAccountId": "sa-1", "createdBy": "creator-other"}
+        await _assert_agent_belongs_to_caller_org(agent, graph_provider, "org-1", "agent-1")
+
+    @pytest.mark.asyncio
+    async def test_assert_agent_belongs_to_caller_org_sa_other_org_raises_404_no_creator_fallback(self) -> None:
+        """_assert_agent_belongs_to_caller_org raises 404 and does not fall back to createdBy when SA is from another org."""
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _assert_agent_belongs_to_caller_org,
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "sa-1", "orgId": "org-other"
+        })
+        agent = {"serviceAccountId": "sa-1", "createdBy": "creator-org-1"}
+        with pytest.raises(AgentNotFoundError):
+            await _assert_agent_belongs_to_caller_org(agent, graph_provider, "org-1", "agent-1")
+
+    @pytest.mark.asyncio
+    async def test_assert_agent_belongs_to_caller_org_sa_missing_raises_404_no_creator_fallback(self) -> None:
+        """_assert_agent_belongs_to_caller_org raises 404 and does not fall back to createdBy when SA document is missing."""
+        from app.api.routes.agent import (
+            AgentNotFoundError,
+            _assert_agent_belongs_to_caller_org,
+        )
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=None)
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        agent = {"serviceAccountId": "sa-missing", "createdBy": "creator-org-1"}
+        with pytest.raises(AgentNotFoundError):
+            await _assert_agent_belongs_to_caller_org(agent, graph_provider, "org-1", "agent-1")
+
+    @pytest.mark.asyncio
+    async def test_assert_agent_belongs_to_caller_org_no_sa_falls_back_to_creator(self) -> None:
+        """_assert_agent_belongs_to_caller_org falls back to creator only when serviceAccountId is not present."""
+        from app.api.routes.agent import _assert_agent_belongs_to_caller_org
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "creator-1", "orgId": "org-1"
+        })
+        agent = {"createdBy": "creator-1"}
+        await _assert_agent_belongs_to_caller_org(agent, graph_provider, "org-1", "agent-1")
+
+    @pytest.mark.asyncio
     async def test_get_agent_internal_success(self) -> None:
         """get_agent_internal returns 200 with isServiceAccount=True for a SA agent."""
         from app.api.routes.agent import get_agent_internal

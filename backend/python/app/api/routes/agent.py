@@ -526,6 +526,9 @@ async def _enrich_user_info_for_service_account_agent_chat(
         )
         raise HTTPException(status_code=500, detail=detail)
 
+    if is_sa_bound and bool(user_doc.get("isDisabled", False)):
+        raise AgentNotFoundError(str(agent.get("_key") or target_key))
+
     target_user_id = user_doc.get("userId")
     if not target_user_id:
         logger.error(
@@ -578,8 +581,9 @@ async def _assert_agent_belongs_to_caller_org(
             except Exception:
                 sa_doc = None
         sa_org = str((sa_doc or {}).get("orgId") or "").strip()
-        if sa_org and sa_org == caller_org:
-            return
+        if not sa_org or sa_org != caller_org:
+            raise AgentNotFoundError(agent_id)
+        return
 
     # Fall back to createdBy check
     creator_key = agent.get("createdBy")
