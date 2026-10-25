@@ -585,6 +585,43 @@ async def test_a_full_resync_keeps_the_folders_above_a_selected_folder(drive: Ha
     assert drive.records.records["nested"].parent_external_record_id == "new"
 
 
+def written_in_last_run(drive: Harness, runs_before: int) -> set[str]:
+    return {
+        external_id
+        for batch in drive.records.new_record_batches[runs_before:]
+        for external_id in batch
+    } | {r.external_record_id for r in drive.records.metadata_updates + drive.records.content_updates}
+
+
+async def test_a_full_resync_writes_a_google_doc_shared_since_the_last_sync(drive: Harness) -> None:
+    # The full sync removes the links of every record it does not write, so a doc whose
+    # version moved with no new content must still be written, or nobody can open it.
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    drive.world.share("doc", {"type": "user", "role": "reader", "emailAddress": "friend@example.com"})
+    batches_before = len(drive.records.new_record_batches)
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert "doc" in written_in_last_run(drive, batches_before)
+    assert drive.records.content_updates == [], "a sharing change is not new content"
+    assert drive.records.records["doc"].external_revision_id == drive.world.files["doc"].meta["version"]
+
+
+async def test_a_full_resync_writes_an_edited_google_doc_as_new_content(drive: Harness) -> None:
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    drive.world.edit("doc", b"new body")
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert [r.external_record_id for r in drive.records.content_updates] == ["doc"]
+
+
 async def test_a_selected_folder_that_cannot_be_listed_keeps_its_subtree_records(drive: Harness) -> None:
     drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
     for n in range(4):

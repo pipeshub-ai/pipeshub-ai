@@ -61,6 +61,9 @@ class FileState:
     deleted: bool = False
     perm_access: Optional[str] = None
     export_too_large: bool = False
+    # A Docs, Sheets or Slides file: no headRevisionId, only `version`, which every change moves.
+    # Its last content revision's time is what revisions.list answers.
+    revised: Optional[str] = None
 
 
 @dataclass
@@ -214,7 +217,7 @@ class DriveWorld:
             "shared": bool(perms),
             "capabilities": {"canListChildren": mime == FOLDER},
         }
-        if mime != FOLDER:
+        if mime not in (FOLDER, GDOC):
             meta["headRevisionId"] = f"{file_id}-rev1"
             meta["size"] = str(len(content))
             if "." in name:
@@ -225,6 +228,8 @@ class DriveWorld:
         else:
             meta["owners"] = [{"emailAddress": owner}]
         state = FileState(meta, [dict(p) for p in (perms or [])], content)
+        if mime == GDOC:
+            state.revised = meta["modifiedTime"]
         return self._mutate(file_id, lambda: self.files.__setitem__(file_id, state)) or state
 
     def add_shortcut(self, file_id: str, name: str, *, parent: str, owner: str, target_id: str) -> FileState:
@@ -288,6 +293,10 @@ class DriveWorld:
         def apply() -> None:
             state = self.files[file_id]
             state.content = content
+            if state.revised is not None:
+                self._bump(file_id)
+                state.revised = state.meta["modifiedTime"]
+                return
             rev = int(state.meta["version"]) + 1
             self._bump(file_id, headRevisionId=f"{file_id}-rev{rev}", size=str(len(content)))
         self._mutate(file_id, apply)
@@ -422,6 +431,7 @@ class DriveWorld:
         r("GET", f"{DRIVE_API}/files/([^/]+)", self._files_get)
         r("GET", f"{DRIVE_API}/files/([^/]+)/export", self._files_export)
         r("GET", f"{DRIVE_API}/files/([^/]+)/permissions", self._permissions_list)
+        r("GET", f"{DRIVE_API}/files/([^/]+)/revisions", self._revisions_list)
         r("GET", f"{DRIVE_API}/changes/startPageToken", self._start_token)
         r("GET", f"{DRIVE_API}/changes", self._changes_list)
         r("GET", f"{DRIVE_API}/drives", self._drives_list)
@@ -468,6 +478,14 @@ class DriveWorld:
         if state.export_too_large:
             return google_error(403, "exportSizeLimitExceeded", "This file is too large to be exported.")
         return self._media(b"exported:" + state.content, req)
+
+    def _revisions_list(self, req: ApiRequest) -> object:
+        file_id = self._file_id(req)
+        if not self.can_open(file_id, self._caller(req)):
+            return google_error(404, "notFound")
+        state = self.files[file_id]
+        assert state.revised is not None, f"revisions of {file_id} are not modelled"
+        return {"revisions": [{"id": state.meta["version"], "modifiedTime": state.revised}]}
 
     @staticmethod
     def _media(content: bytes, req: ApiRequest) -> HttpResult:
