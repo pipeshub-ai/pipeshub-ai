@@ -312,7 +312,18 @@ def _page(nodes, has_next=False, end_cursor=None) -> dict:
 
 
 class TestProjectHome:
-    """A project is filed under its first synced team by id; its other teams are shared groups."""
+    """A project is filed under its lead team, else its first synced team by id."""
+
+    def test_the_lead_team_is_the_home(self) -> None:
+        connector = _make_connector()
+        project = {"leadTeamId": "team-b", "teams": _teams(("team-a", False), ("team-b", True))}
+        assert connector._project_home(project, {"team-a", "team-b"}) == "team-b"
+
+    @pytest.mark.parametrize("lead_team_id", [None, "team-0"])
+    def test_without_a_synced_lead_team_the_first_by_id_is_the_home(self, lead_team_id) -> None:
+        connector = _make_connector()
+        project = {"leadTeamId": lead_team_id, "teams": _teams(("team-b", False), ("team-a", True))}
+        assert connector._project_home(project, {"team-a", "team-b"}) == "team-a"
 
     def test_first_synced_team_by_id_whatever_its_visibility(self) -> None:
         connector = _make_connector()
@@ -558,15 +569,16 @@ class TestProjectToRecords:
         assert ("proj-1" in connector._refreshed_project_ids) is refreshed
 
     @pytest.mark.asyncio
-    async def test_the_other_synced_teams_are_shared_groups_of_every_record(self) -> None:
-        """Linear shows a project, and its documents, links and files, to anyone who can
-        see one of its teams: each record is filed under the home team and shared with
-        the other synced ones."""
+    async def test_every_record_is_filed_under_the_lead_team_only(self) -> None:
+        """Shared into the other teams too, the documents, links and files were listed at
+        the top of each of those teams as well as under the project. The complete, empty
+        list drops the groups a record was shared into before."""
         project = _make_project_data(
             content=f"[spec.pdf]({self.UPLOAD})",
             external_links=_page([{"id": "link-1", "url": "https://example.com/spec", "label": "Spec"}]),
         )
-        project["teams"] = _teams(("team-2", True), ("team-9", False), ("team-1", True))
+        project["teams"] = _teams(("team-1", True), ("team-2", True))
+        project["leadTeamId"] = "team-2"
         connector = self._connector(project)
 
         records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
@@ -574,13 +586,10 @@ class TestProjectToRecords:
         assert len(records) == 3
         assert isinstance(records[0][0], ProjectRecord)
         for record, permissions in records:
-            assert record.external_record_group_id == "team-1"
+            assert record.external_record_group_id == "team-2"
             assert permissions == []
-            # team-9 is not synced, so there is no group to share with.
-            assert record.shared_with_me_record_group_ids == ["team-2"]
+            assert record.shared_with_me_record_group_ids == []
             assert record.shared_groups_complete is True
-        # Each record gets its own list.
-        assert len({id(r.shared_with_me_record_group_ids) for r, _ in records}) == 3
 
     @pytest.mark.asyncio
     async def test_files_are_filed_again_on_every_read(self) -> None:

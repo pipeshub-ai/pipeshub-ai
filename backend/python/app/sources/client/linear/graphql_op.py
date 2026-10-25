@@ -243,6 +243,7 @@ class LinearGraphQLOperations:
                     displayName
                     email
                 }
+                leadTeamId
                 teams(first: 50) {
                     nodes {
                         id

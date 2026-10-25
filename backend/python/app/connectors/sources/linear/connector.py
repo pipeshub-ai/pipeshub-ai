@@ -2241,8 +2241,7 @@ class LinearConnector(BaseConnector):
 
         A project can belong to several teams, so projects are listed once for all
         synced teams (not once per team) and each is filed under one home team chosen by
-        ``_project_home``; its other teams are shared groups. The checkpoint moves only
-        when the whole list was stored.
+        ``_project_home``. The checkpoint moves only when the whole list was stored.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -2309,10 +2308,16 @@ class LinearConnector(BaseConnector):
             )
 
     def _project_home(self, project_data: dict[str, Any], scope: set[str]) -> str | None:
-        """The synced team a project is filed under: the first by id, so the choice never
-        depends on the order teams are read. Its other teams are shared groups of the
-        record (``_transform_to_project_record``): Linear shows a project to anyone who
-        can see at least one of its teams."""
+        """The one synced team a project is filed under: its lead team, else the first by
+        id, so the choice never depends on the order teams are read.
+
+        Only this team's readers see the project and its children. Linear also shows it
+        to the readers of its other teams; filing it under those too listed its documents,
+        links and files at the top of each of them as well as under the project.
+        ``leadTeamId`` is marked internal in Linear's schema, hence the fallback."""
+        lead_team_id = project_data.get("leadTeamId")
+        if lead_team_id in scope:
+            return lead_team_id
         teams = sorted(t["id"] for t in ((project_data.get("teams") or {}).get("nodes") or [])
                        if t and t.get("id") in scope)
         return teams[0] if teams else None
@@ -2369,8 +2374,6 @@ class LinearConnector(BaseConnector):
         project_record = self._transform_to_project_record(
             full_project_data, team_id, existing_record
         )
-        project_record.shared_with_me_record_group_ids = [
-            t for t in project_record.shared_with_me_record_group_ids if t in scope]
         # As for issues: a project stored again unchanged is not re-indexed, so the
         # comment and children-stamp passes must still be able to refresh it.
         if reads_current_content(project_record, existing_record):
@@ -2430,10 +2433,8 @@ class LinearConnector(BaseConnector):
             await self._settle_children(
                 parent_external_id=project_id, keep_file_urls=linked_urls, keep_child_ids=listed)
 
-        # The project's documents, links and files are seen through any of its teams, as
-        # the project is; a team trusted at group level would admit only its own members.
+        # Children were once shared into the project's other teams; this drops those groups.
         for child_record, _ in batch_records:
-            child_record.shared_with_me_record_group_ids = list(project_record.shared_with_me_record_group_ids)
             child_record.shared_groups_complete = project_record.shared_groups_complete
 
         # The project first: a child written before it finds no parent in its team.
@@ -3649,13 +3650,8 @@ class LinearConnector(BaseConnector):
             is_dependent_node=False,
             parent_node_id=None,
         )
-        team_nodes = (project_data.get("teams") or {}).get("nodes") or []
-        other_teams = [
-            str(node.get("id"))
-            for node in team_nodes
-            if isinstance(node, dict) and node.get("id") and str(node.get("id")) != str(team_id)
-        ]
-        project.shared_with_me_record_group_ids = other_teams
+        # A project is filed under its home team only (``_project_home``). Projects synced
+        # before that were shared into their other teams; a complete list of none drops them.
         project.shared_groups_complete = "teams" in project_data
 
 
