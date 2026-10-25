@@ -426,13 +426,29 @@ export class OAuthProviderController {
     _next: NextFunction,
   ): Promise<void> {
     try {
-      const { token, token_type_hint, client_id, client_secret } = req.body;
+      const { token, token_type_hint, client_id, client_secret } = req.body as {
+        token: string;
+        token_type_hint?: 'refresh_token' | 'access_token';
+        client_id: string;
+        client_secret?: string;
+      };
 
-      // RFC 7009: Verify client credentials
-      await this.oauthAppService.verifyClientCredentials(
-        client_id,
-        client_secret,
-      );
+      // RFC 7009: authenticate the client. A public client (the first-party
+      // device app) has no secret and is identified by client_id alone, as the
+      // token and refresh grants do; hashing its absent secret used to throw,
+      // and the catch below answered 200 without revoking anything.
+      const app = await this.oauthAppService.getAppByClientId(client_id);
+      if (app.isConfidential) {
+        if (client_secret === undefined || client_secret === '') {
+          throw new InvalidClientError(
+            'client_secret required for confidential clients',
+          );
+        }
+        await this.oauthAppService.verifyClientCredentials(
+          client_id,
+          client_secret,
+        );
+      }
 
       // RFC 7009: Revoke token with ownership verification
       // The revokeToken method now validates the token was issued to this client

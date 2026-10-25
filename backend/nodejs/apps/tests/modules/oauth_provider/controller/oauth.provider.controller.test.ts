@@ -616,6 +616,10 @@ describe('OAuthProviderController', () => {
   })
 
   describe('revoke', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 even for invalid token', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.resolves(false)
@@ -634,6 +638,38 @@ describe('OAuthProviderController', () => {
       } as any
 
       await controller.revoke(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    // The device app is public: before, its revoke hashed an absent secret,
+    // threw, and was answered 200 with the token still valid.
+    it('revokes for a public client that sends no secret', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: false })
+      mockOAuthTokenService.revokeToken.resolves(true)
+      const req = {
+        body: { token: 'refresh', client_id: 'pipeshub-agent', token_type_hint: 'refresh_token' },
+      } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.calledOnceWith('refresh', 'pipeshub-agent', 'refresh_token')).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('refuses a confidential client that sends no secret', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    it('refuses an unknown client', async () => {
+      mockOAuthAppService.getAppByClientId.rejects(new InvalidClientError('Invalid client_id'))
+      const req = { body: { token: 'tok', client_id: 'nope' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
       expect(mockRes.status.calledWith(401)).to.be.true
     })
   })
@@ -1265,6 +1301,10 @@ describe('OAuthProviderController', () => {
   // revoke – additional branches
   // -----------------------------------------------------------------------
   describe('revoke (extended)', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 on non-client errors', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.rejects(new Error('token not found'))
