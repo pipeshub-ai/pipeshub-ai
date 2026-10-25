@@ -25,6 +25,7 @@ import pdfplumber
 import pypdfium2 as pdfium
 from PIL import Image
 
+from app.services.resource_governor.probe import effective_cpu_count
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
@@ -56,17 +57,21 @@ def _get_pdf_raster_worker_count() -> int:
         except ValueError:
             pass
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(cpu_count, 2))
+    return max(1, min(effective_cpu_count(), 2))
 
 
 PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
 
+def pdf_raster_pool_size() -> int:
+    """Processes the rasterizer pool uses in this service process (for /health)."""
+    return scaled(PDF_RASTER_WORKERS)
+
+
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=scaled(PDF_RASTER_WORKERS),
+        max_workers=pdf_raster_pool_size(),
         mp_context=multiprocessing.get_context("spawn"),
     )
 

@@ -228,3 +228,28 @@ def test_broken_process_pool_without_governor_does_not_raise():
     with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
         with pytest.raises(BrokenProcessPool):
             rasterizer._run_in_pool(lambda: None)
+
+
+class TestRasterWorkerSizing:
+    """The default pool size follows the container-aware CPU count, not the host's."""
+
+    def test_follows_effective_cpu_count_not_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PDF_RASTER_WORKERS", raising=False)
+        monkeypatch.setattr(rasterizer.os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 1)
+        assert rasterizer._get_pdf_raster_worker_count() == 1
+
+    def test_still_capped_at_two(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PDF_RASTER_WORKERS", raising=False)
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 16)
+        assert rasterizer._get_pdf_raster_worker_count() == 2
+
+    def test_env_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PDF_RASTER_WORKERS", "5")
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 1)
+        assert rasterizer._get_pdf_raster_worker_count() == 5
+
+    def test_pool_size_is_scaled_share(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rasterizer, "PDF_RASTER_WORKERS", 4)
+        monkeypatch.setattr(rasterizer, "scaled", lambda n: n // 2)
+        assert rasterizer.pdf_raster_pool_size() == 2
