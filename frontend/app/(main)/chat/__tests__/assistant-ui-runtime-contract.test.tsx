@@ -3,8 +3,9 @@
  *
  * The chat page, the message list and the input wrapper read thread messages
  * with `useAuiState` and send with `useAui().thread().append(...)`. Every other
- * chat test mocks these hooks, so a package upgrade that renames them would
- * pass unit tests and fail only at build time. This test fails on that.
+ * chat test mocks these hooks, so none of them shows that the real runtime
+ * still exposes the messages and delivers `append` to `onNew`. This test does;
+ * a removed or renamed hook is caught by the typecheck.
  */
 import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
