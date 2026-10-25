@@ -148,6 +148,72 @@ class TestAScopedQuestionIsLeftToTheAgent:
         event_sink.write.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filters",
+        [
+            {"apps": ["conn-1"], "kb": ["NO_KB_SELECTED"], "allowedApps": ["conn-1"],
+             "allowedRecordGroups": [], "allowedRecords": []},
+            {"apps": ["conn-1"], "allowedApps": ["conn-1", "conn-2"],
+             "allowedRecordGroups": [], "allowedRecords": []},
+        ],
+        ids=["agent-on-whole-apps", "agent-allows-more-than-is-asked"],
+    )
+    async def test_a_saved_agent_bound_only_to_apps_is_still_counted(self, filters: dict) -> None:
+        """Every saved-agent turn carries these keys, so treating their presence
+        as a reason to decline turned the census off for the custom agents it
+        exists for. A bound that only limits apps is already in `apps`."""
+        graph = MagicMock()
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value=[])
+        context = SimpleNamespace(tool_state={}, org_id="org-1", user_id="user-1")
+        event_sink = MagicMock()
+        event_sink.write = AsyncMock()
+
+        await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters=filters,
+            event_sink=event_sink,
+            log=MagicMock(),
+        )
+
+        graph.get_accessible_virtual_record_ids.assert_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filters",
+        [
+            {"apps": ["conn-1", "conn-2"], "allowedApps": ["conn-1"],
+             "allowedRecordGroups": [], "allowedRecords": []},
+            {"allowedApps": ["conn-1"], "allowedRecordGroups": [], "allowedRecords": []},
+        ],
+        ids=["bound-narrower-than-asked", "bound-with-nothing-asked"],
+    )
+    async def test_a_bound_the_read_would_overshoot_still_defers(self, filters: dict) -> None:
+        """The read scopes by `apps`. If the bound admits fewer apps than that
+        — or the read is unscoped and the bound is not — it would count
+        outside the bound."""
+        graph = MagicMock()
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"vr1": "rec1"})
+        event_sink = MagicMock()
+        event_sink.write = AsyncMock()
+        context = SimpleNamespace(tool_state={}, org_id="org-1", user_id="user-1")
+
+        answered = await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters=filters,
+            event_sink=event_sink,
+            log=MagicMock(),
+        )
+
+        assert answered is False
+        graph.get_accessible_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_whole_app_scope_is_still_read(self) -> None:
         graph = MagicMock()
         # An unusable shape defers right after the read, so only the call is checked.

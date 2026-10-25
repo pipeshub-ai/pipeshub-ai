@@ -140,6 +140,36 @@ async def _record_lookup_factory(
     return lookup
 
 
+def _bound_the_read_would_miss(filters: dict[str, Any] | None) -> bool:
+    """Whether a server-set bound is not already reflected in `apps` and `kb`.
+
+    Every saved-agent turn carries these bounds, and most of them only say
+    which apps the agent may read — which `apps` already says too, so the
+    count is right and the census can answer. Treating their mere presence as
+    a reason to decline turned the census off for every saved agent, which is
+    the custom-agent case it exists for.
+
+    Three bounds are not reflected and must decline: one that names particular
+    record groups or records, since the read counts whole apps; one that lists
+    nothing at all, which admits nothing rather than everything; and one that
+    admits fewer apps than the read is about to count, the unscoped read
+    included, since the read would then count outside it.
+    """
+    raw = (filters or {}).get("apps")
+    asked = (
+        {app for app in raw if isinstance(app, str) and app}
+        if isinstance(raw, (list, tuple))
+        else set()
+    )
+    for bound in allowed_filters(filters):
+        if bound.get("recordGroups") or bound.get("records"):
+            return True
+        bound_apps = {app for app in (bound.get("apps") or []) if app}
+        if not bound_apps or not asked or not asked <= bound_apps:
+            return True
+    return False
+
+
 async def try_answer_enumeration(
     *,
     query: str,
@@ -154,9 +184,9 @@ async def try_answer_enumeration(
     marker = getattr(context, "tool_state", {}).get("corpus_census_marker")
     if not is_enumeration_query(marker, query):
         return False
-    # The read below scopes by apps and kb only. A folder or item selection, or a
-    # saved agent's or project's allow-list, would be miscounted, so the agent answers.
-    if has_selection(filters) or allowed_filters(filters):
+    # The read below scopes by apps and kb only, so a folder or item selection
+    # would be miscounted and the agent answers instead.
+    if has_selection(filters) or _bound_the_read_would_miss(filters):
         return False
 
     org_id = getattr(context, "org_id", "") or ""
