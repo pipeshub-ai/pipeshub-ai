@@ -80,9 +80,11 @@ async def test_a_json_file_comes_back_byte_for_byte(blob: BlobStorage) -> None:
         await store.delete_revision(ORG_ID, plan.document_id)
 
 
+@pytest.mark.skipif(
+    STORAGE_TYPE != "local",
+    reason=f"not applicable on {STORAGE_TYPE}: the file goes to the vendor's signed URL, not through the API",
+)
 async def test_the_local_route_refuses_a_json_content_type(blob: BlobStorage) -> None:
-    if STORAGE_TYPE != "local":
-        return  # S3 and Azure take the file at the vendor's signed URL, not through the API.
     store = NodeArtifactStore(blob, logger)
     plan = await store.presign_revision(
         ORG_ID, str(uuid.uuid4()), uuid.uuid4().hex[:16], [(MANIFEST_PATH, "application/json")]
