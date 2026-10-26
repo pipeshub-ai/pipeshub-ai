@@ -56,6 +56,36 @@ describe('index.ts - Application Bootstrap', () => {
       const { config } = require('dotenv');
       expect(config).to.be.a('function');
     });
+
+    // dotenv >= 17 prints an "injected env" banner on every config() call,
+    // even when no .env exists. That line lands in the structured log stream
+    // of every service start, so each call site must pass `quiet: true`.
+    it('every dotenv config() call in src passes quiet: true', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const files = [
+        'src/index.ts',
+        'src/integrations/slack-bot/src/index.ts',
+        'src/integrations/slack-bot/src/utils/db.ts',
+      ];
+      for (const rel of files) {
+        const text: string = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+        const calls = text.match(/^config\([^)]*\)/gm) ?? [];
+        expect(calls.length, `${rel} should call config()`).to.be.greaterThan(0);
+        for (const call of calls) {
+          expect(call, `${rel}: ${call}`).to.include('quiet: true');
+        }
+      }
+    });
+
+    it('dotenv config({ quiet: true }) writes nothing to the console', () => {
+      const { config } = require('dotenv');
+      const log = sandbox.stub(console, 'log');
+      const info = sandbox.stub(console, 'info');
+      const warn = sandbox.stub(console, 'warn');
+      config({ quiet: true, path: '/nonexistent/.env' });
+      expect(log.called || info.called || warn.called).to.equal(false);
+    });
   });
 
   // =========================================================================

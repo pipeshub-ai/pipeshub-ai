@@ -79,7 +79,7 @@
     "bullmq": "^5.81.5",
     "cors": "^2.8.6",
     "crypto": "^1.0.1",
-    "dotenv": "^16.4.7",
+    "dotenv": "^18.0.9",
     "etcd3": "^1.1.2",
     "express": "^4.22.1",
     "express-rate-limit": "^8.7.1",
