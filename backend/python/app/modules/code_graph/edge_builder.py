@@ -571,11 +571,12 @@ class _Builder:
             if fact.get("isMemberCall"):
                 target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
                 if target:
-                    self._add_edge(
-                        self._source_key(block_id, fact), self._block_key(target),
-                        RecordRelations.CALLS.value,
-                        confidence=confidence, line=fact.get("line"), resolution=resolution,
-                    )
+                    for one in target if isinstance(target, list) else [target]:
+                        self._add_edge(
+                            self._source_key(block_id, fact), self._block_key(one),
+                            RecordRelations.CALLS.value,
+                            confidence=confidence, line=fact.get("line"), resolution=resolution,
+                        )
                 elif resolution == _EXTERNAL or not self.index.candidates(name):
                     # `resp.json()` on a third-party object -- the method name
                     # exists nowhere in the repo.
@@ -829,10 +830,11 @@ class _Builder:
         return None
 
     def _resolve_member_call(self, block_id: str, fact: dict, record_id: str,
-                             ) -> tuple[str | None, str, str | None]:
+                             ) -> tuple[str | list[str] | None, str, str | None]:
         """`obj.method()` -- find the receiver's type, then its method.
 
-        Returns ``(target, confidence, resolution)``; a resolution of
+        Returns ``(target, confidence, resolution)``, the target a list when the
+        receiver's type is a union alias (one per member); a resolution of
         ``_EXTERNAL`` with no target means the receiver is a third-party or
         stdlib module (`logging.getLogger`).
         """
@@ -868,7 +870,7 @@ class _Builder:
             owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
                                     head_type=fact.get("headType"))
             if owner:
-                target = self._resolve_self_method(owner, name)
+                target = self._methods_on(owner, name)
                 if target:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
         if not receiver_type:
@@ -883,8 +885,7 @@ class _Builder:
             if type_candidates:
                 self.result.ambiguous_skipped += 1
             return None, CONFIDENCE_INFERRED, None
-        return (self._resolve_self_method(type_candidates[0], name),
-                CONFIDENCE_INFERRED, RESOLUTION_TYPE)
+        return self._methods_on(type_candidates[0], name) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
 
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
         """The types *type_name* can mean in a file: the one it imports or defines, if any."""
@@ -1158,6 +1159,29 @@ class _Builder:
                 return parent_id
             row = self.index.rows.get(parent_id)
         return None
+
+    def _methods_on(self, owner: str, method_name: str) -> str | list[str] | None:
+        """*method_name* on *owner*, or on each member when *owner* is a union alias."""
+        direct = self._resolve_self_method(owner, method_name)
+        if direct:
+            return direct
+        found = [m for m in dict.fromkeys(self._resolve_self_method(u, method_name)
+                                          for u in self._union_members(owner)) if m]
+        return found or None
+
+    def _union_members(self, alias: str, depth: int = 0) -> list[str]:
+        """The type blocks a `type X = A | B` alias stands for, nested aliases expanded."""
+        row = self.index.rows.get(alias)
+        if row is None or row.kind != "type_alias" or not row.name or depth > 3:
+            return []
+        value = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}|") or ""
+        family = self._family_of(alias)
+        members: list[str] = []
+        for name in filter(None, value.split("|")):
+            found = self._type_candidates(name, row.record_id, family)
+            if len(found) == 1:
+                members += self._union_members(found[0], depth + 1) or found
+        return members
 
     def _resolve_self_method(self, owner: str, method_name: str) -> str | None:
         """`m` on a known type: the owner's own `m`, else the nearest base that defines it.
