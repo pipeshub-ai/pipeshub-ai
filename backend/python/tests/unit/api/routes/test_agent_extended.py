@@ -315,12 +315,13 @@ class TestParseKnowledgeSourcesExtended:
         result = _parse_knowledge_sources(raw)
         assert result["app1"]["filters"] == {"key": "value"}
 
-    def test_invalid_json_string_filters(self):
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_string_filters_are_refused(self):
+        """Saved as "no filters" they would let the agent search the whole source."""
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
 
         raw = [{"connectorId": "app1", "filters": "not-json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["app1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_dict_filters_kept_as_is(self):
         from app.api.routes.agent import _parse_knowledge_sources

@@ -21,6 +21,7 @@ from helper.assertions import ConnectorAssertions  # type: ignore[import-not-fou
 from helper.graph_provider import (
     GraphProviderProtocol,  # type: ignore[import-not-found]
 )
+from connectors.confluence.constants import connector_base_url  # type: ignore[import-not-found]
 from connectors.confluence.confluence_v1_test_utils import (  # type: ignore[import-not-found]
     assert_api_content_matches_graph,
     fetch_space_content_snapshot,
@@ -140,7 +141,7 @@ async def confluence_connector(
     config = {
         "auth": {
             "authType": "API_TOKEN",
-            "baseUrl": base_url,
+            "baseUrl": connector_base_url(),
             "email": email,
             "apiToken": api_token,
         },

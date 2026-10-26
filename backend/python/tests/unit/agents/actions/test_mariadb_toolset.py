@@ -19,11 +19,17 @@ import pytest
 from app.agents.actions.mariadb.mariadb import MariaDB
 from app.modules.transformers.blob_storage import BlobStorage
 from app.sources.client.mariadb import mariadb as mariadb_client_module
-from app.sources.client.mariadb.mariadb import MariaDBClient
+from app.sources.client.mariadb.mariadb import READ_ONLY_TIMEOUT_S, MariaDBClient
 from app.utils.conversation_tasks import pop_tasks
 
 if TYPE_CHECKING:
     from types import ModuleType
+
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.mariadb.mariadb.vetted_addresses", AsyncMock(return_value=[]))
 
 
 def _import_real_driver() -> ModuleType:
@@ -295,7 +301,10 @@ class TestExecuteQuery:
         result = await tool.execute_query(query=sql)
 
         assert result[0] is True
-        assert pool.statements() == ["USE `shop`", sql]
+        assert pool.statements() == [
+            "USE `shop`", "START TRANSACTION READ ONLY",
+            f"SET STATEMENT max_statement_time={READ_ONLY_TIMEOUT_S} FOR {sql}",
+        ]
         body = _body(result)
         assert (body["row_count"], body["database"]) == (2, DATABASE)
         assert "truncated" not in body
@@ -330,6 +339,22 @@ class TestExecuteQuery:
         lines = kwargs["file_bytes"].decode().splitlines()
         assert lines[0] == "id,email"
         assert len(lines) == 251
+
+    async def test_export_belongs_to_the_artifact_owner(self, make_tool) -> None:
+        """A service-account agent queries as its creator; the export is the chatting user's."""
+        blob = create_autospec(BlobStorage, instance=True)
+        blob.save_versioned_artifact_to_storage.return_value = {"documentId": "doc-9", "fileName": "q.csv"}
+        state = {
+            "conversation_id": "conv-maria-sa", "org_id": "org-1", "user_id": "u-alice",
+            "artifact_owner_user_id": "u-bob", "blob_storage": blob, "graph_provider": MagicMock(),
+        }
+        tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(2)), state=state)
+
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-9")) as create:
+            await tool.execute_query(query="SELECT * FROM customers")
+            await pop_tasks("conv-maria-sa")[0]
+
+        assert create.await_args.kwargs["user_id"] == "u-bob"
 
     async def test_export_is_an_artifact_owned_by_the_user(self, make_tool) -> None:
         # The download goes through the record stream, which checks this
@@ -368,6 +393,19 @@ class TestExecuteQuery:
         tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(3)), state={"org_id": "org-1"})
         await tool.execute_query(query="SELECT * FROM customers")
         assert pop_tasks("") == []
+
+    async def test_an_approved_write_runs_as_written_outside_a_read_only_transaction(self, make_tool) -> None:
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: None))
+        ok, _ = await tool.execute_query(query="UPDATE customers SET email = NULL WHERE id = 1")
+
+        assert ok is True
+        assert pool.statements() == ["USE `shop`", "UPDATE customers SET email = NULL WHERE id = 1"]
+
+    async def test_a_read_that_calls_a_server_side_function_is_not_run_read_only(self, make_tool) -> None:
+        # It asks first (see test_tool_approvals); once approved it runs as written.
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: []))
+        await tool.execute_query(query="SELECT SLEEP(1)")
+        assert pool.statements() == ["USE `shop`", "SELECT SLEEP(1)"]
 
     async def test_statement_without_rows_reports_affected_rows(self, make_tool) -> None:
         tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: None))
@@ -451,3 +489,17 @@ class TestConnectionFailures:
         assert caplog.records
         assert PASSWORD not in caplog.text
         assert all(PASSWORD not in payload for _, payload in outputs)
+
+
+class TestReadOnlyGuardFailsClosed:
+    async def test_a_server_that_rejects_the_guard_never_runs_the_bare_query(self, make_tool) -> None:
+        def reject(q: str, p: tuple) -> list:
+            if q.startswith("SET STATEMENT"):
+                raise mariadb_driver.ProgrammingError("You have an error in your SQL syntax near 'STATEMENT'")
+            return []
+
+        tool, pool = make_tool(_Catalog(SHOP, on_query=reject))
+        ok, _ = await tool.execute_query(query="SELECT id FROM customers")
+
+        assert ok is False
+        assert "SELECT id FROM customers" not in pool.statements()

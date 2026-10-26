@@ -1,26 +1,40 @@
 """Live tool discovery against a connected MCP server instance.
 
-Namespaces every discovered tool as `mcp_{server_type}_{tool}` so the agent loop (Phase 2)
-can distinguish MCP-sourced tools from native connector/toolset tools.
+Namespaces every discovered tool as `mcp_{namespace}_{tool}` (see `naming.py`) so the agent
+loop can distinguish MCP-sourced tools from native connector/toolset tools.
 """
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agents.mcp.client import MCPClientManager, MCPConnectionError
-from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPToolInfo, MCPTransport
+from app.agents.mcp import step_up, tool_cache
+from app.agents.mcp.client import (
+    MCPClientManager,
+    MCPConnectionError,
+    ToolListing,
+    discovery_timeout,
+)
+from app.agents.mcp.errors import MCPInsufficientScopeError, is_http_unauthorized
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPServerConfig,
+    MCPToolInfo,
+    MCPTransport,
+)
+from app.agents.mcp.naming import build_namespaced_tool_name, namespace_key
+from app.agents.mcp.service import (
+    credentials_to_discovery_dict,
+    instance_config_from_dict,
+)
 from app.agents.mcp.stdio_policy import is_allowed_env_name
+from app.agents.mcp.token_refresh import refresh_credential_record
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 30.0
 DEFAULT_ENV_VAR_NAME = "API_TOKEN"
-
-
-def build_namespaced_tool_name(server_type: str, tool_name: str) -> str:
-    """`mcp_{server_type}_{tool}` — keeps MCP tools distinguishable from native tools."""
-    normalized_type = server_type.lower().strip().replace(" ", "_").replace("-", "_")
-    return f"mcp_{normalized_type}_{tool_name}"
 
 
 def _allowed_stdio_env_names(config: MCPServerConfig) -> set[str]:
@@ -84,24 +98,44 @@ def build_auth_env_and_headers(
 async def discover_tools(
     config: MCPServerConfig,
     credentials: dict[str, Any],
-    timeout_seconds: float = DEFAULT_DISCOVERY_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
+    *,
+    namespace: str | None = None,
 ) -> list[MCPToolInfo]:
     """Connect to `config`, list its tools, and return them namespaced for the agent loop.
+
+    `namespace` defaults to the catalog type or instance name; a request loading two
+    instances with the same one passes a disambiguated key (see `MCPToolProvider`).
+    `timeout_seconds` defaults to the instance's discovery budget (`discovery_timeout`).
 
     Raises MCPConnectionError (including on timeout) — callers decide whether discovery
     failures are fatal (e.g. `includeTools=false` lets `/my-mcp-servers` skip this entirely).
     """
+    listing = await discover_tool_listing(config, credentials, timeout_seconds)
+    return tool_infos_from_listing(listing.tools, config, namespace)
+
+
+async def discover_tool_listing(
+    config: MCPServerConfig, credentials: dict[str, Any], timeout_seconds: float | None = None,
+) -> ToolListing:
+    """`discover_tools` before namespacing, with the server's instructions and cache hints."""
     env, headers = build_auth_env_and_headers(config, credentials)
     manager = MCPClientManager(config, env=env, headers=headers)
+    timeout_seconds = timeout_seconds or discovery_timeout(config)
 
     try:
-        raw_tools = await asyncio.wait_for(manager.list_tools(), timeout=timeout_seconds)
+        return await asyncio.wait_for(manager.fetch_tool_listing(), timeout=timeout_seconds)
     except asyncio.TimeoutError as e:
         raise MCPConnectionError(
-            f"Timed out discovering tools for MCP instance {config.id} after {timeout_seconds}s"
+            f"Timed out discovering tools for MCP instance {config.id} after {timeout_seconds:g}s"
         ) from e
 
-    server_type = config.type_id or config.name
+
+def tool_infos_from_listing(
+    raw_tools: list[Any], config: MCPServerConfig, namespace: str | None = None,
+) -> list[MCPToolInfo]:
+    """A server's `tools/list` result as namespaced `MCPToolInfo`s."""
+    server_namespace = namespace or namespace_key(config.type_id, config.name)
     tools: list[MCPToolInfo] = []
     for tool in raw_tools:
         name = getattr(tool, "name", None)
@@ -114,16 +148,117 @@ async def discover_tools(
         if description is None and isinstance(tool, dict):
             description = tool.get("description")
 
-        input_schema = getattr(tool, "inputSchema", None)
+        # mcp 1.x types name it `inputSchema`, 2.x `input_schema`.
+        input_schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
         if input_schema is None and isinstance(tool, dict):
             input_schema = tool.get("inputSchema")
 
         tools.append(
             MCPToolInfo(
                 name=name,
-                namespaced_name=build_namespaced_tool_name(server_type, name),
+                namespaced_name=build_namespaced_tool_name(server_namespace, name),
                 description=description,
                 input_schema=input_schema or {},
+                annotations=_annotations_of(tool),
             )
         )
     return tools
+
+
+def _annotations_of(tool: Any) -> dict[str, Any] | None:  # noqa: ANN401
+    """A tool's annotations with protocol (camelCase) keys, from an SDK object or a dict."""
+    annotations = tool.get("annotations") if isinstance(tool, dict) else getattr(tool, "annotations", None)
+    if hasattr(annotations, "model_dump"):
+        annotations = annotations.model_dump(by_alias=True, exclude_none=True)
+    return annotations if isinstance(annotations, dict) and annotations else None
+
+
+async def discover_tools_for_owner(
+    instance: dict[str, Any],
+    auth: dict[str, Any],
+    owner_id: str,
+    config_service: "ConfigurationService",
+    *,
+    timeout_seconds: float | None = None,
+    namespace: str | None = None,
+) -> tuple[list[MCPToolInfo], dict[str, Any]]:
+    """`discover_tools` with `owner_id`'s stored credential. An OAuth server that answers
+    HTTP 401 gets one token refresh and one retry, so an access token that expired before
+    the background refresh ran doesn't hide every tool. Returns the tools and the auth
+    record they were fetched with — the refreshed one when a refresh happened.
+
+    What it finds is kept in the tool cache, for chats and later listings.
+    """
+    config = instance_config_from_dict(instance)
+    listing, auth = await discover_listing_for_owner(instance, auth, owner_id, config_service, timeout_seconds=timeout_seconds)
+    tools = tool_infos_from_listing(listing.tools, config, namespace)
+    await tool_cache.write(
+        config_service, instance=instance, config=config, owner_id=owner_id, auth=auth,
+        catalog=tool_cache.catalog_from_tools(tools, listing.instructions),
+        server_ttl_seconds=listing.ttl_seconds, public=listing.public,
+    )
+    return tools, auth
+
+
+async def discover_listing_for_owner(
+    instance: dict[str, Any],
+    auth: dict[str, Any],
+    owner_id: str,
+    config_service: "ConfigurationService",
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[ToolListing, dict[str, Any]]:
+    """`discover_tools_for_owner` before namespacing, with the server's instructions and hints."""
+    try:
+        return await _discover_listing_for_owner(instance, auth, owner_id, config_service, timeout_seconds=timeout_seconds)
+    except MCPConnectionError as exc:
+        scopes = await step_up.remember_needed_scopes(config_service, instance, owner_id, exc)
+        if not scopes:
+            raise
+        raise MCPInsufficientScopeError(
+            f"This server needs more permission than your sign-in grants (scopes: {', '.join(scopes)}). "
+            "Reconnect it to grant it.",
+            scopes=scopes,
+        ) from exc
+
+
+async def _discover_listing_for_owner(
+    instance: dict[str, Any],
+    auth: dict[str, Any],
+    owner_id: str,
+    config_service: "ConfigurationService",
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[ToolListing, dict[str, Any]]:
+    config = instance_config_from_dict(instance)
+    auth_mode = instance.get("authMode", "")
+    credentials = credentials_to_discovery_dict(auth_mode, auth)
+    try:
+        return await discover_tool_listing(config, credentials, timeout_seconds), auth
+    except MCPConnectionError as exc:
+        if auth_mode != MCPAuthMode.OAUTH.value or not is_http_unauthorized(exc):
+            raise
+    logger.info("MCP instance %s rejected discovery with HTTP 401; refreshing the token once", config.id)
+    tokens = await refresh_credential_record(
+        config.id, owner_id, config_service, stale_access_token=credentials.get("accessToken"),
+    )
+    refreshed = {**auth, "isAuthenticated": True, "oauthTokens": tokens.model_dump(by_alias=True, mode="json")}
+    listing = await discover_tool_listing(config, credentials_to_discovery_dict(auth_mode, refreshed), timeout_seconds)
+    return listing, refreshed
+
+
+async def cached_tools_for_owner(
+    instance: dict[str, Any],
+    auth: dict[str, Any],
+    owner_id: str,
+    config_service: "ConfigurationService",
+    *,
+    namespace: str | None = None,
+) -> tuple[list[MCPToolInfo], float] | None:
+    """The tools the tool cache has for this sign-in, and when they were discovered (epoch
+    seconds), or None on a miss."""
+    config = instance_config_from_dict(instance)
+    hit = await tool_cache.read(config_service, instance=instance, config=config, owner_id=owner_id, auth=auth)
+    if hit is None:
+        return None
+    return tool_infos_from_listing(tool_cache.tool_listing(hit.catalog), config, namespace), hit.pointer.discovered_at

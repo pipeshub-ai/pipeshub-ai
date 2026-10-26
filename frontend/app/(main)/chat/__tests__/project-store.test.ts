@@ -57,6 +57,7 @@ function resetStore() {
     pendingConversations: {},
     projectScope: null,
     projectKnowledgeScope: null,
+    projectKnowledgeScopeRestoredFor: null,
     projectStreamTools: null,
     universalAgentToolCatalogFullNames: [],
     universalAgentStreamTools: null,
@@ -273,6 +274,44 @@ describe('setProjectScope', () => {
     useChatStore.getState().setProjectScope(makeScope());
     expect(useChatStore.getState().projectKnowledgeScope).toEqual({ apps: [], kb: ['kb-1'] });
     expect(useChatStore.getState().projectStreamTools).toEqual([]);
+  });
+
+  it('keeps a folder or record narrowing when the same project re-hydrates unchanged', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    const narrowed = { apps: [], kb: [], recordGroups: ['rg-1'], records: ['folder-1'] };
+    useChatStore.getState().setProjectKnowledgeScope(narrowed);
+    // A pending project chat resolved: the project is refetched and hydrated again.
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toEqual(narrowed);
+  });
+
+  it('drops a folder or record narrowing when the project knowledge scope changed', () => {
+    useChatStore.getState().setProjectScope(makeScope());
+    useChatStore.getState().setProjectKnowledgeScope({ apps: [], kb: [], records: ['folder-1'] });
+    useChatStore.getState().setProjectScope(makeScope({ knowledgeDefaults: { apps: ['app-1'], kb: [] } }));
+    expect(useChatStore.getState().projectKnowledgeScope).toBeNull();
+  });
+
+  it("keeps a reopened conversation's scope through the project's first hydration", () => {
+    const restored = { apps: [], kb: [], records: ['folder-1'] };
+    useChatStore.getState().restoreProjectKnowledgeScope('p1', restored);
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toEqual(restored);
+    // The catalog arrives: a second hydration of the same project keeps it too.
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toEqual(restored);
+  });
+
+  it('treats a reopened scope equal to the whole project as no narrowing', () => {
+    useChatStore.getState().restoreProjectKnowledgeScope('p1', { apps: ['app-1'], kb: ['kb-1'] });
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toBeNull();
+  });
+
+  it("does not carry a scope restored for another project", () => {
+    useChatStore.getState().restoreProjectKnowledgeScope('p2', { apps: [], kb: [], records: ['folder-1'] });
+    useChatStore.getState().setProjectScope(makeScope());
+    expect(useChatStore.getState().projectKnowledgeScope).toBeNull();
   });
 
   it('clears everything when passed null', () => {

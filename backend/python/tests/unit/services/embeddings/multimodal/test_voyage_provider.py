@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.embeddings.multimodal.voyage_provider import VoyageMultimodalProvider
 
 
@@ -36,6 +37,19 @@ class TestVoyageMultimodalProvider:
         assert results[0].embedding is None
         assert "Voyage API error" in results[0].error
         logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_failure_propagates(self) -> None:
+        error = NonRetryableError("final")
+        dense_embeddings = MagicMock()
+        dense_embeddings.batch_size = 2
+        dense_embeddings.aembed_documents = AsyncMock(side_effect=error)
+        provider = VoyageMultimodalProvider(dense_embeddings=dense_embeddings)
+
+        with pytest.raises(NonRetryableError) as exc_info:
+            await provider.embed_images(["img1"])
+
+        assert exc_info.value is error
 
     @pytest.mark.asyncio
     async def test_multiple_batches_are_flattened_in_order(self) -> None:

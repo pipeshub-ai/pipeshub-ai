@@ -4,7 +4,7 @@ Targets the missing lines/branches:
 - Lines 161-162: tiktoken.get_encoding raises exception -> enc = None
 - Line 172: enc.encode raises exception -> fallback heuristic
 - Lines 248-249: TABLE_ROW token budget exceeded (truncation)
-- Lines 323-325: extract_metadata exception propagation (raise inside except)
+- extract_metadata: a failed model call, and a deliberate stop that propagates
 - Line 354->357: _fallback_summary response without .content attribute
 - Lines 378-379: process_document delegates to extract_metadata
 """
@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.blocks import Block, BlockType, DataFormat
+from app.modules.transformers.document_extraction import ExtractionLLMError
+from app.utils.llm import LLMUnavailableError
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +144,62 @@ class TestExtractMetadataExceptionPropagation:
                 await ext.extract_metadata(blocks, "org-1")
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_invoke_raises_propagates(self):
-        """When invoke_with_structured_output_and_reflection raises, exception propagates."""
+    async def test_a_failed_call_is_retried_without_resending_the_document(self) -> None:
+        """While the model is down, a fallback summary would double every record's cost.
+
+        It raises rather than returning None: None reads as nothing to classify,
+        which the classify stage ends as SKIPPED for good.
+        """
+        ext = _build_extractor()
+
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+
+        blocks = [_make_text_block("Some content")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(ext, "graph_provider") as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            side_effect=ConnectionError("Connection error."),
+        ) as structured:
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
+
+            with pytest.raises(ExtractionLLMError, match="Connection error"):
+                await ext.extract_metadata(blocks, "org-1")
+
+        assert structured.await_args.kwargs["raise_call_errors"] is True
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_outage_still_raises_unavailable_so_the_stage_pauses(self) -> None:
+        ext = _build_extractor()
+
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(ext, "graph_provider") as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            side_effect=LLMUnavailableError("circuit open", retry_after=12.0),
+        ) as structured:
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
+
+            with pytest.raises(LLMUnavailableError):
+                await ext.extract_metadata([_make_text_block("Some content")], "org-1")
+
+        assert structured.await_args.kwargs["raise_unavailable"] is True
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_deliberate_stop_still_propagates(self) -> None:
+        from app.exceptions.non_retryable import NonRetryableError
+
         ext = _build_extractor()
 
         fake_llm = MagicMock()
@@ -156,11 +212,11 @@ class TestExtractMetadataExceptionPropagation:
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph, patch(
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
-            side_effect=ValueError("structured output failed"),
+            side_effect=NonRetryableError("stop"),
         ):
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
-            with pytest.raises(ValueError, match="structured output failed"):
+            with pytest.raises(NonRetryableError):
                 await ext.extract_metadata(blocks, "org-1")
 
 
@@ -180,10 +236,10 @@ class TestFallbackSummaryBranches:
         # Create a response without .content attribute and not a string
         mock_response = MagicMock(spec=[])  # no attributes at all
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         # summary_text will be "" -> stripped -> empty -> returns None
         assert result is None
@@ -196,8 +252,8 @@ class TestFallbackSummaryBranches:
         mock_response = MagicMock()
         mock_response.content = "Summary text"
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
         message_content = [
             {"type": "text", "text": "Document Content: "},
@@ -205,12 +261,12 @@ class TestFallbackSummaryBranches:
             {"type": "audio", "data": "some audio"},  # should be filtered out
         ]
 
-        result = await ext._fallback_summary(message_content)
+        result = await ext._fallback_summary(llm, message_content)
 
         assert result is not None
         assert result.summary == "Summary text"
         # Verify the call included text and image_url but not audio
-        call_args = ext.llm.ainvoke.call_args[0][0]
+        call_args = llm.ainvoke.call_args[0][0]
         # The HumanMessage.content list should have 2 prompt items + 2 from message_content
         content_items = call_args[0].content
         types_in_content = [item.get("type") for item in content_items]
@@ -346,3 +402,34 @@ class TestExtractMetadataDepartmentsFallback:
             result = await ext.extract_metadata(blocks, "org-1")
 
         assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_content_preparation_does_not_block_the_loop():
+    import asyncio
+    import time
+
+    ext = _build_extractor()
+
+    def slow_prepare(*_args: object, **_kwargs: object) -> list:
+        time.sleep(0.5)  # stands in for resizing a large image
+        return []
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    ticking = asyncio.create_task(ticker())
+    with patch.object(ext, "_prepare_content", side_effect=slow_prepare), patch(
+        "app.modules.transformers.document_extraction.get_llm_for_role",
+        AsyncMock(return_value=(MagicMock(), {})),
+    ):
+        result = await ext._classify_blocks([], "org", [], "r", "FILE")
+    ticking.cancel()
+
+    assert result is None
+    assert ticks >= 5

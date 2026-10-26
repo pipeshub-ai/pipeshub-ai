@@ -3,26 +3,45 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import stat
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, BinaryIO
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 
 from app.connectors.core.constants import ConfigPaths
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
 from app.sources.client.smb.share_enum import enumerate_shares
+from app.utils.url_fetcher import (
+    HostCheckError,
+    check_addresses,
+    literal_ip,
+    resolved_addresses,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
+    from types import ModuleType
 
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
+STATUS_ACCESS_DENIED = 0xC0000022
+# smbclient waits 60 s by default, longer than a gateway holds a request open.
+CONNECTION_TIMEOUT_SECONDS = 15
+LOOKUP_TIMEOUT_SECONDS = 5
+# getaddrinfo has no timeout. A lookup left running here does not hold a client's lock.
+_lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="smb-lookup")
+_T = TypeVar("_T")
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -35,6 +54,76 @@ def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(float(value), tz=timezone.utc)
     return None
+
+
+def _stat_time(result: object, field: str) -> datetime | None:
+    """A stat time equal to the one a directory listing gives for the same file.
+
+    ``st_mtime`` is float seconds and rounds to a neighbouring microsecond for
+    about half of all files, which changes the revision of an unchanged file.
+    """
+    nanos = getattr(result, f"{field}_ns", None)
+    if isinstance(nanos, int):
+        return datetime.fromtimestamp(0, tz=timezone.utc) + timedelta(microseconds=nanos // 1000)
+    return _as_datetime(getattr(result, field, None))
+
+
+def dial_address(server: str) -> str:
+    """The address to connect to for ``server``, looked up once.
+
+    Every path is then built on this address, so a second lookup cannot move the
+    connection. The deployment's rule for hosts users type applies (``check_addresses``:
+    link-local and cloud metadata never, private ones not while
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on), and loopback, unspecified and multicast
+    addresses are never a file server either. Sessions authenticate with NTLM (the image
+    has no Kerberos), which does not need the server's name.
+
+    Raises:
+        NetworkShareAuthError: the name doesn't resolve or an address is refused.
+    """
+    literal = literal_ip(server)
+    try:
+        addresses = (
+            [literal]
+            if literal is not None
+            else _lookups.submit(resolved_addresses, server).result(timeout=LOOKUP_TIMEOUT_SECONDS)
+        )
+    except TimeoutError as exc:
+        raise NetworkShareAuthError(f'Looking up "{server}" timed out. Check the server name.') from exc
+    if not addresses:
+        raise NetworkShareAuthError(f'Could not find a server named "{server}". Check the server name.')
+    plain = [
+        a.ipv4_mapped if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None else a
+        for a in addresses
+    ]
+    if any(a.is_loopback or a.is_unspecified or a.is_multicast for a in plain):
+        raise NetworkShareAuthError(
+            f"The SMB server address {server} is not allowed: loopback, link-local and multicast "
+            "addresses cannot be used."
+        )
+    try:
+        check_addresses(server, addresses)
+    except HostCheckError as exc:
+        raise NetworkShareAuthError(str(exc)) from exc
+    return str(next((a for a in plain if a.version == 4), plain[0]))
+
+
+def _vet_every_session(pool: ModuleType) -> None:
+    """Send every session smbclient opens through ``dial_address``.
+
+    A DFS referral makes smbclient open a session to a server the user never typed
+    (``get_smb_tree`` and ``_resolve_dfs`` call ``_pool.register_session``).
+    smbprotocol is pinned, so the private name is stable.
+    """
+    original = pool.register_session
+    if getattr(original, "vetted", False) is True:
+        return
+
+    def register_session(server: str, *args: object, **kwargs: object) -> object:
+        return original(dial_address(server), *args, **kwargs)
+
+    register_session.vetted = True  # type: ignore[attr-defined]
+    pool.register_session = register_session
 
 
 def unc(server: str, share: str, rel: str = "") -> str:
@@ -56,7 +145,10 @@ class SmbClient(IClient):
         share: str | None = None,
         logger: Logger | None = None,
     ) -> None:
-        self.server = server
+        # smbclient takes an IPv6 address without the brackets a URL would use.
+        self.server = server.removeprefix("[").removesuffix("]")
+        # The address actually dialled, set when the session is registered.
+        self.host = self.server
         self.port = port
         self.username = f"{domain}\\{username}" if domain else username
         self.password = password
@@ -64,6 +156,10 @@ class SmbClient(IClient):
         self.logger = logger
         self._connection_cache: dict[str, Any] = {}
         self._registered = False
+        # smbprotocol does not wait for SMB credits. Requests from several
+        # threads on one connection fail with "requires 1 credits but only 0
+        # credits are available" and can leave the connection at zero for good.
+        self._io_lock = threading.RLock()
 
     def get_client(self) -> dict[str, Any]:
         return self._connection_cache
@@ -74,38 +170,61 @@ class SmbClient(IClient):
     def _smbclient(self) -> object:
         try:
             import smbclient
+            from smbclient import _pool
         except ImportError as exc:
             raise NetworkShareAuthError(
                 "smbprotocol is not installed. Add smbprotocol to the Python environment."
             ) from exc
+        _vet_every_session(_pool)
         return smbclient
 
+    def serialized(self, fn: Callable[..., _T], *args: object) -> _T:
+        """Run one call on this connection at a time. Handles from open_file go through here too."""
+        with self._io_lock:
+            return fn(*args)
+
     def register(self) -> None:
-        if self._registered:
-            return
-        smbclient = self._smbclient()
-        smbclient.register_session(
-            self.server,
-            username=self.username,
-            password=self.password,
-            port=self.port,
-            connection_cache=self._connection_cache,
-        )
-        self._registered = True
+        with self._io_lock:
+            if self._registered:
+                return
+            self.host = dial_address(self.server)
+            smbclient = self._smbclient()
+            smbclient.register_session(
+                self.host,
+                username=self.username,
+                password=self.password,
+                port=self.port,
+                connection_timeout=CONNECTION_TIMEOUT_SECONDS,
+                connection_cache=self._connection_cache,
+            )
+            self._registered = True
 
     def close(self) -> None:
-        smbclient = self._smbclient()
-        smbclient.reset_connection_cache(connection_cache=self._connection_cache)
-        self._connection_cache.clear()
-        self._registered = False
+        with self._io_lock:
+            smbclient = self._smbclient()
+            smbclient.reset_connection_cache(connection_cache=self._connection_cache)
+            self._connection_cache.clear()
+            self._registered = False
 
     def _kwargs(self) -> dict[str, Any]:
-        return {"connection_cache": self._connection_cache, "port": self.port}
+        # smbprotocol keeps credentials only inside the live session. After the
+        # server drops the connection it opens a new one from these arguments.
+        return {
+            "connection_cache": self._connection_cache,
+            "port": self.port,
+            "username": self.username,
+            "password": self.password,
+            "connection_timeout": CONNECTION_TIMEOUT_SECONDS,
+        }
 
     def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
+        with self._io_lock:
+            return self._list_directory(share, path)
+
+    def _list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         entries: list[DirectoryEntry] = []
         try:
             with smbclient.scandir(target, **self._kwargs()) as scan:
@@ -113,6 +232,10 @@ class SmbClient(IClient):
         except FileNotFoundError:
             raise
         except Exception as exc:
+            # smbclient raises SMBOSError (ntstatus), smbprotocol SMBResponseException (status). The
+            # message reads "Unknown NtStatus error returned 'STATUS_ACCESS_DENIED'", not "access denied".
+            if STATUS_ACCESS_DENIED in (getattr(exc, "ntstatus", None), getattr(exc, "status", None)):
+                raise AccessDeniedError(share, path, str(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(target) from exc
@@ -122,9 +245,13 @@ class SmbClient(IClient):
         return entries
 
     def stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
+        with self._io_lock:
+            return self._stat(share, path, follow=follow)
+
+    def _stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         try:
             result = smbclient.stat(target, follow_symlinks=follow, **self._kwargs())
         except FileNotFoundError:
@@ -143,25 +270,32 @@ class SmbClient(IClient):
             is_symlink=stat.S_ISLNK(result.st_mode),
             is_reparse=bool(attrs & REPARSE_POINT),
             size=int(result.st_size or 0),
-            created_time=_as_datetime(getattr(result, "st_ctime", None)),
-            last_write_time=_as_datetime(getattr(result, "st_mtime", None)),
+            created_time=_stat_time(result, "st_ctime"),
+            last_write_time=_stat_time(result, "st_mtime"),
             file_id=int(result.st_ino) if getattr(result, "st_ino", None) else None,
+            attributes=attrs,
         )
 
     def open_file(self, share: str, path: str) -> BinaryIO:
-        self.register()
-        smbclient = self._smbclient()
-        target = unc(self.server, share, path)
-        return smbclient.open_file(target, mode="rb", buffering=0, **self._kwargs())
+        with self._io_lock:
+            self.register()
+            smbclient = self._smbclient()
+            target = unc(self.host, share, path)
+            # The default share mode for "rb" is read-only, so two overlapping
+            # previews of one file fail with STATUS_SHARING_VIOLATION.
+            return smbclient.open_file(
+                target, mode="rb", buffering=0, share_access="rwd", **self._kwargs()
+            )
 
     def list_shares(self) -> list[ShareInfo]:
-        self.register()
-        try:
-            return enumerate_shares(self.server, self._connection_cache, port=self.port)
-        except ShareListingError:
-            if self.default_share:
-                return [ShareInfo(name=self.default_share, share_type="disk")]
-            raise
+        with self._io_lock:
+            self.register()
+            try:
+                return enumerate_shares(self.host, self._connection_cache, port=self.port)
+            except ShareListingError:
+                if self.default_share:
+                    return [ShareInfo(name=self.default_share, share_type="disk")]
+                raise
 
     def _from_dir_entry(self, item: object) -> DirectoryEntry:
         info = getattr(item, "smb_info", None)
@@ -183,6 +317,7 @@ class SmbClient(IClient):
             created_time=created,
             last_write_time=written,
             file_id=file_id,
+            attributes=attrs,
         )
 
     @classmethod
@@ -193,7 +328,7 @@ class SmbClient(IClient):
         connector_instance_id: str,
     ) -> "SmbClient":
         config = await config_service.get_config(
-            ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_instance_id)
+            ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
         )
         if not config:
             raise NetworkShareAuthError("SMB configuration not found")

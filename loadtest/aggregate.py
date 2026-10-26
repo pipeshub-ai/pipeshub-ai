@@ -52,6 +52,34 @@ def _fill_from_label(run: dict) -> dict:
     return run
 
 
+def _print_resources(groups: dict[tuple, list[dict]]) -> None:
+    """Per combination: median of the trials' averages, worst of their peaks."""
+    if not any(r.get("resources") for rows in groups.values() for r in rows):
+        return
+    print()
+    print("  resources per combination: cpu % of one core, memory MB "
+          "(avg = median of trial averages, max/peak = worst trial)")
+    print(f"  {'arm':<10}{'w':>3}{'users':>7}  {'name':<28}{'cpu avg':>9}{'max':>8}"
+          f"{'mem avg':>10}{'peak':>8}")
+    for key in sorted(groups, key=lambda k: (k[0], int(k[1]) if k[1].isdigit() else 99, k[2])):
+        rows = [r["resources"] for r in groups[key] if r.get("resources") and not r.get("invalid")]
+        if not rows:
+            continue
+        names: dict[str, list[dict]] = {}
+        for res in rows:
+            for scope in ("process", "container"):
+                for name, s in (res.get(scope) or {}).items():
+                    if scope == "process" and name not in ("QUERY WORKERS TOTAL", "query (all processes)", "node"):
+                        continue
+                    names.setdefault(name, []).append(s)
+        arm, workers, users = key
+        for name in sorted(names, key=lambda n: -st.median(s["mem_peak_mb"] for s in names[n])):
+            ss = names[name]
+            print(f"  {arm:<10}{workers:>3}{users:>7}  {name[:27]:<28}"
+                  f"{st.median(s['cpu_avg'] for s in ss):>9.1f}{max(s['cpu_max'] for s in ss):>8.1f}"
+                  f"{st.median(s['mem_avg_mb'] for s in ss):>10.0f}{max(s['mem_peak_mb'] for s in ss):>8.0f}")
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else "results")
     runs = []
@@ -95,6 +123,8 @@ def main() -> int:
         print(f"  {arm:<10}{workers:>3}{users:>7}{len(good):>4}{_fmt(thr):>22}"
               f"{_fmt(ss):>22}{_fmt(p50):>20}{_fmt(spt, 0):>18}"
               f"{(max(err) * 100 if err else 0):>7.1f}%{flag}")
+
+    _print_resources(groups)
 
     arms = {r.get("arm") for r in runs if r.get("arm")}
     if len(arms) == 2:

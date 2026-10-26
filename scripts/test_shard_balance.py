@@ -79,6 +79,15 @@ class TestCatchesMistakes(unittest.TestCase):
         # The real marker is now unassigned too, so both halves of the rename show up.
         self.assertTrue(any("'beta' is in no shard" in p for p in problems), problems)
 
+    def test_an_unassigned_connector_is_reported(self) -> None:
+        workflow = MATRIX + '      CONN_SHARD_1: "alpha"\n      CONN_SHARD_2: "gamma"\n'
+        problems, _ = run(workflow=workflow)
+        self.assertTrue(
+            any("'beta' is in no shard" in p and "Add it to a CONN_SHARD_* line" in p
+                for p in problems),
+            problems,
+        )
+
     def test_a_lopsided_split_is_reported(self) -> None:
         workflow = MATRIX + '      CONN_SHARD_1: "alpha or beta or gamma"\n      CONN_SHARD_2: ""\n'
         problems, _ = run(workflow=workflow)

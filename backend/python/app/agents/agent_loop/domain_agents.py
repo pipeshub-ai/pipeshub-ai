@@ -26,7 +26,7 @@ Design:
   with no web-search provider configured never loads `web_search`, so no
   `web_agent` is planned and the definition is silently skipped — same for
   `internal_exploration_agent` when no knowledge node is attached (no
-  `retrieval`/`knowledgehub` tools load, so nothing is claimed). This IS
+  `knowledgegraph` tools load, so nothing is claimed). This IS
   the availability contract for both delegates — no separate gating check
   exists or should be added elsewhere; see `test_domain_agents.py`'s
   `TestAvailabilityGating` for the tests that pin it down.
@@ -48,6 +48,8 @@ from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agents.agent_loop.answer_rules import multi_step_answer_rules
+from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
 
 if TYPE_CHECKING:
@@ -144,7 +146,9 @@ def _fetch_record_policy_for_exploration() -> str:
     return "\n\n" + policy_text("knowledgegraph__fetch_record")
 
 
-def _internal_exploration_instructions(context: "AgentContext | None") -> str | None:
+def _internal_exploration_instructions(
+    context: "AgentContext | None", tool_names: list[str] | None = None
+) -> str | None:
     """Per-request connector inventory + the fan-out/iteration playbook
     above, appended to `internal_exploration_agent`'s child prompt via
     `DomainAgentDefinition.instructions_factory`. Built from
@@ -163,9 +167,20 @@ def _internal_exploration_instructions(context: "AgentContext | None") -> str | 
     duplicated in _EXPLORATION_PLAYBOOK's prose."""
     fetch_policy = _fetch_record_policy_for_exploration()
     base = _EXPLORATION_PLAYBOOK + fetch_policy
+    query_rule = keyword_search_query_rule("knowledgegraph__search")
+    if query_rule:
+        base += f"\n\n{query_rule}"
+    # The explorer runs the chained lookups a multi-step question needs, so it
+    # gets the rules as well as the parent that writes the answer.
+    multi_step = multi_step_answer_rules()
+    if multi_step:
+        base += f"\n\n{multi_step}"
     if context is None or not context.agent_knowledge:
         return base
-    source_table = context.get_source_catalog().render()
+    # Without `tool_names` every `granted(...)` lookup in the catalog returns
+    # None, which drops the fetch_record bullet and the code-graph guidance from
+    # the child's own prompt while leaving "navigate the record group" intact.
+    source_table = context.get_source_catalog().render(tool_names=tool_names)
     if not source_table:
         return base
     return f"{base}\n{source_table}"
@@ -188,7 +203,7 @@ class DomainAgentDefinition:
     the parent model sees, so it must say what to delegate and what comes back."""
 
     app_names: frozenset[str] = frozenset()
-    """Claim every registered tool whose adapter `app_name` is in this set."""
+    """Claim every registered tool whose `Tool.app_name` is in this set."""
 
     tool_names: frozenset[str] = frozenset()
     """Claim these exact registered tool names (for tools whose `app_name`
@@ -204,9 +219,12 @@ class DomainAgentDefinition:
     differs by org/agent), use `instructions_factory` instead — the two
     compose (both are appended) rather than one overriding the other."""
 
-    instructions_factory: Callable[["AgentContext | None"], str | None] | None = None
+    instructions_factory: (
+        Callable[["AgentContext | None", list[str]], str | None] | None
+    ) = None
     """Optional per-request instructions builder, called with this
-    request's `AgentContext` at registration time (see
+    request's `AgentContext` and the child's granted tool names at
+    registration time (see
     `register_domain_agents()`). Returns `None` to add nothing — lets a
     domain (e.g. `internal_exploration_agent`) see request-scoped data
     (connector inventory, knowledge sources) that a static
@@ -215,6 +233,11 @@ class DomainAgentDefinition:
     domain-specific (open/closed: adding this to a new domain later means
     adding one function, not touching this module's control flow)."""
 
+    reads_code: bool = False
+    """Granted the code-graph tools (`register_domain_agents(code_tool_names=...)`).
+    Only domains whose work reads repository code get them; the rest paid
+    their schemas on every turn for nothing (A-11)."""
+
     max_turns: int = _DEFAULT_CHILD_MAX_TURNS
 
     model: str | None = None
@@ -222,7 +245,7 @@ class DomainAgentDefinition:
     the request's own `model_name` (`register_domain_agents(model_name=...)`),
     same as every domain got before this field existed. Set this for a
     domain whose work reliably needs LESS capability than the rest of the
-    request (e.g. `calculator_agent`'s single arithmetic call) or MORE
+    request (e.g. a domain making one lookup call) or MORE
     (a domain doing multi-step synthesis) — the override applies to the
     domain's OWN `AgentSpec`, so it takes effect whether that domain is
     reached via static composition, `spawn_agent`'s direct-AgentTool
@@ -321,6 +344,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
     DomainAgentDefinition(
         name="coding_agent",
         domain="coding",
+        reads_code=True,
         description=(
             "Delegate a coding task to a focused sub-agent that writes and runs "
             "code in a sandbox, installs packages, and reads files it produced. "
@@ -368,6 +392,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
     DomainAgentDefinition(
         name="internal_exploration_agent",
         domain="internal knowledge exploration",
+        reads_code=True,
         description=(
             "Delegate exploration of the organization's internal knowledge to a "
             "sub-agent that iteratively searches, browses, and fetches records "
@@ -384,7 +409,6 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "specific facts, figures, and citations — never reduce them to a "
             "vague, uncited paraphrase."
         ),
-        app_names=frozenset({"retrieval", "knowledgehub"}),
         tool_names=frozenset({
             "knowledgegraph__search",
             "knowledgegraph__list_files",
@@ -394,29 +418,9 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
         max_turns=_EXPLORATION_MAX_TURNS,
         result_note=_EXPLORATION_RESULT_NOTE,
     ),
-    DomainAgentDefinition(
-        name="calculator_agent",
-        domain="calculation",
-        description=(
-            "Delegate arithmetic, unit, and date calculations to a focused "
-            "sub-agent. Give it ONE self-contained calculation request with all "
-            "numbers/dates inline. Returns the computed result."
-        ),
-        app_names=frozenset({"calculator", "date_calculator"}),
-        max_turns=5,
-    ),
-    DomainAgentDefinition(
-        name="calendar_agent",
-        domain="calendar",
-        description=(
-            "Delegate calendar work to a focused sub-agent that can list, "
-            "create, and update events and check availability on the user's "
-            "connected calendars. Give it ONE self-contained request with "
-            "explicit dates/times and attendees. Returns the outcome with event "
-            "links."
-        ),
-        app_names=frozenset({"calendar", "google_calendar"}),
-    ),
+    # No calculator or calendar domain: they never ran (toolset tools did not
+    # expose `app_name`), and their tools stay on the top-level agent until
+    # there is a measured reason to delegate them.
 )
 
 
@@ -474,7 +478,7 @@ def plan_domain_agents(
             if name in claimed:
                 continue
             tool = tool_registry.resolve_by_name(name)
-            app_name = getattr(tool, "app_name", None)
+            app_name = tool.app_name
             if name in definition.tool_names or (app_name and app_name in definition.app_names):
                 names.append(name)
                 claimed.add(name)
@@ -491,6 +495,13 @@ def _combine_instructions(static: str | None, from_factory: str | None) -> str |
     return "\n\n".join(parts) if parts else None
 
 
+def _model_spec(provider: str, model: str | None, model_name: str, context_window: int | None) -> ModelSpec:
+    """`context_window` is configured for `model_name`; a domain on another
+    model falls back to that model's table entry."""
+    name = model or model_name
+    return ModelSpec(provider=provider, model=name, context_window=context_window if name == model_name else None)
+
+
 def register_domain_agents(
     plan: DomainAgentPlan,
     tool_registry: "ToolRegistry",
@@ -499,8 +510,10 @@ def register_domain_agents(
     *,
     provider: str,
     model_name: str,
+    context_window: int | None = None,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    code_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Materializes `plan`: builds one ReAct child `AgentSpec` per claimed
     domain and registers each as an `AgentTool` on `tool_registry`. Returns
@@ -547,10 +560,15 @@ def register_domain_agents(
         if not claimed_names:
             continue
         delegate_names = [d for d in definition.delegate_agents if d in claims]
-        shared_names = [n for n in shared_tool_names if n in registered]
+        # Sorted: a frozenset iterates in per-process hash order, and the tool
+        # list is the start of every cached prompt prefix.
+        shared = shared_tool_names | (code_tool_names if definition.reads_code else frozenset())
+        shared_names = [n for n in sorted(shared) if n in registered]
         extra_instructions = _combine_instructions(
             definition.extra_instructions,
-            definition.instructions_factory(context) if definition.instructions_factory else None,
+            definition.instructions_factory(
+                context, [*claimed_names, *delegate_names, *shared_names]
+            ) if definition.instructions_factory else None,
         )
         child_tool_names, tool_disclosure = (
             lazy_tools(tool_registry, [*claimed_names, *delegate_names, *shared_names])
@@ -563,10 +581,11 @@ def register_domain_agents(
             system_prompt=build_sub_agent_prompt(
                 definition.domain, context,
                 extra_instructions=extra_instructions,
+                tool_names=child_tool_names,
             ),
             tool_names=child_tool_names,
             tool_disclosure=tool_disclosure,
-            model=ModelSpec(provider=provider, model=definition.model or model_name),
+            model=_model_spec(provider, definition.model, model_name, context_window),
             loop=ReActLoop(),
             max_turns=definition.max_turns,
         )
@@ -607,9 +626,11 @@ def compose_domain_agents(
     *,
     provider: str,
     model_name: str,
+    context_window: int | None = None,
     definitions: tuple[DomainAgentDefinition, ...] = DOMAIN_AGENT_DEFINITIONS,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    code_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Convenience: plan + register in one call, for callers that don't
     need the plan/register split (e.g. tests, or a caller with no need to
@@ -617,8 +638,8 @@ def compose_domain_agents(
     plan = plan_domain_agents(tool_registry, definitions)
     return register_domain_agents(
         plan, tool_registry, runtime, context,
-        provider=provider, model_name=model_name, lazy_tools=lazy_tools,
-        shared_tool_names=shared_tool_names,
+        provider=provider, model_name=model_name, context_window=context_window, lazy_tools=lazy_tools,
+        shared_tool_names=shared_tool_names, code_tool_names=code_tool_names,
     )
 
 

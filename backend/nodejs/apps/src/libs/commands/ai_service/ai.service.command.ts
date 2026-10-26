@@ -79,10 +79,12 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
 
       // Assuming the response is JSON; adjust if needed.
       const data = await response.json();
+      const retryAfter = response.headers.get('retry-after');
       return {
         statusCode: response.status,
         data: data,
         msg: response.statusText,
+        ...(retryAfter ? { headers: { 'retry-after': retryAfter } } : {}),
       };
     } catch (error: any) {
       // Headers are left out: they carry the caller's bearer token.
@@ -170,9 +172,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
-      // Propagates a client disconnect to the upstream fetch — without this,
-      // aborting on our end only tore down the Node-side Readable while
-      // Python kept generating against a socket nobody was reading.
+      // Lets Node abandon a run nobody is waiting for (see `attachUpstreamAbort`);
+      // aborting only the Readable would leave Python generating into the void.
       ...(signal ? { signal } : {}),
     };
 
@@ -237,7 +238,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       logger.error('AI service streaming command failed', {
         error: error.message,
         url: url,
-        requestOptions: requestOptions,
+        method: this.method,
       });
       throw error;
     }

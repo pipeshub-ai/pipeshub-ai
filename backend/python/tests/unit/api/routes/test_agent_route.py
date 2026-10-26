@@ -307,11 +307,11 @@ class TestParseKnowledgeSources:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_invalid_json_filters(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_empty_and_none_input(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
@@ -495,7 +495,7 @@ class TestGetUserDocument:
         gp.get_user_by_user_id.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_user_document("u1", gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================
@@ -545,7 +545,7 @@ class TestGetOrgInfo:
         gp.get_document.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_org_info({"orgId": "o1"}, gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================

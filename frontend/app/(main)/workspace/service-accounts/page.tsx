@@ -1,28 +1,46 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Flex, Heading, IconButton, Text } from '@radix-ui/themes';
+import { Badge, Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { EntityEmptyState, ConfirmationDialog } from '../components';
+import { EntityEmptyState, ConfirmationDialog, EntityRowActionMenu } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
-import { ServiceAccountsApi } from './api';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '../components/settings-page-container';
+import { DelegationsApi, ServiceAccountsApi } from './api';
 import type { ServiceAccount } from './types';
 import { CreateServiceAccountPanel } from './components/create-service-account-panel';
 import { ServiceAccountTokensPanel } from './components/service-account-tokens-panel';
+import { ServiceAccountDelegationsPanel } from './components/service-account-delegations-panel';
 
 function ServiceAccountsPageContent() {
   const { t } = useTranslation();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
+  const isMobile = useIsMobile();
 
   const [accounts, setAccounts] = useState<ServiceAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [tokensFor, setTokensFor] = useState<ServiceAccount | null>(null);
+  /**
+   * Whether this deployment can delegate at all.
+   *
+   * Asked once, because it is a property of the build rather than of any one
+   * account. `null` until the answer arrives; the panel treats that as "yes"
+   * so the usual path never flickers through the explanatory state.
+   */
+  const [delegationAvailable, setDelegationAvailable] = useState<
+    boolean | null
+  >(null);
+  const [delegationsFor, setDelegationsFor] = useState<ServiceAccount | null>(
+    null
+  );
   const [deleteTarget, setDeleteTarget] = useState<ServiceAccount | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   // Disabling is asked about first, because it stops every token the account
@@ -51,6 +69,26 @@ function ServiceAccountsPageContent() {
     if (!isProfileInitialized) return;
     void fetchAccounts();
   }, [isProfileInitialized, fetchAccounts]);
+
+  useEffect(() => {
+    if (!isProfileInitialized) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { available } = await DelegationsApi.capability();
+        if (!cancelled) setDelegationAvailable(available === true);
+      } catch {
+        // A probe that does not come back is not an edition answer, so this
+        // stays quiet rather than raising a toast about a capability nobody
+        // has asked for yet. Left as unavailable: offering a control that
+        // cannot work is worse than withholding one that could.
+        if (!cancelled) setDelegationAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isProfileInitialized]);
 
   const toggleDisabled = useCallback(
     async (account: ServiceAccount) => {
@@ -111,7 +149,6 @@ function ServiceAccountsPageContent() {
 
   if (!isProfileInitialized) return null;
 
-  const pagePaddingX = 'clamp(var(--space-4), 4vw, 40px)';
   const isEmpty = !isLoading && !error && accounts.length === 0;
 
   return (
@@ -120,19 +157,20 @@ function ServiceAccountsPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: pagePaddingX,
-        paddingRight: pagePaddingX,
+        paddingInline: pagePaddingX(40),
         boxSizing: 'border-box',
         minWidth: 0,
       }}
     >
       <Flex
         justify="between"
-        align="end"
-        style={{ paddingTop: '64px', paddingBottom: 'var(--space-4)' }}
+        align="start"
+        wrap="wrap"
+        gap="3"
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 'var(--space-5)' }}
       >
-        <Flex direction="column" gap="1">
-          <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.serviceAccounts.title')}
           </Heading>
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -141,6 +179,7 @@ function ServiceAccountsPageContent() {
         </Flex>
         <Button
           size="2"
+          className="touch-hit"
           style={{ cursor: 'pointer' }}
           onClick={() => setCreatePanelOpen(true)}
         >
@@ -215,13 +254,15 @@ function ServiceAccountsPageContent() {
                 <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 2 }}>
                   {t('workspace.serviceAccounts.columnName')}
                 </Text>
-                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 3 }}>
-                  {t('workspace.serviceAccounts.columnDescription')}
-                </Text>
+                {!isMobile && (
+                  <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 3 }}>
+                    {t('workspace.serviceAccounts.columnDescription')}
+                  </Text>
+                )}
                 <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
                   {t('workspace.serviceAccounts.columnStatus')}
                 </Text>
-                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', width: 120, textAlign: 'right' }}>
+                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', width: 44, textAlign: 'right' }}>
                   {' '}
                 </Text>
               </Flex>
@@ -249,9 +290,11 @@ function ServiceAccountsPageContent() {
                       {account.slug}
                     </Text>
                   </Flex>
-                  <Text size="1" style={{ color: 'var(--slate-11)', flex: 3 }}>
-                    {account.description ?? '—'}
-                  </Text>
+                  {!isMobile && (
+                    <Text size="1" style={{ color: 'var(--slate-11)', flex: 3 }}>
+                      {account.description ?? '—'}
+                    </Text>
+                  )}
                   <Flex style={{ flex: 1 }}>
                     <Badge color={account.isDisabled ? 'gray' : 'green'} size="1">
                       {account.isDisabled
@@ -259,48 +302,22 @@ function ServiceAccountsPageContent() {
                         : t('workspace.serviceAccounts.statusActive')}
                     </Badge>
                   </Flex>
-                  <Flex gap="1" justify="end" style={{ width: 120 }}>
-                    <IconButton
-                      size="2"
-                      variant="ghost"
-                      style={{ cursor: 'pointer' }}
-                      aria-label={t('workspace.serviceAccounts.manageTokens')}
-                      onClick={() => setTokensFor(account)}
-                    >
-                      <MaterialIcon name="key" size={16} />
-                    </IconButton>
-                    <IconButton
-                      size="2"
-                      variant="ghost"
-                      style={{ cursor: 'pointer' }}
-                      aria-label={
-                        account.isDisabled
-                          ? t('workspace.serviceAccounts.enable')
-                          : t('workspace.serviceAccounts.disable')
-                      }
-                      onClick={() => {
-                        if (account.isDisabled) {
-                          void toggleDisabled(account);
-                        } else {
-                          setDisableTarget(account);
-                        }
-                      }}
-                    >
-                      <MaterialIcon
-                        name={account.isDisabled ? 'play_arrow' : 'pause'}
-                        size={16}
-                      />
-                    </IconButton>
-                    <IconButton
-                      size="2"
-                      variant="ghost"
-                      color="red"
-                      style={{ cursor: 'pointer' }}
-                      aria-label={t('workspace.serviceAccounts.delete')}
-                      onClick={() => setDeleteTarget(account)}
-                    >
-                      <MaterialIcon name="delete" size={16} />
-                    </IconButton>
+                  <Flex justify="end" style={{ width: 44 }}>
+                    <EntityRowActionMenu
+                      actions={[
+                        { icon: 'key', label: t('workspace.serviceAccounts.manageTokens'), onClick: () => setTokensFor(account) },
+                        { icon: 'switch_account', label: t('workspace.serviceAccounts.manageDelegations'), onClick: () => setDelegationsFor(account) },
+                        {
+                          icon: account.isDisabled ? 'play_arrow' : 'pause',
+                          label: account.isDisabled ? t('workspace.serviceAccounts.enable') : t('workspace.serviceAccounts.disable'),
+                          onClick: () => {
+                            if (account.isDisabled) void toggleDisabled(account);
+                            else setDisableTarget(account);
+                          },
+                        },
+                        { icon: 'delete', label: t('workspace.serviceAccounts.delete'), variant: 'danger', onClick: () => setDeleteTarget(account) },
+                      ]}
+                    />
                   </Flex>
                 </Flex>
               ))}
@@ -313,6 +330,15 @@ function ServiceAccountsPageContent() {
         open={createPanelOpen}
         onOpenChange={setCreatePanelOpen}
         onCreated={() => void fetchAccounts()}
+      />
+
+      <ServiceAccountDelegationsPanel
+        available={delegationAvailable}
+        open={delegationsFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setDelegationsFor(null);
+        }}
+        account={delegationsFor}
       />
 
       <ServiceAccountTokensPanel

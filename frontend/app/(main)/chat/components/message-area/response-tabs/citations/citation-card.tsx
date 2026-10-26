@@ -55,7 +55,7 @@ export function ReferenceCard({
   const isCitationsTab = currentTab === 'citation';
   const isMobile = useIsMobile();
 
-  const config = getConnectorConfig(citation.connector);
+  const config = getConnectorConfig(citation.connector, citation.connectorInstanceName);
 
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
@@ -133,7 +133,7 @@ export function ReferenceCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {config.label}
+              {config.sourceLabel}
             </Text>
             <DemoSourceBadge connectorId={citation.connectorId} />
           </Flex>

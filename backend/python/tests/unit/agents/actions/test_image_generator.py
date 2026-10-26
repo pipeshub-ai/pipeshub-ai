@@ -62,6 +62,27 @@ class TestGenerateImage:
         assert "No image-generation model" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_generated_images_belong_to_the_artifact_owner(self) -> None:
+        """A service-account agent's run: the images are the chatting user's."""
+        from app.agents.actions.image_generator import image_generator as mod
+
+        tool = mod.ImageGenerator(_make_state(user_id="u-alice", artifact_owner_user_id="u-bob"))
+        adapter = SimpleNamespace(provider="openAI", model="gpt-image-1", generate=AsyncMock(return_value=[b"\x89PNG"]))
+        upload = AsyncMock(return_value={"fileName": "img.png", "mimeType": "image/png", "sizeBytes": 4, "recordId": "rec-1"})
+        tasks: list[asyncio.Task] = []
+
+        with patch.object(mod, "get_image_generation_config", AsyncMock(return_value={
+            "provider": "openAI", "configuration": {"apiKey": "sk", "model": "gpt-image-1"}, "isDefault": True,
+        })), patch("app.utils.aimodels.get_image_generation_model", return_value=adapter), patch.object(
+            mod, "upload_bytes_artifact", upload,
+        ), patch.object(mod, "register_task", lambda conv_id, task: tasks.append(task)):
+            ok, _ = await tool.generate_image(prompt="a fox", size="1024x1024", n=1)
+            await tasks[0]
+
+        assert ok is True
+        assert upload.await_args.kwargs["user_id"] == "u-bob"
+
+    @pytest.mark.asyncio
     async def test_happy_path_schedules_upload(self):
         from app.agents.actions.image_generator import image_generator as mod
         from app.config.constants.arangodb import Connectors

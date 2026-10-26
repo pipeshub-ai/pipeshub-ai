@@ -462,4 +462,18 @@ describe('PatService', () => {
       expect(mockLogger.info.called).to.be.true
     })
   })
+
+  describe('knowledge limit', () => {
+    it('mints the token with the picked limit and returns it', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({
+        clientId: patClientId, accessTokenLifetime: 3600, createdBy: new Types.ObjectId(),
+      } as any)
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+
+      const created = await service.createToken(orgId, userId, 'Test User', { name: 'limited', knowledgeLimit })
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({ knowledgeLimit })
+      expect(created.knowledgeLimit).to.deep.equal(knowledgeLimit)
+    })
+  })
 })

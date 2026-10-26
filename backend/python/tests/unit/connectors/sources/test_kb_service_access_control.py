@@ -48,6 +48,7 @@ from unittest.mock import AsyncMock, MagicMock
 def _make_service():
     """Return (service, graph_provider mock)."""
     graph_provider = AsyncMock()
+    graph_provider.is_write_conflict = MagicMock(return_value=False)
     kafka_service = AsyncMock()
     logger = MagicMock()
 

@@ -4,13 +4,13 @@ const SIDEBAR_ITEMS = [
   { label: 'General', url: '/workspace/general/' },
   { label: 'Profile', url: '/workspace/profile/' },
   { label: 'Authentication', url: '/workspace/authentication/' },
-  { label: 'AI Models', url: '/workspace/ai-models/' },
+  { label: 'AI models', url: '/workspace/ai-models/' },
   { label: 'Users', url: '/workspace/users/' },
   { label: 'Teams', url: '/workspace/teams/' },
   { label: 'Groups', url: '/workspace/groups/' },
   { label: 'Bots', url: '/workspace/bots/' },
   { label: 'Mail', url: '/workspace/mail/' },
-  { label: 'Web Search', url: '/workspace/web-search/' },
+  { label: 'Web search', url: '/workspace/web-search/' },
   { label: 'Prompts', url: '/workspace/prompts/' },
   { label: 'Services', url: '/workspace/services/' },
   { label: 'Labs', url: '/workspace/labs/' },
@@ -46,7 +46,7 @@ test.describe('Workspace Sidebar Navigation', () => {
   for (const item of SIDEBAR_ITEMS) {
     test(`navigates to ${item.label}`, async ({ page }) => {
       // A link's name may start with its icon's ligature text ("hub Connectors"); allow one
-      // such word, which still keeps "Your Personal Connectors" from matching "Connectors".
+      // such word, which still keeps "Your connectors" from matching "Connectors".
       const sidebarLink = page
         .getByRole('link', { name: new RegExp(`^(\\S+ )?${item.label}$`) })
         .first();

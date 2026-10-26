@@ -21,6 +21,8 @@ import type {
 } from './types';
 import type { StreamMessageCallbacks } from './api';
 import { toolStatusLabel } from './utils/tool-display';
+import { ChatStreamError } from './stream-error';
+import { toolApprovalDetails } from './tool-approval';
 
 /** Mutable counters the caller inspects after the stream ends (mirrors the
  * legacy dispatcher's local `receivedComplete`/`lastSSEError` bookkeeping). */
@@ -37,10 +39,12 @@ interface AGUIStreamState {
   rawLength: number;
 }
 
-// Mirrors the server-side caps in `transcript_collector.py` — defensive
-// only, since the server already truncates before these deltas are sent.
+// Mirrors the server-side caps in `transcript_collector.py`. A result arrives
+// already truncated, but a TOOL_CALL_ARGS `delta` is the call's whole JSON:
+// `args` takes the frame's `argsPreview`, and cuts `delta` only from a server
+// that does not send one.
 const MAX_TOOL_ARGS_CHARS = 2000;
-const MAX_TOOL_RESULT_CHARS = 500;
+const MAX_TOOL_RESULT_CHARS = 2000;
 
 /**
  * Builds the live `MessagePart[]` timeline from the SAME AG-UI event stream
@@ -76,6 +80,9 @@ class LivePartsBuilder {
    * own `RUN_STARTED` (see `AGUIEventEmitter._translate`) — stash the role
    * name here, keyed by the parent's runId, until that `RUN_STARTED` lands. */
   private pendingRoleByParent = new Map<string, string>();
+
+  /** messageId -> where that text message's model call starts in its container. */
+  private modelCallStarts = new Map<string, { container: MessagePart[]; index: number }>();
 
   private containerFor(runId: string | undefined): MessagePart[] {
     if (!runId) return this.parts;
@@ -181,6 +188,12 @@ class LivePartsBuilder {
     if (typeof data.displayName === 'string') {
       part.displayName = data.displayName;
     }
+    if (data.approved === true) {
+      part.approved = true;
+    }
+    if (data.approvalAnswer === 'allowed' || data.approvalAnswer === 'declined' || data.approvalAnswer === 'expired') {
+      part.approvalAnswer = data.approvalAnswer;
+    }
     this.containerFor(runId).push(part);
     this.openToolCalls.set(toolCallId, part);
   }
@@ -191,7 +204,7 @@ class LivePartsBuilder {
     const part = this.openToolCalls.get(toolCallId);
     if (!part) return;
     const delta = typeof data.delta === 'string' ? data.delta : '';
-    part.args = delta.slice(0, MAX_TOOL_ARGS_CHARS);
+    part.args = typeof data.argsPreview === 'string' ? data.argsPreview : delta.slice(0, MAX_TOOL_ARGS_CHARS);
     if (typeof data.argsSummary === 'string') {
       part.argsSummary = data.argsSummary;
     }
@@ -209,6 +222,10 @@ class LivePartsBuilder {
     if (typeof data.resultSummary === 'string') {
       part.resultSummary = data.resultSummary;
     }
+    // Checked where it is drawn, the same for a live frame and a saved part.
+    if (data.resultView !== undefined && data.resultView !== null) part.resultView = data.resultView;
+    const approval = status === 'awaiting_approval' ? toolApprovalDetails(data.approval) : null;
+    if (approval) part.approval = approval;
   }
 
   /** Read-only peek at the dedup set `handleTextStart` below consults —
@@ -229,8 +246,21 @@ class LivePartsBuilder {
     }
     const runId = typeof data.runId === 'string' ? data.runId : undefined;
     const part: MessagePart = { type: 'text', content: '', runId };
-    this.containerFor(runId).push(part);
+    const container = this.containerFor(runId);
+    if (messageId) this.modelCallStarts.set(messageId, { container, index: container.length });
+    container.push(part);
     this.openTurnParts.set(`${runId ?? ''}:text`, part);
+  }
+
+  /** Mirrors `TranscriptCollector`: a model call that failed mid-stream is
+   * dropped whole — its text message and the reasoning streamed after it. */
+  discardMessage(messageId: string | undefined, runId: string | undefined): void {
+    if (!messageId) return;
+    const start = this.modelCallStarts.get(messageId);
+    this.modelCallStarts.delete(messageId);
+    this.openTurnParts.delete(`${runId ?? ''}:text`);
+    this.openTurnParts.delete(`${runId ?? ''}:reasoning`);
+    if (start) start.container.splice(start.index);
   }
 
   handleTextContent(data: AGUIEventEnvelope): void {
@@ -296,6 +326,21 @@ function applyStatePatch(state: AGUIStreamState, ops: AGUIJsonPatchOp[]): AGUISt
 }
 
 /**
+ * What an MCP server said about a running tool (`AGUIFormatter.tool_progress`), shown after its
+ * label: its own message, else "3/10", or a percentage for fractional progress.
+ */
+function toolProgressText(snapshot: Record<string, unknown>): string {
+  const note = typeof snapshot.progress_message === 'string' ? snapshot.progress_message.trim() : '';
+  if (note) return ` ${note}`;
+  const { progress, total } = snapshot;
+  if (typeof progress !== 'number' || typeof total !== 'number' || !Number.isFinite(progress) || !(total > 0)) {
+    return '';
+  }
+  if (Number.isInteger(progress) && Number.isInteger(total)) return ` ${progress}/${total}`;
+  return ` ${Math.round(Math.min(Math.max(progress / total, 0), 1) * 100)}%`;
+}
+
+/**
  * Builds an `onEvent` callback for `streamSSERequest` that translates AG-UI
  * frames into the existing `StreamMessageCallbacks`. Pass `tracking` so the
  * caller can detect "stream ended without RUN_FINISHED" the same way the
@@ -307,6 +352,7 @@ export function createAGUIEventHandler(
 ): (event: SSEEvent) => void {
   let textBuffer = '';
   let rawTextReceived = 0;
+  let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = { citations: [], normalizedAnswer: '', rawLength: 0 };
   const partsBuilder = new LivePartsBuilder();
   const emitParts = () => callbacks.onParts?.(partsBuilder.snapshot());
@@ -359,6 +405,7 @@ export function createAGUIEventHandler(
         if (isNewRootTurn) {
           textBuffer = '';
           rawTextReceived = 0;
+          awaitingRetryAfterDiscard = false;
         }
         if (data) partsBuilder.handleTextStart(data);
         emitParts();
@@ -487,13 +534,24 @@ export function createAGUIEventHandler(
         const textOps: AGUIJsonPatchOp[] = [];
         for (const op of ops) {
           if (op.op === 'add' && op.path === '/artifacts/-') {
-            callbacks.onArtifact?.(op.value as SSEArtifactEvent);
+            if (op.value) callbacks.onArtifact?.(op.value as SSEArtifactEvent);
           } else {
             textOps.push(op);
           }
         }
         if (textOps.length === 0) break;
+        // The answer streamer runs behind these frames, so snapshots of the
+        // discarded attempt can follow `message_discarded`; the one marked
+        // `/discarded` is the first written after it.
+        const endsDiscard = textOps.some((op) => op.path === '/discarded');
+        if (awaitingRetryAfterDiscard && !endsDiscard) break;
         state = applyStatePatch(state, textOps);
+        if (endsDiscard) {
+          awaitingRetryAfterDiscard = false;
+          textBuffer = state.normalizedAnswer;
+          callbacks.onChunk?.({ chunk: '', accumulated: textBuffer, citations: state.citations });
+          break;
+        }
         const normalizationCurrent =
           state.rawLength > 0
             ? state.rawLength >= rawTextReceived
@@ -518,7 +576,22 @@ export function createAGUIEventHandler(
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
-          callbacks.onArtifact?.(value as SSEArtifactEvent);
+          if (value) callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (name === 'message_discarded') {
+          const runId = typeof data?.runId === 'string' ? data.runId : undefined;
+          const discarded = (value ?? {}) as { messageId?: unknown };
+          partsBuilder.discardMessage(
+            typeof discarded.messageId === 'string' ? discarded.messageId : undefined,
+            runId,
+          );
+          if (partsBuilder.isRootRun(runId)) {
+            textBuffer = '';
+            rawTextReceived = 0;
+            awaitingRetryAfterDiscard = true;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+          }
+          emitParts();
         }
         break;
       }
@@ -562,7 +635,9 @@ export function createAGUIEventHandler(
         }
         if (tracking) tracking.receivedError = true;
         console.warn('[Chat SSE/AGUI] RUN_ERROR:', message);
-        callbacks.onError?.(new Error(message));
+        callbacks.onError?.(
+          new ChatStreamError(message, typeof data?.code === 'string' ? data.code : undefined, data?.details)
+        );
         break;
       }
 
@@ -584,7 +659,7 @@ export function createAGUIEventHandler(
         let message = STATUS_MESSAGES[status];
         if (message) {
           if (status === 'running_tool' && typeof snapshot?.current_tool === 'string') {
-            message = `${toolStatusLabel(snapshot.current_tool)}...`;
+            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
           }
           callbacks.onStatus?.({ status, message });
         }

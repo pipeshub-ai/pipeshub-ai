@@ -11,9 +11,22 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  clientTags,
+  domainFromEmail,
+} from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import {
+  PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
+} from '../../oauth_provider/constants/constants';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import {
+  CODE_GRAPH_TOOL_NAMES,
+  callerHasCodeRepos,
+  registerCodeGraphTools,
+  ToolRegistrar,
+} from '../code-graph.tools';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -46,6 +59,16 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     userId: typeof user.userId === 'string' ? user.userId : undefined,
     domain: domainFromEmail(email),
     auth_type: authType,
+    // Which client and which of our channels: for a stateless transport,
+    // every request has to say it, not only initialize.
+    // Service tokens are OAuth too, but their client id is an internal
+    // per-org placeholder like the PAT one, not an app.
+    ...(authType === 'oauth' &&
+    clientId &&
+    !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
+      ? { oauth_client_id: clientId }
+      : {}),
+    ...clientTags(req.headers),
   };
 }
 
@@ -83,6 +106,45 @@ function mcpToolCallProps(
     ...mcpEventBase(req),
     tool: typeof body.params?.name === 'string' ? body.params.name : undefined,
   };
+}
+
+/** Whether this request can reach a code tool: a listing or a call to one.
+ *  Anything else skips the repo check the code tools would cost. */
+function reachesCodeTools(body: unknown): boolean {
+  if (Array.isArray(body)) return body.some(reachesCodeTools);
+  const message = body as
+    | { method?: unknown; params?: { name?: unknown } }
+    | undefined;
+  if (message?.method === 'tools/list') return true;
+  return (
+    message?.method === 'tools/call' &&
+    (CODE_GRAPH_TOOL_NAMES as readonly unknown[]).includes(message.params?.name)
+  );
+}
+
+/** Session users pass, as in requireScopes; an OAuth token or PAT needs code:read. */
+function mayReadCode(user: Record<string, unknown> | undefined): boolean {
+  if (!user?.isOAuth) return true;
+  const scopes: unknown = user.oauthScopes;
+  return Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CODE_READ);
+}
+
+/**
+ * The MCP tool scopes to mount for this caller. A token without both
+ * kb:write and kb:upload is offered the read tools only, so an agent is not
+ * shown tools that would answer 403. Session users get every tool, as in
+ * requireScopes; undefined mounts everything.
+ */
+export function mcpToolScopes(
+  user: Record<string, unknown> | undefined,
+): Array<'read'> | undefined {
+  if (!user?.isOAuth) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  const held = Array.isArray(scopes) ? scopes : [];
+  return held.includes(OAuthScopeNames.KB_WRITE) &&
+    held.includes(OAuthScopeNames.KB_UPLOAD)
+    ? undefined
+    : ['read'];
 }
 
 /** The Grafana counter for the same step: org and domain only. */
@@ -129,6 +191,7 @@ export const handleMCPRequest =
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        scopes: mcpToolScopes(req.user),
         serverURL,
         getSDK: () =>
           new PipeshubCore({
@@ -136,6 +199,23 @@ export const handleMCPRequest =
             serverURL,
           }),
       });
+
+      const codeDeps = {
+        aiBackend: appConfig.aiBackend,
+        authorization: req.headers.authorization ?? '',
+      };
+      if (
+        reachesCodeTools(req.body) &&
+        mayReadCode(req.user) &&
+        (await callerHasCodeRepos(
+          codeDeps,
+          `${req.user?.orgId}:${req.user?.userId}`,
+        ))
+      ) {
+        // The package's McpServer is typed against its own zod 4; comparing that
+        // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
+        registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
+      }
 
       await mcpServer.connect(transport);
       const connectedProps = mcpConnectedProps(req);
@@ -145,7 +225,11 @@ export const handleMCPRequest =
       // "initialized" notification never reaches this one. Count an accepted
       // initialize: a refused one can still answer HTTP 200 with a JSON-RPC
       // error, and the server keeps the client's info only once it accepts.
-      if (connectedProps && res.statusCode < 400 && mcpServer.server.getClientVersion()) {
+      if (
+        connectedProps &&
+        res.statusCode < 400 &&
+        mcpServer.server.getClientVersion()
+      ) {
         recordEvent('mcp_connected', connectedProps);
         recordActivityFromProps('mcp_connected', connectedProps);
       }
@@ -156,11 +240,20 @@ export const handleMCPRequest =
         recordEvent('mcp_tool_called', toolCallProps);
         recordActivityFromProps('mcp_tool_called', toolCallProps);
       }
+
+      const body = req.body as { method?: unknown } | undefined;
+      const jsonRpcMethod =
+        typeof body?.method === 'string' ? body.method : undefined;
+      logger.info('MCP request completed', {
+        method: jsonRpcMethod,
+        requestId: req.context?.requestId,
+      });
     } catch (error: any) {
       logger.error('MCP request failed', {
         error: error.message,
         method: req.method,
         userId: req.user?.userId,
+        requestId: req.context?.requestId,
       });
       next(error);
     }

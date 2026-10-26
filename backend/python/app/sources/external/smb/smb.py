@@ -24,18 +24,18 @@ class SmbDataSource:
             return await asyncio.to_thread(self._client.list_directory, share, path)
 
     async def read_file(
-        self, share: str, path: str, chunk_size: int = 8192
+        self, share: str, path: str, chunk_size: int = 1024 * 1024
     ) -> AsyncIterator[bytes]:
         async with self._rate_limiter:
             handle = await asyncio.to_thread(self._client.open_file, share, path)
         try:
             while True:
-                chunk = await asyncio.to_thread(handle.read, chunk_size)
+                chunk = await asyncio.to_thread(self._client.serialized, handle.read, chunk_size)
                 if not chunk:
                     break
                 yield chunk
         finally:
-            await asyncio.to_thread(handle.close)
+            await asyncio.to_thread(self._client.serialized, handle.close)
 
     async def list_shares(self) -> list[ShareInfo]:
         async with self._rate_limiter:

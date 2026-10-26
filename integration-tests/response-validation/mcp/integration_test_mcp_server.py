@@ -29,6 +29,7 @@ import re
 import jsonschema
 import pytest
 
+from helper.local_auth import jwt_claims, session_service_account_id
 from helper.mcp_client import ASSISTANT_PROMPT, mcp_initialize_raw, read_mcp_surface
 
 CURATED_TOOLS = {
@@ -39,11 +40,31 @@ CURATED_TOOLS = {
     "pipeshub_get_record_content",
     "pipeshub_directory",
     "pipeshub_agents",
+    "pipeshub_create_collection",
+    "pipeshub_upload",
+    "pipeshub_indexing_status",
+    "pipeshub_connect_source",
+}
+
+# Registered by PipesHub itself (modules/mcp/code-graph.tools.ts), not the
+# package, and only for a caller with code:read who can read an indexed repo.
+CODE_TOOLS = {
+    "pipeshub_code_repos",
+    "pipeshub_code_symbols",
+    "pipeshub_code_neighbours",
+    "pipeshub_code_read",
+    "pipeshub_code_path",
+    "pipeshub_code_search",
+    "pipeshub_code_outline",
+    "pipeshub_code_impact",
+    "pipeshub_code_entry_points",
 }
 
 # The mcp-server repo caps every description so hosts keep room for their own
 # tools (its __tests__/toolDescriptions.test.ts). Mirror the ceiling here.
-DESCRIPTION_MAX_CHARS = 4000
+# 3.1.0 raised it from 4000 to 4600 (mcp-server#100), for caveats that replace
+# promises the tools did not keep.
+DESCRIPTION_MAX_CHARS = 4600
 
 def _diff(expected: str, actual: str, name: str) -> str:
     return "\n".join(
@@ -95,7 +116,11 @@ class TestMcpSurfaceMatchesGolden:
         assert actual == expected, "instructions differ:\n" + _diff(expected, actual, "instructions")
 
     def test_tool_names(self, mcp_surface: dict, mcp_golden: dict) -> None:
-        assert [t["name"] for t in mcp_surface["tools"]] == [t["name"] for t in mcp_golden["tools"]]
+        served = [t["name"] for t in mcp_surface["tools"]]
+        golden = [t["name"] for t in mcp_golden["tools"]]
+        if not CODE_TOOLS & set(served):
+            golden = [n for n in golden if n not in CODE_TOOLS]
+        assert served == golden
 
     def test_tool_descriptions(self, mcp_surface: dict, mcp_golden: dict) -> None:
         served, golden = _by_name(mcp_surface["tools"]), _by_name(mcp_golden["tools"])
@@ -142,7 +167,13 @@ class TestMcpSurfaceMatchesGolden:
 @pytest.mark.mcp
 class TestMcpSurfaceInvariants:
     def test_exactly_the_curated_tools(self, mcp_surface: dict) -> None:
-        assert {t["name"] for t in mcp_surface["tools"]} == CURATED_TOOLS
+        """The code tools come all together or not at all (no repo, or no code:read)."""
+        assert {t["name"] for t in mcp_surface["tools"]} in (CURATED_TOOLS, CURATED_TOOLS | CODE_TOOLS)
+
+    def test_code_tools_are_marked_experimental(self, mcp_surface: dict) -> None:
+        for tool in mcp_surface["tools"]:
+            if tool["name"] in CODE_TOOLS:
+                assert tool["description"].startswith("[Experimental] "), tool["name"]
 
     def test_every_tool_has_description_schema_and_annotations(self, mcp_surface: dict) -> None:
         for tool in mcp_surface["tools"]:
@@ -202,7 +233,11 @@ class TestMcpAuth:
     def test_client_credentials_token_sees_the_same_tools(
         self, mcp_base_url: str, mcp_client_credentials_token: str, mcp_surface: dict
     ) -> None:
-        """The route resolves a client_credentials token to the app owner and lists every tool."""
+        """A client_credentials token acts as the app's service account and lists every tool."""
+        # The backend resolves a client_credentials token to its createdBy claim,
+        # so that claim, not the tool list, shows whose access the token carries.
+        claims = jwt_claims(mcp_client_credentials_token)
+        assert claims.get("createdBy") == session_service_account_id(mcp_base_url), claims
         other = read_mcp_surface(mcp_base_url, mcp_client_credentials_token)
         assert [t["name"] for t in other["tools"]] == [t["name"] for t in mcp_surface["tools"]]
 

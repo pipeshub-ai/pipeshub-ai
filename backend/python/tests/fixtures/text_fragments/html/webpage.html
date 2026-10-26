@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connectors overview</title>
+<style>
+  ::target-text { background: rgb(255, 0, 255); color: rgb(255, 0, 255); }
+  body { font: 20px/1.6 sans-serif; margin: 24px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<a href="#content-area" class="sr-only focus:not-sr-only">Skip to main content</a>
+<header>
+  <nav><a href="/">Home</a> <a href="/guides">Guides</a> <a href="/api">API reference</a></nav>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <a href="/connectors/overview">Overview</a>
+    <a href="/connectors/dropbox">Dropbox</a>
+    <a href="/connectors/google">Google Workspace</a>
+  </aside>
+  <main id="content-area">
+    <h1>What are Connectors?</h1>
+    <p>Connectors are software components that sync and index data from external applications into the workspace. They let chat and agents search through an organization's knowledge without anyone copying files by hand, and they keep that knowledge current as the source changes.</p>
+    <p>Use connectors when you want to query or search data that lives somewhere else. The indexed data becomes searchable knowledge for assistants, with the same permissions people have in the source application, so nobody sees a document they could not open there.</p>
+    <p>Syncing is one-way. Data is imported for indexing and is never written back to the source application. A connector reads with the narrowest scopes the source offers, and an administrator can pause or remove it at any time without losing anything in the source.</p>
+    <p>Syncing happens on a schedule rather than in real time. Each run fetches what changed since the previous run, so a large workspace is read once in full and then kept current with small updates that finish in minutes instead of hours.</p>
+    <p>Every connector reports what it indexed, what it skipped and why. Records that could not be read stay listed with their reason, so an administrator can fix a permission or a file type and run the sync again without starting over.</p>
+    <p>Citations in answers link back to the exact place in the source. Opening one shows the record in the app or opens the original page, scrolled to the passage the answer used, so a reader can check the claim in its own context.</p>
+  </main>
+</div>
+<template><script>self.__next_f.push([1,"_jsx(_components.strong,{children:`Tools`}),`\n`"])</script>{"deploymentId":"dpl_5UDDZ9hnigTkoV7QtvQ39eUp84nu","chunks":[]}</template>
+</body>
+</html>

@@ -5,13 +5,14 @@ import { Theme } from '@radix-ui/themes';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
 vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
 vi.mock('../../../api', () => ({
   McpServersApi: { discoverOAuthMetadata: vi.fn(), getOAuthConfig: vi.fn() },
 }));
-vi.mock('../../../components', () => ({ McpDisabledCallout: () => null }));
+vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
   WorkspaceRightPanel: ({
     open,
@@ -30,6 +31,7 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
         </button>
       </div>
     ) : null,
+  useWorkspaceDrawerNestedModalHost: () => null,
 }));
 // Native controls so the test can read the selected transport and the offered options.
 vi.mock('../../../../components', () => ({
@@ -56,6 +58,7 @@ vi.mock('../../../../components', () => ({
     </select>
   ),
   TagInput: () => null,
+  ConfirmationDialog: () => null,
 }));
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';

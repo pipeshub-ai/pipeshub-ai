@@ -42,10 +42,9 @@ RAW_HARD_DELETES = {
 }
 
 # Read ENABLE_SOFT_DELETE themselves and call on_records_soft_deleted when it is on.
-FLAG_CHECKING_HARD_DELETERS = {
-    "linear/connector.py",
-    "atlassian/jira_data_center/connector.py",
-}
+# Linear and Jira Data Center delete through on_records_deleted_cascade, which
+# reads the flag itself, so no connector checks it around a raw hard delete.
+FLAG_CHECKING_HARD_DELETERS: set[str] = set()
 
 # Whole-collection delete: a hard delete by design, as in the soft-delete design (section 6).
 KB_DELETE = {"localKB/handlers/kb_service.py": {"delete_connector_instance"}}

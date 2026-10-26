@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import app.schema.arango.documents as documents
 import pytest
-from jsonschema import Draft4Validator
+from jsonschema import Draft4Validator, ValidationError
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema.node_schema_registry import adapt_schema
@@ -93,6 +93,7 @@ class TestDocumentSchemaInventory:
             "pull_request_record_schema",
             "sql_table_record_schema",
             "sql_view_record_schema",
+            "stage_state_schema",
             "product_record_schema",
             "deal_record_schema",
             "record_group_schema",
@@ -109,6 +110,10 @@ class TestDocumentSchemaInventory:
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",
             "code_file_record_schema",
+            "block_schema",
+            "named_entity_schema",
+            "value_mention_schema",
+            "named_entity_persist_retry_schema",
             "agent_skills_schema",
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",
@@ -206,6 +211,30 @@ class TestRequiredFields:
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
         assert rule.get("additionalProperties") is False
+
+
+def _valid_record_doc(**extra: object) -> dict[str, object]:
+    doc = {
+        "recordName": "upload.pdf",
+        "externalRecordId": "document-1",
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "createdAtTimestamp": 1,
+        "connectorId": "kb-1",
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestRecordUploaderField:
+    def test_accepts_uploaded_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        validator.validate(_valid_record_doc(uploadedBy="user-1"))
+
+    def test_rejects_created_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(_valid_record_doc(createdBy="user-1"))
 
 
 def _valid_app_doc(**extra):

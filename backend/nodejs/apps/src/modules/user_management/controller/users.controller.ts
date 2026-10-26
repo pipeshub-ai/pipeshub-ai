@@ -1,15 +1,23 @@
 import { Response, NextFunction } from 'express';
 import { User, Users } from '../schema/users.schema'; // Adjust path as needed
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import mongoose from 'mongoose';
 import { UserDisplayPicture } from '../schema/userDp.schema';
-import sharp from 'sharp';
+import {
+  assertRasterImage,
+  readImageUpload,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import {
   fetchConfigJwtGenerator,
   jwtGeneratorForNewAccountPassword,
   jwtGeneratorForValidateEmailLink,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   BadRequestError,
   ForbiddenError,
@@ -21,10 +29,9 @@ import {
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
-  serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
-import { MailService } from '../services/mail.service';
+import { MailService, mailFailureError } from '../services/mail.service';
 import {
   EntitiesEventProducer,
   Event,
@@ -88,6 +95,13 @@ import {
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
+
+// What the auth service reads from an email lookup: the session and refresh
+// tokens it issues, the sign-in checks, and the first-login update.
+export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
+
+export const USER_LOOKUP_EMAIL_MISMATCH_MESSAGE =
+  'This lookup token was issued for a different email address.';
 
 /**
  * Only the account's owner may change its email address.
@@ -543,7 +557,7 @@ export class UserController {
             blockExpiresAt: null,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       );
 
       if (!credential) {
@@ -651,17 +665,34 @@ export class UserController {
   }
 
   async checkUserExistsByEmail(
-    req: AuthenticatedUserRequest,
+    req: AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { email } = req.body;
+      // The lookup is not org-scoped, so the email comes from the token the
+      // auth service minted for this one sign-in, never from the request alone.
+      // A USER_LOOKUP token minted for a userId carries no email and is refused.
+      const tokenEmail = req.tokenPayload?.email;
+      const { email } = req.body as { email: string };
+      if (
+        typeof tokenEmail !== 'string' ||
+        tokenEmail.toLowerCase() !== email.toLowerCase()
+      ) {
+        throw new ForbiddenError(USER_LOOKUP_EMAIL_MISMATCH_MESSAGE);
+      }
+
+      const tokenOrgId = (req as { tokenPayload?: { orgId?: string } })
+        .tokenPayload?.orgId;
 
       const users = await Users.find({
-        email: email,
+        email: tokenEmail.toLowerCase(),
         isDeleted: false,
-      });
+        ...(tokenOrgId ? { orgId: tokenOrgId } : {}),
+      })
+        .select(USER_LOOKUP_FIELDS)
+        .lean()
+        .exec();
 
       res.json(users);
       return;
@@ -759,7 +790,7 @@ export class UserController {
         }
         try {
           if (hashedPassword !== undefined) {
-            await UserCredentials.deleteOne({ userId: newUser._id });
+            await UserCredentials.deleteOne({ userId: String(newUser._id) });
           }
           await Users.deleteOne({ _id: newUser._id });
         } catch (cleanupError) {
@@ -852,67 +883,6 @@ export class UserController {
     } catch (error) {
       next(error);
     }
-  }
-
-  /**
-   * Just-In-Time user provisioning from SAML assertion
-   * Creates user, adds to everyone group, and publishes creation event
-   */
-  async provisionSamlUser(
-    email: string,
-    samlUser: any,
-    orgId: string,
-    logger: Logger,
-  ) {
-    logger.info('Auto-provisioning user from SAML', { email, orgId });
-
-    const userDetails = this.extractSamlUserDetails(samlUser, email);
-    const newUser = new Users({
-      email,
-      ...userDetails,
-      orgId,
-      hasLoggedIn: false,
-      isDeleted: false,
-      role: 'member',
-    });
-
-    await newUser.save();
-
-    // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
-
-    // Publish user creation event
-    try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id.toString(),
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
-    } catch (eventError) {
-      logger.error('Failed to publish user creation event', {
-        error: eventError,
-        userId: newUser._id,
-      });
-    } finally {
-      await this.eventService.stop();
-    }
-
-    logger.info('User auto-provisioned successfully', {
-      userId: newUser._id,
-      email,
-    });
-
-    return newUser.toObject();
   }
 
   /**
@@ -1688,7 +1658,7 @@ export class UserController {
       user.deletedBy = req.user.userId ?? req.user._id;
 
       await UserCredentials.updateOne(
-        { userId },
+        { userId: String(userId) },
         { $unset: { hashedPassword: '' } },
       );
 
@@ -1719,20 +1689,26 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const dpFile = req.body.fileBuffer;
+      const upload = readImageUpload(req.body as unknown);
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
 
-      if (!dpFile) {
+      if (upload === undefined) {
         throw new BadRequestError('DP File is required');
       }
+      const dpBuffer = upload.buffer;
+      assertRasterImage(
+        dpBuffer,
+        ['png', 'jpeg', 'webp', 'gif'],
+        'Profile photo must be a PNG, JPEG, WebP or GIF image',
+      );
       let quality = 100;
-      let compressedImageBuffer = await sharp(dpFile.buffer)
+      let compressedImageBuffer = await sharp(dpBuffer)
         .jpeg({ quality })
         .toBuffer();
       while (compressedImageBuffer.length > 100 * 1024 && quality > 10) {
         quality -= 10;
-        compressedImageBuffer = await sharp(dpFile.buffer)
+        compressedImageBuffer = await sharp(dpBuffer)
           .jpeg({ quality })
           .toBuffer();
       }
@@ -1754,7 +1730,7 @@ export class UserController {
           pic: compressedPic,
           mimeType: compressedPicMimeType,
         },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
       res.setHeader('Content-Type', compressedPicMimeType);
       res.status(201).send(compressedImageBuffer);
@@ -1892,9 +1868,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1916,9 +1890,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       }
 
@@ -2751,56 +2723,6 @@ export class UserController {
     }
   }
 
-  /**
-   * Extract user details from SAML assertion with fallbacks for different IdP formats
-   */
-  private extractSamlUserDetails(samlUser: any, email: string) {
-    const SAML_CLAIM_GIVENNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname';
-    const SAML_OID_GIVENNAME = 'urn:oid:2.5.4.42';
-    const SAML_CLAIM_SURNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname';
-    const SAML_OID_SURNAME = 'urn:oid:2.5.4.4';
-    const SAML_CLAIM_NAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name';
-    const SAML_OID_DISPLAYNAME = 'urn:oid:2.16.840.1.113730.3.1.241';
-
-    // Try multiple SAML attribute names for first name
-    const firstName =
-      samlUser.firstName ||
-      samlUser.givenName ||
-      samlUser[SAML_CLAIM_GIVENNAME] ||
-      samlUser[SAML_OID_GIVENNAME];
-
-    // Try multiple SAML attribute names for last name
-    const lastName =
-      samlUser.lastName ||
-      samlUser.surname ||
-      samlUser.sn ||
-      samlUser[SAML_CLAIM_SURNAME] ||
-      samlUser[SAML_OID_SURNAME];
-
-    // Try multiple SAML attribute names for display name
-    const displayName =
-      samlUser.displayName ||
-      samlUser.name ||
-      samlUser.fullName ||
-      samlUser[SAML_CLAIM_NAME] ||
-      samlUser[SAML_OID_DISPLAYNAME];
-
-    // Construct full name with fallbacks
-    const fullName =
-      displayName ||
-      [firstName, lastName].filter(Boolean).join(' ') ||
-      email.split('@')[0];
-
-    return {
-      firstName: firstName || undefined,
-      lastName: lastName || undefined,
-      fullName,
-    };
-  }
-
   async emailChange(
     email: string,
     newEmail: string,
@@ -2853,7 +2775,7 @@ export class UserController {
           orgId: user.orgId?.toString(),
         },
         usersMails: [newEmail],
-        subject: 'PipesHub | Verify your email !',
+        subject: `${getBrandConfig().productName} | Verify your email !`,
         templateData: {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
@@ -2882,7 +2804,7 @@ export class UserController {
             orgId: String(user.orgId ?? ''),
           },
           usersMails: [currentEmail],
-          subject: 'PipesHub | Your email address is being changed',
+          subject: `${getBrandConfig().productName} | Your email address is being changed`,
           templateData: {
             orgName: org?.shortName ?? org?.registeredName,
             name: user.fullName,

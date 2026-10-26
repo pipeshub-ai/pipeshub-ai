@@ -1,4 +1,5 @@
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from collections.abc import AsyncGenerator
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -7,6 +8,18 @@ from app.sources.client.linear.graphql_op import LinearGraphQLOperations
 from app.sources.client.linear.linear import (
     LinearClient,
 )
+from app.sources.client.linear.upload_urls import is_linear_upload_url
+
+
+def _require_upload_url(file_url: str) -> None:
+    """The Authorization header goes to Linear's upload host over HTTPS and nowhere else."""
+    if not is_linear_upload_url(file_url):
+        raise ValueError("Not a Linear upload URL")
+
+
+async def _upload_host_only(request: httpx.Request) -> None:
+    """Every request of a download, each redirect included, goes to Linear's upload host."""
+    _require_upload_url(str(request.url))
 
 
 class LinearDataSource:
@@ -29,6 +42,25 @@ class LinearDataSource:
             linear_client (LinearClient): Linear client instance
         """
         self._linear_client = linear_client
+
+    async def execute_operation(
+        self,
+        operation: str,
+        variables: dict[str, Any] | None = None,
+        operation_type: str = "query",
+    ) -> GraphQLResponse:
+        """Run any operation registered in ``LinearGraphQLOperations`` by name.
+
+        Transport failures come back as an unsuccessful response with no status, the
+        same as the per-operation methods below.
+        """
+        query = LinearGraphQLOperations.get_operation_with_fragments(operation_type, operation)
+        try:
+            return await self._linear_client.get_client().execute(
+                query=query, variables={k: v for k, v in (variables or {}).items() if v is not None}
+            )
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to execute {operation_type} {operation}: {str(e)}")
 
     # =============================================================================
     # QUERY OPERATIONS
@@ -1171,7 +1203,7 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="projectCreate"
+                query=query, variables=variables, operation_name="ProjectCreate"
             )
             return response
         except Exception as e:
@@ -1188,7 +1220,7 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="projectUpdate"
+                query=query, variables=variables, operation_name="ProjectUpdate"
             )
             return response
         except Exception as e:
@@ -1253,7 +1285,7 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="commentCreate"
+                query=query, variables=variables, operation_name="CommentCreate"
             )
             return response
         except Exception as e:
@@ -2116,6 +2148,7 @@ class LinearDataSource:
         Raises:
             ValueError: If file download fails
         """
+        _require_upload_url(file_url)
         try:
             auth_header = self._get_auth_header()
 
@@ -2123,7 +2156,7 @@ class LinearDataSource:
             if auth_header:
                 headers["Authorization"] = auth_header
 
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, event_hooks={"request": [_upload_host_only]}) as client:
                 async with client.stream("GET", file_url, headers=headers) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes():
@@ -2148,6 +2181,7 @@ class LinearDataSource:
         Raises:
             ValueError: If file request fails
         """
+        _require_upload_url(file_url)
         try:
             auth_header = self._get_auth_header()
 
@@ -2155,7 +2189,7 @@ class LinearDataSource:
             if auth_header:
                 headers["Authorization"] = auth_header
 
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, event_hooks={"request": [_upload_host_only]}) as client:
                 response = await client.head(file_url, headers=headers)
                 response.raise_for_status()
 

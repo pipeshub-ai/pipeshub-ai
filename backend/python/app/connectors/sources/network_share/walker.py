@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderScope
 from app.connectors.sources.network_share.entry import DirectoryEntry
-from app.connectors.sources.network_share.errors import DirectoryListingError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    DirectoryListingError,
+)
 from app.connectors.sources.network_share.filters import (
     date_bounds,
     passes_date_filters,
@@ -31,6 +34,7 @@ from app.models.entities import FileRecord, Record
 from app.models.permission import Permission
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from logging import Logger
 
     from app.config.constants.arangodb import Connectors
@@ -47,6 +51,9 @@ class WalkResult:
     seen: set[str]
     complete: bool
     max_timestamp_ms: int = 0
+    # External ids of the folders and files that failed to be read. What was
+    # stored under them is still on the share as far as this walk knows.
+    unread: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -77,13 +84,21 @@ class ShareWalker:
             IndexingFilterKey.FILES, default=True
         )
         seen: set[str] = {share}
+        unread: set[str] = set()
         complete = True
         max_ts = 0
         upserts: list[tuple[FileRecord, list[Permission]]] = []
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         pending_moves: list[tuple[MoveDecision, DirectoryEntry, str, list[Permission]]] = []
         seen_file_ids: set[int] = set()
+        # The folders the walk is inside right now, outermost first.
+        open_dirs: list[tuple[int, datetime | None, datetime | None, str]] = []
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
+
+        def mark_unread(server_path: str) -> None:
+            nonlocal complete
+            complete = False
+            unread.add(f"{share}/{identity_rel_path(server_path)}" if server_path else share)
 
         async def flush() -> None:
             nonlocal upserts, moves
@@ -93,6 +108,23 @@ class ShareWalker:
             if moves:
                 await self.flush_moves(moves)
                 moves = []
+
+        def enclosing_folder(entry: DirectoryEntry) -> str | None:
+            # Samba follows a directory symlink on the server and lists it as a
+            # plain folder with the target's file id. A link back up the tree
+            # would be walked until the server gives up. Only a folder the walk
+            # is inside counts: a second path elsewhere with the same id can be
+            # a snapshot or a cloned volume, and skipping it drops its records.
+            # The timestamps tell a nested mount that reuses an inode number apart.
+            if entry.created_time is None and entry.last_write_time is None:
+                return None
+            for file_id, created, written, path in open_dirs:
+                if file_id == entry.file_id and (created, written) == (
+                    entry.created_time,
+                    entry.last_write_time,
+                ):
+                    return path
+            return None
 
         async def handle_entry(entry: DirectoryEntry, parent_dir: str) -> str | None:
             nonlocal max_ts
@@ -123,11 +155,6 @@ class ShareWalker:
                 return None
 
             ext_id = f"{share}/{nfc_path}"
-            seen.add(ext_id)
-            if entry.last_write_time is not None:
-                ts = int(entry.last_write_time.timestamp() * 1000)
-                max_ts = max(max_ts, ts)
-
             existing_by_id = await self.get_by_external_id(ext_id)
             existing_by_revision = None
             skip_revision_lookup = (
@@ -139,6 +166,21 @@ class ShareWalker:
                 existing_by_revision = await self.get_by_revision(
                     revision_id(share, entry, nfc_path)
                 )
+
+            if entry.is_directory and usable_file_id(entry.file_id):
+                inside = enclosing_folder(entry)
+                if inside is not None:
+                    self.logger.warning(
+                        "Not walking %s: it is %s, the folder that contains it (a link loop on the server)",
+                        ext_id,
+                        inside,
+                    )
+                    return None
+
+            seen.add(ext_id)
+            if entry.last_write_time is not None:
+                ts = int(entry.last_write_time.timestamp() * 1000)
+                max_ts = max(max_ts, ts)
 
             decision = self.mapper.classify(
                 entry=entry,
@@ -165,8 +207,9 @@ class ShareWalker:
                     await flush()
             return server_path if entry.is_directory else None
 
-        async def traverse(directory_path: str, *, prefix: bool = False) -> None:
-            nonlocal complete
+        async def traverse(
+            directory_path: str, *, prefix: bool = False, start: bool = False
+        ) -> None:
             try:
                 entries = await self.data_source.list_directory(share, directory_path)
             except FileNotFoundError:
@@ -177,13 +220,28 @@ class ShareWalker:
                         directory_path,
                     )
                     return
-                complete = False
+                mark_unread(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: not found", share, directory_path
                 )
                 return
+            except AccessDeniedError as exc:
+                # Where the walk starts, a denial is more likely the account's
+                # session or the connector's settings than a folder it lost.
+                if start:
+                    mark_unread(directory_path)
+                    self.logger.error(
+                        "Failed to list %s/%s: %s", share, directory_path, exc
+                    )
+                    return
+                # Below that it is the folder's own permissions: what the account
+                # cannot list is not synced, and what was synced from it goes.
+                self.logger.info(
+                    "Not syncing %s/%s: the account may not list it", share, directory_path
+                )
+                return
             except (DirectoryListingError, OSError, ConnectionError) as exc:
-                complete = False
+                mark_unread(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: %s", share, directory_path, exc
                 )
@@ -203,9 +261,23 @@ class ShareWalker:
                         and not entry.is_symlink
                         and not entry.is_reparse
                     ):
-                        await traverse(child_dir)
+                        tracked = usable_file_id(entry.file_id)
+                        if tracked:
+                            open_dirs.append(
+                                (
+                                    entry.file_id,
+                                    entry.created_time,
+                                    entry.last_write_time,
+                                    f"{share}/{identity_rel_path(child_dir)}",
+                                )
+                            )
+                        try:
+                            await traverse(child_dir)
+                        finally:
+                            if tracked:
+                                open_dirs.pop()
                 except Exception:
-                    complete = False
+                    mark_unread(join_rel_path(directory_path, entry.name) or directory_path)
                     self.logger.exception(
                         "Error processing %s in %s/%s",
                         entry.name,
@@ -213,40 +285,67 @@ class ShareWalker:
                         directory_path,
                     )
 
-        async def selected_prefix_is_walkable(directory_path: str) -> bool:
-            # Listing starts at the chosen path, so a reparse prefix is invisible
-            # to the child check. A failed stat must not prune.
-            nonlocal complete
+        async def selected_prefix_dirs(
+            directory_path: str,
+        ) -> list[tuple[int, datetime | None, datetime | None, str]] | None:
+            """The folders along a selected path, or None when it must not be walked.
+
+            Listing starts at the chosen path, so a reparse prefix is invisible to
+            the child check, and neither the chosen folder nor the folders above it
+            are ever listed as entries. A failed stat must not prune.
+            """
+            along: list[tuple[int, datetime | None, datetime | None, str]] = []
             parts = [part for part in directory_path.split("/") if part]
             for index in range(len(parts)):
                 path = "/".join(parts[: index + 1])
                 try:
                     info = await self.data_source.stat(share, path, follow=False)
                 except Exception as exc:
-                    complete = False
+                    mark_unread(directory_path)
                     self.logger.error(
                         "Failed to stat %s/%s before walking a selected folder: %s",
                         share,
                         path,
                         exc,
                     )
-                    return False
+                    return None
                 if info is None:
-                    return True
+                    return along
                 if info.is_symlink or info.is_reparse:
                     self.logger.warning(
                         "Not walking %s/%s: the path is a reparse point",
                         share,
                         path,
                     )
-                    return False
-            return True
+                    return None
+                if usable_file_id(info.file_id):
+                    along.append(
+                        (
+                            info.file_id,
+                            info.created_time,
+                            info.last_write_time,
+                            f"{share}/{identity_rel_path(path)}",
+                        )
+                    )
+            return along
+
+        try:
+            root = await self.data_source.stat(share, "")
+        except Exception:  # only loses detection of a link to the share root
+            root = None
+        if root is not None and usable_file_id(root.file_id):
+            open_dirs.append((root.file_id, root.created_time, root.last_write_time, share))
 
         for prefix in scope.list_prefixes:
             directory = prefix.rstrip("/")
-            if directory and not await selected_prefix_is_walkable(directory):
+            along = await selected_prefix_dirs(directory) if directory else []
+            if along is None:
                 continue
-            await traverse(directory, prefix=bool(prefix))
+            open_dirs.extend(along)
+            try:
+                await traverse(directory, prefix=bool(prefix), start=True)
+            finally:
+                del open_dirs[len(open_dirs) - len(along) :]
 
         # Settled only after the whole walk: the revision lookup returns one record
         # per file id, so for a hard link walked before its other path it hands
@@ -272,7 +371,9 @@ class ShareWalker:
                 await flush()
 
         await flush()
-        return WalkResult(seen=seen, complete=complete, max_timestamp_ms=max_ts)
+        return WalkResult(
+            seen=seen, complete=complete, max_timestamp_ms=max_ts, unread=unread
+        )
 
     async def _materialize_ancestors(
         self,

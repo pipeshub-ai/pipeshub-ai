@@ -15,10 +15,15 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { createAuthRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
-import { AppConfig } from '../../tokens_manager/config/config';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import {
+  AUTH_APP_CONFIG_RELOADER,
+  AuthAppConfigReloader,
+} from '../container/authService.container';
+import { emailCheck } from '../../../libs/utils/zod-formats';
 
 const otpGenerationBody = z.object({
-  email: z.string().email('Invalid email'),
+  email: z.string().check(emailCheck('Invalid email')),
   'cf-turnstile-response': z.string().optional(), // Add Turnstile token for forgot password
 });
 
@@ -34,7 +39,8 @@ const initAuthBody = z.object({
     .string()
     // .min(1, 'Email is required')
     .max(254, 'Email address is too long') // RFC 5321 limit
-    .email('Invalid email format').optional(),
+    .check(emailCheck('Invalid email format'))
+    .optional(),
 });
 
 const initAuthValidationSchema = z.object({
@@ -82,12 +88,12 @@ export function createUserAccountRouter(container: Container) {
         code: z.string().optional(),
         accessToken: z.string().optional(),
         idToken: z.string().optional(),
-      }).passthrough(), // Allow additional fields for OAuth providers
+      }).loose(), // Allow additional fields for OAuth providers
     ]),
     email: z
       .string()
       .max(254, 'Email address is too long') // RFC 5321 limit
-      .email('Invalid email format')
+      .check(emailCheck('Invalid email format'))
       .optional(),
     'cf-turnstile-response': z.string().optional(), // Add Turnstile token
   }).strict();
@@ -244,20 +250,6 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
-  router.post(
-    '/oauth/exchange',
-    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
-      try {
-        const userAccountController = container.get<UserAccountController>(
-          'UserAccountController',
-        );
-        await userAccountController.exchangeOAuthToken(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   router.put(
     '/validateEmailChange',
     authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
@@ -267,6 +259,28 @@ export function createUserAccountRouter(container: Container) {
           'UserAccountController',
         );
         await userAccountController.validateEmailChange(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Called by the configuration manager after settings such as the frontend URL change.
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        container.get<AuthAppConfigReloader>(AUTH_APP_CONFIG_RELOADER)(
+          await loadAppConfig(),
+        );
+        res
+          .status(200)
+          .json({ message: 'Auth configuration updated successfully' });
       } catch (error) {
         next(error);
       }

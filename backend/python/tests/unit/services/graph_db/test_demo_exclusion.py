@@ -1,4 +1,4 @@
-"""Switched-off demo data is left out of what a user can search and browse, in both graph providers."""
+"""Switched-off demo data is left out of what a user can search, in both graph providers. The knowledge hub leaves it out of its gate in the service (test_knowledge_hub_service_v2)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ def _neo4j() -> Neo4jProvider:
     provider.get_user_apps = AsyncMock(
         return_value=[{"id": "jira-1", "type": "JIRA"}, {"id": "demo-1", "type": "Demo"}, {"id": "kb-1", "type": "KB"}]
     )
+    provider.get_gated_apps = provider.get_user_apps
     provider._get_virtual_ids_for_connector = AsyncMock(return_value={})
     provider._get_kb_virtual_ids = AsyncMock(return_value={})
     return provider
@@ -61,16 +62,3 @@ async def test_nothing_is_left_out_by_default(make) -> None:
     provider = make()
     await provider.get_accessible_virtual_record_ids("user-1", "org-1")
     assert _connectors_queried(provider) == ["demo-1", "jira-1"]
-
-
-@pytest.mark.asyncio
-async def test_arango_record_listing_search_leaves_the_demo_out() -> None:
-    provider = _arango()
-    provider.get_user_app_ids = AsyncMock(return_value=["jira-1", "demo-1"])
-    provider.get_user_permission_app_ids = AsyncMock(return_value=[])
-    provider.http_client.execute_aql = AsyncMock(return_value=[{"nodes": [], "total": 0}])
-
-    await provider.get_knowledge_hub_search("org-1", "user-key-1", 0, 10, "name", "ASC", exclude_app_ids=OFF)
-
-    bind_vars = provider.http_client.execute_aql.await_args.kwargs.get("bind_vars") or provider.http_client.execute_aql.await_args.args[1]
-    assert bind_vars["user_accessible_apps"] == ["jira-1"]

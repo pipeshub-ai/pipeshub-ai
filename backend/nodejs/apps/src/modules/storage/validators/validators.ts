@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { MAX_SIGNED_URL_TTL_SECONDS } from '../constants/constants';
+import {
+  CONNECTOR_VRID_PAGE_MAX,
+  MAX_SIGNED_URL_TTL_SECONDS,
+  RELOCATE_MAX_MOVES,
+  MAX_MISSING_DOCUMENT_IDS,
+  ARTIFACT_MAX_FILES_PER_CALL,
+} from '../constants/constants';
+import { messageWhenPresent } from '../../../libs/utils/validation.utils';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
@@ -21,7 +29,7 @@ export const DocumentIdParams = z.object({
   }),
   headers: Headers,
   body: z.object({
-    fileBuffer: z.any(),
+    fileBuffer: z.any().optional(),
   }),
 });
 
@@ -32,11 +40,112 @@ export const PurgeDocumentParams = z.object({
   }),
 });
 
+export const PurgeConversationParams = z.object({
+  params: z.object({
+    conversationId: z
+      .string()
+      .regex(/^[0-9a-f]{24}$/i, 'Not a conversation id'),
+  }),
+});
+
+const virtualRecordIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id');
+
+// Same rule as the connector routes: the id becomes a storage prefix, and a
+// decoded "%2F" would otherwise name another connector's folder.
+const connectorIdSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z0-9_-]{1,64}$/,
+    'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+  );
+
+// The only files a revision holds. Anything else, including any `..`, a leading
+// `/` or a backslash, never reaches a storage key.
+const ARTIFACT_FILE_PATH =
+  /^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)\/part-\d{4}\.jsonl|images\/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich\/[a-z0-9_.-]+@\d+\.json)$/;
+
+export const artifactPathSchema = z
+  .string()
+  .refine(
+    (p) => ARTIFACT_FILE_PATH.test(p) && !p.includes('..'),
+    'Not a file an artifact set can hold',
+  );
+
+const artifactRevSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8,64}$/, 'rev must be 8 to 64 lowercase hex characters');
+
+const uniquePaths = (paths: string[]): boolean =>
+  new Set(paths).size === paths.length;
+
+export const PresignArtifactsSchema = z.object({
+  headers: Headers,
+  body: z.object({
+    // Accepted only to be compared with the token's org; see the controller.
+    orgId: z.string().optional(),
+    virtualRecordId: virtualRecordIdSchema,
+    rev: artifactRevSchema,
+    files: z
+      .array(
+        z.object({
+          path: artifactPathSchema,
+          contentType: z
+            .string()
+            .max(127)
+            .regex(/^[\w.+-]+\/[\w.+-]+$/, 'Not a media type'),
+        }),
+      )
+      .min(1)
+      .max(ARTIFACT_MAX_FILES_PER_CALL)
+      .refine((files) => uniquePaths(files.map((f) => f.path)), {
+        message: 'Each path may appear only once',
+      }),
+  }),
+});
+
+export const ArtifactReadUrlsSchema = z.object({
+  headers: Headers,
+  params: z.object({
+    documentId: documentIdSchema,
+  }),
+  body: z.object({
+    orgId: z.string().optional(),
+    paths: z
+      .array(artifactPathSchema)
+      .min(1)
+      .max(ARTIFACT_MAX_FILES_PER_CALL)
+      .refine(uniquePaths, { message: 'Each path may appear only once' }),
+  }),
+});
+
+// Express puts the `*` of `/files/*` at params[0].
+export const ArtifactFileParams = z.object({
+  headers: Headers,
+  params: z.object({
+    documentId: documentIdSchema,
+    0: artifactPathSchema,
+  }),
+});
+
+export const ArtifactSetParams = z.object({
+  headers: Headers,
+  params: z.object({
+    documentId: documentIdSchema,
+  }),
+});
+
+export const ListArtifactSetsSchema = z.object({
+  headers: Headers,
+  query: z.object({
+    virtualRecordId: virtualRecordIdSchema,
+  }),
+});
+
 export const PurgeVirtualRecordParams = z.object({
   params: z.object({
-    virtualRecordId: z
-      .string()
-      .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id'),
+    virtualRecordId: virtualRecordIdSchema,
   }),
 });
 
@@ -60,6 +169,55 @@ export const MoveTreeSchema = z.object({
     .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
       message: 'newPath must not be a descendant of oldPath',
     }),
+});
+
+export const RelocateVirtualRecordsSchema = z.object({
+  headers: Headers,
+  body: z.object({
+    fromConnectorId: connectorIdSchema,
+    moves: z
+      .array(
+        z.object({
+          virtualRecordId: virtualRecordIdSchema,
+          // Content envelopes only ever live under records/.
+          newPath: treePath.refine(
+            (p) => p.startsWith('records/'),
+            'newPath must be under records/',
+          ),
+          connectorId: connectorIdSchema,
+          recordGroupId: z.string().min(1).optional(),
+        }),
+      )
+      .min(1)
+      .max(RELOCATE_MAX_MOVES),
+  }),
+});
+
+export const ConnectorVirtualRecordsSchema = z.object({
+  params: z.object({
+    connectorId: connectorIdSchema,
+  }),
+  query: z.object({
+    after: z.string().regex(OBJECT_ID_REGEX, 'Not a document id').optional(),
+    limit: z.coerce
+      .number()
+      .check(integerCheck())
+      .min(1)
+      .max(CONNECTOR_VRID_PAGE_MAX)
+      .optional(),
+  }),
+  headers: Headers,
+});
+
+// Ids are not checked for shape: one that is not an ObjectId cannot exist, and is answered missing.
+export const MissingDocumentsSchema = z.object({
+  headers: Headers,
+  body: z.object({
+    documentIds: z
+      .array(z.string().min(1).max(64))
+      .min(1)
+      .max(MAX_MISSING_DOCUMENT_IDS),
+  }),
 });
 
 export const DocumentIdParamsWithVersion = z.object({
@@ -110,7 +268,7 @@ export const UploadNewSchema = z.object({
     })
     .refine(
       (data) => {
-        return data.fileBuffer || data.fileBuffers;
+        return Boolean(data.fileBuffer) || Boolean(data.fileBuffers);
       },
       {
         message: 'fileBuffer or fileBuffers must be present',
@@ -128,7 +286,7 @@ export const UploadNextVersionSchema = z.object({
   body: z.object({
     currentVersionNote: z.string().optional(),
     nextVersionNote: z.string().optional(),
-    fileBuffer: z.any(),
+    fileBuffer: z.any().optional(),
   }),
 });
 
@@ -152,8 +310,8 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
   body: z.object({
     note: z.string(),
     version: z
-      .number({ invalid_type_error: 'version must be an integer' })
-      .int({ message: 'version must be an integer' })
+      .number(messageWhenPresent('version must be an integer'))
+      .check(integerCheck('version must be an integer'))
       .min(0, { message: 'version must be >= 0' })
       .optional(),
   }),
@@ -161,7 +319,7 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
 
 export const ConnectorIdParams = z.object({
   params: z.object({
-    connectorId: z.string().min(1),
+    connectorId: connectorIdSchema,
   }),
   headers: Headers,
 });
@@ -174,7 +332,7 @@ export const CreateDocumentSchema = z.object({
     permissions: z.string().optional(),
     metaData: z.any().optional(),
     customMetadata: z
-      .array(z.object({ key: z.string(), value: z.any() }))
+      .array(z.object({ key: z.string(), value: z.any().optional() }))
       .optional(),
     isVersionedFile: z.boolean().optional(),
     extension : z.string(),
@@ -182,4 +340,10 @@ export const CreateDocumentSchema = z.object({
   query: z.object({}),
   params: z.object({}),
   headers: Headers,
+});
+export const FlatRecordDocumentsQuery = z.object({
+  query: z.object({
+    after: documentIdSchema.optional(),
+    limit: z.coerce.number().check(integerCheck()).min(1).max(1000).optional(),
+  }),
 });

@@ -39,9 +39,7 @@
         "
       >
         <div style="max-width: 320px; margin: 0 auto;">
-          Where your team and AI work together. PipesHub is a fully extensible
-          and explainable workplace AI platform for enterprise search and
-          workflow automation.
+          {{footerBlurb}}
         </div>
       </td>
     </tr>
@@ -56,15 +54,21 @@
           line-height: 16px;
         "
       >
+        {{#if supportEmail}}
         <a
-          href="mailto:support@pipeshub.com"
+          href="mailto:{{supportEmail}}"
           style="color: #60646c; text-decoration: none;"
         >Contact Support</a>
+        {{/if}}
+        {{#if privacyUrl}}
+        {{#if supportEmail}}
         <span style="padding: 0 6px; color: #60646c;">&middot;</span>
+        {{/if}}
         <a
-          href="https://pipeshub.com/privacy-policy"
+          href="{{privacyUrl}}"
           style="color: #60646c; text-decoration: none;"
         >Privacy Policy</a>
+        {{/if}}
       </td>
     </tr>
   </table>

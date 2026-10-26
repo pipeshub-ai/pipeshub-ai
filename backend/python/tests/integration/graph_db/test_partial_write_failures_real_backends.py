@@ -1,8 +1,10 @@
 """A write that fails partway leaves the graph as it was, on Neo4j 5.26 and ArangoDB 3.12.
 
-With NEO4J_EXPLICIT_TRANSACTIONS off (the default), every Neo4j statement
-commits on its own, so a write split over several statements kept its first
-steps when a later one failed. ArangoDB rolls the whole transaction back. Each
+With NEO4J_EXPLICIT_TRANSACTIONS off, every Neo4j statement commits on its own,
+so a write split over several statements kept its first steps when a later one
+failed. It is on by default now and these writes are single statements anyway;
+the tests run in the default mode, and a plain multi-statement block that
+fails midway is checked to leave nothing. ArangoDB rolls the whole transaction back. Each
 write below is now one statement on Neo4j:
 
 - a sync rewriting a user group's members, a record group's permissions or an
@@ -12,12 +14,22 @@ write below is now one statement on Neo4j:
   IS_OF_TYPE edge;
 - a hard delete: the type nodes went first, and the records stayed live
   without them;
+- a connector's delete of one record: its parent edge went in a statement of
+  its own, so a failure left the record live and searchable but in no folder;
 - a record's permission rewrite: the old edges, the new ones and the
   inherit-permissions edge were three writes, so a failure on the last left a
   file its drive should no longer read still readable through the drive;
 - a record changing record group: it left the old group before it lost that
   group's inherit-permissions edge, with the same result;
-- a permission upgrade: the old edge was deleted before the new one was written.
+- a permission upgrade: the old edge was deleted before the new one was written;
+- a move inside a knowledge base: the old parent edge was deleted, the record
+  rewritten and the new parent edge created in three writes, so a failure left
+  the item, and everything beneath it, in no folder at all.
+
+A knowledge-base move into a folder in the trash is refused too, with a 409 that
+says so, whether the folder was in the trash when the move was checked or went
+there before it was written; nothing moves. Creating a folder in it, or uploading
+to it, is refused the same way.
 
 A failed permission write is also raised now on both stores, where it used to
 be logged and the surrounding write committed without the permissions. On
@@ -25,11 +37,24 @@ ArangoDB the same goes for a failed delete of a record's inherit-permissions or
 belongs-to edge, or of a user's permission on a record, which was answered with
 False: the rest committed, or the caller was told the permission was gone.
 
+Taking a user out of a user group, and deleting a user group or an app role,
+raise too when the delete fails. They used to answer False, which for a member
+removal is also the answer for "was not a member", so the user kept the group's
+access and the connector moved on.
+
 Looking up who a permission is for raises as well when the lookup fails. It used
 to answer "nobody by that email", and a rewrite then replaced the record's
 permissions without them. A read cannot be made to fail on a live database, so
 the test here fails the write half of the lookup (creating the Person for an
 outside email); the reads are covered by the unit tests.
+
+Creating an agent, a team or a knowledge base (a user's own or their default one,
+and the repair of a default one missing its edges) cannot be one statement, so
+those creates ask for a real Neo4j transaction instead, even with
+NEO4J_EXPLICIT_TRANSACTIONS off. A failure partway used to leave an agent or a
+team with no owner, or a knowledge base the org could not reach; now it leaves
+nothing. With NEO4J_CREATE_TRANSACTIONS=false they run as before, which one test
+checks so the hold is known to fail them partway.
 
 Each test makes the write fail inside the database, partway through: another
 transaction holds a lock that only the later part of the write needs. Neo4j
@@ -50,7 +75,9 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -58,12 +85,22 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.api.routes.agent import create_agent
+from app.api.routes.entity import create_team
 from app.config.constants.arangodb import (
+    AppGroups,
     CollectionNames,
     Connectors,
+    ConnectorScopes,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
+)
+from app.config.constants.neo4j import collection_to_label
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -72,6 +109,7 @@ from app.connectors.core.base.data_store import (
     graph_data_store as graph_data_store_module,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -84,6 +122,8 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.messaging.kafka.handlers import entity as entity_handler_module
+from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -146,7 +186,7 @@ async def _require_lock_timeout(graph: Neo4jProvider) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own.
+    # The default: Neo4j runs each transaction block as one real transaction.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     # The failure is the point: a retry would only wait on the same hold again.
     monkeypatch.setattr(graph_data_store_module, "_is_retryable", lambda _instance, _error: False)
@@ -426,6 +466,41 @@ async def test_a_failed_hard_delete_keeps_records_and_their_types(world: _World)
     assert await _typed(w, record.id) == (False, False, False)
 
 
+async def test_a_failed_record_delete_keeps_the_record_in_its_folder(world: _World) -> None:
+    """A connector's per-record delete is one statement: the record goes with its parent edge or stays with it."""
+    w = world
+    folder, note = _file(w, "folder"), _file(w, "note")
+    await _upsert(w, folder)
+    await _upsert(w, note)
+    async with w.processor.data_store_provider.transaction() as tx_store:
+        await tx_store.create_record_relation(folder.id, note.id, "PARENT_CHILD")
+    assert await _parents(w, note.id) == [folder.id]
+
+    async def delete() -> bool:
+        return await w.processor.on_record_deleted(note.id)
+
+    # A sync is writing the record's type node on Neo4j, whose lock the delete of the
+    # record needs (for its IS_OF_TYPE edge) but a delete of just its parent edge does not.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n",
+                           {"id": note.id})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                            "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                            {"key": note.id, "now": get_epoch_timestamp_in_ms() + 1})
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    assert await _typed(w, note.id) == (True, True, True)
+    assert await _parents(w, note.id) == [folder.id], "the record lost its folder but stayed live and searchable"
+
+    assert await delete() is False
+    assert await w.graph.get_document(note.id, CollectionNames.RECORDS.value) is None
+    assert await _parents(w, note.id) == []
+
+
 async def _add_app(w: _World, *users: str) -> None:
     """The connector's app and the users who have it: a connector's record is read only through it."""
     now = get_epoch_timestamp_in_ms()
@@ -555,6 +630,64 @@ async def test_a_record_that_stops_inheriting_does_so_when_its_group_is_not_foun
     assert await _readers(w, record.id, alice, bob) == {bob}
 
 
+async def test_a_group_write_counts_the_inherit_edges_it_removed(world: _World) -> None:
+    """The processor drops the connector's cached access on this count instead of reading the edge first."""
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    drive, other_drive = _Target("record_group", w), _Target("record_group", w)
+    await drive.sync(alice_email)
+    await other_drive.sync(alice_email)
+    record = _file(w, "brief", drive)
+    await w.processor.on_new_records([(record, [])])
+    assert await _links(w, record.id, drive) == BELONGS_AND_INHERITS
+
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=True) == 0
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=False) == 1
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=False) == 0
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=None) == 0
+
+    # Leaving counts the old group's inherit edge, and not its membership.
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=True) == 0
+    assert await w.graph.link_record_to_group(
+        record.id, other_drive.node.id, inherit=True, leaving_group_id=drive.node.id
+    ) == 1
+    assert await _links(w, record.id, drive) == set()
+    assert await _links(w, record.id, other_drive) == BELONGS_AND_INHERITS
+    assert await w.graph.link_record_to_group(
+        record.id, drive.node.id, inherit=False, leaving_group_id=other_drive.node.id
+    ) == 1
+    assert await w.graph.link_record_to_group(
+        record.id, other_drive.node.id, inherit=None, leaving_group_id=drive.node.id
+    ) == 0
+    assert await _links(w, record.id, drive) == set()
+    assert await _links(w, record.id, other_drive) == {CollectionNames.BELONGS_TO.value}
+
+
+async def test_a_record_that_stops_inheriting_in_place_drops_the_cached_access_once(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    drive = _Target("record_group", w)
+    await drive.sync(alice_email)
+    record = _file(w, "minutes", drive)
+    await w.processor.on_new_records([(record, [])])
+    drop = AsyncMock()
+    monkeypatch.setattr(processor_module, "notify_connector_permissions_changed", drop)
+
+    private = record.model_copy(update={"inherit_permissions": False})
+    await w.processor.on_new_records([(private, [])])
+
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    drop.assert_awaited_once_with(w.connector_id, w.org_id)
+    drop.reset_mock()
+    await w.processor.on_new_records([(private, [])])
+    drop.assert_not_awaited()
+
+
 async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
     w = world
     alice, alice_email = await _add_user(w, "alice")
@@ -590,6 +723,105 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
     await remove()
     assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
     assert await _readers(w, record.id, alice, bob) == {alice}
+
+
+async def _share_with(w: _World, target: _Target, record: FileRecord) -> None:
+    """Let the user group or app role read the record."""
+    entity_type = EntityType.GROUP if target.kind == "user_group" else EntityType.ROLE
+    await w.graph.batch_create_edges(
+        [Permission(type=PermissionType.READ, entity_type=entity_type).to_arango_permission(
+            target.node.id, target.collection, record.id, CollectionNames.RECORDS.value)],
+        collection=CollectionNames.PERMISSION.value,
+    )
+
+
+async def test_a_failed_group_member_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    team = _Target("user_group", w)
+    await team.sync(alice_email, bob_email)
+    record = _file(w, "handbook")
+    await _upsert(w, record)
+    await _share_with(w, team, record)
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    def remove() -> Awaitable[bool]:
+        return w.processor.on_user_group_member_removed(team.node.source_user_group_id, bob_email, w.connector_id)
+
+    # Bob leaves the group at the source, and his membership edge cannot be deleted.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": bob})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, CollectionNames.PERMISSION.value,
+            "FOR e IN permission FILTER e._from == @from AND e._to == @to "
+            "UPDATE e WITH {heldByTest: true} IN permission RETURN 1",
+            {"from": f"users/{bob}", "to": f"groups/{team.node.id}"},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        # Raised, so the connector knows Bob is still in the group. False would
+        # have read as "he was not a member".
+        assert expected in await _failure(remove)
+
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    assert await remove() is True
+    assert await _sources(w, team.node.id, team.collection) == {alice}
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+    # Not a member any more: nothing to remove is an answer, not a failure.
+    assert await remove() is False
+
+
+@pytest.mark.parametrize("kind", ["user_group", "app_role"])
+async def test_a_failed_group_or_role_deletion_is_raised_and_the_access_stays_until_it_succeeds(
+    world: _World, kind: str
+) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    target = _Target(kind, w)
+    await target.sync(alice_email)
+    record = _file(w, "runbook")
+    await _upsert(w, record)
+    await _share_with(w, target, record)
+    assert await _readers(w, record.id, alice) == {alice}
+
+    def delete() -> Awaitable[bool]:
+        if kind == "user_group":
+            return w.processor.on_user_group_deleted(target.node.source_user_group_id, w.connector_id)
+        return w.processor.on_app_role_deleted(target.node.source_role_id, w.connector_id)
+
+    # The source deleted it while another sync is writing to it.
+    if w.neo4j:
+        hold = _neo4j_hold(
+            w, f"MATCH (n:{collection_to_label(target.collection)} {{id: $id}}) SET n.heldByTest = true RETURN count(n) AS n",
+            {"id": target.node.id},
+        )
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, target.collection, f"UPDATE @key WITH {{updatedAtTimestamp: @now}} IN {target.collection} RETURN 1",
+            {"key": target.node.id, "now": get_epoch_timestamp_in_ms()},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    # Still there with its member and its share, as the caller was told.
+    assert await w.graph.get_document(target.node.id, target.collection) is not None
+    assert await _sources(w, target.node.id, target.collection) == {alice}
+    assert await _readers(w, record.id, alice) == {alice}
+
+    assert await delete() is True
+    assert await w.graph.get_document(target.node.id, target.collection) is None
+    assert await _readers(w, record.id, alice) == set()
 
 
 async def test_a_rewrite_whose_principal_lookup_fails_replaces_nothing(world: _World) -> None:
@@ -776,3 +1008,669 @@ async def test_a_failed_group_to_user_migration_keeps_the_users_own_permissions(
     await migrate()
     assert await _roles(w, alice, handbook.id) == ["WRITER"]
     assert await _roles(w, alice, payroll.id) == ["WRITER"]
+
+
+@dataclass
+class _KbTree:
+    """Old/Reports/q3.pdf and New/Archive in one knowledge base, and the service that moves its items."""
+
+    service: KnowledgeBaseService
+    kb_id: str
+    owner: str
+    old: str
+    new: str
+    reports: str
+    report: str
+    storage_moves: AsyncMock
+
+
+async def _kb_tree(w: _World) -> _KbTree:
+    owner, _ = await _add_user(w, "owner")
+
+    async def processor_for_kb(_kb_id: str) -> DataSourceEntitiesProcessor:
+        return w.processor
+
+    service = KnowledgeBaseService(logger, w.graph, MagicMock(), processor_for_kb=processor_for_kb)
+    created = await service.create_knowledge_base(user_id=owner, org_id=w.org_id, name="Handbook")
+    assert created.get("success") is True, created
+    kb_id = created["id"]
+    w.ids.add(kb_id)
+
+    async def folder(name: str, parent: str | None = None) -> str:
+        made = await (
+            service.create_nested_folder(kb_id, parent, name, owner, w.org_id) if parent
+            else service.create_folder_in_kb(kb_id, name, owner, w.org_id)
+        )
+        assert made.get("success") is True, made
+        w.ids.add(made["id"])
+        return made["id"]
+
+    old, new = await folder("Old"), await folder("New")
+    reports = await folder("Reports", old)
+    # New holds a folder already, so on ArangoDB a second child of it can be refused.
+    await folder("Archive", new)
+    report = _file(w, "q3").model_copy(update={
+        "origin": OriginTypes.UPLOAD, "connector_name": Connectors.KNOWLEDGE_BASE, "connector_id": kb_id,
+        "external_record_group_id": kb_id, "parent_external_record_id": reports,
+    })
+    await w.processor.on_new_records([(report, [])])
+
+    # The stored files follow the graph: the move asks the storage service to
+    # move them, and that request is all there is of it here.
+    storage_moves = AsyncMock(return_value={"moved": 1})
+    w.processor._get_storage_cleanup().move_record_tree = storage_moves
+    return _KbTree(service, kb_id, owner, old, new, reports, report.id, storage_moves)
+
+
+@contextlib.asynccontextmanager
+async def _arango_edge_hold(w: _World, parent: str, child: str) -> AsyncIterator[None]:
+    """Another writer's uncommitted PARENT_CHILD edge from *parent* to *child*."""
+    edges = CollectionNames.NODE_RELATIONS.value
+    async with _arango_unique(w, edges, ["_from", "_to"]), _arango_hold(
+        w, edges,
+        f"INSERT {{ _from: @p, _to: @c, relationshipType: 'PARENT_CHILD' }} INTO {edges} RETURN 1",
+        {"p": f"records/{parent}", "c": f"records/{child}"},
+    ):
+        yield
+
+
+async def _parents(w: _World, record_id: str) -> list[str]:
+    """The record at the other end of each PARENT_CHILD edge into the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            parameters={"id": record_id},
+        )
+        return [row["id"] for row in rows or []]
+    return await w.graph.http_client.execute_aql(
+        "FOR e IN nodeRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._from).key",
+        {"to": f"records/{record_id}"},
+    ) or []
+
+
+async def _kb_place(w: _World, kb: _KbTree) -> dict[str, object]:
+    """Where the Reports folder is: by its edges, by its own record, and as the product reads it."""
+    stored = await w.graph.get_document(kb.reports, CollectionNames.RECORDS.value)
+    shown_in = []
+    for name, parent in (("root", None), ("Old", kb.old), ("New", kb.new)):
+        found = await w.graph.find_folder_by_name_in_parent(
+            kb_id=kb.kb_id, folder_name="Reports", parent_folder_id=parent, raise_on_error=True
+        )
+        if found:
+            shown_in.append(name)
+    return {
+        "parents": await _parents(w, kb.reports),
+        "externalParentId": stored.get("externalParentId"),
+        "shown_in": shown_in,
+        # Read through the folder: only a parent the record itself names counts.
+        "path_of_its_file": await w.graph.get_record_path_segments(kb.report, raise_on_error=True),
+    }
+
+
+async def _failed_kb_move(
+    w: _World,
+    kb: _KbTree,
+    new_parent_id: str | None,
+    *,
+    code: int = 500,
+    reason: str | None = None,
+    before_write: Callable[[], Awaitable[object]] | None = None,
+) -> str:
+    """Move Reports through the KB service, which answers a failure instead of raising it; return its cause.
+
+    *before_write* runs after the service has checked the move and before the move is written.
+    """
+    causes: list[str] = []
+    write = w.processor.on_records_moved
+
+    async def recording(moves: list) -> None:
+        if before_write:
+            await before_write()
+        try:
+            await write(moves)
+        except Exception as exc:
+            causes.append(str(exc))
+            raise
+
+    w.processor.on_records_moved = recording
+    try:
+        result = await kb.service.move_record(kb.kb_id, kb.reports, new_parent_id, kb.owner)
+    finally:
+        w.processor.on_records_moved = write
+    assert result["success"] is False and result["code"] == code, result
+    if reason is not None:
+        assert result["reason"] == reason, result
+    assert len(causes) == 1, causes
+    return causes[0]
+
+
+@pytest.mark.parametrize("fails_on", ["old_edge", "record", "new_edge"])
+async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World, fails_on: str) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    target: str | None = kb.new
+    moved = {
+        "parents": [kb.new], "externalParentId": kb.new, "shown_in": ["New"],
+        "path_of_its_file": ["New", "Reports", "q3.pdf"],
+    }
+    expected = NEO4J_LOCK_TIMEOUT if w.neo4j else ARANGO_CONFLICT
+    if fails_on == "old_edge":
+        # The edge from the old folder cannot be deleted. Neo4j answered that with
+        # False, and the move went on to put the item in the new folder as well.
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.old}
+            )
+        else:
+            hold = _arango_hold(
+                w, CollectionNames.NODE_RELATIONS.value,
+                "FOR e IN nodeRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN nodeRelations RETURN 1",
+                {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
+            )
+    elif fails_on == "record":
+        # To the root there is no new edge: the move fails on rewriting the record,
+        # after the edge from the old folder is deleted. Neo4j's hold is on the
+        # folder's File node, which that delete does not need.
+        target = None
+        moved = {
+            "parents": [kb.kb_id], "externalParentId": None, "shown_in": ["root"],
+            "path_of_its_file": ["Reports", "q3.pdf"],
+        }
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n", {"id": kb.reports}
+            )
+        else:
+            hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                                "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                                {"key": kb.reports, "now": get_epoch_timestamp_in_ms()})
+    # The move fails on the edge from the new folder, after the edge from the old
+    # one is deleted and the record rewritten. Another writer holds the new folder
+    # on Neo4j; on ArangoDB, whose edges have random keys, another writer holds the
+    # same edge behind a unique index on its ends.
+    elif w.neo4j:
+        hold = _neo4j_hold(
+            w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
+        )
+    else:
+        hold = _arango_edge_hold(w, kb.new, kb.reports)
+    async with hold:
+        assert expected in await _failed_kb_move(w, kb, target)
+
+    # Still in the old folder, with everything beneath it, and nowhere else.
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, target, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == moved
+    # The retry is a whole move, the stored files included.
+    old_path, new_path = (
+        "/".join(["records", kb.kb_id, *place["path_of_its_file"][:-1]]) for place in (in_old, moved)
+    )
+    assert [call.args[1:3] for call in kb.storage_moves.await_args_list] == [(old_path, new_path)]
+
+
+async def test_a_kb_move_into_a_folder_deleted_on_the_way_moves_nothing(world: _World) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is there when the service checks it and gone when the move is
+    # written. Neither store refuses an edge from a record that does not exist:
+    # Neo4j wrote none and ArangoDB a dangling one, after the old edge was deleted.
+    async def delete_the_new_folder() -> None:
+        await w.graph.delete_nodes_and_edges([kb.new], CollectionNames.RECORDS.value)
+        assert await w.graph.get_document(kb.new, CollectionNames.RECORDS.value) is None
+
+    cause = await _failed_kb_move(w, kb, kb.new, code=404, before_write=delete_the_new_folder)
+    assert f"its new parent {kb.new} is not in the graph" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, None, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == {
+        "parents": [kb.kb_id], "externalParentId": None, "shown_in": ["root"],
+        "path_of_its_file": ["Reports", "q3.pdf"],
+    }
+
+
+
+def _in_trash(folder: str, action: str) -> str:
+    return f"'{folder}' is in Recently deleted, so you can't {action}. Restore it first, or choose another folder."
+
+
+async def _trash(w: _World, kb: _KbTree, folder_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the folder, and everything in it, in the trash as its owner's delete does."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
+    result = await w.processor.on_records_deleted_cascade(
+        [folder_id], kb.kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=kb.owner
+    )
+    assert result["success"] is True and result["softDeleted"] is True, result
+    assert (await w.graph.get_document(folder_id, CollectionNames.RECORDS.value))["isDeleted"] is True
+
+
+async def _children(w: _World, record_id: str) -> set[str]:
+    """The record at the other end of each PARENT_CHILD edge out of the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            parameters={"id": record_id},
+        )
+        return {row["id"] for row in rows or []}
+    return set(await w.graph.http_client.execute_aql(
+        "FOR e IN nodeRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._to).key",
+        {"from": f"records/{record_id}"},
+    ) or [])
+
+
+@pytest.mark.parametrize("item", ["folder", "file"])
+async def test_a_kb_move_into_a_folder_in_the_trash_is_refused(
+    world: _World, item: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+    moving, home = (kb.reports, kb.old) if item == "folder" else (kb.report, kb.reports)
+    before = await _kb_place(w, kb)
+
+    result = await kb.service.move_record(kb.kb_id, moving, kb.new, kb.owner)
+
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _parents(w, moving) == [home]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == home
+    assert await _kb_place(w, kb) == before
+    assert await _children(w, kb.new) == in_trash
+    kb.storage_moves.assert_not_awaited()
+
+    # A live folder still takes it.
+    made = await kb.service.create_folder_in_kb(kb.kb_id, "Live", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    moved = await kb.service.move_record(kb.kb_id, moving, made["id"], kb.owner)
+    assert moved["success"] is True, moved
+    assert await _parents(w, moving) == [made["id"]]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == made["id"]
+
+
+async def test_a_kb_move_into_a_folder_trashed_on_the_way_moves_nothing(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is live when the service checks it and in the trash when the move is written.
+    async def trash_the_new_folder() -> None:
+        await _trash(w, kb, kb.new, monkeypatch)
+
+    cause = await _failed_kb_move(
+        w, kb, kb.new, code=409, reason=_in_trash("New", "move items into it"), before_write=trash_the_new_folder
+    )
+    assert f"its new parent {kb.new} is not in the graph or is in the trash" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    assert kb.reports not in await _children(w, kb.new)
+    kb.storage_moves.assert_not_awaited()
+
+
+async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.new, "Q4", kb.owner, w.org_id)
+    assert made == {"success": False, "code": 409, "reason": _in_trash("New", "create a folder in it")}
+
+    upload_refused = {"code": 409, "reason": _in_trash("New", "upload files to it")}
+    checked = await kb.service.validate_folder_for_upload(kb.kb_id, kb.new, kb.owner, w.org_id)
+    assert checked["valid"] is False and {k: checked[k] for k in upload_refused} == upload_refused, checked
+    files = [{"filePath": "q4.pdf", "record": {"recordName": "q4.pdf"}, "fileRecord": {"name": "q4.pdf"}}]
+    uploaded = await kb.service.upload_records_to_folder(kb.kb_id, kb.new, kb.owner, w.org_id, files)
+    assert uploaded["success"] is False and {k: uploaded[k] for k in upload_refused} == upload_refused, uploaded
+
+    assert await _children(w, kb.new) == in_trash
+
+    # A live folder still takes both.
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.old, "Q4", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    assert (await kb.service.validate_folder_for_upload(kb.kb_id, kb.old, kb.owner, w.org_id))["valid"] is True
+
+
+# Neo4j only: ArangoDB reads the parent without a lock (see upsert_record_under_parent).
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_kb_move_waits_for_a_trash_of_its_folder_still_being_written(world: _World) -> None:
+    """The trash marks the folder in a transaction still open when the move is checked and written.
+
+    The service's check reads the folder as live, since the trash has not committed.
+    The move must then wait for the trash and see it, not read the folder as live
+    before taking its lock and put the item under it once the trash commits.
+    """
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    session = w.graph.client.driver.session(database=w.graph.client.database)
+    trash = await session.begin_transaction()
+    try:
+        marked = await (await trash.run(
+            "MATCH (n:Record) WHERE n.id IN $ids SET n.isDeleted = true, n.deletedAtTimestamp = $now "
+            "RETURN count(n) AS n",
+            {"ids": [kb.new, *await _children(w, kb.new)], "now": get_epoch_timestamp_in_ms()},
+        )).single()
+        assert marked["n"] == 2, marked
+        move = asyncio.create_task(kb.service.move_record(kb.kb_id, kb.reports, kb.new, kb.owner))
+        await asyncio.sleep(3)
+        assert not move.done(), await move
+        await trash.commit()
+    finally:
+        await session.close()
+
+    result = await asyncio.wait_for(move, timeout=30)
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+    stored = await w.graph.get_document(kb.new, CollectionNames.RECORDS.value)
+    assert not any("lock" in key.lower() for key in stored), stored
+
+
+async def _add_org(w: _World) -> None:
+    await w.graph.batch_upsert_nodes(
+        [{"id": w.org_id, "accountType": "enterprise", "isActive": True, "name": "partial writes"}],
+        collection=CollectionNames.ORGS.value,
+    )
+    w.ids.add(w.org_id)
+
+
+def _holding_org(w: _World) -> contextlib.AbstractAsyncContextManager[None]:
+    return _neo4j_hold(
+        w, "MATCH (o:Organization {id: $id}) SET o.heldByTest = true RETURN count(o) AS n", {"id": w.org_id},
+    )
+
+
+@contextlib.asynccontextmanager
+async def _arango_second_org_app_edge_refused(w: _World) -> AsyncIterator[None]:
+    """The org already links one app, and a unique index refuses it a second link."""
+    await w.graph.batch_create_edges(
+        [{"from_id": w.org_id, "from_collection": CollectionNames.ORGS.value, "to_id": "app-elsewhere",
+          "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": get_epoch_timestamp_in_ms()}],
+        collection=CollectionNames.ORG_APP_RELATION.value,
+    )
+    async with _arango_unique(w, CollectionNames.ORG_APP_RELATION.value, ["_from"]):
+        yield
+
+
+def _holding_org_app_link(w: _World) -> tuple[contextlib.AbstractAsyncContextManager[None], str]:
+    """Fails a knowledge base's org edge, the third of its four writes."""
+    if w.neo4j:
+        return _holding_org(w), NEO4J_LOCK_TIMEOUT
+    return _arango_second_org_app_edge_refused(w), "unique constraint violated"
+
+
+async def _kb_apps(w: _World, created_by: str, graph: IGraphDBProvider | None = None) -> list[dict]:
+    apps = await (graph or w.graph).get_nodes_by_filters(
+        collection=CollectionNames.APPS.value,
+        filters={"createdBy": created_by, "orgId": w.org_id, "type": Connectors.KNOWLEDGE_BASE.value},
+        raise_on_error=True,
+    )
+    w.ids.update(app.get("id") or app.get("_key") for app in apps)
+    return apps
+
+
+async def _edges_into(w: _World, to_id: str) -> set[str]:
+    """The relationship types into the node, by their ArangoDB edge collection names."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH ()-[e]->({id: $id}) RETURN DISTINCT type(e) AS t", parameters={"id": to_id},
+        )
+        names = {"PERMISSION": "permission", "ORG_APP_RELATION": "orgAppRelation",
+                 "USER_APP_RELATION": "userAppRelation"}
+        return {names.get(row["t"], row["t"]) for row in rows or []}
+    found = set()
+    for collection in ("permission", "orgAppRelation", "userAppRelation"):
+        rows = await w.graph.http_client.execute_aql(
+            f"FOR e IN {collection} FILTER e._to == @to LIMIT 1 RETURN 1", {"to": f"apps/{to_id}"},
+        )
+        if rows:
+            found.add(collection)
+    return found
+
+
+_KB_EDGES = {"permission", "orgAppRelation", "userAppRelation"}
+
+
+@pytest.fixture
+def _no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The creates re-run on a lock timeout; here that would only wait on the same hold again.
+    monkeypatch.setattr(graph_data_store_module, "_RETRY_ATTEMPTS", 1)
+
+
+@pytest.mark.usefixtures("_no_retry")
+async def test_a_failed_knowledge_base_create_leaves_no_knowledge_base(world: _World) -> None:
+    """With NEO4J_EXPLICIT_TRANSACTIONS off, the App and its owner edge used to commit before the
+    org edge failed: a knowledge base nobody in the org could reach."""
+    w = world
+    await _add_org(w)
+    owner, _ = await _add_user(w, "owner")
+    service = KnowledgeBaseService(logger, w.graph, MagicMock())
+
+    hold, _expected = _holding_org_app_link(w)
+    async with hold:
+        result = await service.create_knowledge_base(user_id=owner, org_id=w.org_id, name="Handbook")
+    # The service answers a failure with a plain message, not the database's error.
+    assert result.get("success") is False, result
+
+    assert await _kb_apps(w, owner) == []
+
+    result = await service.create_knowledge_base(user_id=owner, org_id=w.org_id, name="Handbook")
+    assert result.get("success") is True, result
+    (app,) = await _kb_apps(w, owner)
+    assert await _edges_into(w, app.get("id") or app["_key"]) == _KB_EDGES
+
+
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+@pytest.mark.usefixtures("_no_retry")
+async def test_with_create_transactions_off_a_failed_knowledge_base_create_leaves_it_half_made(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With both flags false it is the old auto-commit, which the hold above does fail partway."""
+    w = world
+    monkeypatch.setenv("NEO4J_CREATE_TRANSACTIONS", "false")
+    monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", "false")
+    graph = await connect_neo4j(logger, monkeypatch)
+    try:
+        await _add_org(w)
+        owner, _ = await _add_user(w, "owner")
+        async with _holding_org(w):
+            result = await KnowledgeBaseService(logger, graph, MagicMock()).create_knowledge_base(
+                user_id=owner, org_id=w.org_id, name="Handbook",
+            )
+        assert result.get("success") is False, result
+        (app,) = await _kb_apps(w, owner, graph)
+        assert await _edges_into(w, app.get("id") or app["_key"]) == {"permission"}
+    finally:
+        await graph.disconnect()
+
+
+def _entity_service(w: _World) -> EntityEventService:
+    container = MagicMock()
+    container.connectors_map = {}
+    container.data_store = AsyncMock()
+    return EntityEventService(logger, w.graph, container)
+
+
+@pytest.mark.usefixtures("_no_retry")
+async def test_a_failed_default_knowledge_base_create_leaves_no_knowledge_base(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w = world
+    await _add_org(w)
+    user_key, _ = await _add_user(w, "newcomer")
+    service = _entity_service(w)
+    monkeypatch.setattr(entity_handler_module.ConnectorFactory, "create_and_start_sync", AsyncMock(return_value=None))
+
+    hold, expected = _holding_org_app_link(w)
+    async with hold:
+        assert expected in await _failure(
+            lambda: service._get_or_create_knowledge_base(user_key, user_key, w.org_id),
+        )
+
+    assert await _kb_apps(w, user_key) == []
+
+    created = await service._get_or_create_knowledge_base(user_key, user_key, w.org_id)
+    assert created.get("success") is True, created
+    (app,) = await _kb_apps(w, user_key)
+    assert await _edges_into(w, app.get("id") or app["_key"]) == _KB_EDGES
+
+
+@pytest.mark.usefixtures("_no_retry")
+async def test_a_failed_default_knowledge_base_repair_adds_none_of_its_edges(world: _World) -> None:
+    w = world
+    await _add_org(w)
+    user_key, _ = await _add_user(w, "newcomer")
+    kb_id = f"kb-half-{uuid.uuid4().hex[:8]}"
+    now = get_epoch_timestamp_in_ms()
+    await w.graph.batch_upsert_nodes(
+        [{"id": kb_id, "createdBy": user_key, "orgId": w.org_id, "name": "Private",
+          "type": Connectors.KNOWLEDGE_BASE.value, "appGroup": AppGroups.LOCAL_STORAGE.value, "authType": "NONE",
+          "scope": ConnectorScopes.PERSONAL.value, "isActive": True, "isAgentActive": True, "isConfigured": True,
+          "isAuthenticated": True, "vectorMembershipBackfilled": True, "hideConnector": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value,
+    )
+    w.ids.add(kb_id)
+    service = _entity_service(w)
+
+    hold, expected = _holding_org_app_link(w)
+    async with hold:
+        assert expected in await _failure(
+            lambda: service._get_or_create_knowledge_base(user_key, user_key, w.org_id),
+        )
+
+    assert await _edges_into(w, kb_id) == set()
+
+    await service._get_or_create_knowledge_base(user_key, user_key, w.org_id)
+    assert await _edges_into(w, kb_id) == _KB_EDGES
+
+
+def _route_request(w: _World, user_id: str, body: dict) -> MagicMock:
+    request = MagicMock()
+    request.state.user = {"userId": user_id, "orgId": w.org_id}
+    request.app.state.graph_provider = w.graph
+    request.app.container.graph_provider = AsyncMock(return_value=w.graph)
+    request.app.container.retrieval_service = AsyncMock()
+    request.app.container.logger.return_value = logger
+    request.body = AsyncMock(return_value=json.dumps(body).encode())
+    return request
+
+
+async def _route_failure(write: Callable[[], Awaitable[object]]) -> int:
+    """Run the route, which must fail; it answers a failure with a plain message, so return its status."""
+    with pytest.raises(HTTPException) as exc:
+        await write()
+    return exc.value.status_code
+
+
+@pytest.mark.usefixtures("_no_retry")
+async def test_a_failed_team_create_leaves_no_team(world: _World) -> None:
+    """The team node used to commit before its members' edges: a team with no owner."""
+    w = world
+    creator, _ = await _add_user(w, "creator")
+    member, _ = await _add_user(w, "member")
+    body = {"name": "Platform", "userRoles": [{"userId": member, "role": "OWNER"}]}
+
+    # The edges into the team are one write after the team node: hold the member, or
+    # on ArangoDB refuse a second edge into the same team.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": member})
+    else:
+        hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to"])
+    async with hold:
+        assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
+
+    teams = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id}, raise_on_error=True)
+    assert teams == []
+
+    response = await create_team(_route_request(w, creator, body))
+    assert response.status_code == 200
+    (team,) = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id})
+    w.ids.add(team.get("id") or team.get("_key"))
+    assert await _sources(w, team.get("id") or team["_key"], CollectionNames.TEAMS.value) == {creator, member}
+
+
+async def _agents_by(w: _World, user_key: str) -> list[dict]:
+    agents = await w.graph.get_nodes_by_filters(
+        CollectionNames.AGENT_INSTANCES.value, {"createdBy": user_key}, raise_on_error=True,
+    )
+    w.ids.update(a.get("id") or a.get("_key") for a in agents)
+    return agents
+
+
+@pytest.mark.usefixtures("_no_retry")
+async def test_a_failed_agent_create_leaves_no_agent(world: _World) -> None:
+    """The agent node and its owner edge used to commit before the org's edge failed."""
+    w = world
+    await _add_org(w)
+    owner, _ = await _add_user(w, "owner")
+    body = {"name": "Helper", "shareWithOrg": True, "knowledge": [{"connectorId": w.connector_id}]}
+
+    # The org's READER edge is the agent's third write, after the node and the owner's edge.
+    hold = _holding_org(w) if w.neo4j else _arango_unique(w, CollectionNames.PERMISSION.value, ["_to"])
+    async with hold:
+        assert await _route_failure(lambda: create_agent(_route_request(w, owner, body))) == 500
+
+    assert await _agents_by(w, owner) == []
+
+    response = await create_agent(_route_request(w, owner, body))
+    assert response.status_code == 200
+    (agent,) = await _agents_by(w, owner)
+    assert await _sources(w, agent.get("id") or agent["_key"], CollectionNames.AGENT_INSTANCES.value) == {
+        owner, w.org_id,
+    }
+
+
+async def test_a_plain_block_that_fails_midway_writes_nothing(world: _World) -> None:
+    """The default on both stores: statements before the failure are rolled back."""
+    w = world
+    key = f"user-midway-{uuid.uuid4().hex[:8]}"
+    w.ids.add(key)
+    store = GraphDataStore(logger, w.graph)
+
+    async def write_then_fail(tx_store) -> None:
+        await tx_store.batch_upsert_nodes(
+            [{"id": key, "userId": key, "orgId": w.org_id, "email": f"{key}@example.com", "isActive": True}],
+            CollectionNames.USERS.value,
+        )
+        raise RuntimeError("fail after the first statement")
+
+    with pytest.raises(RuntimeError, match="after the first statement"):
+        await store.execute_in_transaction(write_then_fail)
+
+    assert await w.graph.get_document(key, CollectionNames.USERS.value) is None

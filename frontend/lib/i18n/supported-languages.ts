@@ -17,6 +17,7 @@ export const SUPPORTED_LANGUAGES = {
   'zh-TW': { value: 'zh-TW', menuName: '中文（台灣）' },
   'zh-SG': { value: 'zh-SG', menuName: '中文（新加坡）' },
   'zh-CN': { value: 'zh-CN', menuName: '中文（简体，中国）' },
+  'cs-CZ': { value: 'cs-CZ', menuName: 'Čeština (Česko)' },
 } as const;
 
 /** Union type of all supported language codes, e.g. 'en-US' | 'de-DE' */

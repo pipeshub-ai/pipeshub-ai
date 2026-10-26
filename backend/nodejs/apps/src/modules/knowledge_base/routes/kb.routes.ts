@@ -57,7 +57,6 @@ import {
   demoDataPreferenceSchema,
   demoDataWorkspaceSchema,
 } from '../validators/validators';
-// Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimetypes';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -404,6 +403,16 @@ export function createKnowledgeBaseRouter(
   // Create folder (root or nested via optional folderId query param)
   router.post(
     '/:kbId/folder',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(createFolderSchema),
+    createFolder(appConfig),
+  );
+
+  // Create subfolder (nested via path parameter)
+  router.post(
+    '/:kbId/folder/:folderId/subfolder',
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(createFolderSchema),

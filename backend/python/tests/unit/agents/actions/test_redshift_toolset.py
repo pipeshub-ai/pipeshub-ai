@@ -306,6 +306,22 @@ class TestExecuteQuery:
         lines = blob.save_conversation_file_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
         assert (lines[0], len(lines)) == ("id,email", 151)
 
+    async def test_export_belongs_to_the_artifact_owner(self, make_tool) -> None:
+        """A service-account agent queries as its creator; the export is the chatting user's."""
+        blob = create_autospec(BlobStorage, instance=True)
+        blob.save_versioned_artifact_to_storage.return_value = {"documentId": "doc-rs", "fileName": "q.csv"}
+        state = {
+            "conversation_id": "conv-rs-sa", "org_id": "org-1", "user_id": "u-alice",
+            "artifact_owner_user_id": "u-bob", "blob_storage": blob, "graph_provider": MagicMock(),
+        }
+        tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(2)), state=state)
+
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-rs")) as create:
+            await tool.execute_query(query="SELECT * FROM public.customers")
+            await pop_tasks("conv-rs-sa")[0]
+
+        assert create.await_args.kwargs["user_id"] == "u-bob"
+
     async def test_export_is_an_artifact_owned_by_the_user(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
         blob.save_versioned_artifact_to_storage.return_value = {"documentId": "doc-rs", "fileName": "q.csv"}

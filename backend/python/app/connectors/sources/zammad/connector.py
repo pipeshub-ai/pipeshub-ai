@@ -1,10 +1,12 @@
 """Zammad Connector Implementation"""
 import asyncio
 import base64
+import os
 import re
 from dataclasses import dataclass, field
 from collections import defaultdict
 from datetime import datetime, timezone
+from enum import Enum
 from logging import Logger
 from typing import (
     Any,
@@ -139,6 +141,12 @@ MAX_TICKET_READ_ATTEMPTS = 3
 MIN_SPLIT_WINDOW_MS = 60_000
 GRAPH_RECORDS_PAGE_SIZE = 500
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
+# A Zammad before 6.5 can't count tickets, so finding deleted ones means listing every
+# held ticket. That runs at most this often per group; 6.5 and later check every sync.
+# The integration stack sets 0 so a delete lands on the next sync.
+FULL_TICKET_LISTING_INTERVAL_MS = int(
+    os.getenv("ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS", str(24 * 60 * 60 * 1000))
+)
 # Attachment records are "<ticket>_<article>_<attachment>".
 TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
 
@@ -192,6 +200,38 @@ class ZammadReadError(Exception):
         super().__init__(message)
         self.read_until = read_until
         self.burst = burst
+
+
+class ReadOutcome(Enum):
+    """How far a read of who belongs where got, which decides what may be written from it."""
+
+    COMPLETE = "complete"
+    # Stopped for a reason that passes (no answer, a timeout, a rate limit, a server
+    # error): replacing stored members with what was read would take access from
+    # everyone not read, so what is stored stays until a sync reads it all.
+    INTERRUPTED = "interrupted"
+    # Zammad refused it (401, 403 and other 4xx), which repeats every sync until the
+    # token or Zammad is changed. Keeping stored members would keep access no one can
+    # check, so the write goes ahead without what couldn't be read: access fails closed.
+    REFUSED = "refused"
+
+
+# Client errors that pass with time, unlike the rest of 4xx.
+RETRYABLE_CLIENT_ERRORS = frozenset({408, HttpStatusCode.TOO_MANY_REQUESTS.value})
+
+
+def read_failure(status_code: int | None) -> ReadOutcome:
+    """The outcome of a read Zammad answered with ``status_code`` instead of the data.
+
+    No status means no answer at all (a network error, or a body that wasn't JSON).
+    """
+    if (
+        isinstance(status_code, int)
+        and HttpStatusCode.BAD_REQUEST.value <= status_code < HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        and status_code not in RETRYABLE_CLIENT_ERRORS
+    ):
+        return ReadOutcome.REFUSED
+    return ReadOutcome.INTERRUPTED
 
 
 # Zammad link type to RecordRelations mapping
@@ -345,6 +385,8 @@ class ZammadConnector(BaseConnector):
         self._state_map: Dict[int, str] = {}  # state_id -> state_name
         self._priority_map: Dict[int, str] = {}  # priority_id -> priority_name
         self._user_id_to_data: Dict[int, Dict[str, Any]] = {}  # user_id -> {"email": str, "role_ids": List[int]} (lightweight mapping)
+        # How the last _fetch_users read ended; run_sync reads it straight after.
+        self._users_read = ReadOutcome.COMPLETE
 
         # Filter collections (initialized in run_sync)
         self.sync_filters: Any = None
@@ -511,6 +553,10 @@ class ZammadConnector(BaseConnector):
             if users:
                 await self.data_entities_processor.on_new_app_users(users)
                 self.logger.info(f"✅ Synced {len(users)} users")
+            # Group and role members are built from the user list, and writing them
+            # replaces what is stored: from a list cut short, everyone not on it would
+            # lose access through every group and role.
+            keep_members = self._users_read is ReadOutcome.INTERRUPTED
 
             # Step 2: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
             self.logger.info("👥 Step 2: Syncing groups...")
@@ -518,7 +564,11 @@ class ZammadConnector(BaseConnector):
 
             # IMPORTANT: Sync UserGroups BEFORE RecordGroups!
             # so UserGroups must exist first for permission edges to be created.
-            if group_user_groups:
+            if keep_members:
+                self.logger.warning(
+                    "⚠️ The user list was not read in full, so group members stay as stored this sync"
+                )
+            elif group_user_groups:
                 await self.data_entities_processor.on_new_user_groups(group_user_groups)
                 self.logger.info(f"✅ Synced {len(group_user_groups)} groups as UserGroups")
 
@@ -527,8 +577,13 @@ class ZammadConnector(BaseConnector):
                 self.logger.info(f"✅ Synced {len(group_record_groups)} groups as RecordGroups")
 
             # Step 3: Fetch and sync roles
-            self.logger.info("🎭 Step 3: Syncing roles...")
-            await self._sync_roles(users, user_email_map)
+            if keep_members:
+                self.logger.warning(
+                    "⚠️ The user list was not read in full, so roles and their members stay as stored this sync"
+                )
+            else:
+                self.logger.info("🎭 Step 3: Syncing roles...")
+                await self._sync_roles(users, user_email_map)
 
             # Step 5: Sync tickets (linked to group RecordGroups via group_id)
             self.logger.info("🎫 Step 5: Syncing tickets...")
@@ -593,28 +648,35 @@ class ZammadConnector(BaseConnector):
         Fetch all users from Zammad with pagination.
 
         Returns:
-            Tuple of (list of AppUser objects, email -> AppUser map)
+            Tuple of (list of AppUser objects, email -> AppUser map). Whether
+            every page was read is left in ``self._users_read``.
         """
         users: List[AppUser] = []
         user_email_map: Dict[str, AppUser] = {}
+        self._users_read = ReadOutcome.INTERRUPTED
 
         datasource = await self._get_fresh_datasource()
         page = 1
         per_page = 100
+        outcome = ReadOutcome.COMPLETE
 
         while True:
             response = await datasource.list_users(page=page, per_page=per_page)
 
-            if not response.success or not response.data:
+            if not response.success:
+                outcome = read_failure(response.status_code)
+                self.logger.warning(
+                    f"Failed to read Zammad users (page {page}, HTTP {response.status_code}): "
+                    f"{response.error or response.message}"
+                )
                 break
 
             users_data = response.data
-            if not isinstance(users_data, list):
-                users_data = [users_data]
-
             if not users_data:
                 self.logger.debug(f"Empty users list for page {page}")
                 break
+            if not isinstance(users_data, list):
+                users_data = [users_data]
 
             self.logger.debug(f"Fetched {len(users_data)} users from page {page}")
 
@@ -681,6 +743,12 @@ class ZammadConnector(BaseConnector):
 
             page += 1
 
+        self._users_read = outcome
+        if outcome is ReadOutcome.REFUSED:
+            self.logger.error(
+                f"❌ Zammad refused the user list after {len(users)} users; group and role members are "
+                "written from those alone, so access through them is withdrawn from the rest until it can be read"
+            )
         self.logger.info(f"📥 Fetched {len(users)} users from Zammad")
         return users, user_email_map
 
@@ -793,24 +861,44 @@ class ZammadConnector(BaseConnector):
                 member_app_users: List[AppUser] = []
                 try:
                     group_detail_response = await datasource.get_group(group_id)
-                    if group_detail_response.success and group_detail_response.data:
-                        group_detail = group_detail_response.data
-                        # Zammad API returns user_ids or member_ids in group detail
-                        member_user_ids = group_detail.get("user_ids", [])
-
-                        for member_user_id in member_user_ids:
-                            # Convert to int if needed
-                            if isinstance(member_user_id, str) and member_user_id.isdigit():
-                                member_user_id = int(member_user_id)
-
-                            # Get email from lightweight mapping
-                            user_data = self._user_id_to_data.get(member_user_id)
-                            if user_data:
-                                email = user_data.get("email")
-                                if email and email in user_email_map:
-                                    member_app_users.append(user_email_map[email])
                 except Exception as e:
+                    group_detail_response = None
                     self.logger.warning(f"Failed to fetch group members for group {group_id}: {e}")
+                group_detail = group_detail_response.data if group_detail_response else None
+                if group_detail_response and group_detail_response.success and isinstance(group_detail, dict):
+                    # Zammad API returns user_ids or member_ids in group detail
+                    member_user_ids = group_detail.get("user_ids", [])
+
+                    for member_user_id in member_user_ids:
+                        # Convert to int if needed
+                        if isinstance(member_user_id, str) and member_user_id.isdigit():
+                            member_user_id = int(member_user_id)
+
+                        # Get email from lightweight mapping
+                        user_data = self._user_id_to_data.get(member_user_id)
+                        if user_data:
+                            email = user_data.get("email")
+                            if email and email in user_email_map:
+                                member_app_users.append(user_email_map[email])
+                elif (
+                    group_detail_response is None
+                    or group_detail_response.success
+                    or read_failure(group_detail_response.status_code) is ReadOutcome.INTERRUPTED
+                ):
+                    # Writing the group replaces its stored members, so a group whose
+                    # members weren't read is left out and keeps them. Its RecordGroup
+                    # above is still written, so its tickets sync.
+                    self.logger.warning(
+                        f"Could not read the members of group {group_id}; its members stay as stored this sync"
+                    )
+                    continue
+                else:
+                    # Refused (or gone, 404): saved with no members, so nobody keeps
+                    # access through it that Zammad can't confirm.
+                    self.logger.warning(
+                        f"Zammad refused the members of group {group_id} "
+                        f"(HTTP {group_detail_response.status_code}); saving it with none"
+                    )
 
                 user_groups.append((user_group, member_app_users))
 
@@ -1436,7 +1524,9 @@ class ZammadConnector(BaseConnector):
                 return ticket_ids
             offset += TICKET_ID_LISTING_PAGE_SIZE
 
-    async def _unlisted_ticket_ids(self, group_id: int, group_name: str, held: list[str]) -> list[str]:
+    async def _unlisted_ticket_ids(
+        self, group_id: int, group_name: str, held: list[str], *, full_listing_recent: bool = False,
+    ) -> tuple[list[str], bool] | None:
         """The held tickets Zammad's search does not return for this group.
 
         Held tickets are first counted in chunks, among their own ids: a chunk
@@ -1445,25 +1535,33 @@ class ZammadConnector(BaseConnector):
         count) is listed, in id ranges around its tickets, each narrow enough
         that its pages stay inside Elasticsearch's result window. A range that
         fails is left out of the answer, so its tickets are kept this sync.
+
+        Returns the unlisted ids and whether every listed range was read, or
+        None when this Zammad can't count and ``full_listing_recent`` says the
+        full listing already ran within its interval.
         """
         query = self._build_ticket_search_query(group_id, last_sync_time=None)
         # A range of this many ids holds at most this many tickets, so offset + limit never passes the window.
         span = SEARCH_RESULT_WINDOW - TICKET_ID_LISTING_PAGE_SIZE
         held_ids = sorted(int(t) for t in held)
         unlisted: list[str] = []
+        all_read = True
         for start in range(0, len(held_ids), TICKET_ID_COUNT_CHUNK):
             chunk = held_ids[start:start + TICKET_ID_COUNT_CHUNK]
             if await self._search_returns_all(query, chunk):
                 continue
+            if self._ticket_count_unsupported and full_listing_recent:
+                return None
             for low, high in self._id_ranges(chunk, span):
                 listed = await self._list_ticket_ids_in_range(query, low, high)
                 if listed is None:
                     self.logger.warning(
                         f"Could not list tickets {low}-{high} of group '{group_name}'; keeping them this sync"
                     )
+                    all_read = False
                     continue
                 unlisted.extend(str(t) for t in chunk if low <= t <= high and str(t) not in listed)
-        return unlisted
+        return unlisted, all_read
 
     async def _search_returns_all(self, query: str, ticket_ids: list[int]) -> bool:
         """Whether Zammad's search matches every one of ``ticket_ids`` for ``query``, by one count.
@@ -1560,25 +1658,48 @@ class ZammadConnector(BaseConnector):
         The incremental search only returns tickets updated since the checkpoint,
         so a deleted ticket never appears in it. This checks the graph's tickets
         against the group's search instead (see ``_unlisted_ticket_ids``). It reads everything afresh each sync,
-        so a failed read or delete is simply repeated next time.
+        so a failed read or delete is simply repeated next time. On a Zammad that can't count (before 6.5)
+        that means listing every held ticket, so it runs at most once per FULL_TICKET_LISTING_INTERVAL_MS.
         """
         external_group_id = f"group_{group_id}"
         try:
             by_ticket = await self._records_by_ticket_in_group(external_group_id)
             if not by_ticket:
                 return
+            point = await self.tickets_sync_point.read_sync_point(group_name) or {}
+            last_full = point.get("full_listing_at") or 0
+            full_listing_recent = get_epoch_timestamp_in_ms() - last_full < FULL_TICKET_LISTING_INTERVAL_MS
+            outcome = await self._unlisted_ticket_ids(
+                group_id, group_name, list(by_ticket), full_listing_recent=full_listing_recent,
+            )
+            if outcome is None:
+                self.logger.info(
+                    f"Zammad can't count tickets (before 6.5); group '{group_name}' was fully checked for "
+                    "deleted tickets less than a day ago, so it is not listed again this sync"
+                )
+                return
+            unlisted, all_read = outcome
             removed = 0
-            for ticket_id in await self._unlisted_ticket_ids(group_id, group_name, list(by_ticket)):
+            settled_all = True
+            for ticket_id in unlisted:
                 try:
                     if await self._settle_ticket(
                         ticket_id, by_ticket[ticket_id], external_group_id,
                         f"ticket {ticket_id} left group '{group_name}'",
                     ):
                         removed += 1
+                    else:
+                        settled_all = False
                 except Exception as e:
+                    settled_all = False
                     self.logger.warning(f"Could not settle ticket {ticket_id} of group '{group_name}': {e}")
             if removed:
                 self.logger.info(f"🗑️ Settled {removed} tickets no longer listed in group '{group_name}'")
+            # Only a full listing that read everything and settled everything starts the next interval.
+            if self._ticket_count_unsupported and all_read and settled_all:
+                await self.tickets_sync_point.update_sync_point(
+                    group_name, {"full_listing_at": get_epoch_timestamp_in_ms()},
+                )
         except Exception as e:
             self.logger.warning(f"Could not check group '{group_name}' for deleted tickets: {e}", exc_info=True)
 
@@ -2254,7 +2375,7 @@ class ZammadConnector(BaseConnector):
         }
         kb_map: Dict[int, RecordGroup] = {}
         category_map: Dict[int, RecordGroup] = {}
-        category_permissions_map: Dict[int, Dict[str, List[int]]] = {}
+        category_permissions_map: Dict[int, Dict[str, Any]] = {}
         await self._process_kb_entities(
             assets=listing,
             kb_map=kb_map,
@@ -2320,7 +2441,7 @@ class ZammadConnector(BaseConnector):
         assets: Dict[str, Any],
         kb_map: Dict[int, RecordGroup],
         category_map: Dict[int, RecordGroup],
-        category_permissions_map: Dict[int, Dict[str, List[int]]]
+        category_permissions_map: Dict[int, Dict[str, Any]]
     ) -> None:
         """
         Process knowledge bases and categories from the knowledge base listing.
@@ -2438,6 +2559,9 @@ class ZammadConnector(BaseConnector):
                 permissions_effective = cat_data.get("permissions_effective", [])
                 editor_role_ids: List[int] = []
                 reader_role_ids: List[int] = []
+                # False when the category's permissions couldn't be read for a reason
+                # that passes: saving it would replace its stored grants with none.
+                permissions_read = True
 
                 if permissions_effective:
                     editor_role_ids = [
@@ -2455,26 +2579,46 @@ class ZammadConnector(BaseConnector):
                             kb_id=kb_id,
                             cat_id=cat_id
                         )
-                        if perm_response.success and perm_response.data:
-                            # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
-                            # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
-                            permissions_list = perm_response.data.get("permissions", [])
-                            editor_role_ids = [
-                                p["role_id"] for p in permissions_list
-                                if p.get("access") == "editor"
-                            ]
-                            reader_role_ids = [
-                                p["role_id"] for p in permissions_list
-                                if p.get("access") == "reader"
-                            ]
                     except Exception as e:
+                        perm_response = None
                         self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
+                    perm_data = perm_response.data if perm_response else None
+                    if perm_response and perm_response.success and isinstance(perm_data, dict):
+                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
+                        # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
+                        permissions_list = perm_data.get("permissions", [])
+                        editor_role_ids = [
+                            p["role_id"] for p in permissions_list
+                            if p.get("access") == "editor"
+                        ]
+                        reader_role_ids = [
+                            p["role_id"] for p in permissions_list
+                            if p.get("access") == "reader"
+                        ]
+                    elif (
+                        perm_response is None
+                        or perm_response.success
+                        or read_failure(perm_response.status_code) is ReadOutcome.INTERRUPTED
+                    ):
+                        permissions_read = False
+                        self.logger.warning(
+                            f"Could not read the permissions of KB category {cat_id}; it and its "
+                            "archived and draft answers keep their stored access this sync"
+                        )
+                    else:
+                        # Refused, or gone (404): saved with no role grants, so nobody
+                        # keeps access through it that Zammad can't confirm.
+                        self.logger.warning(
+                            f"Zammad refused the permissions of KB category {cat_id} "
+                            f"(HTTP {perm_response.status_code}); saving it with no role grants"
+                        )
 
                 # Store permissions and KB ID for answer processing
                 category_permissions_map[cat_id] = {
                     "kb_id": kb_id,
                     "editor_role_ids": editor_role_ids,
-                    "reader_role_ids": reader_role_ids
+                    "reader_role_ids": reader_role_ids,
+                    "read": permissions_read,
                 }
 
                 # Create category permissions (all roles: editor + reader)
@@ -2515,7 +2659,9 @@ class ZammadConnector(BaseConnector):
                     web_url=cat_web_url,
                 )
 
-                category_record_groups.append((cat_record_group, cat_permissions))
+                if permissions_read:
+                    category_record_groups.append((cat_record_group, cat_permissions))
+                # Kept in the map either way: answers and child categories find their place through it.
                 category_map[cat_id] = cat_record_group
 
             if category_record_groups:
@@ -2527,7 +2673,7 @@ class ZammadConnector(BaseConnector):
         answers: dict[str, dict[str, Any]],
         assets: dict[str, Any],
         category_map: Dict[int, RecordGroup],
-        category_permissions_map: Dict[int, Dict[str, List[int]]]
+        category_permissions_map: Dict[int, Dict[str, Any]]
     ) -> tuple[int, int, list[int]]:
         """
         Write KB answers from the knowledge base listing, BATCH_SIZE_KB_ANSWERS at a time.
@@ -2567,6 +2713,14 @@ class ZammadConnector(BaseConnector):
 
                     # Determine visibility
                     visibility = self._determine_visibility(answer_data)
+                    if visibility in ("ARCHIVED", "DRAFT") and cat_perms.get("read") is False:
+                        # Granted to the category's editor roles, which couldn't be read;
+                        # writing it now would replace its stored grants with none.
+                        self.logger.warning(
+                            f"KB answer {answer_id} waits for its category's permissions; the next sync reads it again"
+                        )
+                        failed_updated_at.append(answer_updated_at)
+                        continue
 
                     # Enrich answer with translations
                     translation_ids = answer_data.get("translation_ids", [])

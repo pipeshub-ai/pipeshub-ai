@@ -2,13 +2,13 @@
 
 import asyncio
 import os
-import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Awaitable, List, TypeVar, cast
-from weakref import WeakKeyDictionary
+from typing import TYPE_CHECKING, Awaitable, List, TypeVar, cast
 
-from app.utils.worker_scaling import scaled
+if TYPE_CHECKING:
+    from app.services.llm_gateway.gateway import SlotHealth
+    from app.services.llm_gateway.limiter import CrossLoopSemaphore
 
 T = TypeVar("T")
 
@@ -25,38 +25,65 @@ MAX_CONCURRENT_TABLES = 15
 MAX_CONCURRENT_ROW_BATCHES = 8
 MAX_CONCURRENT_PAGE_BUILDS = 4
 
+# Graph queries one fan-out (one query per record or per relation pair) runs at
+# once. Each concurrent query can open a new database connection, and a burst
+# wider than the server's accept backlog has its connects dropped until
+# aiohttp's 30s sock_connect fails them together ("Connection timeout to host").
+GRAPH_FANOUT_CONCURRENCY = 16
+
 TABLE_ROW_BATCH_SIZE = 50
 
-_sem_by_loop: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
-    WeakKeyDictionary()
-)
-_sem_lock = threading.Lock()
 
+def max_table_rows_for_llm() -> int:
+    """Table rows per record that get an LLM-written description.
 
-def _indexing_llm_semaphore() -> asyncio.Semaphore:
-    """Return the semaphore bound to the running loop, creating it on first use.
-
-    This process runs several event loops: the uvicorn loop plus the Kafka and Redis
-    indexing consumers, which each call ``asyncio.new_event_loop()`` in a worker thread.
-    ``asyncio.Semaphore`` binds to a loop on first await and then raises if awaited from
-    another, so a single module-level instance would crash. The double-checked init is
-    guarded by a threading lock because those loops live in different threads.
+    Running total across the record's tables; rows past it get deterministic
+    "column: value" text. Every table parser reads the cap from here.
     """
-    loop = asyncio.get_running_loop()
-    sem = _sem_by_loop.get(loop)
-    if sem is None:
-        with _sem_lock:
-            sem = _sem_by_loop.get(loop)
-            if sem is None:
-                sem = asyncio.Semaphore(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
-                _sem_by_loop[loop] = sem
-    return sem
+    return max(0, int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000")))
+
+def _indexing_llm_semaphore() -> "CrossLoopSemaphore":
+    """The LLM gateway's cap: one per process, shared by every event loop in it.
+
+    A semaphore per loop multiplied the budget by the number of loops (the server
+    loop and the worker loop).
+    """
+    # Imported here: the gateway sizes its cap from this module.
+    from app.services.llm_gateway.gateway import get_llm_gateway
+
+    return get_llm_gateway().limiter
+
+
+def indexing_llm_stats() -> "SlotHealth":
+    """The /health ``indexing_llm`` block: use of the cap, wait and hold time, rate-limit retries."""
+    from app.services.llm_gateway.gateway import get_llm_gateway
+
+    return get_llm_gateway().slot_stats()
+
+
+def note_indexing_llm_rate_limit() -> None:
+    from app.services.llm_gateway.gateway import get_llm_gateway
+
+    get_llm_gateway().note_rate_limit_retry()
+
+
+def indexing_llm_slots_remaining() -> int:
+    """How many indexing LLM calls can start without waiting, process-wide.
+
+    Used to skip the multi-turn extractor when the process is already saturated.
+    """
+    sem = _indexing_llm_semaphore()
+    return max(0, sem.limit - sem.in_use)
 
 
 @asynccontextmanager
 async def indexing_llm_slot() -> AsyncGenerator[None, None]:
-    """Hold a slot in the process-wide indexing LLM budget."""
-    async with _indexing_llm_semaphore():
+    """Hold a permit of the process-wide indexing LLM cap (the LLM gateway's).
+
+    For a caller that makes its model call itself; ``LLMGateway.invoke`` takes the
+    same permit and adds the breaker, the hang ceiling and rate-limit retries.
+    """
+    async with _indexing_llm_semaphore().slot():
         yield
 
 

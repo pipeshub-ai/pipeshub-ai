@@ -472,7 +472,7 @@ export function InviteUsersSidebar({
   // Panel title & button labels change in edit mode
   const panelTitle = isEditMode
     ? t('workspace.users.invite.editTitle', 'Edit Invite')
-    : t('workspace.users.invite.title', 'Invite User(s)');
+    : t('workspace.users.invite.title');
 
   const primaryLabel = isEditMode
     ? t('workspace.users.invite.update', 'Update Invite')
@@ -619,7 +619,7 @@ export function InviteUsersSidebar({
         </FormField>
 
         {/* Role dropdown */}
-        <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
+        <FormField label={t('workspace.users.invite.roleLabel')}>
           <SelectDropdown
             value={isAdmin ? inviteRole : USER_ROLES.MEMBER}
             onChange={setInviteRole}

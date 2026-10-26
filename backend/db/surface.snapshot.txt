@@ -1,0 +1,576 @@
+column kernel.alembic_version.version_num type=character varying(32) notnull=true identity= generated= default=-
+column kernel.completed_jobs.finished_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column kernel.completed_jobs.name type=text notnull=true identity= generated= default=-
+column kernel.extension_schemas.nsp type=name notnull=true identity= generated= default=-
+column kernel.function_registry.class type=text notnull=true identity= generated= default=-
+column kernel.function_registry.content_ok type=boolean notnull=true identity= generated= default=false
+column kernel.function_registry.dedupe_rel type=regclass notnull=false identity= generated= default=-
+column kernel.function_registry.person_effect type=text notnull=false identity= generated= default=-
+column kernel.function_registry.proc type=regprocedure notnull=true identity= generated= default=-
+column kernel.function_registry.scope type=text notnull=true identity= generated= default='org'::text
+column kernel.function_registry.writer type=name notnull=false identity= generated= default=-
+column kernel.job_gate_grants.owner type=name notnull=true identity= generated= default=-
+column kernel.job_gate_grants.rel type=text notnull=true identity= generated= default='platform.jobs'::text
+column kernel.lock_keys.class_id type=integer notnull=true identity= generated= default=-
+column kernel.lock_keys.name type=text notnull=true identity= generated= default=-
+column kernel.lock_keys.purpose type=text notnull=true identity= generated= default=-
+column kernel.person_violations.object type=text notnull=false identity= generated= default=-
+column kernel.person_violations.rule type=text notnull=false identity= generated= default=-
+column kernel.policy_template.cmd type="char" notnull=true identity= generated= default=-
+column kernel.policy_template.name type=text notnull=true identity= generated= default=-
+column kernel.policy_template.qual type=text notnull=false identity= generated= default=-
+column kernel.policy_template.with_check type=text notnull=false identity= generated= default=-
+column kernel.restore_window.disabled_logins type=name[] notnull=true identity= generated= default='{}'::name[]
+column kernel.restore_window.one type=boolean notnull=true identity= generated= default=true
+column kernel.restore_window.org type=text notnull=true identity= generated= default=-
+column kernel.restore_window.sequences_restored type=boolean notnull=true identity= generated= default=false
+column kernel.restore_window.until type=timestamp with time zone notnull=true identity= generated= default=-
+column kernel.rls_exemptions.condef_md5 type=text notnull=true identity= generated= default=-
+column kernel.rls_exemptions.conname type=name notnull=true identity= generated= default=-
+column kernel.rls_exemptions.reason type=text notnull=true identity= generated= default=-
+column kernel.rls_exemptions.rel type=regclass notnull=true identity= generated= default=-
+column kernel.rls_exemptions.reviewed_at type=date notnull=true identity= generated= default=CURRENT_DATE
+column kernel.rls_exemptions.reviewed_by type=text notnull=true identity= generated= default=-
+column kernel.rls_exemptions.value_source type=text notnull=true identity= generated= default=-
+column kernel.rls_registry.class type=text notnull=true identity= generated= default=-
+column kernel.rls_registry.import_access type=boolean notnull=true identity= generated= default=false
+column kernel.rls_registry.jobs_access type=boolean notnull=true identity= generated= default=false
+column kernel.rls_registry.person type=boolean notnull=true identity= generated= default=false
+column kernel.rls_registry.rel type=regclass notnull=true identity= generated= default=-
+column kernel.rls_registry.vetted_delete type=boolean notnull=true identity= generated= default=false
+column kernel.rls_registry.vetted_read type=boolean notnull=true identity= generated= default=false
+column kernel.rls_registry.vetted_write type=boolean notnull=true identity= generated= default=false
+column kernel.rls_violations.object type=text notnull=false identity= generated= default=-
+column kernel.rls_violations.rule type=text notnull=false identity= generated= default=-
+column kernel.rls_violations_core.object type=text notnull=false identity= generated= default=-
+column kernel.rls_violations_core.rule type=text notnull=false identity= generated= default=-
+column kernel.rls_warnings.object type=text notnull=false identity= generated= default=-
+column kernel.rls_warnings.rule type=text notnull=false identity= generated= default=-
+column kernel.schema_epoch.branch type=text notnull=true identity= generated= default=-
+column kernel.schema_epoch.epoch type=integer notnull=true identity= generated= default=-
+column kernel.schema_epoch.min_code_epoch type=integer notnull=true identity= generated= default=0
+column kernel.schema_epoch.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column kernel.sequence_waivers.attname type=name notnull=true identity= generated= default=-
+column kernel.sequence_waivers.reason type=text notnull=true identity= generated= default=-
+column kernel.sequence_waivers.rel type=regclass notnull=true identity= generated= default=-
+column kernel.sequence_waivers.reviewed_at type=date notnull=true identity= generated= default=CURRENT_DATE
+column kernel.sequence_waivers.reviewed_by type=text notnull=true identity= generated= default=-
+column kernel.sequence_waivers.seq type=regclass notnull=true identity= generated= default=-
+column kernel.settings.admins type=name[] notnull=true identity= generated= default='{}'::name[]
+column kernel.settings.app_group type=name notnull=true identity= generated= default=-
+column kernel.settings.backup type=name notnull=true identity= generated= default=-
+column kernel.settings.extensions type=name[] notnull=true identity= generated= default=-
+column kernel.settings.importer type=name notnull=true identity= generated= default='pipeshub_import'::name
+column kernel.settings.jobs type=name notnull=true identity= generated= default=-
+column kernel.settings.migrate type=name notnull=true identity= generated= default=-
+column kernel.settings.one type=boolean notnull=true identity= generated= default=true
+column kernel.settings.org_id_pattern type=text notnull=true identity= generated= default=-
+column kernel.settings.owner type=name notnull=true identity= generated= default=-
+column kernel.settings.restore type=name notnull=true identity= generated= default=-
+column kernel.settings.ro type=name notnull=false identity= generated= default=-
+column kernel.settings.role_prefix type=text notnull=true identity= generated= default=-
+column kernel.settings.services type=name[] notnull=true identity= generated= default=-
+column kernel.settings.vetted_prefix type=text notnull=true identity= generated= default=-
+column kernel.surface_skips.files type=text notnull=true identity= generated= default=''::text
+column kernel.surface_skips.skipped_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column kernel.surface_skips.skipped_by type=name notnull=true identity= generated= default=SESSION_USER
+column kernel.trigger_exemptions.body_md5 type=text notnull=true identity= generated= default=-
+column kernel.trigger_exemptions.proc type=regprocedure notnull=true identity= generated= default=-
+column kernel.trigger_exemptions.reason type=text notnull=true identity= generated= default=-
+column kernel.trigger_exemptions.reviewed_at type=date notnull=true identity= generated= default=CURRENT_DATE
+column kernel.trigger_exemptions.reviewed_by type=text notnull=true identity= generated= default=-
+column kernel.vetted_extension_reads.rel type=regclass notnull=true identity= generated= default=-
+column kernel.vetted_violations.object type=text notnull=false identity= generated= default=-
+column kernel.vetted_violations.rule type=text notnull=false identity= generated= default=-
+column platform.consumer_inbox.message_id type=text notnull=true identity= generated= default=-
+column platform.consumer_inbox.org_id type=text notnull=true identity= generated= default=-
+column platform.consumer_inbox.received_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.deployment_profile.epoch type=integer notnull=true identity= generated= default=-
+column platform.deployment_profile.profile type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column platform.jobs.created_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.jobs.id type=bigint notnull=true identity=a generated= default=-
+column platform.jobs.kind type=text notnull=true identity= generated= default=-
+column platform.jobs.progress type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column platform.jobs.status type=text notnull=true identity= generated= default=-
+column platform.jobs.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.kv_entries.expires_at type=timestamp with time zone notnull=false identity= generated= default=-
+column platform.kv_entries.key type=text notnull=true identity= generated= default=-
+column platform.kv_entries.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.kv_entries.value type=bytea notnull=true identity= generated= default=-
+column platform.queue_deliveries.attempts type=integer notnull=true identity= generated= default=0
+column platform.queue_deliveries.consumer type=text notnull=false identity= generated= default=-
+column platform.queue_deliveries.group_id type=text notnull=true identity= generated= default=-
+column platform.queue_deliveries.last_error type=text notnull=false identity= generated= default=-
+column platform.queue_deliveries.locked_until type=timestamp with time zone notnull=false identity= generated= default=-
+column platform.queue_deliveries.message_id type=bigint notnull=true identity= generated= default=-
+column platform.queue_deliveries.msg_key type=text notnull=false identity= generated= default=-
+column platform.queue_deliveries.status type=text notnull=true identity= generated= default='ready'::text
+column platform.queue_deliveries.topic type=text notnull=true identity= generated= default=-
+column platform.queue_deliveries.visible_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.queue_groups.created_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.queue_groups.ephemeral type=boolean notnull=true identity= generated= default=false
+column platform.queue_groups.group_id type=text notnull=true identity= generated= default=-
+column platform.queue_groups.seen_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.queue_groups.topic type=text notnull=true identity= generated= default=-
+column platform.queue_messages.created_at type=timestamp with time zone notnull=true identity= generated= default=now()
+column platform.queue_messages.headers type=text notnull=false identity= generated= default=-
+column platform.queue_messages.id type=bigint notnull=true identity=a generated= default=-
+column platform.queue_messages.msg_key type=text notnull=false identity= generated= default=-
+column platform.queue_messages.topic type=text notnull=true identity= generated= default=-
+column platform.queue_messages.value type=text notnull=true identity= generated= default=-
+column platform.sched_jobs.attempts_made type=integer notnull=true identity= generated= default=0
+column platform.sched_jobs.created_ms type=bigint notnull=true identity= generated= default=-
+column platform.sched_jobs.data type=jsonb notnull=true identity= generated= default=-
+column platform.sched_jobs.delay_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_jobs.failed_reason type=text notnull=false identity= generated= default=-
+column platform.sched_jobs.finished_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_jobs.id type=text notnull=true identity= generated= default=-
+column platform.sched_jobs.locked_by type=text notnull=false identity= generated= default=-
+column platform.sched_jobs.locked_until type=timestamp with time zone notnull=false identity= generated= default=-
+column platform.sched_jobs.name type=text notnull=true identity= generated= default=-
+column platform.sched_jobs.opts type=jsonb notnull=true identity= generated= default='{}'::jsonb
+column platform.sched_jobs.priority type=integer notnull=true identity= generated= default=0
+column platform.sched_jobs.processed_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_jobs.progress type=jsonb notnull=false identity= generated= default=-
+column platform.sched_jobs.queue type=text notnull=true identity= generated= default=-
+column platform.sched_jobs.run_at type=timestamp with time zone notnull=true identity= generated= default=-
+column platform.sched_jobs.stalled type=integer notnull=true identity= generated= default=0
+column platform.sched_jobs.state type=text notnull=true identity= generated= default=-
+column platform.sched_repeats.end_date_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_repeats.every_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_repeats.job_id type=text notnull=false identity= generated= default=-
+column platform.sched_repeats.key type=text notnull=true identity= generated= default=-
+column platform.sched_repeats.name type=text notnull=true identity= generated= default=-
+column platform.sched_repeats.next_ms type=bigint notnull=false identity= generated= default=-
+column platform.sched_repeats.pattern type=text notnull=false identity= generated= default=-
+column platform.sched_repeats.queue type=text notnull=true identity= generated= default=-
+column platform.sched_repeats.tz type=text notnull=false identity= generated= default=-
+column platform.store_epoch.backend type=text notnull=true identity= generated= default=-
+column platform.store_epoch.epoch type=integer notnull=true identity= generated= default=-
+column platform.store_epoch.one type=boolean notnull=true identity= generated= default=true
+column platform.store_epoch.readonly type=boolean notnull=true identity= generated= default=false
+column platform.store_epoch.updated_at type=timestamp with time zone notnull=true identity= generated= default=now()
+constraint kernel.alembic_version alembic_version_pkc p def=9ff9b7a06b20441038321e312af2b931
+constraint kernel.completed_jobs completed_jobs_pkey p def=c302dc585e3d60f2f29aa138474141ea
+constraint kernel.extension_schemas extension_schemas_pkey p def=ad15a3f885884f639b9ce12e76a1d0b6
+constraint kernel.function_registry function_registry_check c def=343a16de6f2f6396337d7fc059126052
+constraint kernel.function_registry function_registry_class_check c def=1a496eab2086fb4adba27a11f0af97a8
+constraint kernel.function_registry function_registry_dedupe_is_write c def=67a4de300c1fb4eb6dfd4318972e0c72
+constraint kernel.function_registry function_registry_helper_is_read c def=896b8e8020b38effb9c48fd12314dc0f
+constraint kernel.function_registry function_registry_person_effect c def=d14e22f04683341c4c207d0471ecdded
+constraint kernel.function_registry function_registry_pkey p def=b664a5b1e44013a75f9cb4978b703ade
+constraint kernel.function_registry function_registry_scope_check c def=6f4985ec551f448f651cea213a30ade3
+constraint kernel.job_gate_grants job_gate_grants_pkey p def=27e717ec98bb52c36934560f5bc7b963
+constraint kernel.job_gate_grants job_gate_grants_rel_check c def=1cf45e19250dd8dae7506b9ee802391a
+constraint kernel.lock_keys lock_keys_class_id_check c def=810e3fd3156f65c8f0e2406cc1cf3012
+constraint kernel.lock_keys lock_keys_name_key u def=6cd240145af2a9dad30030041a41b7af
+constraint kernel.lock_keys lock_keys_pkey p def=8cfbcf15ca12c2b69900a30b8c01ef9b
+constraint kernel.policy_template policy_template_pkey p def=c302dc585e3d60f2f29aa138474141ea
+constraint kernel.restore_window restore_window_one_check c def=21c1ed2340b0cfd00c3a8b8b5b6635c5
+constraint kernel.restore_window restore_window_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
+constraint kernel.rls_exemptions rls_exemptions_pkey p def=5e29a70a1efafe57020378d4404d7c7e
+constraint kernel.rls_exemptions rls_exemptions_value_source_check c def=ec666afce9c9d1d65f3f9e07bbac1b3a
+constraint kernel.rls_registry rls_registry_class_check c def=92e4c0243dabf9abab1e73f7fd63a794
+constraint kernel.rls_registry rls_registry_person_is_global c def=27e7c0d3ad141b478610c22e950d34ff
+constraint kernel.rls_registry rls_registry_pkey p def=e4e9923f49f3d59f199c0867a2422f66
+constraint kernel.schema_epoch schema_epoch_pkey p def=cf487ace8d4cca1ad8da90e604d732c6
+constraint kernel.sequence_waivers sequence_waivers_pkey p def=152ea1d893407ab553be765463baa525
+constraint kernel.settings settings_one_check c def=21c1ed2340b0cfd00c3a8b8b5b6635c5
+constraint kernel.settings settings_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
+constraint kernel.trigger_exemptions trigger_exemptions_pkey p def=b664a5b1e44013a75f9cb4978b703ade
+constraint kernel.vetted_extension_reads vetted_extension_reads_pkey p def=e4e9923f49f3d59f199c0867a2422f66
+constraint platform.consumer_inbox consumer_inbox_pkey p def=200b24df51f90df254103634480056dc
+constraint platform.consumer_inbox org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint platform.consumer_inbox org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint platform.jobs jobs_pkey p def=4c6419b3704337bbfe50f018842a9ad3
+constraint platform.jobs jobs_status_check c def=0b1660fa4b72c6172fa023081f133040
+constraint platform.kv_entries kv_entries_pkey p def=729d3ed6c85722f863da384d2313331e
+constraint platform.queue_deliveries queue_deliveries_pkey p def=642a7b2d61320c918711d7f4c8347790
+constraint platform.queue_groups queue_groups_pkey p def=f4e295329f4fbbd78c4bf423598128b4
+constraint platform.queue_messages queue_messages_pkey p def=4c6419b3704337bbfe50f018842a9ad3
+constraint platform.sched_jobs sched_jobs_pkey p def=fb1dc97b15533753e225dd9e13202cb5
+constraint platform.sched_repeats sched_repeats_pkey p def=362c34a4b5f43bdbb3f55d9179c0c99a
+constraint platform.store_epoch store_epoch_backend_check c def=555fa520c8f4d93b603a9a3896f753c7
+constraint platform.store_epoch store_epoch_epoch_check c def=7a8151e7105396955e8374258e85d35c
+constraint platform.store_epoch store_epoch_one_check c def=21c1ed2340b0cfd00c3a8b8b5b6635c5
+constraint platform.store_epoch store_epoch_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
+database owner=<bootstrap-superuser>
+databaseacl PUBLIC CONNECT grantable=false
+databaseacl pipeshub_owner CREATE grantable=false
+extension pg_trgm schema=ext owner=<bootstrap-superuser>
+extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
+func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
+func kernel._secure_rel(regclass,regclass,text,boolean,boolean,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=c9880dc715481f2736fa8b6daa39a99e ext=-
+func kernel.allow_vetted_delete(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b8b4486fa5fdd2cbc37ea306db8250f9 ext=-
+func kernel.annotate_function(regprocedure,text,regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=387b680675daab47ab27aed7509546b9 ext=-
+func kernel.apply_rls(regclass,text,boolean,boolean,text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=916adc3ea995abf19c362ef1c52a4224 ext=-
+func kernel.apply_rls_partition(regclass,regclass,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=11c43c9acfff84c19685af9a65f2ddb8 ext=-
+func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=162d140f491f16e476f7a0f9df464d0a ext=-
+func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=a9359f45061785e9af50b8da0c38e054 ext=-
+func kernel.declare_extension_schema(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b9da3c6332da59a2fbc1ddb6040080c5 ext=-
+func kernel.exempt_constraint(regclass,name,text,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=32c4a15e8a767e354922828a28af36e8 ext=-
+func kernel.exempt_trigger(regprocedure,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ba198108fb9374224c91da29e844c153 ext=-
+func kernel.grant_import_access(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=43f693635cfaec8b0f563e5aa961a997 ext=-
+func kernel.grant_job_gate(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=6b3fb0d3544a2415deaf6f0b8b4fef83 ext=-
+func kernel.grant_vetted_owner_select(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=a1427a71de0492fa7b22f3b784064bd8 ext=-
+func kernel.has_extension(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, pg_temp body=9a911c56d70d1fb1fdc091c65d4ed2c9 ext=-
+func kernel.mark_person(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b484b2534a793edfa2ae9602b73116a0 ext=-
+func kernel.org_lineage(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=13472cd4766a802b66ccfd6b2a167682 ext=-
+func kernel.org_parent_ids(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=784c5292fdf530dd3ed72a8f021e7f2e ext=-
+func kernel.pg_major() owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, pg_temp body=6925a6b0331dc612469f3d602ea42f17 ext=-
+func kernel.postgres_store_epoch() owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=99fdf6eb1e3d20d978c618b85d8c83ba ext=-
+func kernel.profile_epoch() owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=032994c6311412f0f44ca0a3e09466fd ext=-
+func kernel.register_function(regprocedure,text,name,text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=cd7129043fbda03f78361a02a8d806e2 ext=-
+func kernel.register_internal(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=4c4756c98033506a41dd99c286c4110e ext=-
+func kernel.require_job_done(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=c4ecaff7145d039c1a2db0fe16c9c17b ext=-
+func kernel.restore_allows(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, kernel, pg_temp body=121d24d8b4401d3a668330099e195751 ext=-
+func kernel.set_epoch(text,integer,integer) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=sql config=search_path=pg_catalog, kernel, pg_temp body=8f910d57b1a6285a77542f5a3a0eac76 ext=-
+func kernel.src_text(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=search_path=pg_catalog, pg_temp body=8001a9f19c5f8282cd91897708625973 ext=-
+func kernel.waive_sequence(regclass,regclass,name,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ce100d8398bc4d8937f3de3bc2a90b48 ext=-
+func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
+func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
+func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors_login EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_indexing EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_indexing_login EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_jobs EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_kv EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_kv_login EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_node EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_node_login EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_query EXECUTE
+funcacl kernel.assert_profile_epoch(integer) pipeshub_query_login EXECUTE
+funcacl kernel.assert_store_epoch(integer) pipeshub_jobs EXECUTE
+funcacl kernel.assert_store_epoch(integer) pipeshub_node_login EXECUTE
+funcacl kernel.has_extension(text) pipeshub_app EXECUTE
+funcacl kernel.org_lineage(text) pipeshub_app EXECUTE
+funcacl kernel.pg_major() pipeshub_app EXECUTE
+funcacl kernel.postgres_store_epoch() pipeshub_node EXECUTE
+funcacl kernel.profile_epoch() pipeshub_connectors EXECUTE
+funcacl kernel.profile_epoch() pipeshub_indexing EXECUTE
+funcacl kernel.profile_epoch() pipeshub_kv EXECUTE
+funcacl kernel.profile_epoch() pipeshub_node EXECUTE
+funcacl kernel.profile_epoch() pipeshub_query EXECUTE
+funcacl kernel.restore_allows(text) pipeshub_restore EXECUTE
+funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
+funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
+funcacl platform.job_start(text) pipeshub_owner EXECUTE
+index kernel.alembic_version_pkc on kernel.alembic_version unique=true exclusion=false valid=true def=c141328fa649632bd48c615b4bb672db
+index kernel.completed_jobs_pkey on kernel.completed_jobs unique=true exclusion=false valid=true def=15027330d42fe41c06bc07732df27c9c
+index kernel.extension_schemas_pkey on kernel.extension_schemas unique=true exclusion=false valid=true def=542ab4475729ca447b06e65f4bccc85c
+index kernel.function_registry_pkey on kernel.function_registry unique=true exclusion=false valid=true def=493d61676b029c47e9a418c2c17038d9
+index kernel.job_gate_grants_pkey on kernel.job_gate_grants unique=true exclusion=false valid=true def=1c015c63a6ad61f61c72436ca1a64dba
+index kernel.lock_keys_name_key on kernel.lock_keys unique=true exclusion=false valid=true def=50cb3130e507b92b2f7b826deb0e3f3d
+index kernel.lock_keys_pkey on kernel.lock_keys unique=true exclusion=false valid=true def=4974bcfad5d5c28cc1b367a1aa7e8760
+index kernel.policy_template_pkey on kernel.policy_template unique=true exclusion=false valid=true def=0548824c442adb8386bba3daf495c01b
+index kernel.restore_window_pkey on kernel.restore_window unique=true exclusion=false valid=true def=000bf614fcc3a0b78e685d139253b73f
+index kernel.rls_exemptions_pkey on kernel.rls_exemptions unique=true exclusion=false valid=true def=32b0e2a93d62a60135f74fea32828c94
+index kernel.rls_registry_pkey on kernel.rls_registry unique=true exclusion=false valid=true def=d242d9793a241812e05967541454388d
+index kernel.schema_epoch_pkey on kernel.schema_epoch unique=true exclusion=false valid=true def=c0cdb8e68e541f9ed740aabda89d7b52
+index kernel.sequence_waivers_pkey on kernel.sequence_waivers unique=true exclusion=false valid=true def=025604fe0b7afbc71d98c927ba3d5fdd
+index kernel.settings_pkey on kernel.settings unique=true exclusion=false valid=true def=ed2b9216ae4996a86b1ef1b08bba07c7
+index kernel.trigger_exemptions_pkey on kernel.trigger_exemptions unique=true exclusion=false valid=true def=5a5c9cce9f2561d6615c813ceab48725
+index kernel.vetted_extension_reads_pkey on kernel.vetted_extension_reads unique=true exclusion=false valid=true def=cc195b08ec1797e6cf63209b89a33a6f
+index platform.consumer_inbox_pkey on platform.consumer_inbox unique=true exclusion=false valid=true def=fdd7dcc3e0a1196783a6f4123c894660
+index platform.consumer_inbox_received_at on platform.consumer_inbox unique=false exclusion=false valid=true def=aedce0110dc15e21ca7265496b1a0100
+index platform.deployment_profile_one_row on platform.deployment_profile unique=true exclusion=false valid=true def=d14b131f206cb2b4f70564ec9404b576
+index platform.jobs_one_running_per_kind on platform.jobs unique=true exclusion=false valid=true def=48b0837b864e0155e01b30cd4761f3bf
+index platform.jobs_pkey on platform.jobs unique=true exclusion=false valid=true def=79f9c6e47506242e024f85e368948de3
+index platform.kv_entries_expiry on platform.kv_entries unique=false exclusion=false valid=true def=3fd96ca779f6b615709654ddb1a836fc
+index platform.kv_entries_pkey on platform.kv_entries unique=true exclusion=false valid=true def=3b0c327cf2af823aa5b132cf444b9604
+index platform.queue_deliveries_by_message on platform.queue_deliveries unique=false exclusion=false valid=true def=95d363ac9cc9c05ff75a3d5bd63763c8
+index platform.queue_deliveries_key on platform.queue_deliveries unique=false exclusion=false valid=true def=29cb2c01c3ab61859e445da3a1009988
+index platform.queue_deliveries_open on platform.queue_deliveries unique=false exclusion=false valid=true def=384c937ce9fce4be55d7c9417680f2ba
+index platform.queue_deliveries_pkey on platform.queue_deliveries unique=true exclusion=false valid=true def=b0b6fd7cf71a2c75e1b4bc4aa1953356
+index platform.queue_groups_pkey on platform.queue_groups unique=true exclusion=false valid=true def=bd3526951208b0a18aefb4e082ab6f01
+index platform.queue_messages_pkey on platform.queue_messages unique=true exclusion=false valid=true def=86cde2aa63faeb2776c7e926f72e74ee
+index platform.queue_messages_topic on platform.queue_messages unique=false exclusion=false valid=true def=42e18947aa0fbbcbb7aea2b59b7c2a19
+index platform.sched_jobs_active on platform.sched_jobs unique=false exclusion=false valid=true def=5fdf2604a9284c605a48dfcea936f714
+index platform.sched_jobs_by_state on platform.sched_jobs unique=false exclusion=false valid=true def=1b9a70c042dbc0682ecc29681463272d
+index platform.sched_jobs_due on platform.sched_jobs unique=false exclusion=false valid=true def=7cf9d768b0dfa67891c3e7f6f169d409
+index platform.sched_jobs_pkey on platform.sched_jobs unique=true exclusion=false valid=true def=c648c9c85ecf24b08822678f915456b1
+index platform.sched_repeats_pkey on platform.sched_repeats unique=true exclusion=false valid=true def=0704607f8fae1f2d85e4d8270ab35624
+index platform.store_epoch_pkey on platform.store_epoch unique=true exclusion=false valid=true def=6f2b38c345e73c59514153010e2ada47
+language c trusted=false owner=<bootstrap-superuser>
+language internal trusted=false owner=<bootstrap-superuser>
+language plpgsql trusted=true owner=<bootstrap-superuser>
+language sql trusted=true owner=<bootstrap-superuser>
+languageacl c PUBLIC USAGE
+languageacl internal PUBLIC USAGE
+languageacl plpgsql PUBLIC USAGE
+languageacl sql PUBLIC USAGE
+lofunctions public_execute=0
+member pipeshub_connectors -> pipeshub_app inherit=true set=false admin=false
+member pipeshub_connectors_login -> pipeshub_connectors inherit=false set=true admin=false
+member pipeshub_indexing -> pipeshub_app inherit=true set=false admin=false
+member pipeshub_indexing_login -> pipeshub_indexing inherit=false set=true admin=false
+member pipeshub_kv -> pipeshub_app inherit=true set=false admin=false
+member pipeshub_kv_login -> pipeshub_kv inherit=false set=true admin=false
+member pipeshub_migrate -> pipeshub_owner inherit=true set=true admin=false
+member pipeshub_node -> pipeshub_app inherit=true set=false admin=false
+member pipeshub_node_login -> pipeshub_node inherit=false set=true admin=false
+member pipeshub_owner -> pipeshub_vetted_kernel inherit=false set=false admin=true
+member pipeshub_owner -> pipeshub_vetted_platform inherit=false set=false admin=true
+member pipeshub_query -> pipeshub_app inherit=true set=false admin=false
+member pipeshub_query_login -> pipeshub_query inherit=false set=true admin=false
+member pipeshub_ro -> pipeshub_app inherit=true set=false admin=false
+operator ext.%(text,text) owner=<bootstrap-superuser> function=ext.similarity_op
+operator ext.%>(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_commutator_op
+operator ext.%>>(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_commutator_op
+operator ext.<%(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_op
+operator ext.<->(text,text) owner=<bootstrap-superuser> function=ext.similarity_dist
+operator ext.<->>(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_commutator_op
+operator ext.<->>>(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_commutator_op
+operator ext.<<%(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_op
+operator ext.<<->(text,text) owner=<bootstrap-superuser> function=ext.word_similarity_dist_op
+operator ext.<<<->(text,text) owner=<bootstrap-superuser> function=ext.strict_word_similarity_dist_op
+policy platform.consumer_inbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy platform.consumer_inbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.consumer_inbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy platform.consumer_inbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+rel kernel.alembic_version kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.completed_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.extension_schemas kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.function_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.job_gate_grants kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.lock_keys kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.person_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=3c61dc5686c98e4f31b82f45e2e73cbf
+rel kernel.policy_template kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.restore_window kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.rls_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.rls_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=da83ed4eea13d08748e6fefd8a66f62e
+rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=e232e39bc8fc37a16c579397aa6379a6
+rel kernel.rls_warnings kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=82f66d8e056dc84e6344cb21d9064d00
+rel kernel.schema_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.sequence_waivers kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.settings kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.surface_skips kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.trigger_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.vetted_extension_reads kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kernel.vetted_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=ac60a8348f9045e9ea4af61a1da3eeac
+rel platform.consumer_inbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel platform.deployment_profile kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.jobs_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.kv_entries kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.queue_deliveries kind=r owner=pipeshub_owner rls=false force=false options=fillfactor=85,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=2000 ext=-
+rel platform.queue_groups kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.queue_messages kind=r owner=pipeshub_owner rls=false force=false options=autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=2000 ext=-
+rel platform.queue_messages_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.sched_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.sched_repeats kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+rel platform.store_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+relacl kernel.restore_window pipeshub_restore SELECT grantable=false
+relacl kernel.schema_epoch pipeshub_connectors SELECT grantable=false
+relacl kernel.schema_epoch pipeshub_indexing SELECT grantable=false
+relacl kernel.schema_epoch pipeshub_node SELECT grantable=false
+relacl kernel.schema_epoch pipeshub_query SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_backup SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_connectors INSERT grantable=false
+relacl platform.consumer_inbox pipeshub_connectors SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_indexing INSERT grantable=false
+relacl platform.consumer_inbox pipeshub_indexing SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_jobs DELETE grantable=false
+relacl platform.consumer_inbox pipeshub_jobs SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_node INSERT grantable=false
+relacl platform.consumer_inbox pipeshub_node SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_query INSERT grantable=false
+relacl platform.consumer_inbox pipeshub_query SELECT grantable=false
+relacl platform.consumer_inbox pipeshub_restore INSERT grantable=false
+relacl platform.deployment_profile pipeshub_vetted_kernel SELECT grantable=false
+relacl platform.jobs pipeshub_vetted_platform INSERT grantable=false
+relacl platform.jobs pipeshub_vetted_platform SELECT grantable=false
+relacl platform.jobs pipeshub_vetted_platform UPDATE grantable=false
+relacl platform.kv_entries pipeshub_connectors DELETE grantable=false
+relacl platform.kv_entries pipeshub_connectors INSERT grantable=false
+relacl platform.kv_entries pipeshub_connectors SELECT grantable=false
+relacl platform.kv_entries pipeshub_connectors UPDATE grantable=false
+relacl platform.kv_entries pipeshub_indexing DELETE grantable=false
+relacl platform.kv_entries pipeshub_indexing INSERT grantable=false
+relacl platform.kv_entries pipeshub_indexing SELECT grantable=false
+relacl platform.kv_entries pipeshub_indexing UPDATE grantable=false
+relacl platform.kv_entries pipeshub_kv DELETE grantable=false
+relacl platform.kv_entries pipeshub_kv INSERT grantable=false
+relacl platform.kv_entries pipeshub_kv SELECT grantable=false
+relacl platform.kv_entries pipeshub_kv UPDATE grantable=false
+relacl platform.kv_entries pipeshub_node DELETE grantable=false
+relacl platform.kv_entries pipeshub_node INSERT grantable=false
+relacl platform.kv_entries pipeshub_node SELECT grantable=false
+relacl platform.kv_entries pipeshub_node UPDATE grantable=false
+relacl platform.kv_entries pipeshub_query DELETE grantable=false
+relacl platform.kv_entries pipeshub_query INSERT grantable=false
+relacl platform.kv_entries pipeshub_query SELECT grantable=false
+relacl platform.kv_entries pipeshub_query UPDATE grantable=false
+relacl platform.queue_deliveries pipeshub_connectors DELETE grantable=false
+relacl platform.queue_deliveries pipeshub_connectors INSERT grantable=false
+relacl platform.queue_deliveries pipeshub_connectors SELECT grantable=false
+relacl platform.queue_deliveries pipeshub_connectors UPDATE grantable=false
+relacl platform.queue_deliveries pipeshub_indexing DELETE grantable=false
+relacl platform.queue_deliveries pipeshub_indexing INSERT grantable=false
+relacl platform.queue_deliveries pipeshub_indexing SELECT grantable=false
+relacl platform.queue_deliveries pipeshub_indexing UPDATE grantable=false
+relacl platform.queue_deliveries pipeshub_node DELETE grantable=false
+relacl platform.queue_deliveries pipeshub_node INSERT grantable=false
+relacl platform.queue_deliveries pipeshub_node SELECT grantable=false
+relacl platform.queue_deliveries pipeshub_node UPDATE grantable=false
+relacl platform.queue_deliveries pipeshub_query DELETE grantable=false
+relacl platform.queue_deliveries pipeshub_query INSERT grantable=false
+relacl platform.queue_deliveries pipeshub_query SELECT grantable=false
+relacl platform.queue_deliveries pipeshub_query UPDATE grantable=false
+relacl platform.queue_groups pipeshub_connectors DELETE grantable=false
+relacl platform.queue_groups pipeshub_connectors INSERT grantable=false
+relacl platform.queue_groups pipeshub_connectors SELECT grantable=false
+relacl platform.queue_groups pipeshub_connectors UPDATE grantable=false
+relacl platform.queue_groups pipeshub_indexing DELETE grantable=false
+relacl platform.queue_groups pipeshub_indexing INSERT grantable=false
+relacl platform.queue_groups pipeshub_indexing SELECT grantable=false
+relacl platform.queue_groups pipeshub_indexing UPDATE grantable=false
+relacl platform.queue_groups pipeshub_node DELETE grantable=false
+relacl platform.queue_groups pipeshub_node INSERT grantable=false
+relacl platform.queue_groups pipeshub_node SELECT grantable=false
+relacl platform.queue_groups pipeshub_node UPDATE grantable=false
+relacl platform.queue_groups pipeshub_query DELETE grantable=false
+relacl platform.queue_groups pipeshub_query INSERT grantable=false
+relacl platform.queue_groups pipeshub_query SELECT grantable=false
+relacl platform.queue_groups pipeshub_query UPDATE grantable=false
+relacl platform.queue_messages pipeshub_connectors DELETE grantable=false
+relacl platform.queue_messages pipeshub_connectors INSERT grantable=false
+relacl platform.queue_messages pipeshub_connectors SELECT grantable=false
+relacl platform.queue_messages pipeshub_connectors UPDATE grantable=false
+relacl platform.queue_messages pipeshub_indexing DELETE grantable=false
+relacl platform.queue_messages pipeshub_indexing INSERT grantable=false
+relacl platform.queue_messages pipeshub_indexing SELECT grantable=false
+relacl platform.queue_messages pipeshub_indexing UPDATE grantable=false
+relacl platform.queue_messages pipeshub_node DELETE grantable=false
+relacl platform.queue_messages pipeshub_node INSERT grantable=false
+relacl platform.queue_messages pipeshub_node SELECT grantable=false
+relacl platform.queue_messages pipeshub_node UPDATE grantable=false
+relacl platform.queue_messages pipeshub_query DELETE grantable=false
+relacl platform.queue_messages pipeshub_query INSERT grantable=false
+relacl platform.queue_messages pipeshub_query SELECT grantable=false
+relacl platform.queue_messages pipeshub_query UPDATE grantable=false
+relacl platform.sched_jobs pipeshub_node DELETE grantable=false
+relacl platform.sched_jobs pipeshub_node INSERT grantable=false
+relacl platform.sched_jobs pipeshub_node SELECT grantable=false
+relacl platform.sched_jobs pipeshub_node UPDATE grantable=false
+relacl platform.sched_repeats pipeshub_node DELETE grantable=false
+relacl platform.sched_repeats pipeshub_node INSERT grantable=false
+relacl platform.sched_repeats pipeshub_node SELECT grantable=false
+relacl platform.sched_repeats pipeshub_node UPDATE grantable=false
+relacl platform.store_epoch pipeshub_vetted_kernel SELECT grantable=false
+role <bootstrap-superuser> login=true super=true inherit=true createrole=true createdb=true replication=true bypassrls=true connlimit=-1 valid_until=-
+role pipeshub_app login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_backup login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_connectors login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_connectors_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_import login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_indexing login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_indexing_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_jobs login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_kv login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_kv_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_migrate login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_node login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_node_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_owner login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_query login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_query_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_restore login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_ro login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_vetted_kernel login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_vetted_platform login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+schema ext owner=pipeshub_owner
+schema kernel owner=pipeshub_owner
+schema platform owner=pipeshub_owner
+schema public owner=pg_database_owner
+schemaacl ext pipeshub_app USAGE grantable=false
+schemaacl kernel pipeshub_app USAGE grantable=false
+schemaacl kernel pipeshub_connectors_login USAGE grantable=false
+schemaacl kernel pipeshub_indexing_login USAGE grantable=false
+schemaacl kernel pipeshub_jobs USAGE grantable=false
+schemaacl kernel pipeshub_kv_login USAGE grantable=false
+schemaacl kernel pipeshub_node_login USAGE grantable=false
+schemaacl kernel pipeshub_query_login USAGE grantable=false
+schemaacl kernel pipeshub_restore USAGE grantable=false
+schemaacl kernel pipeshub_vetted_kernel USAGE grantable=false
+schemaacl platform pipeshub_backup USAGE grantable=false
+schemaacl platform pipeshub_connectors USAGE grantable=false
+schemaacl platform pipeshub_indexing USAGE grantable=false
+schemaacl platform pipeshub_jobs USAGE grantable=false
+schemaacl platform pipeshub_kv USAGE grantable=false
+schemaacl platform pipeshub_node USAGE grantable=false
+schemaacl platform pipeshub_query USAGE grantable=false
+schemaacl platform pipeshub_restore USAGE grantable=false
+schemaacl platform pipeshub_vetted_kernel USAGE grantable=false
+schemaacl platform pipeshub_vetted_platform USAGE grantable=false
+schemaacl public PUBLIC USAGE grantable=false
+settings admins= extensions=plpgsql,vector,pg_trgm,pg_textsearch,btree_gin,pg_search,pg_stat_statements services=pipeshub_node,pipeshub_connectors,pipeshub_indexing,pipeshub_query,pipeshub_kv
+sysfuncs@17 count=3330 md5=4ffc20628a8498ed9cac0aa6b3560b9e
+sysfuncs@18 count=3413 md5=e1d09e84fd442d7baa0c82daf2e7df8a
+sysrelacl information_schema.administrable_role_authorizations PUBLIC SELECT
+sysrelacl information_schema.applicable_roles PUBLIC SELECT
+sysrelacl information_schema.attributes PUBLIC SELECT
+sysrelacl information_schema.character_sets PUBLIC SELECT
+sysrelacl information_schema.check_constraint_routine_usage PUBLIC SELECT
+sysrelacl information_schema.check_constraints PUBLIC SELECT
+sysrelacl information_schema.collation_character_set_applicability PUBLIC SELECT
+sysrelacl information_schema.collations PUBLIC SELECT
+sysrelacl information_schema.column_column_usage PUBLIC SELECT
+sysrelacl information_schema.column_domain_usage PUBLIC SELECT
+sysrelacl information_schema.column_options PUBLIC SELECT
+sysrelacl information_schema.column_privileges PUBLIC SELECT
+sysrelacl information_schema.column_udt_usage PUBLIC SELECT
+sysrelacl information_schema.columns PUBLIC SELECT
+sysrelacl information_schema.constraint_column_usage PUBLIC SELECT
+sysrelacl information_schema.constraint_table_usage PUBLIC SELECT
+sysrelacl information_schema.data_type_privileges PUBLIC SELECT
+sysrelacl information_schema.domain_constraints PUBLIC SELECT
+sysrelacl information_schema.domain_udt_usage PUBLIC SELECT
+sysrelacl information_schema.domains PUBLIC SELECT
+sysrelacl information_schema.element_types PUBLIC SELECT
+sysrelacl information_schema.enabled_roles PUBLIC SELECT
+sysrelacl information_schema.foreign_data_wrapper_options PUBLIC SELECT
+sysrelacl information_schema.foreign_data_wrappers PUBLIC SELECT
+sysrelacl information_schema.foreign_server_options PUBLIC SELECT
+sysrelacl information_schema.foreign_servers PUBLIC SELECT
+sysrelacl information_schema.foreign_table_options PUBLIC SELECT
+sysrelacl information_schema.foreign_tables PUBLIC SELECT
+sysrelacl information_schema.information_schema_catalog_name PUBLIC SELECT
+sysrelacl information_schema.key_column_usage PUBLIC SELECT
+sysrelacl information_schema.parameters PUBLIC SELECT
+sysrelacl information_schema.referential_constraints PUBLIC SELECT
+sysrelacl information_schema.role_column_grants PUBLIC SELECT
+sysrelacl information_schema.role_routine_grants PUBLIC SELECT
+sysrelacl information_schema.role_table_grants PUBLIC SELECT
+sysrelacl information_schema.role_udt_grants PUBLIC SELECT
+sysrelacl information_schema.role_usage_grants PUBLIC SELECT
+sysrelacl information_schema.routine_column_usage PUBLIC SELECT
+sysrelacl information_schema.routine_privileges PUBLIC SELECT
+sysrelacl information_schema.routine_routine_usage PUBLIC SELECT
+sysrelacl information_schema.routine_sequence_usage PUBLIC SELECT
+sysrelacl information_schema.routine_table_usage PUBLIC SELECT
+sysrelacl information_schema.routines PUBLIC SELECT
+sysrelacl information_schema.schemata PUBLIC SELECT
+sysrelacl information_schema.sequences PUBLIC SELECT
+sysrelacl information_schema.sql_features PUBLIC SELECT
+sysrelacl information_schema.sql_implementation_info PUBLIC SELECT
+sysrelacl information_schema.sql_sizing PUBLIC SELECT
+sysrelacl information_schema.table_constraints PUBLIC SELECT
+sysrelacl information_schema.table_privileges PUBLIC SELECT
+sysrelacl information_schema.tables PUBLIC SELECT
+sysrelacl information_schema.triggered_update_columns PUBLIC SELECT
+sysrelacl information_schema.triggers PUBLIC SELECT
+sysrelacl information_schema.udt_privileges PUBLIC SELECT
+sysrelacl information_schema.usage_privileges PUBLIC SELECT
+sysrelacl information_schema.user_defined_types PUBLIC SELECT
+sysrelacl information_schema.user_mapping_options PUBLIC SELECT
+sysrelacl information_schema.user_mappings PUBLIC SELECT
+sysrelacl information_schema.view_column_usage PUBLIC SELECT
+sysrelacl information_schema.view_routine_usage PUBLIC SELECT
+sysrelacl information_schema.view_table_usage PUBLIC SELECT
+sysrelacl information_schema.views PUBLIC SELECT
+sysschemaacl information_schema PUBLIC USAGE
+tablespace pg_default owner=<bootstrap-superuser>
+tablespace pg_global owner=<bootstrap-superuser>

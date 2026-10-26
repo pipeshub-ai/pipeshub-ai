@@ -1,14 +1,10 @@
 """Knowledge Hub's ``collectionRole`` against a real Neo4j and a real ArangoDB.
 
-The collection header offers "Recently deleted" to the roles the trash API
-serves (OWNER, WRITER, FILEORGANIZER). Knowledge Hub's context ``role`` can't
-decide that inside a folder: there it ranks record permissions, which have no
-FILEORGANIZER, so a file organizer reads as READER. ``collectionRole`` is the
-user's own role on the collection, from the check restore and the trash list
-use, at the collection and in a folder inside it alike.
+``collectionRole`` is the user's own role on the collection, from the check
+restore and the trash list use, at the collection and in a folder inside it
+alike. FILEORGANIZER is a retired role: a stored one reads as READER.
 
-Seeds the restore suite's collection with a file organizer and a reader beside
-its owner.
+Seeds the restore suite's collection with members beside its owner.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
 fails, naming it; one that is not configured skips:
@@ -61,7 +57,7 @@ async def _member(w: _World, role: str) -> str:
     return key
 
 
-@pytest.mark.parametrize("role", ["FILEORGANIZER", "READER", "WRITER"])
+@pytest.mark.parametrize("role", ["READER", "WRITER"])
 async def test_the_collection_role_is_the_same_at_the_collection_and_in_a_folder(seeded: _World, role: str) -> None:
     user = await _member(seeded, role)
     hub = KnowledgeHubService(logger, seeded.graph)
@@ -73,16 +69,15 @@ async def test_the_collection_role_is_the_same_at_the_collection_and_in_a_folder
     assert (at_collection.collectionRole, in_folder.collectionRole) == (role, role)
 
 
-async def test_a_file_organizer_reads_as_a_reader_in_a_folder_but_keeps_their_collection_role(seeded: _World) -> None:
-    """Why the header can't use the context role: inside a folder it has no FILEORGANIZER."""
+async def test_a_stored_file_organizer_reads_as_a_reader(seeded: _World) -> None:
     user = await _member(seeded, "FILEORGANIZER")
     hub = KnowledgeHubService(logger, seeded.graph)
 
+    at_collection = await hub._get_permissions(user, seeded.org_id, seeded.kb_id, "app")
     in_folder = await hub._get_permissions(user, seeded.org_id, seeded.ids["folder"], "folder")
 
-    assert in_folder is not None
-    assert in_folder.role != "FILEORGANIZER"
-    assert in_folder.collectionRole == "FILEORGANIZER"
+    assert at_collection is not None and in_folder is not None
+    assert (at_collection.collectionRole, in_folder.collectionRole) == ("READER", "READER")
 
 
 async def test_a_node_outside_a_collection_has_no_collection_role(seeded: _World) -> None:

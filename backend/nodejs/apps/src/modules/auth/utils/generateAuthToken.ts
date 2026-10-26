@@ -20,8 +20,7 @@ export const DISABLED_ACCOUNT_SIGN_IN_MESSAGE =
 /**
  * Issues the session token that every interactive sign-in ends with.
  *
- * Password, OTP, Google, Microsoft, Azure AD, generic OAuth, SAML, the refresh
- * exchange and the OAuth token exchange all converge here, which makes this
+ * Every sign-in method and the refresh exchange converge here, which makes this
  * the one place worth checking whether this account is allowed a session at
  * all. Two kinds are not: service accounts, which exist to be authenticated as
  * by machines and never by people, and accounts an administrator has disabled.

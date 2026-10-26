@@ -15,7 +15,10 @@ projects what the graph already holds, with no extraction or LLM call:
 A document is done when its ``entityIndexState`` equals the current marker,
 ``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
 every pass, and each point records the model that embedded it, so a point
-from another model is re-embedded whenever it is next written. Mechanics
+from another model is re-embedded whenever it is next written. The marker
+also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
+so a collection dropped, recreated or emptied from outside is refilled the
+same way. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
 """
@@ -24,11 +27,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
@@ -41,8 +45,10 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.utils import MessagingUtils
+from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -72,6 +78,9 @@ MAX_TICK_ERRORS = 10
 STARTUP_GRACE_SECONDS = 60.0
 # Between ticks that did work, and while idle or not leader.
 BUSY_INTERVAL_SECONDS = 2.0
+# Longest extra wait after a tick while indexing is busy (see LoopShare); the
+# leader lease outlasts it many times over.
+MAX_TICK_PAUSE_SECONDS = 60.0
 IDLE_INTERVAL_SECONDS = 60.0
 # While waiting between ticks, how often to check for an embedding model
 # switch. The check is a cache read; a switch ends the wait, so the leader's
@@ -151,15 +160,18 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str) -> str:
-    return f"v{ENTITY_INDEX_VERSION}:{fingerprint}"
+def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+    """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
+    under another stamp was projected into a collection that is gone."""
+    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
+
+
+_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
 
 
 def fingerprint_of(marker: object) -> str | None:
-    if not isinstance(marker, str) or not marker.startswith("v") or ":" not in marker:
-        return None
-    version, fingerprint = marker.split(":", 1)
-    return fingerprint if version[1:].isdigit() and fingerprint else None
+    match = _MARKER.fullmatch(marker) if isinstance(marker, str) else None
+    return match.group(1) if match else None
 
 
 def _text(value: object) -> str:
@@ -258,7 +270,11 @@ class EntityIndexRebuilder:
             return "entity_cleanup"
         # Holding the leader lock, this is the one place a collection another
         # model wrote is dropped (see EntityVectorStore._ensure_initialized).
-        marker = entity_index_marker(await self.store.embedding_fingerprint(recreate=True))
+        fingerprint = await self.store.embedding_fingerprint(recreate=True)
+        # Read every tick, after the line above may have recreated the
+        # collection: a collection without its stamp gets a new one, which no
+        # document has reached, so every pass runs again.
+        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
@@ -393,6 +409,11 @@ class EntityIndexRebuilder:
         phase, after_key = run.phase, run.after_key
         limit = self.page_size if run.collection == _APPS else self.taxonomy_page_size
         rows = await self.graph.page_entity_index_source(phase, run.key, after_key, limit)
+        # A store that keeps a collection per org cannot recreate them all in
+        # ``embedding_fingerprint``; each is recreated when its org comes up.
+        orgs = {run.key} if run.collection == _ORGS else {_text(row.get("orgId")) for row in rows}
+        for org_id in sorted(orgs - {""}):
+            await self.store.recreate_stale_collection(org_id)
         if run.collection == _APPS:
             failed = await self._project_connector_rows(run, phase, rows)
         else:
@@ -492,7 +513,7 @@ class EntityIndexRebuilder:
             if phase == _RECORD_GROUPS:
                 entities.append(EntityRecord.for_record_group(key, name, org_id, run.key))
                 continue
-            if row.get("indexingStatus") != ProgressStatus.COMPLETED.value or row.get("isDeleted"):
+            if not is_searchable_record(row) or row.get("isDeleted"):
                 continue
             entities.append(EntityRecord.for_record(
                 key, name, org_id, run.key, _text(row.get("recordGroupId")) or None,
@@ -523,6 +544,9 @@ class EntityIndexRebuilder:
         offset = org.get(EntityIndexState.SWEEP_OFFSET)
         offset = offset if isinstance(offset, str) and offset else None
         try:
+            # No pass re-runs for a model the org was already projected under
+            # (switched away and back), so this is where its collection is checked.
+            await self.store.recreate_stale_collection(org_id)
             # Scrolling fails too, not only lookups: Redis refuses offsets
             # past its 10,000-result window on a large org.
             refs, next_offset = await self._scan(org_id, offset)
@@ -641,7 +665,7 @@ def _key_of(doc: dict[str, Any]) -> str | None:
     return key if isinstance(key, str) and key else None
 
 
-async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
+async def resolve_entity_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
     getter = getattr(app_container, "entity_vector_store", None)
     if getter is None:
         return None
@@ -679,6 +703,10 @@ async def run_entity_index_rebuild_loop(
     lock: VectorMembershipBackfillLeaderLock | None = None
     rebuilder: EntityIndexRebuilder | None = None
     backoff = 1
+    # Runs on the indexing worker loop on Neo4j: a page embeds and writes up
+    # to 200 entities, and pages came every two seconds whatever else the loop
+    # had to do.
+    pacer = LoopShare(max_pause_seconds=MAX_TICK_PAUSE_SECONDS)
     try:
         while True:
             interval = IDLE_INTERVAL_SECONDS
@@ -690,7 +718,7 @@ async def run_entity_index_rebuild_loop(
                     )
                     rebuilder = None
                 if rebuilder is None:
-                    store = await _resolve_store(app_container)
+                    store = await resolve_entity_store(app_container)
                     if store is not None:
                         rebuilder = EntityIndexRebuilder(
                             logger=logger, graph_provider=graph_provider, store=store, lock=lock,
@@ -699,10 +727,12 @@ async def run_entity_index_rebuild_loop(
                 if rebuilder is None:
                     logger.warning("entity_index_rebuild: entity store unavailable; skipping tick")
                 else:
+                    pacer.begin()
                     outcome = await rebuilder.tick()
                     backoff = 1
                     if outcome not in ("idle", "not_leader"):
                         interval = BUSY_INTERVAL_SECONDS
+                        await pacer.pause()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -726,5 +756,6 @@ __all__ = [
     "EntityIndexState",
     "entity_index_marker",
     "fingerprint_of",
+    "resolve_entity_store",
     "run_entity_index_rebuild_loop",
 ]

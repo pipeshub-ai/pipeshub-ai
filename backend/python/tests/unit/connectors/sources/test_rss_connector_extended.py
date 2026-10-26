@@ -1,15 +1,14 @@
 """Extended tests for RSSConnector covering more uncovered code paths."""
 
 import time
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes
-from app.connectors.sources.rss.connector import RSSApp, RSSConnector
-from app.models.entities import AppUser, RecordGroupType, RecordType, User
-from app.models.permission import EntityType, PermissionType
+from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.rss.connector import RSSConnector
+from app.models.entities import RecordGroupType, User
 
 
 def _make_connector():
@@ -21,6 +20,8 @@ def _make_connector():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
     dep.on_new_records = AsyncMock()
     dep.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="rss-conn-1",
@@ -53,7 +54,7 @@ def _make_connector():
     ds_provider.transaction.return_value = mock_tx
     
     config_service = AsyncMock()
-    return RSSConnector(
+    conn = RSSConnector(
         logger=logger,
         data_entities_processor=dep,
         data_store_provider=ds_provider,
@@ -62,6 +63,13 @@ def _make_connector():
         scope="personal",
         created_by="test-user-id",
     )
+    # run_sync re-reads the saved settings: answer with whatever the test set on the connector.
+    conn.config_service.get_config = AsyncMock(side_effect=lambda *_a, **_k: {"sync": {
+        "feed_urls": "\n".join(conn.feed_urls),
+        "max_articles_per_feed": conn.max_articles_per_feed,
+        "fetch_full_content": conn.fetch_full_content,
+    }})
+    return conn
 
 
 def _make_entry(title="Article", link="https://example.com/article-1",
@@ -85,21 +93,20 @@ class TestRSSInit:
     async def test_init_no_config(self):
         conn = _make_connector()
         conn.config_service.get_config = AsyncMock(return_value=None)
-        # init catches the ValueError and returns False
-        result = await conn.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="No feed URLs"):
+            await conn.init()
 
     async def test_init_no_sync_config(self):
         conn = _make_connector()
         conn.config_service.get_config = AsyncMock(return_value={"sync": {}})
-        result = await conn.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="No feed URLs"):
+            await conn.init()
 
     async def test_init_no_feed_urls(self):
         conn = _make_connector()
         conn.config_service.get_config = AsyncMock(return_value={"sync": {"feed_urls": ""}})
-        result = await conn.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="No feed URLs"):
+            await conn.init()
 
     async def test_init_string_fetch_full_content(self):
         conn = _make_connector()
@@ -170,40 +177,6 @@ class TestTestConnection:
         conn = _make_connector()
         conn.feed_urls = ["https://example.com/rss"]
         conn.session = None
-        assert await conn.test_connection_and_access() is False
-
-    async def test_success(self):
-        conn = _make_connector()
-        conn.feed_urls = ["https://example.com/rss"]
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=None),
-        ))
-        conn.session = mock_session
-        assert await conn.test_connection_and_access() is True
-
-    async def test_bad_status(self):
-        conn = _make_connector()
-        conn.feed_urls = ["https://example.com/rss"]
-        mock_response = MagicMock()
-        mock_response.status = 404
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=None),
-        ))
-        conn.session = mock_session
-        assert await conn.test_connection_and_access() is False
-
-    async def test_exception(self):
-        conn = _make_connector()
-        conn.feed_urls = ["https://example.com/rss"]
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(side_effect=Exception("error"))
-        conn.session = mock_session
         assert await conn.test_connection_and_access() is False
 
 
@@ -343,7 +316,7 @@ class TestProcessEntry:
         record, perms = result
         assert record.record_name == "Article"
         assert record.mime_type == MimeTypes.PLAIN_TEXT.value
-        assert len(perms) == 1
+        assert perms == []
 
     async def test_entry_with_html_summary(self):
         conn = _make_connector()
@@ -400,6 +373,7 @@ class TestRunSync:
 
     async def test_run_sync_exception_raises(self):
         conn = _make_connector()
+        conn.feed_urls = ["https://example.com/rss"]
         conn.scope = "PERSONAL"
         conn.created_by = "user-1"
         conn.data_entities_processor.get_user_by_user_id = AsyncMock(
@@ -421,7 +395,8 @@ class TestCreateRecordGroup:
         call_args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = call_args[0]
         assert rg.group_type == RecordGroupType.RSS_FEED
-        assert perms[0].entity_type == EntityType.ORG
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     async def test_error_raises(self):
         conn = _make_connector()
@@ -450,11 +425,6 @@ class TestCleanup:
         conn = _make_connector()
         conn.session = None
         await conn.cleanup()  # should not raise
-
-    async def test_reindex_not_implemented(self):
-        conn = _make_connector()
-        with pytest.raises(NotImplementedError):
-            await conn.reindex_records([])
 
     async def test_incremental_sync(self):
         conn = _make_connector()

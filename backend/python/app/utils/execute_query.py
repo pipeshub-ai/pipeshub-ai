@@ -180,6 +180,16 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     Returns:
         (is_safe, error_message) tuple
     """
+    # Imported here to avoid an import cycle.
+    from app.agents.actions.util.read_only_sql import (
+        MAX_SQL_CHARS,
+        calls_side_effect_function,
+    )
+
+    # The side-effect scan reads the whole text, so text it won't read is refused, not half-checked.
+    if len(query) > MAX_SQL_CHARS:
+        return False, "Blocked: the statement is too long to check"
+
     query_upper = query.upper().strip()
 
     # Remove comments and extra whitespace
@@ -249,10 +259,8 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'DBCC',
         # Oracle specific
         'DUMP',
-        # BigQuery specific
-        'DECLARE', 'SET',
         # Multiple dialects
-        'USE', 'VALUES',
+        'VALUES',
     ]
 
     if not any(query_clean.startswith(start) for start in allowed_starts):
@@ -283,6 +291,9 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     for pattern in dynamic_sql_patterns:
         if pattern in query_clean:
             return False, "Blocked: Dynamic SQL execution is not allowed"
+
+    if calls_side_effect_function(query):
+        return False, "Blocked: this statement calls a function that is not a plain read"
 
     return True, ""
 
@@ -673,29 +684,52 @@ async def _execute_query_impl(
         return result
 
 
+async def _connector_is_accessible(
+    graph_provider: IGraphDBProvider | None,
+    connector_id: str,
+    user_id: str,
+    org_id: str,
+) -> bool:
+    """The query runs with the connector's own credentials, so the connector must
+    be one of the caller's org that the user can reach."""
+    if graph_provider is None or not org_id:
+        return False
+    from app.utils.chat_helpers import accessible_node_ids
+
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if not app or app.get("orgId") != org_id:
+        return False
+    return connector_id in await accessible_node_ids(graph_provider, {connector_id}, user_id, org_id)
+
+
 def create_execute_query_tool(
     config_service: "ConfigurationService",
     graph_provider: Optional["IGraphDBProvider"] = None,
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     *,
     allowed_connector_ids: Collection[str],
+    artifact_owner_user_id: str | None = None,
 ) -> Callable:
     """Factory function to create the execute_query tool with runtime dependencies.
     
     Args:
         config_service: Configuration service for retrieving connection details
-        graph_provider: Optional GraphDB service (used for BlobStorage fallback)
-        org_id: Optional organization ID for background CSV export
+        graph_provider: GraphDB service: checks the user can reach the connector,
+            and backs the BlobStorage fallback
+        org_id: The caller's organization: scopes the connector check and the CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
-        user_id: Optional owner of the CSV export; without it the export has
-            no artifact record and so no download link on local storage
+        user_id: Whose connector access is checked, and the CSV export's owner
+            unless ``artifact_owner_user_id`` is given; without either the
+            export has no artifact record and so no download link on local storage
         allowed_connector_ids: The only connector instance IDs the tool may
             query. The query runs with the connector's stored credentials, so
             any other ID (or none) is rejected before a client is built.
+        artifact_owner_user_id: Owner of the CSV export when it is not ``user_id``
+            (a service-account agent's run, owned by the person chatting).
         
     Returns:
         A langchain tool for executing SQL queries
@@ -753,6 +787,11 @@ def create_execute_query_tool(
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
 
         connector_id = (connector_id or "").strip()
+        if not connector_id:
+            return {
+                "ok": False,
+                "error": "connector_id is required: pass the Connector Id of the SQL_TABLE record in context.",
+            }
         if connector_id not in allowed:
             logger.warning(
                 "🔍 [execute_sql_query_tool] Rejected connector_id=%r: not attached to this agent",
@@ -767,6 +806,9 @@ def create_execute_query_tool(
             }
 
         try:
+            if not await _connector_is_accessible(graph_provider, connector_id, user_id or "", org_id or ""):
+                return {"ok": False, "error": f"Connector {connector_id!r} is not available to you."}
+
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,
@@ -810,7 +852,7 @@ def create_execute_query_tool(
                     blob_store=resolved_blob_store,
                     graph_provider=graph_provider,
                     org_id=org_id,
-                    user_id=user_id,
+                    user_id=artifact_owner_user_id or user_id,
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,

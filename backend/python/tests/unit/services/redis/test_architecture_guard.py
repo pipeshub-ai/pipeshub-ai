@@ -124,8 +124,12 @@ class TestNoDirectRedisClientImportsOutsideProviders:
             rel = _relative_path(path)
             if rel in _ALLOWED_DIRECT_CLIENT_IMPORT_FILES:
                 continue
+            source = path.read_text(encoding="utf-8")
+            # Parsing all of app/ takes ~18s; no file without "redis" in it can import a redis client.
+            if "redis" not in source:
+                continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+                tree = ast.parse(source, filename=rel)
             except SyntaxError:
                 continue
             for lineno, module in _find_restricted_imports(tree):

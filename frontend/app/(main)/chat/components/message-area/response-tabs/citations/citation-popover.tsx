@@ -1,6 +1,7 @@
 'use client';
 
 import React, { memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from '@/lib/navigation';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
@@ -25,12 +26,15 @@ function CitationPopoverContentInner({
   onPreview,
   onOpenInCollection,
 }: CitationPopoverContentProps) {
-  const config = getConnectorConfig(citation.connector);
+  const { t } = useTranslation();
+  const config = getConnectorConfig(citation.connector, citation.connectorInstanceName);
 
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(citation.connector ?? '');
-  const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
+  const openInLabel = isCollectionSource
+    ? t('chat.recordActions.openInCollections')
+    : t('chat.recordActions.openIn', { source: config.label });
   const isAttachment = citation.connector?.toUpperCase() === 'ATTACHMENTS';
   const canOpenSource =
     !isAttachment &&
@@ -66,7 +70,7 @@ function CitationPopoverContentInner({
               lineHeight: 'var(--line-height-1)',
             }}
           >
-            {config.label}
+            {config.sourceLabel}
           </Text>
         </Flex>
 
@@ -107,7 +111,7 @@ function CitationPopoverContentInner({
               onClick={handlePreview}
               style={{ cursor: 'pointer', backgroundColor: 'var(--emerald-9)' }}
             >
-              Preview
+              {t('chat.recordActions.preview')}
             </Button>
           )}
         </Flex>

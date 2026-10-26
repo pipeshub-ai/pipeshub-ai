@@ -1,38 +1,34 @@
 """Comprehensive tests for SharePoint Online connector covering uncovered methods."""
 
-import asyncio
 import logging
-import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SharePointSubscriptionManager,
     SiteMetadata,
+)
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
 )
 from app.models.entities import (
     FileRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
     SharePointListItemRecord,
-    SharePointListRecord,
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -54,6 +50,8 @@ def _make_mock_deps():
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+    data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
 
     data_store_provider = MagicMock()
     config_service = MagicMock()
@@ -726,6 +724,11 @@ class TestCheckAndFetchUpdatedPageRecord:
         result = await connector._check_and_fetch_updated_page_record(record)
         assert result is not None
         assert result[0].id == record.id
+        # The page scope is unreadable here, so the stored page's inherit edge (none) decides.
+        assert result[0].inherit_permissions is False
+        connector.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, record.id
+        )
 
     @pytest.mark.asyncio
     async def test_page_access_denied(self):
@@ -886,11 +889,13 @@ class TestHandleRecordUpdates:
             return_value=MagicMock(id="rec-key-1")
         )
         await connector._handle_record_updates(update)
-        # Deleted by the record's key, not by the Graph item id.
+        # Deleted by the record's key, not by the Graph item id, with what is under it.
         connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
             connector.connector_id, "ext-1"
         )
-        connector.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="rec-key-1")
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-key-1"], connector.connector_id, cascade_children=True, include_trashed_roots=True
+        )
 
     @pytest.mark.asyncio
     async def test_deleted_record_never_indexed(self):
@@ -908,6 +913,7 @@ class TestHandleRecordUpdates:
         )
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_called()
         connector.data_entities_processor.on_record_deleted.assert_not_called()
 
     @pytest.mark.asyncio
@@ -966,7 +972,12 @@ class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_handle_update_exception(self):
         connector = _make_connector()
-        connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("db fail"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rec-key-1")
+        )
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(
+            side_effect=Exception("db fail")
+        )
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         update = RecordUpdate(
             record=None,
@@ -978,7 +989,9 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False,
         )
-        await connector._handle_record_updates(update)
+        # A failed write raises, so the delta token does not move past the change.
+        with pytest.raises(Exception, match="db fail"):
+            await connector._handle_record_updates(update)
 
 
 # ===========================================================================
@@ -1059,33 +1072,61 @@ class TestReinitializeCredential:
 
 class TestRunIncrementalSync:
 
+    @staticmethod
+    def _prepare_run(connector, mock_site) -> None:
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector._sync_users = AsyncMock()
+        connector._sync_user_groups = AsyncMock()
+        connector._remove_deleted_sites = AsyncMock()
+        connector._get_all_sites = AsyncMock(return_value=[mock_site])
+        connector._get_site_permissions = AsyncMock(return_value=[])
+        connector.notify = AsyncMock()
+        connector.drive_delta_sync_point = MagicMock()
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+
+    @staticmethod
+    def _site(name) -> MagicMock:
+        mock_site = MagicMock()
+        mock_site.id = f"site-{name}"
+        mock_site.display_name = f"{name.title()} Site"
+        mock_site.name = name
+        mock_site.web_url = f"https://contoso.sharepoint.com/sites/{name}"
+        mock_site.description = None
+        mock_site.created_date_time = None
+        mock_site.last_modified_date_time = None
+        return mock_site
+
     @pytest.mark.asyncio
     async def test_incremental_sync_success(self):
         connector = _make_connector()
-        connector._reinitialize_credential_if_needed = AsyncMock()
-
-        mock_site = MagicMock()
-        mock_site.display_name = "Test Site"
-        mock_site.name = "test"
-        connector._get_all_sites = AsyncMock(return_value=[mock_site])
+        mock_site = self._site("test")
+        self._prepare_run(connector, mock_site)
         connector._sync_site_content = AsyncMock()
 
-        await connector.run_incremental_sync()
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
+            await connector.run_incremental_sync()
 
-        connector._sync_site_content.assert_called_once_with(mock_site)
+        # An incremental run is a full run: the site's record group is synced.
+        connector._sync_site_content.assert_called_once()
+        site_record_group = connector._sync_site_content.call_args[0][0]
+        assert site_record_group.external_group_id == "site-test"
 
     @pytest.mark.asyncio
     async def test_incremental_sync_site_error(self):
         connector = _make_connector()
-        connector._reinitialize_credential_if_needed = AsyncMock()
-
-        mock_site = MagicMock()
-        mock_site.display_name = "Fail Site"
-        mock_site.name = "fail"
-        connector._get_all_sites = AsyncMock(return_value=[mock_site])
+        mock_site = self._site("fail")
+        self._prepare_run(connector, mock_site)
         connector._sync_site_content = AsyncMock(side_effect=Exception("site sync fail"))
 
-        await connector.run_incremental_sync()
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
+            # The site that failed is reported, and the run is recorded as failed.
+            with pytest.raises(SharePointSyncIncomplete, match="site sync fail"):
+                await connector.run_incremental_sync()
+
+        connector.notify.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_incremental_sync_outer_error(self):
@@ -1710,7 +1751,7 @@ class TestSafeApiCall:
         async def api():
             return "result"
 
-        result = await connector._safe_api_call(api())
+        result = await connector._safe_api_call(api)
         assert result == "result"
 
     @pytest.mark.asyncio
@@ -1723,7 +1764,7 @@ class TestSafeApiCall:
             call_count += 1
             raise Exception("403 forbidden accessdenied")
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
         assert result is None
         assert call_count == 1
 
@@ -1734,7 +1775,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("404 notfound")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
@@ -1744,17 +1785,12 @@ class TestSafeApiCall:
         async def api():
             raise Exception("400 badrequest invalid")
 
-        result = await connector._safe_api_call(api(), max_retries=2, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=2, retry_delay=0.001)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_throttle_retries(self):
         connector = _make_connector()
-        # _safe_api_call receives a single coroutine object which can only be
-        # awaited once.  After the first await raises, subsequent retry
-        # iterations will encounter a RuntimeError ("cannot reuse already
-        # awaited coroutine") which eventually exhausts retries and returns
-        # None.
         call_count = 0
 
         async def api():
@@ -1764,8 +1800,10 @@ class TestSafeApiCall:
                 raise Exception("429 throttle")
             return "ok"
 
-        result = await connector._safe_api_call(api(), max_retries=3, retry_delay=0.001)
-        assert result is None
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await connector._safe_api_call(api, max_retries=3, retry_delay=0.001)
+        assert result == "ok"
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_generic_error_retries_then_fails(self):
@@ -1774,7 +1812,7 @@ class TestSafeApiCall:
         async def api():
             raise Exception("unknown error")
 
-        result = await connector._safe_api_call(api(), max_retries=1, retry_delay=0.001)
+        result = await connector._safe_api_call(api, max_retries=1, retry_delay=0.001)
         assert result is None
 
 
@@ -1851,49 +1889,6 @@ class TestHandleDeleteGroup:
         )
         result = await connector._handle_delete_group("group-1")
         assert result is False
-
-
-# ===========================================================================
-# _process_member_change
-# ===========================================================================
-
-
-class TestProcessMemberChange:
-
-    @pytest.mark.asyncio
-    async def test_add_member(self):
-        connector = _make_connector()
-        connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_user_email = AsyncMock(return_value="user@test.com")
-
-        await connector._process_member_change("group-1", {"id": "user-1"})
-
-    @pytest.mark.asyncio
-    async def test_remove_member(self):
-        connector = _make_connector()
-        connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_user_email = AsyncMock(return_value="user@test.com")
-
-        await connector._process_member_change("group-1", {"id": "user-1", "@removed": True})
-
-        connector.data_entities_processor.on_user_group_member_removed.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_email(self):
-        connector = _make_connector()
-        connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_user_email = AsyncMock(return_value=None)
-
-        await connector._process_member_change("group-1", {"id": "user-1"})
-
-    @pytest.mark.asyncio
-    async def test_remove_member_failure(self):
-        connector = _make_connector()
-        connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_user_email = AsyncMock(return_value="user@test.com")
-        connector.data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=False)
-
-        await connector._process_member_change("group-1", {"id": "user-1", "@removed": True})
 
 
 # ===========================================================================
@@ -2088,14 +2083,14 @@ class TestHandleWebhookNotification:
 
         mock_site = MagicMock()
         connector._safe_api_call = AsyncMock(return_value=mock_site)
-        connector._sync_site_content = AsyncMock()
+        connector.run_sync = AsyncMock()
 
         notification = {
             "resource": "sites/site-123/drives/drive-1",
             "changeType": "updated"
         }
         await connector.handle_webhook_notification(notification)
-        connector._sync_site_content.assert_called_once()
+        connector.run_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_site_notification(self):
@@ -2126,8 +2121,38 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self):
         connector = _make_connector()
+        connector.client = MagicMock()
+        connector.client.sites.by_site_id.return_value.get = AsyncMock(
+            return_value=MagicMock(web_url="https://contoso.sharepoint.com")
+        )
+        connector.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
+        rest_urls = []
+
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
+            rest_urls.append(url)
+            yield {"results": []}
+
+        connector._sharepoint_rest_pages = rest_pages
         result = await connector.test_connection_and_access()
         assert result is True
+        connector.client.sites.get.assert_awaited_once()
+        assert rest_urls == ["https://contoso.sharepoint.com/_api/web/roleassignments?$top=1"]
+
+    @pytest.mark.asyncio
+    async def test_sharepoint_rest_failure_returns_false(self):
+        connector = _make_connector()
+        connector.client = MagicMock()
+        connector.client.sites.by_site_id.return_value.get = AsyncMock(
+            return_value=MagicMock(web_url="https://contoso.sharepoint.com")
+        )
+        connector.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
+
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[None]:
+            raise RuntimeError("SharePoint REST answered 403")
+            yield
+
+        connector._sharepoint_rest_pages = rest_pages
+        assert await connector.test_connection_and_access() is False
 
 
 # ===========================================================================
@@ -2176,7 +2201,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["write"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
@@ -2194,7 +2219,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["read"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.GROUP
@@ -2210,10 +2235,10 @@ class TestConvertToPermissions:
         perm.link.type = "view"
         perm.roles = []
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        # An anonymous link names no grantee, so it yields no permission.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2226,10 +2251,9 @@ class TestConvertToPermissions:
         perm.link.type = "edit"
         perm.roles = []
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_identities_v2_group(self):
@@ -2246,7 +2270,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["read"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
 
@@ -2265,7 +2289,7 @@ class TestConvertToPermissions:
         perm.link = None
         perm.roles = ["write"]
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.WRITE):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
@@ -2286,9 +2310,11 @@ class TestConvertToPermissions:
         perm_bad.granted_to_identities_v2 = None
         type(perm_bad).link = PropertyMock(side_effect=Exception("bad perm"))
 
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
+        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_roles_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm_bad, perm_good])
-        assert len(result) == 1
+        # The bad permission must not abort the batch. Neither input yields a
+        # permission: one raises, and an anonymous link names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_permissions(self):
@@ -2307,25 +2333,24 @@ class TestGetItemPermissions:
     @pytest.mark.asyncio
     async def test_success(self):
         connector = _make_connector()
-        connector.rate_limiter = AsyncMock()
-        connector.rate_limiter.__aenter__ = AsyncMock()
-        connector.rate_limiter.__aexit__ = AsyncMock()
-
-        mock_perms = MagicMock()
-        mock_perms.value = []
-        connector._safe_api_call = AsyncMock(return_value=mock_perms)
-        connector._convert_to_permissions = AsyncMock(return_value=[])
+        graph_perm = MagicMock()
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(return_value=[graph_perm])
+        converted = [Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)]
+        connector._convert_to_permissions = AsyncMock(return_value=converted)
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
-        assert result == []
+        assert result == converted
+        connector.msgraph_client.get_file_permission.assert_awaited_once_with(
+            "drive-1", "item-1", raise_on_error=True
+        )
+        connector._convert_to_permissions.assert_awaited_once_with([graph_perm], site_id="site-1")
 
     @pytest.mark.asyncio
     async def test_no_response(self):
         connector = _make_connector()
-        connector.rate_limiter = AsyncMock()
-        connector.rate_limiter.__aenter__ = AsyncMock()
-        connector.rate_limiter.__aexit__ = AsyncMock()
-        connector._safe_api_call = AsyncMock(return_value=None)
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
         assert result == []
@@ -2333,13 +2358,12 @@ class TestGetItemPermissions:
     @pytest.mark.asyncio
     async def test_exception(self):
         connector = _make_connector()
-        connector.rate_limiter = AsyncMock()
-        connector.rate_limiter.__aenter__ = AsyncMock()
-        connector.rate_limiter.__aexit__ = AsyncMock()
-        connector._safe_api_call = AsyncMock(side_effect=Exception("perms error"))
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(side_effect=Exception("perms error"))
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
-        assert result == []
+        # Unreadable, not "no permissions".
+        assert result is None
 
 
 # ===========================================================================
@@ -2522,7 +2546,8 @@ class TestGetSubsites:
 
         mock_result = MagicMock()
         mock_result.value = [subsite]
-        connector._safe_api_call = AsyncMock(return_value=mock_result)
+        mock_result.odata_next_link = None
+        connector.client.sites.by_site_id.return_value.sites.get = AsyncMock(return_value=mock_result)
 
         result = await connector._get_subsites("parent-site-id")
         assert len(result) == 1
@@ -2535,25 +2560,31 @@ class TestGetSubsites:
         connector.client = MagicMock()
         connector.rate_limiter = AsyncMock()
         connector.rate_limiter.__aenter__ = AsyncMock()
-        connector.rate_limiter.__aexit__ = AsyncMock()
+        # A truthy __aexit__ would swallow an error inside the rate limiter.
+        connector.rate_limiter.__aexit__ = AsyncMock(return_value=False)
 
         mock_result = MagicMock()
         mock_result.value = None
-        connector._safe_api_call = AsyncMock(return_value=mock_result)
+        mock_result.odata_next_link = None
+        connector.client.sites.by_site_id.return_value.sites.get = AsyncMock(return_value=mock_result)
 
         result = await connector._get_subsites("site-id")
+        # A site without subsites is an empty list, not a failure (None).
         assert result == []
+        connector.client.sites.by_site_id.return_value.sites.get.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_exception(self):
         connector = _make_connector()
+        connector.client = MagicMock()
         connector.rate_limiter = AsyncMock()
         connector.rate_limiter.__aenter__ = AsyncMock()
-        connector.rate_limiter.__aexit__ = AsyncMock()
-        connector._safe_api_call = AsyncMock(side_effect=Exception("api fail"))
+        # A truthy __aexit__ would swallow the error inside the rate limiter.
+        connector.rate_limiter.__aexit__ = AsyncMock(return_value=False)
+        connector.client.sites.by_site_id.return_value.sites.get = AsyncMock(side_effect=Exception("api fail"))
 
         result = await connector._get_subsites("site-id")
-        assert result == []
+        assert result is None
 
 
 # ===========================================================================
@@ -2621,8 +2652,9 @@ class TestFetchGraphGroupMembers:
         mock_group.transitive_members.get = AsyncMock(side_effect=Exception("fail"))
         connector.client.groups.by_group_id = MagicMock(return_value=mock_group)
 
-        result = await connector._fetch_graph_group_members("group-1")
-        assert result == []
+        # No partial or empty member list: the failure reaches the caller.
+        with pytest.raises(Exception, match="fail"):
+            await connector._fetch_graph_group_members("group-1")
 
 
 # ===========================================================================

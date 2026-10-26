@@ -75,6 +75,8 @@ export interface SlackAGUICallbacks {
   /** Full current answer text (caller diffs against last streamed length). */
   onAnswerAccumulated?: (accumulated: string) => void;
   onClearAnswerPreamble?: () => void;
+  /** A model call failed mid-stream and is retried: drop what it streamed. */
+  onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
@@ -87,6 +89,40 @@ interface AGUIStreamState {
   normalizedAnswer: string;
   confidence?: string;
   rawLength: number;
+}
+
+/** A third party's text kept plain in Slack mrkdwn, where `<…>` is a link or a mention. */
+function slackPlainText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * What an MCP server said about a running tool (Python's `AGUIFormatter.tool_progress`),
+ * shown after its label: its own message, else "3/10", or a percentage for fractional
+ * progress. The same rule as the dashboard's `agui-event-handler.ts`.
+ */
+export function toolProgressText(snapshot: Record<string, unknown>): string {
+  const note =
+    typeof snapshot.progress_message === 'string'
+      ? snapshot.progress_message.trim()
+      : '';
+  if (note !== '') return ` ${slackPlainText(note)}`;
+  const { progress, total } = snapshot;
+  if (
+    typeof progress !== 'number' ||
+    typeof total !== 'number' ||
+    !Number.isFinite(progress) ||
+    !(total > 0)
+  ) {
+    return '';
+  }
+  if (Number.isInteger(progress) && Number.isInteger(total)) {
+    return ` ${String(progress)}/${String(total)}`;
+  }
+  return ` ${String(Math.round(Math.min(Math.max(progress / total, 0), 1) * 100))}%`;
 }
 
 function asEnvelope(data: unknown): AGUIEventEnvelope | undefined {
@@ -397,6 +433,17 @@ export function createSlackAGUIEventHandler(
           emitAskUserFromRaw(value);
         } else if (name === "artifact") {
           callbacks.onArtifact?.((value ?? {}) as SlackArtifactPayload);
+        } else if (name === 'message_discarded') {
+          // A model call failed mid-stream and may be retried: drop its text.
+          const runId =
+            typeof data?.runId === 'string' ? data.runId : undefined;
+          if (runs.isRootRun(runId)) {
+            textBuffer = '';
+            rawTextReceived = 0;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onModelCallDiscarded?.();
+            emitAnswer();
+          }
         }
         break;
       }
@@ -452,7 +499,7 @@ export function createSlackAGUIEventHandler(
             status === "running_tool" &&
             typeof snapshot.current_tool === "string"
           ) {
-            message = `${toolStatusLabel(snapshot.current_tool)}...`;
+            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
           }
           callbacks.onStatus?.(message);
         }

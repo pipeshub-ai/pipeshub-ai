@@ -24,6 +24,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
+from app.sources.client.smb.smb import dial_address
 
 smb_structs.SUPPORT_SMB2 = False
 
@@ -141,7 +142,8 @@ class CifsClient(IClient):
             return
         conn = self._new_connection()
         try:
-            ok = conn.connect(self.server, self.port)
+            # The address SMB checks for its sessions: loopback, link-local and metadata never.
+            ok = conn.connect(dial_address(self.server), self.port)
         except Exception as exc:
             with suppress(Exception):
                 conn.close()
@@ -271,6 +273,7 @@ class CifsClient(IClient):
             created_time=_as_datetime(getattr(item, "create_time", None)),
             last_write_time=_as_datetime(getattr(item, "last_write_time", None)),
             file_id=file_id_int,
+            attributes=attrs,
         )
 
     @classmethod
@@ -281,7 +284,7 @@ class CifsClient(IClient):
         connector_instance_id: str,
     ) -> "CifsClient":
         config = await config_service.get_config(
-            ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_instance_id)
+            ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
         )
         if not config:
             raise NetworkShareAuthError("CIFS configuration not found")

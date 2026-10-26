@@ -254,14 +254,12 @@ class TestGetDocumentIdMetadataField:
     @pytest.mark.asyncio
     async def test_includes_record_metadata_doc_id_when_present(self):
         gp = AsyncMock()
-        gp.get_nodes_by_filters = AsyncMock(
-            return_value=[
-                {
-                    "record_doc_id": "rd1",
-                    "fileSizeBytes": 10,
-                    "record_metadata_doc_id": "meta-z",
-                }
-            ]
+        gp.get_document = AsyncMock(
+            return_value={
+                "record_doc_id": "rd1",
+                "fileSizeBytes": 10,
+                "record_metadata_doc_id": "meta-z",
+            }
         )
         bs = _make_bs(graph_provider=gp)
         result = await bs.get_document_id_by_virtual_record_id("vr-99")

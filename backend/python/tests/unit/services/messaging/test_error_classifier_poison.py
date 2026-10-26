@@ -49,3 +49,34 @@ class TestUndecodableBytes:
             json.loads("{not json")
         except json.JSONDecodeError as e:
             assert MessageErrorClassifier.classify_by_exception(e) == MessageErrorType.TERMINAL
+
+
+class TestStorageRejections:
+    """A record the storage service refuses is refused again on every retry."""
+
+    def test_a_storage_rejection_is_terminal(self) -> None:
+        import aiohttp
+
+        from app.modules.transformers.blob_storage import _storage_status_error
+
+        for status in (400, 413):
+            error = _storage_status_error(status, "Failed to upload record", "larger than the 30 MB limit")
+            assert MessageErrorClassifier.classify_by_exception(error) == MessageErrorType.TERMINAL
+            assert isinstance(error, aiohttp.ClientError), "callers catching ClientError still catch it"
+
+    def test_a_storage_rejection_wrapped_by_a_handler_is_still_terminal(self) -> None:
+        from app.modules.transformers.blob_storage import _storage_status_error
+
+        try:
+            try:
+                raise _storage_status_error(400, "Failed to upload record")
+            except Exception as inner:
+                raise RuntimeError("event processor failed") from inner
+        except RuntimeError as outer:
+            assert MessageErrorClassifier.classify_by_exception(outer) == MessageErrorType.TERMINAL
+
+    def test_a_refused_service_token_is_not_treated_as_a_rejection(self) -> None:
+        from app.modules.transformers.blob_storage import _storage_status_error
+
+        error = _storage_status_error(401, "Failed to upload record")
+        assert MessageErrorClassifier.classify_by_exception(error) == MessageErrorType.TRANSIENT

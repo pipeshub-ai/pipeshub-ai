@@ -33,6 +33,7 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
         TokenScopes.FETCH_CONFIG.value,  # Node scheduled-jobs backfill -> connectors
         TokenScopes.DOCUMENT_PARSE.value,  # indexing -> parsing
         TokenScopes.DOCUMENT_CLASSIFY.value,  # indexing -> extraction
+        TokenScopes.ENTITY_USER_WRITE.value,  # Node verified-email change -> connectors graph
     }
 )
 

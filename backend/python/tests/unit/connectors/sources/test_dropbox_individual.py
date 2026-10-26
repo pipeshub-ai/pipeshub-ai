@@ -16,6 +16,7 @@ from app.connectors.sources.dropbox_individual.connector import (
     get_mimetype_enum_for_dropbox,
     get_parent_path_from_path,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +155,8 @@ class TestDropboxIndividualInit:
             "credentials": {"access_token": "t"},
             "auth": {},
         })
-        result = await dropbox_connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await dropbox_connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -551,8 +552,8 @@ class TestDropboxIndividualInitCoverage:
             "credentials": {"access_token": "t"},
             "auth": {},
         })
-        result = await dropbox_connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await dropbox_connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)

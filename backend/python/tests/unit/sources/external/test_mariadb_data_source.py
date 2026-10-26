@@ -50,3 +50,27 @@ class TestTableStats:
 
         assert response.success, response.error
         assert [s["last_updated"] for s in response.data] == ["2026-09-18T21:47:29", None]
+
+
+class TestFetchTableRows:
+    @staticmethod
+    async def _query(**kwargs):
+        client = MagicMock()
+        client.execute_query = AsyncMock(return_value=[])
+        await MariaDBDataSource(client).fetch_table_rows("shop", "orders", limit=5, **kwargs)
+        return client.execute_query.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_sorts_by_the_given_columns_so_a_limit_returns_the_same_rows(self):
+        query = await self._query(order_by=["tenant", "id"])
+        assert query == "SELECT * FROM `shop`.`orders` ORDER BY `tenant`, `id` LIMIT 5"
+
+    @pytest.mark.asyncio
+    async def test_column_names_are_quoted(self):
+        query = await self._query(order_by=["we`ird"])
+        assert "ORDER BY `we``ird` LIMIT 5" in query
+
+    @pytest.mark.asyncio
+    async def test_no_order_without_columns(self):
+        assert await self._query() == "SELECT * FROM `shop`.`orders` LIMIT 5"
+        assert await self._query(order_by=[]) == "SELECT * FROM `shop`.`orders` LIMIT 5"

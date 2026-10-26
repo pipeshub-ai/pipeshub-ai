@@ -321,8 +321,9 @@ class TestListValuedTypeNormalization:
             "type": "object",
             "properties": {"fields": {"type": ["string", "array"]}},
         })
+        # The array arm gets `items`, which OpenAI and Gemini require.
         assert resolved["properties"]["fields"]["anyOf"] == [
-            {"type": "string"}, {"type": "array"},
+            {"type": "string"}, {"type": "array", "items": {"type": "string"}},
         ]
         assert "type" not in resolved["properties"]["fields"]
 
@@ -434,3 +435,199 @@ class TestMCPAdapterRawSchemaPassthrough:
         link = lc_dict["function"]["parameters"]["properties"]["link"]
         assert link["properties"]["id"]["type"] == "string"
         assert "$ref" not in str(lc_dict)
+
+
+def _doubling_schema(levels: int) -> dict[str, Any]:
+    """Each definition references the next one twice, so inlining doubles per level: the shape
+    that turned a 1.9 KB schema into 17 MB before inlining had a budget."""
+    defs = {
+        f"L{i}": {"type": "object", "properties": {"a": {"$ref": f"#/$defs/L{i + 1}"}, "b": {"$ref": f"#/$defs/L{i + 1}"}}}
+        for i in range(levels)
+    }
+    defs[f"L{levels}"] = {"type": "string"}
+    return {"$defs": defs, "type": "object", "properties": {"root": {"$ref": "#/$defs/L0"}}}
+
+
+def _count_nodes(node: Any) -> int:  # noqa: ANN401
+    if isinstance(node, dict):
+        return 1 + sum(_count_nodes(v) for v in node.values())
+    if isinstance(node, list):
+        return 1 + sum(_count_nodes(v) for v in node)
+    return 0
+
+
+class TestInliningIsBounded:
+    def test_a_schema_that_doubles_per_level_stays_bounded_and_fast(self) -> None:
+        import time
+
+        from app.agents.agent_loop.tool_adapter import MAX_INLINED_SCHEMA_NODES
+
+        started = time.monotonic()
+        resolved = resolve_json_schema_refs(_doubling_schema(30))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0
+        # Each budgeted dict becomes at most a few output nodes (itself plus its properties map).
+        assert _count_nodes(resolved) < 4 * MAX_INLINED_SCHEMA_NODES
+        assert "not expanded: the schema is too large" in str(resolved)
+        assert "$ref" not in str(resolved)
+
+    def test_an_ordinary_schema_is_inlined_in_full(self) -> None:
+        resolved = resolve_json_schema_refs(_doubling_schema(6))
+
+        assert "too large" not in str(resolved)
+        leaf = resolved["properties"]["root"]
+        for _ in range(6):
+            leaf = leaf["properties"]["a"]
+        assert leaf == {"type": "string"}
+
+    def test_recursion_still_gets_the_recursion_placeholder(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "$defs": {"Node": {"type": "object", "properties": {"next": {"$ref": "#/$defs/Node"}}}},
+            "type": "object",
+            "properties": {"head": {"$ref": "#/$defs/Node"}},
+        })
+
+        assert "recursive reference to 'Node'" in str(resolved)
+        assert "too large" not in str(resolved)
+
+
+class TestMCPAdapterResolvesItsSchemaOnce:
+    def test_many_reads_inline_once_and_callers_get_their_own_copy(self) -> None:
+        from unittest.mock import patch
+
+        from app.agents.agent_loop import mcp_tool_adapter
+
+        adapter = _mcp_adapter(_doubling_schema(4))
+        with patch.object(
+            mcp_tool_adapter, "resolve_json_schema_refs", wraps=mcp_tool_adapter.resolve_json_schema_refs,
+        ) as resolve:
+            first = adapter.raw_input_schema
+            first["properties"]["root"] = "mutated by a caller"
+            for _ in range(5):
+                again = adapter.raw_input_schema
+                _ = adapter.parameters
+
+        assert resolve.call_count == 1
+        assert again["properties"]["root"] != "mutated by a caller"
+
+
+class TestProviderSafeShape:
+    """What providers reject fails every tool in the request, so an MCP schema is reshaped
+    into what they all accept."""
+
+    def test_an_object_schema_without_a_type_gets_one(self) -> None:
+        resolved = resolve_json_schema_refs({"properties": {"q": {"type": "string"}}, "required": ["q"]})
+        assert resolved["type"] == "object"
+        assert resolved["required"] == ["q"]
+
+    def test_a_schema_with_nothing_in_it_but_a_title_is_an_empty_object(self) -> None:
+        assert resolve_json_schema_refs({"title": "noArgs"}) == {"title": "noArgs", "type": "object", "properties": {}}
+
+    def test_a_root_any_of_of_objects_becomes_one_object(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "description": "Find a user",
+            "anyOf": [
+                {"type": "object", "properties": {"email": {"type": "string"}, "org": {"type": "string"}}, "required": ["email", "org"]},
+                {"type": "object", "properties": {"id": {"type": "integer"}, "org": {"type": "string"}}, "required": ["id", "org"]},
+            ],
+        })
+        assert "anyOf" not in resolved
+        assert resolved["type"] == "object"
+        assert set(resolved["properties"]) == {"email", "org", "id"}
+        # Only what every alternative requires.
+        assert resolved["required"] == ["org"]
+        assert resolved["description"] == "Find a user"
+
+    def test_a_root_all_of_requires_what_any_part_requires(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "allOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"properties": {"b": {"type": "string"}}, "required": ["b"]},
+            ],
+        })
+        assert resolved["required"] == ["a", "b"]
+
+    def test_a_nullable_root_keeps_its_object(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "anyOf": [{"type": "object", "properties": {"q": {"type": "string"}}}, {"type": "null"}],
+        })
+        assert resolved == {"type": "object", "properties": {"q": {"type": "string"}}}
+
+    def test_constraint_only_alternatives_at_the_root_are_dropped(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "name": {"type": "string"}},
+            "oneOf": [{"required": ["id"]}, {"required": ["name"]}],
+        })
+        assert "anyOf" not in resolved and "oneOf" not in resolved
+        assert set(resolved["properties"]) == {"id", "name"}
+
+    def test_a_root_that_is_not_an_object_is_offered_without_parameters(self) -> None:
+        assert resolve_json_schema_refs({"type": "string", "description": "A query"}) == {
+            "type": "object", "properties": {}, "description": "A query",
+        }
+
+    def test_an_array_without_items_gets_string_items_at_any_depth(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array"},
+                "filter": {"type": "object", "properties": {"ids": {"type": "array", "description": "ids"}}},
+                "ok": {"type": "array", "items": {"type": "integer"}},
+            },
+        })
+        assert resolved["properties"]["tags"]["items"] == {"type": "string"}
+        assert resolved["properties"]["filter"]["properties"]["ids"] == {
+            "type": "array", "description": "ids", "items": {"type": "string"},
+        }
+        assert resolved["properties"]["ok"]["items"] == {"type": "integer"}
+
+    def test_a_default_that_looks_like_an_array_schema_is_data(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {"shape": {"type": "object", "default": {"type": "array"}}},
+        })
+        assert resolved["properties"]["shape"]["default"] == {"type": "array"}
+
+
+class TestReferencesArePointers:
+    def test_a_pointer_into_the_document_resolves(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {
+                "owner": {"type": "object", "properties": {"login": {"type": "string"}}},
+                "reviewer": {"$ref": "#/properties/owner"},
+            },
+        })
+        assert resolved["properties"]["reviewer"] == {"type": "object", "properties": {"login": {"type": "string"}}}
+
+    def test_definitions_and_escaped_names_resolve(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "definitions": {"a/b": {"type": "integer"}},
+            "properties": {"n": {"$ref": "#/definitions/a~1b"}},
+        })
+        assert resolved["properties"]["n"] == {"type": "integer"}
+
+    def test_a_reference_that_does_not_resolve_is_a_placeholder_not_an_empty_schema(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {
+                "remote": {"$ref": "https://example.com/schemas/thing.json"},
+                "missing": {"$ref": "#/$defs/Nope", "description": "kept"},
+            },
+        })
+        remote = resolved["properties"]["remote"]
+        assert remote["type"] == "object" and "could not be resolved" in remote["description"]
+        assert resolved["properties"]["missing"] == {"type": "object", "description": "kept"}
+
+    def test_a_reference_to_the_whole_schema_stops_after_one_level(self) -> None:
+        resolved = resolve_json_schema_refs({
+            "type": "object",
+            "properties": {"child": {"$ref": "#"}, "name": {"type": "string"}},
+        })
+        child = resolved["properties"]["child"]
+        assert child["properties"]["name"] == {"type": "string"}
+        assert "recursive reference" in child["properties"]["child"]["description"]
+

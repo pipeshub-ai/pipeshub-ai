@@ -9,7 +9,7 @@ _TOGETHER_ENDPOINT = AIModelField(
     name="endpoint",
     display_name="Endpoint URL",
     field_type="URL",
-    required=False,
+    required=True,
     placeholder="e.g., https://api.together.xyz/v1",
 )
 

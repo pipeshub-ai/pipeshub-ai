@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { configureEnvelope, deriveKey, sign } from '../../../src/libs/context/envelope';
+import { currentOrgContext, makeOrgContext, orgContextStorage, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { EventEmitter } from 'events';
@@ -140,12 +142,30 @@ describe('Redis Streams Service', () => {
         expect(producer.maxLen).to.equal(5000);
       });
 
-      it('should default maxLen to 500000 when not specified', () => {
+      it('should not cap streams when maxLen is not specified', async () => {
         class TestP extends BaseRedisStreamsProducerConnection {
           constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
         }
         const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
-        expect(p.maxLen).to.equal(500000);
+        expect(p.maxLen).to.be.undefined;
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('test-topic', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args).to.not.include('MAXLEN');
+        expect(args[1]).to.equal('*');
+      });
+
+      it('should keep a small fixed cap on the consumer-less health-check stream', async () => {
+        class TestP extends BaseRedisStreamsProducerConnection {
+          constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
+        }
+        const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('health-check', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args.slice(1, 4)).to.deep.equal(['MAXLEN', '~', '1000']);
       });
 
       it('should report isConnected false before connect', () => {
@@ -673,6 +693,56 @@ describe('Redis Streams Service', () => {
       });
     });
 
+    describe('org context', () => {
+      const KEY = deriveKey('redis-test');
+      beforeEach(async () => {
+        await consumer.connect();
+        await consumer.subscribe(['test-stream']);
+        configureEnvelope(async () => [KEY]);
+      });
+      afterEach(() => configureEnvelope(null));
+
+      const drain = async (value: unknown, handler: sinon.SinonStub) => {
+        mockRedis.xautoclaim.onFirstCall().resolves(['0-0', [['1-0', ['key', 'k', 'value', JSON.stringify(value)]]], []]);
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+      };
+
+      it('binds the signed org for the handler and acks', async () => {
+        let org: string | undefined;
+        const handler = sinon.stub().callsFake(async () => { org = currentOrgContext().orgId as string; });
+        const ctx = makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' });
+        await drain(sign(KEY, 'test-stream', { orgId: 'org_a' }, ctx), handler);
+        expect(org).to.equal('org_a');
+        expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('a forged ctx is dropped (acked) and never reaches the handler', async () => {
+        const handler = sinon.stub().resolves();
+        const ctx = makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' });
+        const forged: any = sign(KEY, 'test-stream', { orgId: 'org_a' }, ctx);
+        forged.ctx.orgId = 'org_b';
+        await drain(forged, handler);
+        expect(handler.called).to.be.false;
+        expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('the consume loop does not keep the caller org context', async () => {
+        let ambient: unknown = 'unset';
+        const handler = sinon.stub().callsFake(async () => { ambient = orgContextStorage.getStore(); });
+        mockRedis.xautoclaim.onFirstCall().resolves(['0-0', [['1-0', ['key', 'k', 'value', JSON.stringify({ n: 1 })]]], []]);
+        mockRedis.xreadgroup.callsFake(async () => { consumer.running = false; return null; });
+        await runWithOrgContext(makeOrgContext({ orgId: 'org_a', userId: null, kind: 'user', source: 'jwt' }), () =>
+          consumer.consume(handler));
+        await consumer.consumeLoopPromise;
+        expect(ambient).to.equal(undefined);
+      });
+    });
+
     describe('drainPending', () => {
       beforeEach(async () => {
         await consumer.connect();
@@ -1102,8 +1172,25 @@ describe('Redis Streams Service', () => {
         ];
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
-        // Each topic triggers xgroup CREATE + xgroup DESTROY = 2 calls per topic
-        expect(mockRedis.xgroup.callCount).to.equal(4);
+        // record-events is the base stream plus its eight lanes by default,
+        // as the Python services read it; each stream triggers xgroup CREATE
+        // + xgroup DESTROY = 2 calls.
+        expect(mockRedis.xgroup.callCount).to.equal(2 * (1 + 8 + 1));
+      });
+
+      it('should create only the base stream when laning is off', async () => {
+        const original = process.env.FAIR_SCHEDULING_LANE_COUNT;
+        process.env.FAIR_SCHEDULING_LANE_COUNT = '1';
+        try {
+          mockRedis.exists.resolves(0);
+          await admin.ensureTopicsExist([
+            { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
+          ]);
+          expect(mockRedis.xgroup.callCount).to.equal(2);
+        } finally {
+          if (original === undefined) delete process.env.FAIR_SCHEDULING_LANE_COUNT;
+          else process.env.FAIR_SCHEDULING_LANE_COUNT = original;
+        }
       });
 
       it('should skip existing streams', async () => {

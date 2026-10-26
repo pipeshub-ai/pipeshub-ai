@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
+import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -423,8 +424,7 @@ function GroupsPageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: '40px',
-        paddingRight: '40px',
+        paddingInline: pagePaddingX(40),
       }}
     >
       {/* Header */}

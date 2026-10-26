@@ -177,3 +177,36 @@ def test_ownership_survives_the_handoff_between_xdist_workers() -> None:
     seeded = setup.SeededAIModel("embedding", "azureOpenAI", "m", "k", owned=False)
 
     assert setup.SeededAIModel(**asdict(seeded)) == seeded
+
+
+def test_the_org_default_llm_is_reused_when_it_is_the_wanted_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stack onboarded with a reasoning-only deployment keeps it: adding the same
+    model again with chat settings would be refused, and teardown must not delete it."""
+    monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-6-luna")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_MODEL", "gpt-6-luna")
+    backend = _Backend([], post=_Response(500, text="must not be called"))
+    llm = {**_entry(model="gpt-6-luna"), "modelKey": "default-llm"}
+    monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": [llm]}))
+    monkeypatch.setattr(setup.requests, "post", backend.post)
+    monkeypatch.setattr(setup.requests, "delete", backend.delete)
+
+    seeded = setup.setup_test_llm_model(_Client())
+    setup.teardown_test_llm_model(_Client(), seeded)
+
+    assert (seeded.model_key, seeded.owned) == ("default-llm", False)
+    assert backend.posts == []
+    assert backend.deletes == []
+
+
+def test_a_default_llm_without_an_asked_for_capability_is_not_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-6-luna")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_MODEL", "gpt-6-luna")
+    backend = _Backend([], post=_Response(200, {"details": {"modelKey": "new-llm"}}))
+    llm = {**_entry(model="gpt-6-luna"), "modelKey": "default-llm", "isReasoning": False}
+    monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": [llm]}))
+    monkeypatch.setattr(setup.requests, "post", backend.post)
+
+    seeded = setup.setup_test_llm_model(_Client(), is_reasoning=True)
+
+    assert (seeded.model_key, seeded.owned) == ("new-llm", True)
+    assert [post["isReasoning"] for post in backend.posts] == [True]

@@ -10,7 +10,11 @@ import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { LLM_SECTION_MODEL_TYPES, registryCapabilityForModelType } from '../types';
+import {
+  modelTypesForSection,
+  registryCapabilityForModelType,
+  supportsIdentityForwarding,
+} from '../types';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
@@ -36,14 +40,6 @@ function isEmbeddingBuiltinPlaceholder(model: ConfiguredModel): boolean {
   );
 }
 
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
-}
-
 function capabilityLabelForModelType(mt: string, t: TFunction): string {
   const cap = registryCapabilityForModelType(mt);
   return aiModelsCapabilityLabel(t, cap);
@@ -57,6 +53,8 @@ interface ConfiguredModelsGridProps {
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
   showEmbeddingBuiltinPlaceholder?: boolean;
@@ -70,6 +68,8 @@ export function ConfiguredModelsGrid({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
+  onIdentityForwarding,
   isLoading = false,
   showEmbeddingBuiltinPlaceholder = true,
 }: ConfiguredModelsGridProps) {
@@ -155,6 +155,8 @@ export function ConfiguredModelsGrid({
           onEdit={onEdit}
           onSetDefault={onSetDefault}
           onDelete={onDelete}
+          onRotate={onRotate}
+          onIdentityForwarding={onIdentityForwarding}
         />
       ))}
     </Flex>
@@ -167,12 +169,16 @@ function ConfiguredModelRow({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
+  onIdentityForwarding,
 }: {
   model: ConfiguredModel;
   provider: AIModelProvider | undefined;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
@@ -305,6 +311,28 @@ function ConfiguredModelRow({
                   }}
                 />
               )}
+              {model.connectionId && onRotate ? (
+                <PopoverMenuItem
+                  icon="key"
+                  label={t('workspace.aiModels.rotateCredentials')}
+                  disabled={settingDefault}
+                  onClick={() => {
+                    setPopoverOpen(false);
+                    onRotate(model);
+                  }}
+                />
+              ) : null}
+              {model.connectionId && onIdentityForwarding && supportsIdentityForwarding(model.provider) ? (
+                <PopoverMenuItem
+                  icon="badge"
+                  label={t('workspace.aiModels.identity.menuItem')}
+                  disabled={settingDefault}
+                  onClick={() => {
+                    setPopoverOpen(false);
+                    onIdentityForwarding(model);
+                  }}
+                />
+              ) : null}
               <PopoverMenuItem
                 icon="delete"
                 label={t('workspace.aiModels.actionDelete')}

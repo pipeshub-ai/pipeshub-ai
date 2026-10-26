@@ -202,7 +202,7 @@ class TestCitationsAcrossTheCut:
         # Once the continuation starts, what is on screen still begins with part one.
         continuation = [c for c in chunks if "beat plan" in c["accumulated"]]
         assert continuation
-        part_one_on_screen = f"Per the [1]({_REPORT}), sign-ups "
+        part_one_on_screen = f"Per the report [1]({_REPORT}), sign-ups "
         assert all(c["accumulated"].startswith(part_one_on_screen) for c in continuation)
         assert completion["answer"].startswith(part_one_on_screen)
         assert chunks[-1]["accumulated"] == completion["answer"]

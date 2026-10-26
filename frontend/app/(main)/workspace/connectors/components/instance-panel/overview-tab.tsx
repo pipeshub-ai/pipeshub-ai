@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
+import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
@@ -24,6 +25,9 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { CodeGraphStatus } from './code-graph-status';
+import { LastRunSummary } from './last-run-summary';
+import { ActionItemsCallout } from './action-items-callout';
 
 // ========================================
 // Props
@@ -58,6 +62,8 @@ export function OverviewTab({
   const { t } = useTranslation();
   const router = useRouter();
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
+  const openPanel = useConnectorsStore((s) => s.openPanel);
+  const setPanelActiveTab = useConnectorsStore((s) => s.setPanelActiveTab);
   const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
@@ -66,6 +72,8 @@ export function OverviewTab({
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
+  const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
 
   // The panel outlives the run, so a stop the backend could not complete
@@ -76,6 +84,7 @@ export function OverviewTab({
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const isFullSyncRunning =
     (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
+  const [panelRefreshKey, bumpPanelRefresh] = useReducer((n: number) => n + 1, 0);
   const configForDerive =
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
@@ -108,6 +117,7 @@ export function OverviewTab({
     try {
       setIsRefreshStatsBusy(true);
       await fetchInstanceStats(connectorId, { force: true });
+      bumpPanelRefresh();
       addToast({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
@@ -222,6 +232,57 @@ export function OverviewTab({
     }
   }, [instance._key, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
+  // The retry is already queued here: a stats refresh that fails must not read
+  // as a failed retry, or the user repeats a request that went through.
+  const refreshStatsAfterQueuedRetry = useCallback(
+    async (connectorId: string) => {
+      try {
+        await fetchInstanceStats(connectorId, { force: true });
+      } catch (error) {
+        console.warn('Retry queued; refreshing the connector stats failed', { connectorId, error });
+      }
+    },
+    [fetchInstanceStats],
+  );
+
+  const handleRetryFailedClassification = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryClassificationBusy) return;
+    setIsRetryClassificationBusy(true);
+    try {
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['classify']);
+      } catch (error) {
+        console.error('Failed to retry classification', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryClassificationError') });
+        return;
+      }
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryClassificationSuccess') });
+      await refreshStatsAfterQueuedRetry(connectorId);
+    } finally {
+      setIsRetryClassificationBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryClassificationBusy, addToast, refreshStatsAfterQueuedRetry, t]);
+
+  const handleRetryFailedEntities = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryEntitiesBusy) return;
+    setIsRetryEntitiesBusy(true);
+    try {
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['entities']);
+      } catch (error) {
+        console.error('Failed to retry entity extraction', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryEntitiesError') });
+        return;
+      }
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryEntitiesSuccess') });
+      await refreshStatsAfterQueuedRetry(connectorId);
+    } finally {
+      setIsRetryEntitiesBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryEntitiesBusy, addToast, refreshStatsAfterQueuedRetry, t]);
+
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
 
@@ -273,6 +334,21 @@ export function OverviewTab({
         </Flex>
       )}
 
+      <ActionItemsCallout
+        instance={instance}
+        onOpenAuthentication={() => {
+          closeInstancePanel();
+          openPanel(instance, instance._key, instance.scope === 'personal' ? 'personal' : 'team');
+          // openPanel picks Configure for an authenticated connector; the fix is on Authenticate.
+          setPanelActiveTab('authenticate');
+        }}
+      />
+
+      {stats?.byRecordType?.some((t) => t.recordType === 'CODE_FILE' && t.total > 0) && (
+        <CodeGraphStatus connectorId={instance._key} />
+      )}
+      <LastRunSummary instance={instance} />
+
       {/* Shared stats panel */}
       <IndexingStatsPanel
         stats={stats}
@@ -280,6 +356,8 @@ export function OverviewTab({
         onRefresh={handleOverviewRefreshStats}
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
+        onRetryFailedClassification={handleRetryFailedClassification}
+        onRetryFailedEntities={handleRetryFailedEntities}
         onNavigateToRecords={navigateToRecords}
         onSync={
           instance.isActive && !isSyncRunning(instance.status)
@@ -304,6 +382,8 @@ export function OverviewTab({
         }
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
+        isRetryEntitiesBusy={isRetryEntitiesBusy}
       />
 
       <ConfirmationDialog
@@ -337,6 +417,7 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );
 }

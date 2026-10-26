@@ -13,12 +13,13 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { emailCheck } from '../../../libs/utils/zod-formats';
 
 export const OrgCreationBody = z
   .object({
     accountType: z.enum(['individual', 'business']),
     shortName: z.string().optional(),
-    contactEmail: z.string().email('Invalid email format'),
+    contactEmail: z.string().check(emailCheck('Invalid email format')),
     registeredName: z.string().optional(), // Will be enforced conditionally
     adminFullName: z.string().min(1, 'Admin full name required'),
     password: z
@@ -29,6 +30,9 @@ export const OrgCreationBody = z
           'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
       }),
     sendEmail: z.boolean().optional(),
+    // Where the signup came from; a malformed value is dropped, never a 400.
+    ref: z.string().optional().catch(undefined),
+    referrerDomain: z.string().optional().catch(undefined),
     permanentAddress: z
       .object({
         addressLine1: z.string().optional(),
@@ -79,7 +83,7 @@ const UpdatePermanentAddressBody = z.object({
 // fields are optional to allow partial updates
 const UpdateBody = z
   .object({
-    contactEmail: z.string().email('Invalid email format').optional(),
+    contactEmail: z.string().check(emailCheck('Invalid email format')).optional(),
     registeredName: z.string().optional(),
     shortName: z.string().optional(),
     permanentAddress: UpdatePermanentAddressBody.optional(),

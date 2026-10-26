@@ -6,13 +6,15 @@ import logging
 import os
 import re
 import shlex
-from typing import Any
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
+from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
@@ -22,15 +24,36 @@ from app.agents.actions.storage_search.storage_search import (
     is_local_storage,
 )
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.models.entities import USER_EMAIL_PLACEHOLDER, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.retrieval.selection_scope import (
+    SelectionScope,
+    allowed_filters,
+    has_selection,
+    resolve_request_scopes,
+    selection_app_ids,
+)
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
     requested_scope_ids,
 )
+from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
+from app.utils.exact_text_index import (
+    LexicalSearcher,
+    plan_command,
+    run_index_pattern_match,
+)
+from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
     _build_record_dict_from_graph_base,
@@ -39,11 +62,54 @@ from app.utils.chat_helpers import (
     get_record,
 )
 
+if TYPE_CHECKING:
+    from app.utils.stage_timer import RunTimer
+
+logger = logging.getLogger(__name__)
+
 _PATTERN_MATCH_TIMEOUT = 30
+# Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
+_LLM_GREP_ATTEMPT_TIMEOUT = 10.0
+_LLM_GREP_MIN_RETRY_SECS = 4.0
+_GREP_LLM_ROLE = "query"
+_GREP_LLM_TTL_SECS = 300.0
+# Runs inside the total budget before any grep, so a stalled config read must not eat it.
+_GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
 _PATTERN_MATCH_TOTAL_BUDGET = 35.0
+# How long a search that asked for the short keyword-search budget waits for
+# the pattern match once its semantic results are in, before it goes on with
+# the matches found so far. Measured on agent chats over MCP: semantic results
+# came in a median 0.7 s after the search started, and the pattern match then
+# took a median 4.4 s more (90th percentile 9.2 s, worst 12.6 s). Its command
+# generation alone finishes a median 2.4 s after the start, so a wait under
+# about 3 s keeps almost nothing. 5 s keeps 67% of the matched records and 32
+# of 43 searches still get some, while ending the wait 7.6 s sooner at worst.
+KEYWORD_SEARCH_SHORT_WAIT_SECS = 5.0
+# How long the short wait gives a cut-off grep task to clean up before
+# returning without it.
+KEYWORD_SEARCH_CLEANUP_GRACE_SECS = 1.0
+# Values of the chat request's `keywordSearchBudget`. "full" (and leaving it
+# out) keeps the whole `_PATTERN_MATCH_TOTAL_BUDGET`.
+KEYWORD_SEARCH_BUDGETS = ("short", "full")
+# Reciprocal rank fusion constant (Cormack et al. 2009): damps the gap
+# between first and second place so one command cannot decide the order.
+_RRF_K = 60
+_GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
+# "false" sends every exact-text search back to the file scan.
+_PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
+# At or under this many indexed chunks, every command is also scanned: a full
+# grep then takes well under a second warm (about 0.3 s per 100k chunks
+# measured), so it is complete within its budget and matches what the index
+# cannot (substrings, titles, metadata). Above it, a scan is kept only for a
+# command the index cannot express or found nothing for.
+_SCAN_BELOW_CHUNKS_ENV_VAR = "PATTERN_MATCH_SCAN_BELOW_CHUNKS"
+_DEFAULT_SCAN_BELOW_CHUNKS = 200_000
 _MAX_PATTERN_MATCH_RECORDS = 50
+_DEFAULT_FETCH_TOOL_REF = "knowledgegraph__fetch_record"
+_BRIEF_HINT_HEADING = "Also matched (name and Record ID only):"
+_MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
 # accessible record into one synthetic result per block, so an unbounded record
@@ -52,6 +118,126 @@ _MAX_PATTERN_MATCH_RECORDS = 50
 # the <=1 source case) and ChatQuery.limit's own default, so pattern-match and
 # semantic search share the same budget baseline across both call paths.
 DEFAULT_PATTERN_MATCH_BLOCK_BUDGET = 50
+
+_GREP_TIMEOUT_PREFIX = "Error: command timed out"
+
+
+@dataclass
+class PatternMatchCoverage:
+    """How much of the store one search's exact-text matching covered.
+
+    Filled while it runs, and read once it is over: a search cut short by a
+    time or size limit must say so, or a missing match reads as "the text is
+    not there".
+    """
+
+    sources: set[str] = field(default_factory=set)
+    timed_out: set[str] = field(default_factory=set)
+    failed: set[str] = field(default_factory=set)
+    capped: set[str] = field(default_factory=set)
+    # Set when the whole search stopped before it finished.
+    stopped: str | None = None
+    # A keyword-index lookup returned its whole limit, so more chunks may match.
+    index_capped: bool = False
+    # More records matched than are listed: one command past its own cap, or
+    # all commands together past the merge's.
+    records_truncated: bool = False
+    # Some command was answered by the index alone, with no file scan behind it.
+    index_only: bool = False
+    # Some candidate took too long to check against its pattern and was left out.
+    index_unverified: bool = False
+    # A lookup after the first failed; the stages it served count as cut.
+    index_lookup_failed: bool = False
+    # (collections the index could not search, collections asked), when any failed.
+    index_unsearched: tuple[int, int] | None = None
+    # Why some commands were scanned file by file instead of looked up.
+    scan_reasons: set[str] = field(default_factory=set)
+
+    def stop(self, reason: str) -> None:
+        if self.stopped is None:
+            self.stopped = reason
+
+    @property
+    def complete(self) -> bool:
+        return not (
+            self.timed_out or self.failed or self.capped or self.stopped
+            or self.index_capped or self.records_truncated or self.index_unsearched
+            or self.index_unverified or self.index_lookup_failed
+        )
+
+
+_SCAN_NO_WORD = "no_word"
+_SCAN_INDEX_FAILED = "index_failed"
+_SCAN_INDEX_MISS = "index_miss"
+_SCAN_NOTES = {
+    _SCAN_INDEX_MISS: (
+        "A keyword search the index found nothing for was run again as a "
+        "time-bounded scan of stored files, which matches inside words and "
+        "reads record titles and metadata."
+    ),
+    _SCAN_NO_WORD: (
+        "A pattern with no whole word to look up in the keyword index was matched "
+        "by a time-bounded scan of stored files instead."
+    ),
+    _SCAN_INDEX_FAILED: (
+        "The keyword index could not be searched, so stored files were scanned "
+        "instead, within a time limit."
+    ),
+}
+
+
+_WHOLE_WORD_NOTE = (
+    "Keyword matches came from the passage-text index, which matches whole words "
+    "and their inflections: text inside a longer word (part of an identifier, a "
+    "cut-off stem), or only in a record's title or metadata, can be missed there."
+)
+
+def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") -> str:
+    """One paragraph for the tool result when exact-text matching was cut
+    short or fell back to scanning files; empty when it looked everything up
+    in the index and covered all of it."""
+    if coverage is None:
+        return ""
+    notes = [_SCAN_NOTES[r] for r in sorted(coverage.scan_reasons) if r in _SCAN_NOTES]
+    if coverage.index_only:
+        notes.append(_WHOLE_WORD_NOTE)
+    scan_note = " ".join(notes)
+    if coverage.complete:
+        return f"\n\n{scan_note}" if scan_note else ""
+    parts: list[str] = []
+    total = len(coverage.sources)
+    unreached = coverage.timed_out | coverage.failed
+    if total and unreached:
+        parts.append(f"searched {total - len(unreached)} of {total} sources in full")
+    if coverage.timed_out:
+        parts.append(f"{len(coverage.timed_out)} source(s) hit the time limit")
+    if coverage.failed - coverage.timed_out:
+        parts.append(f"{len(coverage.failed - coverage.timed_out)} source(s) could not be searched")
+    if coverage.capped:
+        parts.append(f"{len(coverage.capped)} source(s) matched more than could be listed")
+    if coverage.index_unverified:
+        parts.append("some candidates took too long to check against the pattern and were left out")
+    if coverage.index_lookup_failed:
+        parts.append("a keyword index lookup failed part-way")
+    if coverage.index_unsearched:
+        failed, asked = coverage.index_unsearched
+        parts.append(f"the keyword index could not search {failed} of its {asked} collections")
+    if coverage.records_truncated:
+        parts.append("more records matched than are listed")
+    if coverage.index_capped:
+        parts.append(
+            "some of its words are in more passages than the keyword index returns "
+            "in one lookup, and only the best-ranked were checked",
+        )
+    if coverage.stopped:
+        parts.append(coverage.stopped)
+    note = (
+        "\n\nExact-text search incomplete: " + "; ".join(parts) + ". "
+        "Records it did not reach may still contain the exact words, so a record "
+        "missing from the keyword matches is not evidence that the text is absent."
+    )
+    return f"{note} {scan_note}" if scan_note else note
+
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -71,13 +257,12 @@ _STOP_WORDS = frozenset({
 
 _ALLOWED_GREP_BINARIES = frozenset({"grep", "egrep", "fgrep", "rg"})
 _MAX_GREP_COMMAND_LENGTH = 1000
-_MAX_GREP_OUTPUT_LINES = 200
 # Caps the FIRST pipeline stage, which for `grep -rliZ a . | xargs grep b` is the
 # list of every file matching `a`. Too small and stage 2 only ever sees the first
 # few hundred files in directory-walk order; the overall timeout bounds latency.
 _MAX_GREP_STDOUT_BYTES = 4_000_000
 # Deep hierarchies (Confluence page trees) produce paths of several hundred chars,
-# so the tool's default 8K cap would keep only a few dozen of the 200 lines.
+# so the tool's default 8K cap would keep only a few dozen lines.
 _MAX_GREP_OUTPUT_CHARS = 200_000
 _MAX_SCOPED_SEARCH_PATHS = 20
 _ZERO_COUNT_FILTER = "grep -v ':0$'"
@@ -170,15 +355,30 @@ def build_grep_command_from_query(query: str) -> str | None:
     return f'grep -rci -e "{pattern}" .'
 
 
+_MAX_GREP_REASONING_CHARS = 200
+
+
 class GrepCommandResult(BaseModel):
-    reasoning: str
+    # Commands first: a completion cut off mid-way still carries them.
     grep_commands: list[str]
+    # Capped by truncation, not max_length: several providers reject string
+    # length keywords in a response schema, and an over-long note is harmless.
+    reasoning: str = Field(description=f"One short sentence, under {_MAX_GREP_REASONING_CHARS} characters.")
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _cap_reasoning(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value[:_MAX_GREP_REASONING_CHARS]
+        return value
 
 
 _MAX_LLM_GREP_COMMANDS = 3
 
 _GREP_GENERATION_SYSTEM_PROMPT = """\
-You are generating filesystem search commands to find JSON documents relevant to a user query.
+You are generating filesystem search commands to find JSON documents relevant to a search query.
+Build the commands from the search query. An original question, when given, is context only: \
+use it to disambiguate the search query, not as a source of extra terms.
 
 STEP 1 — Identify core concepts:
 Extract the 1-3 core concepts the user actually cares about. These are the nouns \
@@ -189,9 +389,9 @@ STEP 2 — Scale command complexity to the number of distinct concepts:
 - 1 concept → single grep with OR alternatives (synonyms, abbreviations, stems). \
 Example: grep -rci "deploy\\|deployment\\|ci.cd\\|pipeline" .
 - 2 concepts → one AND stage: two grep commands piped, each with OR alternatives. \
-Example: grep -rliZ "invoice\\|billing\\|payment" . | xargs -0 grep -Hci "recurring\\|subscri"
+Example: grep -rliZ "invoice\\|billing\\|payment" . | xargs -0 grep -Hci "recurring\\|subscription"
 - 3 concepts → at most 2 AND stages (max 3 piped greps). \
-Example: grep -rliZ "hierarch\\|tree\\|nested" . | xargs -0 grep -liZ "storage\\|store\\|persist" \
+Example: grep -rliZ "hierarchy\\|tree\\|nested" . | xargs -0 grep -liZ "storage\\|store\\|persist" \
 | xargs -0 grep -Hci "pattern\\|match\\|search"
 - NEVER use more than 3 piped stages. Each AND stage exponentially reduces matches \
 on small document sets.
@@ -200,8 +400,10 @@ Key principles:
 - Use OR (\\|) liberally within each stage for synonyms, abbreviations, and stems.
 - Each AND stage must represent a genuinely DIFFERENT concept, not a synonym of \
 something already in an earlier stage.
-- Prefer word stems to match inflections (e.g. "hierarch" matches hierarchy, \
-hierarchical; "subscri" matches subscribe, subscription).
+- Use whole words, and list other forms that matter as alternatives \
+(e.g. "hierarchy\\|hierarchical", "subscribe\\|subscription"). Commands are looked up \
+in a word index that already matches a word's inflections; a cut-off stem such as \
+"subscri" is not a word and finds nothing there.
 - Skip terms that appear in most documents (site names, navigation labels, generic \
 words like "data", "system", "service").
 - When the user's query is short or vague (1-2 words), cast a wide net with many \
@@ -222,7 +424,7 @@ number with no filename prefix, which breaks result parsing. Always include -H.
 - Two-concept intersection: grep -rliZ "group_a1\\|group_a2" . | \
 xargs -0 grep -Hci "group_b1\\|group_b2"
 - When piping grep to xargs, ALWAYS use -Z on grep and -0 on xargs (handles filenames with spaces)
-- Allowed binaries: grep, egrep, fgrep, rg, xargs ONLY
+- Allowed binaries: grep, egrep, fgrep, xargs ONLY
 - No shell operators: ; && || $( ${ ` > <
 - Max 1000 characters per command
 - Do NOT include common words like "how", "what", "setup", "use", "explain" as \
@@ -374,16 +576,36 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _report_llm_usage(
+    response: Any,  # noqa: ANN401 - the include_raw structured-output dict
+    on_llm_usage: Callable[[BaseMessage], None] | None,
+    logger_instance: logging.Logger,
+) -> None:
+    raw = response.get("raw") if isinstance(response, dict) else None
+    if on_llm_usage is None or not isinstance(raw, BaseMessage):
+        return
+    try:
+        on_llm_usage(raw)
+    except Exception:
+        # Usage accounting must not cost the grep commands it accounts for.
+        logger_instance.warning("generate_grep_command_via_llm: usage callback failed", exc_info=True)
+
+
 async def generate_grep_command_via_llm(
     query: str,
     llm: BaseChatModel,
     logger_instance: logging.Logger,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[str] | None:
     """Generate targeted grep commands via LLM structured output.
 
     Returns a list of 1-3 commands that passed ``validate_pattern_match_command``,
-    or None on timeout, LLM failure, or when every command is rejected.
+    or None on timeout, LLM failure, or when every command is rejected. A failed
+    attempt is retried once while ``_LLM_GREP_TIMEOUT`` leaves room for it.
+
+    ``on_llm_usage`` receives the raw model message of every attempt that
+    returned, for its token usage; an attempt cut off by the timeout has none.
 
     Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
     in the Opik trace alongside the rest of the agent loop.
@@ -391,34 +613,71 @@ async def generate_grep_command_via_llm(
     from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
     from app.utils.streaming import _apply_structured_output
 
-    effective_query = user_query.strip() if user_query and user_query.strip() else query
-
     messages = [
         SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
-        HumanMessage(content=f'User query: "{effective_query}"'),
+        HumanMessage(content=_grep_generation_request(query, user_query)),
     ]
 
     try:
-        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult)
-        opik_callbacks = build_langchain_opik_callbacks()
-        config = {"callbacks": opik_callbacks} if opik_callbacks else {}
-        response = await asyncio.wait_for(
-            structured_llm.ainvoke(messages, config=config),
-            timeout=_LLM_GREP_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger_instance.info("generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT)
-        return None
+        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult, include_raw=True)
     except Exception as exc:
-        logger_instance.warning("generate_grep_command_via_llm: LLM call failed: %s", exc)
+        logger_instance.warning("generate_grep_command_via_llm: LLM setup failed: %s", exc)
         return None
+    opik_callbacks = build_langchain_opik_callbacks()
+    config = {"callbacks": opik_callbacks} if opik_callbacks else {}
 
-    result = _parse_grep_response(response, logger_instance)
-    if result is None:
-        return None
+    deadline = time.monotonic() + _LLM_GREP_TIMEOUT
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic()
+        if attempt > 1 and remaining < _LLM_GREP_MIN_RETRY_SECS:
+            break
+        try:
+            response = await asyncio.wait_for(
+                structured_llm.ainvoke(messages, config=config),
+                timeout=min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+        except asyncio.TimeoutError:
+            logger_instance.info(
+                "generate_grep_command_via_llm: attempt %d timed out after %.1fs",
+                attempt, min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+            continue
+        except Exception as exc:
+            logger_instance.warning(
+                "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
+            )
+            continue
+        _report_llm_usage(response, on_llm_usage, logger_instance)
+        commands = _parse_grep_response(response, logger_instance)
+        valid_commands = _valid_llm_grep_commands(commands or [], logger_instance)
+        if valid_commands:
+            logger_instance.info(
+                "generate_grep_command_via_llm: generated %d command(s) on attempt %d: %r",
+                len(valid_commands), attempt, valid_commands,
+            )
+            return valid_commands
+    return None
 
+
+def _grep_generation_request(query: str, user_query: str | None) -> str:
+    """The search query the agent wrote, with the user's question as context.
+
+    The agent's query carries the vocabulary it learned from earlier results
+    (often the documents' own terms); the question alone makes every search
+    in a turn grep for the same paraphrase.
+    """
+    search = (query or "").strip()
+    question = (user_query or "").strip()
+    if not search:
+        return f'Search query: "{question}"'
+    if not question or question == search:
+        return f'Search query: "{search}"'
+    return f'Search query: "{search}"\nOriginal question (context only): "{question}"'
+
+
+def _valid_llm_grep_commands(commands: list[str], logger_instance: logging.Logger) -> list[str]:
     valid_commands: list[str] = []
-    for cmd in result.grep_commands[:_MAX_LLM_GREP_COMMANDS]:
+    for cmd in commands[:_MAX_LLM_GREP_COMMANDS]:
         ok, reason = validate_pattern_match_command(cmd)
         if ok:
             valid_commands.append(cmd.strip())
@@ -427,55 +686,166 @@ async def generate_grep_command_via_llm(
                 "generate_grep_command_via_llm: rejected %r: %s",
                 cmd[:100] if cmd else "", reason,
             )
-
-    if not valid_commands:
-        return None
-
-    logger_instance.info(
-        "generate_grep_command_via_llm: generated %d command(s): %r",
-        len(valid_commands), valid_commands,
-    )
     return valid_commands
+
+
+_GREP_COMMANDS_KEY_RE = re.compile(r'"grep_commands"\s*:\s*\[')
+
+
+def _recover_grep_commands(text: str) -> list[str]:
+    """The complete strings of a ``grep_commands`` array in *text*, even when
+    the JSON around them was cut off."""
+    m = _GREP_COMMANDS_KEY_RE.search(text)
+    if not m:
+        return []
+    decoder = json.JSONDecoder()
+    commands: list[str] = []
+    pos = m.end()
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] != '"':
+            break
+        try:
+            value, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            break
+        if isinstance(value, str):
+            commands.append(value)
+    return commands
+
+
+def _message_text(message: object) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return ""
+
+
+def _commands_in_args(args: object) -> list[str]:
+    if isinstance(args, str):
+        return _recover_grep_commands(args)
+    if isinstance(args, dict):
+        commands = args.get("grep_commands")
+        if isinstance(commands, list):
+            return [c for c in commands if isinstance(c, str)]
+    return []
+
+
+def _recover_raw_grep_commands(message: object) -> list[str]:
+    """Commands in a raw completion that failed to parse. Tool-calling structured
+    output (Bedrock) carries them in tool-call arguments, not in the text."""
+    recovered = _recover_grep_commands(_message_text(message))
+    if recovered:
+        return recovered
+    content = getattr(message, "content", None)
+    tool_args = [
+        block.get("input")
+        for block in (content if isinstance(content, list) else [])
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    for attr in ("tool_calls", "invalid_tool_calls"):
+        calls = getattr(message, attr, None)
+        if isinstance(calls, list):
+            tool_args += [call.get("args") for call in calls if isinstance(call, dict)]
+    for args in tool_args:
+        recovered = _commands_in_args(args)
+        if recovered:
+            return recovered
+    return []
 
 
 def _parse_grep_response(
     response: Any,
     logger_instance: logging.Logger,
-) -> GrepCommandResult | None:
-    """Parse the LLM response into a ``GrepCommandResult``."""
+) -> list[str] | None:
+    """The generated commands in an LLM response, or None when it holds none.
+
+    Accepts the ``include_raw`` envelope (``{"raw", "parsed", "parsing_error"}``):
+    when parsing failed, the commands are recovered from the raw completion.
+    """
     if response is None:
         logger_instance.info("generate_grep_command_via_llm: LLM returned no output")
         return None
 
+    if isinstance(response, dict) and "raw" in response and "parsed" in response:
+        parsed = response.get("parsed")
+        if parsed is not None:
+            return _parse_grep_response(parsed, logger_instance)
+        recovered = _recover_raw_grep_commands(response.get("raw"))
+        logger_instance.info(
+            "generate_grep_command_via_llm: unparseable output (%s), recovered %d command(s)",
+            str(response.get("parsing_error"))[:200], len(recovered),
+        )
+        return recovered or None
+
     if isinstance(response, GrepCommandResult):
-        return response
+        return response.grep_commands
 
     if isinstance(response, dict):
         try:
-            return GrepCommandResult.model_validate(response)
+            return GrepCommandResult.model_validate(response).grep_commands
         except Exception:
+            recovered = response.get("grep_commands")
+            if isinstance(recovered, list) and all(isinstance(c, str) for c in recovered):
+                return recovered
             logger_instance.warning(
                 "generate_grep_command_via_llm: dict response failed validation",
             )
             return None
 
     if hasattr(response, "content"):
-        content = response.content
-        if isinstance(content, str):
-            try:
-                return GrepCommandResult.model_validate_json(content)
-            except Exception:
-                pass
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    try:
-                        return GrepCommandResult.model_validate_json(block["text"])
-                    except Exception:
-                        pass
+        text = _message_text(response)
+        try:
+            return GrepCommandResult.model_validate_json(text).grep_commands
+        except Exception:
+            recovered = _recover_grep_commands(text)
+            if recovered:
+                return recovered
 
     logger_instance.info("generate_grep_command_via_llm: could not parse LLM response")
     return None
+
+
+# Keyed by org: the model carries that org's AI-model config and API key.
+_grep_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=_GREP_LLM_TTL_SECS)
+# The agent often repeats a search query within a turn (retries, other sources).
+_grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
+
+
+async def _grep_generation_llm(
+    config_service: ConfigurationService, org_id: str, fallback: BaseChatModel,
+) -> BaseChatModel:
+    """The model for the ``query`` role (else the default model) at low
+    reasoning effort, cached; *fallback* (the chat's model) when none can be built.
+
+    The chat's own model runs at the conversation's effort, often high, and its
+    completions were often cut off before any command was written.
+    """
+    cached = _grep_llm_cache.get(org_id)
+    if cached is not None:
+        return cached
+    try:
+        llm, _ = await asyncio.wait_for(
+            get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low"),
+            timeout=_GREP_LLM_LOOKUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "pattern_match: grep-generation model lookup timed out after %.1fs, using the chat's",
+            _GREP_LLM_LOOKUP_TIMEOUT,
+        )
+        return fallback
+    except Exception as exc:
+        logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
+        return fallback
+    _grep_llm_cache[org_id] = llm
+    return llm
 
 
 async def check_pattern_match_eligible(
@@ -506,17 +876,25 @@ async def resolve_connector_ids_for_search(
       KB IDs are App node IDs whose storage directories hold record files,
       so they are valid connector paths for grep.
     - Empty scope under ``strictScope`` (project chat) → search nothing.
-    - No filters (chatbot "search all" mode) → get all org app IDs.
+    - No filters (chatbot "search all" mode) → get all org app IDs,
+      switched-off connectors included: their records stay searchable,
+      as they do in semantic search.
+    - A selection below app level → the apps it touches; ``merge_pattern_match_results``
+      then drops every hit outside the selection.
     """
+    touched = selection_app_ids(filters)
+    if touched is not None:
+        return touched
     scope = requested_scope_ids(filters)
     if scope is not None:
         return list(scope)
     if filters and filters.get(STRICT_SCOPE_FILTER_KEY):
         return []
     try:
-        org_apps = await graph_provider.get_org_apps(org_id)
+        org_apps = await graph_provider.get_org_apps(org_id, active_only=False)
         return [app["_key"] for app in org_apps if app.get("_key")]
     except Exception:
+        logger.warning("pattern_match: org app lookup failed, grep searches nothing", exc_info=True)
         return []
 
 
@@ -773,19 +1151,19 @@ def _ensure_null_delimited_pipeline(command: str) -> str:
 
 
 def _cap_grep_output(command: str) -> str:
-    """Drop ``file:0`` lines, then cap at ``_MAX_GREP_OUTPUT_LINES``.
+    """Drop ``file:0`` lines, and any head/tail cut.
 
     ``grep -c`` prints a line for every file it reads, matching or not. Unless
-    those are dropped first, they fill the line and byte caps in directory-walk
-    order and real matches later in the walk are never seen.
+    those are dropped first, they fill the output caps in directory-walk order
+    and real matches later in the walk are never seen.
+
+    find_records refuses a head/tail cut (records the user cannot read could
+    fill it and push readable ones out) and bounds the output itself, ranking
+    every line it keeps by match count.
     """
     stages = [s.strip() for s in _split_pipeline(command)]
-    cut = next(
-        (i for i, s in enumerate(stages) if i > 0 and re.match(r"(head|tail)\b", s)),
-        len(stages),
-    )
-    limit = stages[cut:] or [f"head -{_MAX_GREP_OUTPUT_LINES}"]
-    return " | ".join(stages[:cut] + [_ZERO_COUNT_FILTER] + limit)
+    stages = [s for i, s in enumerate(stages) if i == 0 or not re.match(r"(head|tail)\b", s)]
+    return " | ".join(stages + [_ZERO_COUNT_FILTER])
 
 
 async def run_pattern_match_with_llm_grep(
@@ -799,8 +1177,12 @@ async def run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None = None,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
+    found: dict[str, dict[str, Any]] | None = None,
+    coverage: PatternMatchCoverage | None = None,
+    retrieval_service: LexicalSearcher | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate grep commands via LLM, run pipelines in parallel, dedup.
+    """Generate grep commands via LLM, look them up or run them, dedup.
 
     Falls back to a keyword grep derived from *query* when the LLM produces
     no usable command, or when its commands fail or match nothing — an LLM
@@ -812,22 +1194,40 @@ async def run_pattern_match_with_llm_grep(
     Bounded by ``_PATTERN_MATCH_TOTAL_BUDGET`` as a whole: callers await it
     after semantic search, so without one bound the LLM call, its pipelines
     and the keyword fallback would each add their own timeout to the answer.
+    When the budget runs out, what the finished LLM commands found is kept.
+
+    *found*, when given, is filled with the best hit per record as each LLM
+    command finishes, so a caller that stops waiting early can keep them
+    (``await_pattern_match`` with ``wait_budget``).
+
+    *coverage*, when given, records every source that timed out, failed or
+    was capped, and whether the total budget ran out.
+
+    With *retrieval_service* and a store that keeps a lexical index, each
+    command is answered from that index (``exact_text_index``), and only a
+    command it cannot express is scanned file by file.
     """
+    if found is None:
+        found = {}
     try:
         return await asyncio.wait_for(
             _run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
+                found=found, on_llm_usage=on_llm_usage, coverage=coverage,
+                retrieval_service=retrieval_service,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
     except asyncio.TimeoutError:
         logger_instance.warning(
-            "pattern_match: total budget of %.0fs exceeded, returning no matches",
-            _PATTERN_MATCH_TOTAL_BUDGET,
+            "pattern_match: total budget of %.0fs exceeded, returning %d match(es) found so far",
+            _PATTERN_MATCH_TOTAL_BUDGET, len(found),
         )
-        return []
+        if coverage is not None:
+            coverage.stop(f"it stopped at its {_PATTERN_MATCH_TOTAL_BUDGET:.0f} s time limit")
+        return list(found.values())
 
 
 async def _run_pattern_match_with_llm_grep(
@@ -841,15 +1241,33 @@ async def _run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None,
     user_query: str | None,
+    found: dict[str, dict[str, Any]],
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
+    coverage: PatternMatchCoverage | None = None,
+    retrieval_service: LexicalSearcher | None = None,
 ) -> list[dict[str, Any]]:
+    """*found* collects the best hit per record as each LLM command finishes,
+    so the caller still has them if the total budget cancels this."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
+    searcher = await _index_searcher(retrieval_service, logger_instance)
+    index_kwargs: dict[str, Any] = {
+        "user_id": user_id, "org_id": org_id, "filters": filters,
+        "found": found, "coverage": coverage, "logger_instance": logger_instance,
+        "small_store": searcher is not None and await _is_small_store(searcher, org_id, user_id, logger_instance),
+    }
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
-        llm_grep_cmds = await generate_grep_command_via_llm(
-            query=query, llm=llm, logger_instance=logger_instance,
-            user_query=user_query,
-        )
+        cache_key = (org_id, query.strip(), (user_query or "").strip())
+        llm_grep_cmds = _grep_commands_cache.get(cache_key)
+        if llm_grep_cmds is None:
+            llm_grep_cmds = await generate_grep_command_via_llm(
+                query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
+                logger_instance=logger_instance, user_query=user_query,
+                on_llm_usage=on_llm_usage,
+            )
+            if llm_grep_cmds:
+                _grep_commands_cache[cache_key] = llm_grep_cmds
 
     common: dict[str, Any] = {
         "query": query,
@@ -859,35 +1277,207 @@ async def _run_pattern_match_with_llm_grep(
         "graph_provider": graph_provider,
         "filters": filters,
         "logger_instance": logger_instance,
+        "coverage": coverage,
     }
-    if llm_grep_cmds:
-        results_lists = await asyncio.gather(
-            *(
-                execute_pattern_match_pipeline(
+    keyword_cmd = build_grep_command_from_query(query)
+    scan_cmds = list(llm_grep_cmds or [])
+    # Whether the LLM commands matched anything; the keyword grep is their
+    # fallback, so their hits, not the keyword lookup's, decide it.
+    llm_matched = False
+    scan_keyword = True
+    if searcher is not None:
+        # Every lookup runs before any scan: a scan can take what is left of
+        # the budget, and a lookup answers in milliseconds.
+        if scan_cmds:
+            scan_cmds = await _match_through_index(scan_cmds, searcher, **index_kwargs)
+        llm_matched = bool(found)
+        scan_keyword = False
+        if not llm_matched and keyword_cmd:
+            scan_keyword = bool(await _match_through_index([keyword_cmd], searcher, **index_kwargs))
+
+    if scan_cmds:
+        async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
+            try:
+                return cmd, await execute_pattern_match_pipeline(
                     **common, grep_command=cmd, skip_grep_validation=True,
                 )
-                for cmd in llm_grep_cmds
-            ),
-            return_exceptions=True,
-        )
-        best: dict[str, dict[str, Any]] = {}
-        for cmd, result in zip(llm_grep_cmds, results_lists):
-            if isinstance(result, BaseException):
-                logger_instance.warning(
-                    "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
-                )
-                continue
-            for rec in result:
-                vrid = rec.get("virtual_record_id")
-                if vrid and (vrid not in best or _record_rank(rec) > _record_rank(best[vrid])):
-                    best[vrid] = rec
-        if best:
-            return list(best.values())
-        logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
+            except Exception as exc:
+                return cmd, exc
 
-    return await execute_pattern_match_pipeline(
-        **common, grep_command=None, skip_grep_validation=False,
-    )
+        tasks = [asyncio.ensure_future(_pipeline(cmd)) for cmd in scan_cmds]
+        try:
+            for next_done in asyncio.as_completed(tasks):
+                cmd, result = await next_done
+                if isinstance(result, BaseException):
+                    logger_instance.warning(
+                        "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
+                    )
+                    if coverage is not None:
+                        coverage.stop("one of its keyword searches failed")
+                    continue
+                llm_matched = llm_matched or bool(result)
+                _merge_command_hits(found, result)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    # Without the index, any hit means the LLM commands matched. With it, the
+    # keyword grep still runs when its lookup asked for a scan (a small store,
+    # or a miss), even if that lookup found records itself.
+    if (llm_matched or (searcher is None and found)) or not scan_keyword:
+        return list(found.values())
+    if llm_grep_cmds:
+        logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
+    # Merged, not returned as is: the keyword lookup may already have filled
+    # *found*, and a grep that failed or capped its records must not drop them.
+    try:
+        scanned = await execute_pattern_match_pipeline(
+            **common, grep_command=None, skip_grep_validation=False,
+        )
+    except Exception:
+        logger_instance.warning("pattern_match: keyword grep failed", exc_info=True)
+        if coverage is not None:
+            coverage.stop("its keyword search failed")
+        return list(found.values())
+    _merge_command_hits(found, scanned)
+    return list(found.values())
+
+
+def _index_enabled() -> bool:
+    return os.getenv(_PATTERN_MATCH_INDEX_ENV_VAR, "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+async def _index_searcher(
+    retrieval_service: LexicalSearcher | None, logger_instance: logging.Logger,
+) -> LexicalSearcher | None:
+    """*retrieval_service* when exact text can be looked up in its index."""
+    if retrieval_service is None or not _index_enabled():
+        return None
+    try:
+        if await retrieval_service.lexical_search_available():
+            return retrieval_service
+    except Exception:
+        logger_instance.warning("pattern_match: lexical index check failed, scanning files", exc_info=True)
+    return None
+
+
+async def _match_through_index(
+    commands: list[str],
+    searcher: LexicalSearcher,
+    *,
+    user_id: str,
+    org_id: str,
+    filters: dict[str, Any] | None,
+    found: dict[str, dict[str, Any]],
+    coverage: PatternMatchCoverage | None,
+    logger_instance: logging.Logger,
+    small_store: bool,
+) -> list[str]:
+    """Answer *commands* from the lexical index into *found*; returns the ones
+    left for the file scan, each recorded in *coverage* with why.
+
+    The index matches whole words in passage text; grep matches substrings in
+    the whole stored file, titles and metadata included. So the scan still
+    runs where it is cheap or where the index had nothing: on a small store
+    every command is scanned too (grep is complete there), and on a large one
+    each command the index found nothing for is.
+    """
+    plans = {cmd: plan_command(cmd) for cmd in commands}
+    unplanned = [cmd for cmd, plan in plans.items() if plan is None]
+    planned = [cmd for cmd, plan in plans.items() if plan is not None]
+    if unplanned and coverage is not None and not small_store:
+        coverage.scan_reasons.add(_SCAN_NO_WORD)
+    if not planned:
+        return unplanned
+    try:
+        outcome = await run_index_pattern_match(
+            [plans[cmd] for cmd in planned], searcher,
+            user_id=user_id, org_id=org_id, filters=filters, logger_instance=logger_instance,
+        )
+    except Exception:
+        # The first lookup failed, so nothing was found yet; nothing is lost.
+        logger_instance.warning("pattern_match: lexical index lookup failed, scanning files", exc_info=True)
+        if coverage is not None:
+            coverage.scan_reasons.add(_SCAN_INDEX_FAILED)
+        return commands
+    for hits in outcome.hits:
+        _merge_command_hits(found, hits)
+    if small_store:
+        return commands
+    missed = [cmd for cmd, hits in zip(planned, outcome.hits) if not hits]
+    if coverage is not None:
+        coverage.index_capped = coverage.index_capped or outcome.capped
+        coverage.records_truncated = coverage.records_truncated or outcome.truncated
+        coverage.index_unverified = coverage.index_unverified or any(outcome.unverified)
+        coverage.index_lookup_failed = coverage.index_lookup_failed or outcome.lookup_failed
+        if outcome.failed_collections:
+            coverage.index_unsearched = (outcome.failed_collections, outcome.searched_collections)
+        if missed:
+            coverage.scan_reasons.add(_SCAN_INDEX_MISS)
+        coverage.index_only = coverage.index_only or len(missed) < len(planned)
+    return unplanned + missed
+
+
+async def _is_small_store(
+    searcher: LexicalSearcher, org_id: str, user_id: str, logger_instance: logging.Logger,
+) -> bool:
+    """Whether the store is small enough that a full file scan finishes well
+    inside its budget. Unknown counts as large: the scan is then kept for
+    what the index cannot answer."""
+    try:
+        chunks = await searcher.lexical_store_chunks(org_id, user_id)
+    except Exception:
+        logger_instance.warning("pattern_match: store size unreadable, treating it as large", exc_info=True)
+        return False
+    return chunks is not None and chunks <= _small_store_chunks()
+
+
+def _small_store_chunks() -> int:
+    raw = os.getenv(_SCAN_BELOW_CHUNKS_ENV_VAR, "")
+    try:
+        return max(0, int(raw)) if raw.strip() else _DEFAULT_SCAN_BELOW_CHUNKS
+    except ValueError:
+        return _DEFAULT_SCAN_BELOW_CHUNKS
+
+
+def _merge_command_hits(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Add one grep command's ranked hits to *found*. Rank fusion is opt-in
+    (``GREP_RANK_FUSION``, else ``HIGH_ACCURACY_MODE``); otherwise each record
+    keeps its best hit."""
+    if accuracy_feature_enabled(_GREP_RANK_FUSION_ENV_VAR):
+        _fuse_ranked(found, records)
+    else:
+        _keep_best(found, records)
+
+
+def _keep_best(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Keep each record's best hit across commands, by its own match counts."""
+    for rec in records:
+        vrid = rec.get("virtual_record_id")
+        if vrid and (vrid not in found or _record_rank(rec) > _record_rank(found[vrid])):
+            found[vrid] = rec
+
+
+def _fuse_ranked(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Add one command's hits to *found* by reciprocal rank fusion.
+
+    Commands search different term sets, so their match counts do not
+    compare; a record's place in each command's own ranking does. A record
+    several commands rank highly beats one only a broad command found.
+    """
+    command_hits: dict[str, dict[str, Any]] = {}
+    _keep_best(command_hits, records)
+    # *records* concatenates per-connector lists, each ranked from 0; within
+    # one command the counts compare across connectors, so rank them together.
+    ranked = sorted(command_hits.values(), key=_record_rank, reverse=True)
+    place = 0
+    for i, rec in enumerate(ranked):
+        if i and _record_rank(rec) != _record_rank(ranked[i - 1]):
+            place = i
+        vrid = rec["virtual_record_id"]
+        fused = _fusion_score(found.get(vrid)) + 1.0 / (_RRF_K + place)
+        best = found[vrid] if vrid in found and _record_rank(found[vrid]) >= _record_rank(rec) else rec
+        found[vrid] = {**best, "fusion_score": fused}
 
 
 async def execute_pattern_match_pipeline(
@@ -901,6 +1491,7 @@ async def execute_pattern_match_pipeline(
     logger_instance: logging.Logger,
     grep_command: str | None = None,
     skip_grep_validation: bool = False,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Full pipeline: eligibility check → build grep → resolve connectors → run.
 
@@ -958,6 +1549,7 @@ async def execute_pattern_match_pipeline(
         command=grep_command,
         connector_ids=connector_ids,
         logger_instance=logger_instance,
+        coverage=coverage,
     )
 
 
@@ -971,6 +1563,7 @@ async def run_pattern_match(
     connector_ids: list[str],
     logger_instance: logging.Logger,
     timeout: int = _PATTERN_MATCH_TIMEOUT,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Run grep pattern match across connectors. Returns raw, UNADJUDICATED records.
 
@@ -993,6 +1586,8 @@ async def run_pattern_match(
     if not valid:
         logger_instance.warning("Pattern match command rejected: %s", err)
         return []
+    if coverage is not None:
+        coverage.sources.update(connector_ids)
 
     containers: AccessibleContainers | None = None
     try:
@@ -1017,6 +1612,8 @@ async def run_pattern_match(
         containers and not containers.fallback_reason and containers.direct_records
     )
 
+    # Never the chat state: find_records remembers its hits as shown to the
+    # model, and these are not shown yet. Retrieval remembers what it renders.
     state: dict[str, Any] = {
         "config_service": config_service,
         "org_id": org_id,
@@ -1025,6 +1622,9 @@ async def run_pattern_match(
     }
     storage_tool = StoragePatternMatch(state)
 
+    # Per connector, the outcome of its last grep; read once into *coverage*.
+    outcomes: dict[str, str] = {}
+
     async def _run_grep(connector_id: str, cmd: str) -> list[dict] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
@@ -1032,7 +1632,7 @@ async def run_pattern_match(
             success, output = await storage_tool.find_records(
                 connector_id=connector_id,
                 command=cmd,
-                max_results=10,
+                max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
             )
@@ -1040,17 +1640,31 @@ async def run_pattern_match(
             logger_instance.warning(
                 "pattern_match: grep raised for cid=%s", connector_id, exc_info=True,
             )
+            outcomes[connector_id] = "failed"
             return None
         if not success:
             logger_instance.info(
                 "pattern_match: grep failed for cid=%s: %s", connector_id, output[:300],
             )
+            outcomes[connector_id] = (
+                "timed_out" if str(output).startswith(_GREP_TIMEOUT_PREFIX) else "failed"
+            )
             return None
         try:
             parsed = json.loads(output)
         except (json.JSONDecodeError, TypeError):
+            logger_instance.warning(
+                "pattern_match: unreadable grep output for cid=%s: %r", connector_id, str(output)[:200],
+            )
+            outcomes[connector_id] = "failed"
             return None
-        return parsed.get("records", []) if isinstance(parsed, dict) else None
+        if not isinstance(parsed, dict):
+            outcomes[connector_id] = "failed"
+            return None
+        records = parsed.get("records", [])
+        capped = bool(parsed.get("output_truncated")) or _int_field(parsed, "total_found") > len(records)
+        outcomes[connector_id] = "capped" if capped else "ok"
+        return records
 
     async def _search_connector(connector_id: str) -> list[dict]:
         # APP_LEVEL: full grep, all records accessible
@@ -1146,17 +1760,24 @@ async def run_pattern_match(
             logger_instance.warning(
                 "Pattern match timed out after %ds for cid=%s", timeout, connector_id,
             )
+            outcomes[connector_id] = "timed_out"
             return []
 
-    results = await asyncio.gather(
-        *(_search_connector_bounded(cid) for cid in connector_ids),
-        return_exceptions=True,
-    )
+    try:
+        results = await asyncio.gather(
+            *(_search_connector_bounded(cid) for cid in connector_ids),
+            return_exceptions=True,
+        )
+    finally:
+        if coverage is not None:
+            _record_outcomes(coverage, connector_ids, outcomes)
 
     all_records: list[dict] = []
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             logger_instance.info("Pattern match connector %d error: %s", i, result)
+            if coverage is not None:
+                coverage.failed.add(connector_ids[i])
             continue
         logger_instance.info(
             "Pattern match connector %d returned %d records", i, len(result),
@@ -1166,38 +1787,141 @@ async def run_pattern_match(
     return all_records
 
 
+def _record_outcomes(
+    coverage: PatternMatchCoverage, connector_ids: list[str], outcomes: Mapping[str, str],
+) -> None:
+    """Fold one command's per-connector outcomes into *coverage*. A connector
+    with no outcome was still running when the search was cancelled."""
+    for cid in connector_ids:
+        outcome = outcomes.get(cid, "timed_out")
+        if outcome == "timed_out":
+            coverage.timed_out.add(cid)
+        elif outcome == "failed":
+            coverage.failed.add(cid)
+        elif outcome == "capped":
+            coverage.capped.add(cid)
+
+
+def pattern_match_wait_budget(requested: str | None) -> float | None:
+    """Seconds a search waits for its pattern match after semantic results,
+    or None to wait for all of it (up to ``_PATTERN_MATCH_TOTAL_BUDGET``).
+
+    Only a request that asked for the short budget gets one, and never under
+    ``HIGH_ACCURACY_MODE``, where the deployment has chosen better answers
+    over faster ones. A request that says nothing waits as it always has.
+    """
+    if requested != "short" or high_accuracy_mode():
+        return None
+    return KEYWORD_SEARCH_SHORT_WAIT_SECS
+
+
 async def await_pattern_match(
     task: asyncio.Task, logger_instance: logging.Logger,
+    run_timer: "RunTimer | None" = None,
+    *,
+    wait_budget: float | None = None,
+    found_so_far: Mapping[str, dict[str, Any]] | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict[str, Any]]:
     """Result of a pattern-match task started beside semantic search; any
-    failure is ``[]`` so semantic results are always returned.
+    failure is ``[]`` so semantic results are always returned, and is
+    recorded in *coverage* when given.
 
     A CancelledError from inside the task is a pattern-match failure too
     (``except Exception`` misses it); only cancellation of the caller itself
     is re-raised.
+
+    With ``wait_budget``, waits at most that many seconds. If the task has
+    not finished by then it is cancelled, and the matches its finished
+    commands already put in ``found_so_far`` (the ``found`` dict passed to
+    ``run_pattern_match_with_llm_grep``) are returned.
+
+    When ``run_timer`` is given, the time spent waiting here (semantic
+    results already in hand) is recorded as ``pattern_match_wait``.
     """
+    wait_started = time.perf_counter()
     try:
-        return await task or []
+        if wait_budget is None:
+            return await task or []
+        try:
+            done, _ = await asyncio.wait({task}, timeout=max(0.0, wait_budget))
+        except asyncio.CancelledError:
+            # `asyncio.wait` does not pass the caller's cancellation on to the
+            # task the way awaiting it directly does.
+            task.cancel()
+            raise
+        if task in done:
+            return task.result() or []
+        # Give the grep task a short, bounded time to clean up (kill its
+        # subprocesses, remove its access view); a slow teardown finishes in
+        # the background instead of stretching this short wait. A caller
+        # cancelled meanwhile gets CancelledError from `asyncio.wait`, which
+        # the handler below passes on.
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=KEYWORD_SEARCH_CLEANUP_GRACE_SECS)
+        if task in done:
+            _consume_outcome(task)
+        else:
+            task.add_done_callback(_consume_outcome)
+        kept = list((found_so_far or {}).values())
+        logger_instance.info(
+            "pattern_match: stopped waiting %.1fs after semantic results, keeping %d match(es) found so far",
+            wait_budget, len(kept),
+        )
+        if coverage is not None:
+            coverage.stop(f"the search stopped waiting for it {wait_budget:g} s after the semantic results")
+        return kept
     except asyncio.CancelledError:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
             raise
         logger_instance.warning("Pattern match was cancelled, continuing with semantic results only")
+        if coverage is not None:
+            coverage.stop("it was cancelled before it finished")
     except Exception as exc:
         logger_instance.warning(
             "Pattern match failed, continuing with semantic results only: %s", exc,
         )
+        if coverage is not None:
+            coverage.stop("it failed before it finished")
+    finally:
+        if run_timer is not None:
+            run_timer.record("pattern_match_wait", (time.perf_counter() - wait_started) * 1000.0)
     return []
 
 
+def _consume_outcome(task: asyncio.Task) -> None:
+    """Read a finished task's outcome so a late error is not reported as
+    "exception was never retrieved"."""
+    if not task.cancelled():
+        task.exception()
+
+
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
-    """Cancel an asyncio task if it hasn't finished yet and suppress errors."""
+    """Cancel an asyncio task if it hasn't finished yet and suppress its
+    errors. A cancellation of the caller while it waits is passed on."""
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):
-            pass
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+
+
+def _int_field(record: dict[str, Any] | None, key: str) -> int:
+    try:
+        return int((record or {}).get(key) or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _fusion_score(record: dict[str, Any] | None) -> float:
+    try:
+        return float((record or {}).get("fusion_score") or 0.0)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _record_rank(record: dict[str, Any]) -> tuple[int, int]:
@@ -1206,13 +1930,12 @@ def _record_rank(record: dict[str, Any]) -> tuple[int, int]:
     Distinct terms come first: a record that repeats the company name fifty
     times must not outrank one that also contains the rare query term.
     """
-    def _int(key: str) -> int:
-        try:
-            return int(record.get(key) or 0)
-        except (ValueError, TypeError):
-            return 0
+    return _int_field(record, "matched_terms"), _int_field(record, "match_count")
 
-    return _int("matched_terms"), _int("match_count")
+
+def keyword_match_rank(record: dict[str, Any]) -> tuple[float, int, int]:
+    """Fused rank across commands first, then this record's own match counts."""
+    return (_fusion_score(record), *_record_rank(record))
 
 
 def _record_in_time_range(
@@ -1232,18 +1955,23 @@ def _record_in_time_range(
         except (ValueError, TypeError):
             return None
 
+    # An upload dated only by its upload was written at or before that time:
+    # an after-bound still rules it out, a before-bound cannot.
+    undated = record.get("source_timestamp_origin") == "upload" and upload_times_undated()
+    if undated and time_range.get(DATED_ONLY_TIME_RANGE_KEY):
+        return False
     created = _ts("source_created_at")
     modified = _ts("source_updated_at")
     if "source_created_after_ms" in time_range:
         if created is None or created < time_range["source_created_after_ms"]:
             return False
-    if "source_created_before_ms" in time_range:
+    if "source_created_before_ms" in time_range and not undated:
         if created is None or created > time_range["source_created_before_ms"]:
             return False
     if "source_updated_after_ms" in time_range:
         if modified is None or modified < time_range["source_updated_after_ms"]:
             return False
-    if "source_updated_before_ms" in time_range:
+    if "source_updated_before_ms" in time_range and not undated:
         if modified is None or modified > time_range["source_updated_before_ms"]:
             return False
     return True
@@ -1281,8 +2009,11 @@ async def merge_pattern_match_results(
     time_range: dict[str, int] | None = None,
     filters: dict[str, Any] | None = None,
     config_service: ConfigurationService | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Dedup → permission check → time-range filter → fetch blob → flatten.
+
+    Records past *max_records* are dropped, and *coverage* says so.
 
     The permission check is the one semantic search uses
     (``filter_accessible_virtual_record_ids``): APP_LEVEL apps and
@@ -1293,22 +2024,17 @@ async def merge_pattern_match_results(
     When *time_range* is set, graph records are fetched first (lightweight)
     and filtered before the expensive blob fetch.
     """
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if vrid and vrid not in seen:
-            seen.add(vrid)
-            unique.append(r)
+    scope = requested_scope_ids(filters)
+    if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
+        return []
 
     # Rank across connectors before the cap; each connector's list is already
     # ranked, but concatenation order would otherwise decide who is dropped.
-    unique.sort(key=_record_rank, reverse=True)
-    new_records = [
-        r
-        for r in unique
-        if r.get("virtual_record_id") not in virtual_record_id_to_result
-    ][:max_records]
+    unique = _best_hit_per_record(raw_records)
+    unseen = [r for r in unique if r.get("virtual_record_id") not in virtual_record_id_to_result]
+    # Not cut here: a cap on records not yet access-checked would let the
+    # caller's coverage depend on records they cannot read.
+    new_records = unseen
 
     if not new_records:
         return []
@@ -1326,8 +2052,16 @@ async def merge_pattern_match_results(
     except Exception:
         logger_instance.debug("Pattern match: container lookup failed", exc_info=True)
 
-    scope = requested_scope_ids(filters)
     try:
+        scopes: list[SelectionScope] = []
+        if has_selection(filters) or allowed_filters(filters):
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key = (user.get("_key") or user.get("id")) if user else None
+            if not user_key:
+                return []
+            selection, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filters)
+            if selection is not None:
+                scope = tuple(selection.connector_ids)
         accessible_vrids = await graph_provider.filter_accessible_virtual_record_ids(
             [r["virtual_record_id"] for r in new_records],
             user_id,
@@ -1335,6 +2069,7 @@ async def merge_pattern_match_results(
             trusted_app_ids=trusted_app_ids,
             trusted_group_ids=trusted_group_ids,
             scope_connector_ids=frozenset(scope) if scope is not None else None,
+            scopes=scopes,
         ) or {}
     except Exception:
         # Fail closed: semantic results still answer the turn.
@@ -1379,7 +2114,7 @@ async def merge_pattern_match_results(
     graph_by_vrid = {
         vrid: rec for vrid, rec in graph_by_vrid.items()
         if rec.get("connectorId") not in excluded_apps
-        and rec.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and is_searchable_record(rec)
     }
 
     if time_range:
@@ -1400,18 +2135,16 @@ async def merge_pattern_match_results(
         if not accessible_records:
             return []
 
-    rank_by_vrid: dict[str, tuple[int, int]] = {}
-    snippet_by_vrid: dict[str, str] = {}
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if not vrid:
-            continue
-        rank = _record_rank(r)
-        if vrid not in rank_by_vrid or rank > rank_by_vrid[vrid]:
-            rank_by_vrid[vrid] = rank
-            if r.get("match_preview"):
-                snippet_by_vrid[vrid] = r["match_preview"]
-    match_count_by_vrid = {vrid: rank[1] for vrid, rank in rank_by_vrid.items()}
+    # The cap comes last, over readable records only, so what "more matched
+    # than are listed" says never depends on what the caller cannot read.
+    accessible_records = [r for r in accessible_records if r["virtual_record_id"] in graph_by_vrid]
+    if len(accessible_records) > max_records:
+        if coverage is not None:
+            coverage.records_truncated = True
+        accessible_records = accessible_records[:max_records]
+
+    matches = _best_match_by_vrid(raw_records)
+    viewer_email = await _viewer_email_for(graph_by_vrid.values(), graph_provider, user_id, logger_instance)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -1420,11 +2153,15 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
-        mc = match_count_by_vrid.get(vrid, 0)
+        if graph_rec.get("webUrl"):
+            graph_rec["webUrl"] = substitute_user_email(
+                graph_rec["webUrl"], viewer_email, graph_rec.get("connectorName")
+            )
+        mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
-        if vrid in snippet_by_vrid:
-            graph_rec["_match_snippet"] = snippet_by_vrid[vrid]
+        if snippet:
+            graph_rec["_match_snippet"] = snippet
         virtual_record_id_to_result[vrid] = graph_rec
         results.append({
             "virtual_record_id": vrid,
@@ -1441,6 +2178,161 @@ async def merge_pattern_match_results(
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
     return results
+
+
+async def _viewer_email_for(
+    graph_records: Iterable[dict],
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    logger_instance: logging.Logger,
+) -> str | None:
+    """The searcher's email, read only when a record's link waits on it.
+
+    These records come from the graph, not from search, so a shared Gmail
+    link still holds the placeholder search fills in for the viewer.
+    """
+    if not any(USER_EMAIL_PLACEHOLDER in (r.get("webUrl") or "") for r in graph_records):
+        return None
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception:
+        logger_instance.warning("Pattern match: user unreadable; mail links keep the placeholder", exc_info=True)
+        return None
+    return user.get("email") if isinstance(user, dict) else None
+
+
+def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:
+    """Each record's best-ranked grep hit, best first; ties keep the order
+    the hits arrived in."""
+    best: dict[str, dict] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if vrid and (vrid not in best or keyword_match_rank(raw) > keyword_match_rank(best[vrid])):
+            best[vrid] = raw
+    return sorted(best.values(), key=keyword_match_rank, reverse=True)
+
+
+def _best_match_by_vrid(raw_records: list[dict]) -> dict[str, tuple[int, str | None]]:
+    """Per record: the match count of its best-ranked hit, and the preview of
+    its best-ranked hit that has one.
+
+    Taken apart because the best hit need not carry a preview; tying the two
+    lost a preview another hit had, depending on the order hits arrived in.
+    """
+    best_rank: dict[str, tuple[int, int]] = {}
+    preview_rank: dict[str, tuple[int, int]] = {}
+    previews: dict[str, str] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if not vrid:
+            continue
+        rank = _record_rank(raw)
+        if vrid not in best_rank or rank > best_rank[vrid]:
+            best_rank[vrid] = rank
+        preview = raw.get("match_preview")
+        if preview and (vrid not in preview_rank or rank > preview_rank[vrid]):
+            preview_rank[vrid] = rank
+            previews[vrid] = preview
+    return {vrid: (rank[1], previews.get(vrid)) for vrid, rank in best_rank.items()}
+
+
+def grep_hits_on_loaded_records(
+    raw_records: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+) -> list[dict]:
+    """Hint entries for grep hits on records semantic search already loaded,
+    best first.
+
+    ``merge_pattern_match_results`` skips these records because their blocks
+    are about to be shown. When the search result then leaves one out to fit
+    its size, these entries name it in the keyword hint instead, so its match
+    can still be fetched. Only records already in the map qualify, and those
+    passed the semantic search's own permission check.
+    """
+    matches = _best_match_by_vrid(raw_records)
+    entries: list[dict] = []
+    for raw in _best_hit_per_record(raw_records):
+        vrid = raw["virtual_record_id"]
+        if not isinstance(virtual_record_id_to_result.get(vrid), dict):
+            continue
+        entry: dict[str, Any] = {"virtual_record_id": vrid, "score": 0.0, "source": "pattern_match"}
+        match_count, snippet = matches[vrid]
+        if match_count > 0:
+            entry["_match_count"] = match_count
+        if snippet:
+            entry["_match_snippet"] = snippet
+        entries.append(entry)
+    return entries
+
+
+def grep_hits_within(
+    entries: list[dict], virtual_record_id_to_result: Mapping[str, Any], max_chars: int,
+) -> list[dict]:
+    """The leading ``entries`` whose hint sections fit in ``max_chars``.
+
+    Bounds what naming records adds to a result, so leaving more records out
+    can never grow the hint past the room it frees.
+    """
+    kept: list[dict] = []
+    used = 0
+    for entry in entries:
+        section = _hint_section(entry, virtual_record_id_to_result)
+        if section is None:
+            continue
+        used += len(section) + 1
+        if used > max_chars:
+            break
+        kept.append(entry)
+    return kept
+
+
+def split_hint_entries(
+    entries: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+    max_chars: int,
+    *,
+    max_full: int,
+    has_semantic_blocks: bool = True,
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
+) -> tuple[list[dict], list[dict], int]:
+    """``entries``, in order, split into those the hint shows with full
+    metadata, those it names on one line, and how many it leaves out.
+
+    The leading ``max_full`` that fit get full metadata and the rest are
+    named while the room lasts, so a long list of keyword matches takes a
+    bounded share of the result instead of its passages. The hint that
+    ``render_pattern_match_hint`` makes of the split, header, footer and
+    count of the rest included, is at most ``max_chars`` long.
+    """
+    named = [entry for entry in entries if virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))]
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    count_room = len(_unlisted_line(len(named))) + 1
+    full: list[dict] = []
+    brief: list[dict] = []
+    used = len(header) + len(footer)
+    for index, entry in enumerate(named):
+        reserve = count_room if index < len(named) - 1 else 0
+        if not brief and len(full) < max_full:
+            cost = len(_hint_section(entry, virtual_record_id_to_result) or "") + 1
+            if used + cost + reserve <= max_chars:
+                used += cost
+                full.append(entry)
+                continue
+        cost = len(_hint_line(entry, virtual_record_id_to_result) or "") + 1
+        if not brief:
+            cost += len(_BRIEF_HINT_HEADING) + 1
+        if used + cost + reserve > max_chars:
+            return full, brief, len(named) - index
+        used += cost
+        brief.append(entry)
+    return full, brief, 0
+
+
+def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
+    """The metadata a semantic search result shows for ``record``."""
+    return record.get("context_metadata") or (
+        f"Record ID: {record.get('id') or 'N/A'}\nName: {record.get('record_name') or 'N/A'}"
+    )
 
 
 def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
@@ -1487,12 +2379,43 @@ def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _hint_section(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record's ``<record>`` block in the keyword hint, or None when the
+    record is not in the map."""
+    graph_rec = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not graph_rec:
+        return None
+    # A record semantic search loaded holds its blocks; a grep-only one holds
+    # the graph document.
+    if "block_containers" in graph_rec:
+        metadata_block = _render_loaded_record_metadata(graph_rec)
+    else:
+        metadata_block = _render_graph_record_metadata(graph_rec)
+    mc = graph_rec.get("_match_count") or entry.get("_match_count") or 0
+    mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
+    snippet = graph_rec.get("_match_snippet") or entry.get("_match_snippet")
+    snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
+    return f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>"
+
+
+def _hint_line(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record named on a line of the keyword hint, with the id that fetches it."""
+    record = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not record:
+        return None
+    record_id = record.get("id") or record.get("_key") or "N/A"
+    name = record.get("record_name") or record.get("recordName") or record.get("title") or "N/A"
+    return f"- {' '.join(str(name).split())} (Record ID: {record_id})"
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
-    fetch_tool_ref: str = "knowledgegraph__fetch_record",
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     has_semantic_blocks: bool = True,
+    brief_records: list[dict] | None = None,
+    unlisted: int = 0,
 ) -> str:
     """Render pattern-matched records with full metadata and a fetch hint.
 
@@ -1507,29 +2430,30 @@ def render_pattern_match_hint(
     immediately instead of running more searches.
 
     *max_records* caps how many records are rendered (default
-    ``_MAX_PATTERN_MATCH_RECORDS``).
+    ``_MAX_PATTERN_MATCH_RECORDS``). *brief_records* follow them named on
+    one line each, and *unlisted* counts the matches left out of both.
     """
-    if not pm_records:
-        return ""
+    sections = [
+        section for entry in pm_records[:max_records]
+        if (section := _hint_section(entry, virtual_record_id_to_result)) is not None
+    ]
+    lines = [
+        line for entry in brief_records or ()
+        if (line := _hint_line(entry, virtual_record_id_to_result)) is not None
+    ]
+    if not sections and not lines:
+        # No fetch instruction: none of these records is named.
+        return f"\n\n{_unlisted_line(unlisted)}" if unlisted else ""
+    if lines:
+        sections.append(_BRIEF_HINT_HEADING + "\n" + "\n".join(lines))
+    if unlisted:
+        sections.append(_unlisted_line(unlisted))
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    return header + "\n" + "\n".join(sections) + footer
 
-    capped = pm_records[:max_records]
 
-    sections: list[str] = []
-    for entry in capped:
-        vrid = entry.get("virtual_record_id", "")
-        graph_rec = virtual_record_id_to_result.get(vrid)
-        if not graph_rec:
-            continue
-        metadata_block = _render_graph_record_metadata(graph_rec)
-        mc = graph_rec.get("_match_count", 0)
-        mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
-        snippet = graph_rec.get("_match_snippet")
-        snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
-        sections.append(f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>")
-
-    if not sections:
-        return ""
-
+def _hint_frame(*, has_semantic_blocks: bool, fetch_tool_ref: str) -> tuple[str, str]:
+    """The header and footer around the records the keyword hint names."""
     if has_semantic_blocks:
         header = (
             "\n\nAdditional records found via pattern matching (metadata only — "
@@ -1546,7 +2470,11 @@ def render_pattern_match_hint(
         f"\nTo read the full content of any record above, call "
         f"`{fetch_tool_ref}` with its record_id."
     )
-    return header + "\n" + "\n".join(sections) + footer
+    return header, footer
+
+
+def _unlisted_line(count: int) -> str:
+    return f"{count} more keyword-matched record{'s' if count != 1 else ''} not listed."
 
 
 def cap_pattern_match_blocks(
@@ -1646,6 +2574,7 @@ def _graph_record_in_time_range(
     adapted = {
         "source_created_at": graph_record.get("sourceCreatedAtTimestamp"),
         "source_updated_at": graph_record.get("sourceLastModifiedTimestamp"),
+        "source_timestamp_origin": graph_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
     }
     return _record_in_time_range(adapted, time_range)
 

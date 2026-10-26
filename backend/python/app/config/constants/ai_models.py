@@ -6,12 +6,23 @@ EMBEDDING_SERVER_PORT = 8002
 DEFAULT_EMBEDDING_SERVER_URL = f"http://localhost:{EMBEDDING_SERVER_PORT}"
 EMBEDDING_SERVER_MAX_RETRIES = 5
 EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
+# Request header that marks an embedding request to the bundled server as a
+# search query. The server encodes queries ahead of bulk indexing batches
+# (embedding_main.EncodeGate); any other value, or none, is bulk.
+EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
+EMBEDDING_PRIORITY_QUERY = "query"
 
 # Bound on one HTTP attempt to a hosted embedding API. The provider SDKs
 # default to 600s and retry twice on top, so without this a single stalled
 # request consumes the caller's whole per-batch budget and reports as a
 # timeout with nothing to distinguish it from a slow model.
 REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
+
+# Bound on one attempt to embed a search query with a hosted API. A query is one
+# short string that comes back in well under a second; the 60s above is sized for
+# indexing batches, and a search that waits it out on one stalled request answers
+# after its caller has given up, while a fresh attempt answers at once.
+QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS = 15.0
 
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
