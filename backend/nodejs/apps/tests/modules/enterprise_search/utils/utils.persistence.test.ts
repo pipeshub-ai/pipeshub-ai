@@ -702,7 +702,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       const stale = staleAskUserQuestionToolCallIds(messages, bot._id)
 
-      expect(stale.map((id) => id.toString())).to.have.members([
+      expect(stale.map((id) => id)).to.have.members([
         before._id.toString(),
         after._id.toString(),
       ])

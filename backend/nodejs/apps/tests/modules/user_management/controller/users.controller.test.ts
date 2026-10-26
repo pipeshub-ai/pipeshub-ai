@@ -1315,7 +1315,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1343,7 +1345,9 @@ describe('UserController', () => {
         role: 'member',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1387,7 +1391,9 @@ describe('UserController', () => {
         role: 'admin',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1425,7 +1431,9 @@ describe('UserController', () => {
         role: 'admin',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1475,7 +1483,9 @@ describe('UserController', () => {
         role: 'member',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1512,7 +1522,9 @@ describe('UserController', () => {
         role: 'admin',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1583,7 +1595,9 @@ describe('UserController', () => {
         email: 'old@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1612,7 +1626,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1663,7 +1679,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -1700,7 +1718,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -2727,7 +2747,9 @@ describe('UserController', () => {
         fullName: 'Alice',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -4545,7 +4567,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -4575,7 +4599,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -4605,7 +4631,9 @@ describe('UserController', () => {
         email: 'test@test.com',
         save: sinon.stub().resolves(),
         toObject() {
-          const { save, toObject, ...rest } = this as any;
+          const { ...rest } = this as any;
+      delete rest.save;
+      delete rest.toObject;
           return { ...rest };
         },
       };
@@ -5632,7 +5660,7 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateOne').resolves();
       mockEventService.publishEvent.rejects(new Error('Kafka down'));
 
-      const result = await controller.provisionJitUser(
+      await controller.provisionJitUser(
         'jit@test.com',
         { fullName: 'JIT User' },
         '507f1f77bcf86cd799439012',

@@ -40,13 +40,12 @@ import { buildFilter, buildAgentConversationFilter } from './session-filter-comp
 import { buildAgentSharedWithMeFilter as buildSharedFilter } from '../../../../src/libs/repositories/conversation/mongo'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import * as utilsModule from '../../../../src/modules/enterprise_search/utils/utils';
-import { deleteAgentConversation, attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
+import { attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
 import { useDocumentAsSession } from './doc-backed-repo';
-import { setConversationRepository } from '../../../../src/libs/repositories/conversation';
 
 // Persistence helpers take a session snapshot and write through the repository; these
 // run them with the test's document-like conversation standing in for the stored row.
-const onDoc = <A extends unknown[]>(fn: (conversation: any, ...rest: A) => Promise<any>, at = 0) =>
+const onDoc = (fn: (conversation: any, ...rest: any[]) => Promise<any>, at = 0) =>
   async (...args: any[]): Promise<any> => {
     const restore = useDocumentAsSession(args[at])
     try {
@@ -61,7 +60,6 @@ const markAgentConversationFailed = onDoc(utilsModule.markAgentConversationFaile
 const handleRegenerationError = onDoc(utilsModule.handleRegenerationError as any, 2)
 const savePartialConversation = onDoc(utilsModule.savePartialConversation)
 import { InternalServerError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -1633,7 +1631,7 @@ describe('Enterprise Search Utils', () => {
       const errorData = JSON.stringify({ error: 'Something failed', message: 'Details here' })
       const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
 
-      const newBuffer = handleRegenerationStreamData(
+      handleRegenerationStreamData(
         chunk,
         '',
         null,

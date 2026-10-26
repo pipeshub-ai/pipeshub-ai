@@ -17,7 +17,6 @@ import {
   UnsupportedGrantTypeError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { BadRequestError, NotFoundError } from '../../../../src/libs/errors/http.errors'
-import { setOAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'

@@ -5,7 +5,6 @@ import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
-import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
@@ -35,7 +34,6 @@ const OTHER_AGENT_KEY = 'agent-2'
 type User = { userId: Types.ObjectId; orgId: Types.ObjectId }
 const owner: User = { userId: OWNER, orgId: ORG }
 const recipient: User = { userId: RECIPIENT, orgId: ORG }
-const secondRecipient: User = { userId: SECOND_RECIPIENT, orgId: ORG }
 const stranger: User = { userId: STRANGER, orgId: ORG }
 const outsider: User = { userId: OUTSIDER, orgId: OTHER_ORG }
 

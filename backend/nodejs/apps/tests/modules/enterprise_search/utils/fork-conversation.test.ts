@@ -94,7 +94,7 @@ describe('copySessionUpToMessage', () => {
 
     expect(result.messageCount).to.equal(2)
     expect(result.conversation.title).to.equal('Fork of Quarterly numbers')
-    expect(String(result.conversation.userId)).to.equal(String(owner))
+    expect(result.conversation.userId).to.equal(String(owner))
     expect(result.conversation.isShared).to.equal(false)
     expect(store.messagesOf(source._id)).to.have.length(sourceMessageCount)
     expect(store.session(source._id)?.title).to.equal('Quarterly numbers')
@@ -104,7 +104,7 @@ describe('copySessionUpToMessage', () => {
       'What were Q3 sales?',
       'Q3 sales were 4M.',
     ])
-    expect(forked.every((m) => String(m.sessionId) === String(result.conversation._id))).to.equal(true)
+    expect(forked.every((m) => String(m.sessionId) === result.conversation._id)).to.equal(true)
   })
 
   it('rejects a message that does not belong to the source session', async () => {
@@ -386,7 +386,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const result = await fork(seeded, copyArtifacts)
 
     expect(copyArtifacts.calledOnce).to.equal(true)
-    expect(copyArtifacts.firstCall.args[0]).to.equal(String(result.conversation._id))
+    expect(copyArtifacts.firstCall.args[0]).to.equal(result.conversation._id)
     expect(copyArtifacts.firstCall.args[1]).to.deep.equal([{ artifactId: 'old', upToVersion: 2 }])
 
     const rows = store.messagesOf(result.conversation._id) as any[]
@@ -497,8 +497,8 @@ describe('copySessionUpToMessage with artifacts', () => {
     )
 
     expect(sessionsWhenCopying).to.equal(sessionsBefore)
-    expect(copyArtifacts.firstCall.args[0]).to.equal(String(forkId))
-    expect(String(result.conversation._id)).to.equal(String(forkId))
+    expect(copyArtifacts.firstCall.args[0]).to.equal(forkId)
+    expect(result.conversation._id).to.equal(forkId)
   })
 
   it('answers 404, and copies nothing, when the fork point is not a message of the chat', async () => {
