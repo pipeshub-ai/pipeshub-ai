@@ -1,11 +1,16 @@
 """Unit tests for all parsing provider implementations."""
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import BlocksContainer
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
+from app.models.blocks import Block, BlocksContainer, BlockType
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.parsing.interface import (
     ParseError,
@@ -721,3 +726,77 @@ class TestSmartPDFParserPageRouting:
             assert _detect_needs_ocr(b"%PDF") == (False, 42)
 
         assert opened.call_count == 1
+
+
+def _docling_text(*texts: str) -> ParseResult:
+    return ParseResult(
+        raw_document=json.dumps({"texts": [{"text": t} for t in texts]}), provider_used=ParserProvider.DOCLING
+    )
+
+
+def _blocks_text(*texts: str) -> ParseResult:
+    blocks = [Block(index=i, type=BlockType.TEXT, data=t) for i, t in enumerate(texts)]
+    return ParseResult(block_container=BlocksContainer(blocks=blocks, block_groups=[]), provider_used=ParserProvider.DEFAULT)
+
+
+class TestSmartPDFParserWithoutAnImageModel:
+    """A PDF sent to OCR when no model that can read images is set up: one image-only cover page is enough to send
+    it there, so its text layer is read instead of failing the whole file."""
+
+    @staticmethod
+    def _parser(docling_result: ParseResult | None = None, docling_error: Exception | None = None,
+                ocr_error: Exception | None = None) -> tuple[SmartPDFParser, MagicMock, MagicMock]:
+        docling, ocr = MagicMock(), MagicMock()
+        docling.parse = AsyncMock(side_effect=docling_error, return_value=docling_result)
+        ocr.parse = AsyncMock(side_effect=ocr_error or MultimodalModelNotConfiguredError("no multimodal model"))
+        return SmartPDFParser(docling, ocr), docling, ocr
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_with_text_is_read_as_text(self) -> None:
+        parser, docling, ocr = self._parser(_docling_text("FY2026 Annual Report", "62 sponsors"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 34)):
+            result = await parser.parse(b"%PDF", "FY2026AnnualReport")
+
+        ocr.parse.assert_awaited_once()
+        docling.parse.assert_awaited_once()
+        assert result.raw_document is not None
+        assert result.metadata["ocr_skipped"] == "no multimodal model"
+
+    @pytest.mark.asyncio
+    async def test_built_blocks_with_text_count_as_text(self) -> None:
+        parser, _, _ = self._parser(_blocks_text("", "Sponsorship Program revenue"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)):
+            result = await parser.parse(b"%PDF", "report.pdf")
+
+        assert result.block_container is not None
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [_docling_text(), _docling_text("  ", ""), _blocks_text(), _blocks_text(" ")],
+        ids=["docling, no texts", "docling, blank texts", "no blocks", "blank block"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_real_scan_still_says_to_add_a_model(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(MultimodalModelNotConfiguredError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+    @pytest.mark.asyncio
+    async def test_a_text_parser_failure_still_says_to_add_a_model(self) -> None:
+        parser, _, ocr = self._parser(docling_error=ParseError(ParseErrorCode.PARSE_FAILED, "no"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(MultimodalModelNotConfiguredError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+        # The text path's own OCR fallback hits the same missing model; it is not tried a third time.
+        assert ocr.parse.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_other_ocr_failures_are_not_read_as_text(self) -> None:
+        parser, docling, _ = self._parser(_docling_text("text"), ocr_error=DocumentProcessingError("model call failed"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(DocumentProcessingError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+        docling.parse.assert_not_called()

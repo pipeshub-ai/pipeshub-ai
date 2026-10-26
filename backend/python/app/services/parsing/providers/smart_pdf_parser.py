@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from typing import Any
 
 import pdfplumber
 
+from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
 from app.modules.parsers.encryption import raise_if_pdf_needs_password
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.docling.client import (
@@ -86,6 +88,20 @@ def _detect_needs_ocr(content: bytes) -> tuple[bool, int | None]:
         return False, None
 
 
+def _has_text(result: ParseResult) -> bool:
+    """Whether a parse found any text, in built blocks or in a Docling document."""
+    if result.block_container is not None:
+        return any(
+            isinstance(block.data, str) and block.data.strip()
+            for block in result.block_container.blocks
+        )
+    try:
+        texts = json.loads(result.raw_document or "{}").get("texts") or []
+    except (ValueError, AttributeError):
+        return False
+    return any(isinstance(t, dict) and str(t.get("text") or "").strip() for t in texts)
+
+
 class SmartPDFParser:
     """Delegates to OCR when the document appears to be scanned; otherwise uses
     the primary parser (typically DoclingServiceParser or LocalDoclingParser).
@@ -94,6 +110,9 @@ class SmartPDFParser:
     size or page limit, see ``docling_takes``) goes to that parser instead, and
     so does one the primary parser fails on, before OCR is tried, or one it
     cannot reach (Docling down or shedding load).
+
+    A PDF sent to OCR when no model that can read images is set up is read as
+    text instead, if it has any; see ``_text_without_ocr``.
     """
 
     def __init__(
@@ -123,8 +142,49 @@ class SmartPDFParser:
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",
                 record_name,
             )
-            return await self._ocr.parse(content, record_name, config)
+            try:
+                return await self._ocr.parse(content, record_name, config)
+            except MultimodalModelNotConfiguredError as exc:
+                return await self._text_without_ocr(exc, content, record_name, config, page_count)
+        return await self._parse_text(content, record_name, config, page_count)
 
+    async def _text_without_ocr(
+        self,
+        no_model: MultimodalModelNotConfiguredError,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        page_count: int | None,
+    ) -> ParseResult:
+        """A PDF sent to OCR when no model that can read images is set up.
+
+        One page that is mostly image is enough to send the whole PDF to OCR
+        (an image-only cover, say), so failing here would lose the text of
+        every other page. The text layer is read instead, without what is only
+        in images. A PDF with no text layer, a real scan, still fails with the
+        reason that says to add such a model.
+        """
+        logger.warning(
+            "SmartPDFParser: '%s' needs OCR for some pages, but no model that can read "
+            "images is set up. Reading its text layer instead; text only in images is left out.",
+            record_name,
+        )
+        try:
+            result = await self._parse_text(content, record_name, config, page_count)
+        except (ParseError, MultimodalModelNotConfiguredError) as exc:
+            raise no_model from exc
+        if not _has_text(result):
+            raise no_model
+        result.metadata = {**(result.metadata or {}), "ocr_skipped": "no multimodal model"}
+        return result
+
+    async def _parse_text(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        page_count: int | None,
+    ) -> ParseResult:
         primary = self._primary
         if self._large is not None and not docling_takes(len(content), page_count):
             logger.info(
