@@ -183,7 +183,7 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiobotocore==3.9.2",
+    "aiobotocore==3.10.0",
     "aiohttp==3.14.5",
     "aiokafka==0.14.0",
     "aiolimiter==1.3.0",
@@ -203,7 +203,7 @@ dependencies = [
     "cryptography==50.0.2",
     "dateparser>=1.2.0",
     # Free web search when no provider key is set: one query spread over several engines.
-    "ddgs==9.16.0",
+    "ddgs==9.16.1",
     "crawl4ai==0.9.5",
     "curl-cffi==0.16.3",
     # "databricks-sdk>=0.85.0",
@@ -244,14 +244,14 @@ dependencies = [
     "Jinja2==3.1.6",
     "jsonschema==4.26.0",
     "langchain-anthropic==1.5.6",
-    "langchain-aws==1.1.0",
+    "langchain-aws==1.1.1",
     "langchain-cohere==0.6.0",
     "langchain-community==0.4.2",
     "langchain-core==1.7.0",
     "langchain-experimental==0.4.2",
     "langchain-fireworks==1.7.1",
     "langchain-google-genai==4.3.7",
-    "langchain-google-vertexai==3.2.4",
+    "langchain-google-vertexai==3.2.5",
     "langchain-groq==1.1.3",
     "langchain-mistralai==1.1.6",
     "langchain-ollama==1.1.0",
@@ -273,7 +273,7 @@ dependencies = [
     "msgspec==0.22.0",
     "snowflake-connector-python",
     "clickhouse-connect",
-    "msgraph-sdk==1.64.0",
+    "msgraph-sdk==1.65.0",
     # msgraph-core 1.5.1 runs its middleware (including 429/503 retries) only when a
     # request has `request.options`, which kiota-http 1.13 stopped setting. Remove this
     # pin once a msgraph-core release supports kiota-http 1.13.
@@ -293,7 +293,7 @@ dependencies = [
     "onnxruntime==1.31.0",
     "opencv-python-headless==5.0.0.93",
     "openpyxl==3.1.5",
-    "opik==2.2.117",
+    "opik==2.2.119",
     "pagerduty>=5.0.0",
     "pandas==3.1.0",
     "phonenumbers>=8.13.0",
