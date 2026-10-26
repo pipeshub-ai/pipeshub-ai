@@ -4052,7 +4052,7 @@ function getDocumentationHtml(): string {
       add(platform, platform && platform.serviceNames);
       add(python, { query: 'Query', connector: 'Connectors', indexing: 'Indexing', docling: 'Docling', embedding: 'Embedding', parsing: 'Parsing', extraction: 'Extraction' });
       const platformDown = !platform || platform.status !== 'healthy';
-      const anyDown = services.some((svc) => svc.status !== 'healthy');
+      const anyDown = !python || services.some((svc) => svc.status !== 'healthy');
       return {
         overallStatus: platformDown ? 'unhealthy' : anyDown ? 'degraded' : 'healthy',
         timestamp: (platform && platform.timestamp) || (python && python.timestamp) || new Date().toISOString(),
