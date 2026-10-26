@@ -59,7 +59,7 @@ async def test_urls_map_to_records_and_are_readable_only_when_every_record_is() 
         out = await check_viewer_record_access(
             _request({"recordIds": ["a"], "webUrls": ["u1", "u2", "gone", "u1"]}), graph, VIEWER
         )
-    graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1")
+    graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1", per_address=50)
     check.assert_awaited_once_with(graph, {"a", "r1", "r2", "r3"}, "viewer", "org-1")
     # u2 has an unreadable record at its address, "gone" resolves to nothing.
     assert out == {"accessible": [], "accessibleUrls": ["u1"]}
@@ -72,3 +72,24 @@ async def test_no_urls_means_no_url_lookup() -> None:
         out = await check_viewer_record_access(_request({"recordIds": ["a"]}), graph, VIEWER)
     graph.get_records_by_weburls.assert_not_awaited()
     assert out == {"accessible": ["a"], "accessibleUrls": []}
+
+
+@pytest.mark.asyncio
+async def test_address_with_a_full_page_of_records_is_not_readable() -> None:
+    graph = AsyncMock()
+    graph.get_records_by_weburls = AsyncMock(
+        return_value=_rows(*[(f"r{i}", "full") for i in range(50)], ("s1", "few"))
+    )
+    everything = {f"r{i}" for i in range(50)} | {"s1"}
+    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value=everything)):
+        out = await check_viewer_record_access(_request({"webUrls": ["full", "few"]}), graph, VIEWER)
+    assert out["accessibleUrls"] == ["few"]
+
+
+@pytest.mark.asyncio
+async def test_failed_url_lookup_is_a_503() -> None:
+    graph = AsyncMock()
+    graph.get_records_by_weburls = AsyncMock(side_effect=RuntimeError("db down"))
+    with pytest.raises(HTTPException) as err:
+        await check_viewer_record_access(_request({"webUrls": ["u"]}), graph, VIEWER)
+    assert err.value.status_code == 503

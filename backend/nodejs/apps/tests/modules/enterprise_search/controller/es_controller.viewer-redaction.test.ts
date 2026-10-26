@@ -74,8 +74,8 @@ const SECRET_URL = `https://x/${SECRET}`
 const richAnswer = () => ({
   ...answer(),
   referenceData: [
-    { name: OK_NAME, id: R_OK, webUrl: 'https://x/ok' },
-    { name: SECRET, id: R_NO, webUrl: SECRET_URL },
+    { name: OK_NAME, recordId: R_OK, id: 'PA-1', webUrl: 'https://x/ok' },
+    { name: SECRET, recordId: R_NO, id: 'PA-2', webUrl: SECRET_URL },
     { name: `${SECRET}-unidentified`, webUrl: SECRET_URL },
   ],
   reasoning: [{ content: 'I looked at the pages' }],
@@ -147,7 +147,7 @@ const stubAccess = (readable: string[] | null) => {
       asked.push(body.recordIds ?? [])
       askedUrls.push(...(body.webUrls ?? []))
       if (readable === null) throw new Error('access service down')
-      return { statusCode: 200, data: { accessible: readable }, msg: '' } as any
+      return { statusCode: 200, data: { accessible: readable.filter((r) => !r.startsWith('http')), accessibleUrls: readable.filter((r) => r.startsWith('http')) }, msg: '' } as any
     }
     return { statusCode: 200, data: {}, msg: '' } as any // the unrelated permission sync
   })
@@ -204,6 +204,25 @@ describe('shared chats: per-viewer citations', () => {
     expect(message.referenceData[0].name).to.equal('Ticket PA-1')
     for (const i of [1, 2, 3]) expect(message.referenceData[i]).to.deep.equal({ redacted: true, reason: 'no_access', name: 'Restricted source' })
     expect(askedUrls.sort()).to.deep.equal(['https://jira/PA-1', 'https://jira/PA-2', 'https://jira/unresolved'])
+  })
+
+  it('a readable vendor id or recordId never admits an entry whose url is unreadable (Q3a)', async () => {
+    stubAccess(['https://x/ok', R_OK])
+    stubConversation([{ ...answer(), referenceData: [{ name: SECRET, id: R_OK, webUrl: 'https://x/hidden' }] }])
+    const message = await fetchConversation(VIEWER)
+    expect(JSON.stringify(message.referenceData)).to.not.contain(SECRET)
+  })
+
+  it('a readable url is not a readable id, and a vendor id that equals one is ignored (Q3b)', async () => {
+    stubAccess(['https://x/ok'])
+    stubConversation([{ ...answer(), referenceData: [
+      { name: 'ok', id: 'PA-1', webUrl: 'https://x/ok' },
+      { name: SECRET, id: 'https://x/ok', webUrl: 'https://x/hidden' },
+      { name: `${SECRET}-by-record`, recordId: 'https://x/ok' },
+    ] }])
+    const message = await fetchConversation(VIEWER)
+    expect(message.referenceData[0].name).to.equal('ok')
+    expect(JSON.stringify(message.referenceData)).to.not.contain(SECRET)
   })
 
   it('vendor-id reference data stays hidden when the access check fails', async () => {

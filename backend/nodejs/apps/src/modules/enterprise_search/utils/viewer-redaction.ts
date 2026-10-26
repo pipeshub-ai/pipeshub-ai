@@ -28,8 +28,14 @@ export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
   orgId: String(orgId),
 });
 
+/** Readable record ids and, apart from them, readable record addresses. */
+export interface Readable {
+  ids: Set<string>;
+  urls: Set<string>;
+}
+
 /**
- * Record ids (and record addresses, kept in the same set) the viewer may read,
+ * Record ids and record addresses the viewer may read,
  * from the query service's `check_access`. Fails closed: an error means none.
  */
 export const readableRecordIds = async (
@@ -37,10 +43,10 @@ export const readableRecordIds = async (
   viewer: Viewer,
   recordIds: string[],
   webUrls: string[] = [],
-): Promise<Set<string>> => {
+): Promise<Readable> => {
   const ids = [...new Set(recordIds.filter(Boolean))];
   const urls = [...new Set(webUrls.filter(Boolean))];
-  const readable = new Set<string>();
+  const readable: Readable = { ids: new Set(), urls: new Set() };
   if (ids.length === 0 && urls.length === 0) return readable;
   try {
     const token = new AuthTokenService(
@@ -80,15 +86,15 @@ export const readableRecordIds = async (
           `record access returned ${String(response.statusCode)}`,
         );
       }
-      for (const id of response.data?.accessible ?? []) readable.add(id);
-      for (const u of response.data?.accessibleUrls ?? []) readable.add(u);
+      for (const id of response.data?.accessible ?? []) readable.ids.add(id);
+      for (const u of response.data?.accessibleUrls ?? []) readable.urls.add(u);
     }
     return readable;
   } catch (error: unknown) {
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return new Set();
+    return { ids: new Set(), urls: new Set() };
   }
 };
 
@@ -136,22 +142,26 @@ const refMeta = (e: RefEntry): string | undefined =>
   e.metadata instanceof Map ? e.metadata.get('recordId') : e.metadata?.recordId;
 const refId = (e: RefEntry): string | undefined =>
   e.recordId ?? refMeta(e) ?? e.id;
-/** Shown only if its record is readable; an entry naming something with no readable id is hidden. */
+/**
+ * Shown only if its record is readable. Applied filters name a node by its own
+ * id. Reference data names things by a vendor id, which is never trusted: its
+ * PipesHub `recordId` decides if it has one, else the record(s) at its `webUrl`,
+ * else it is hidden.
+ */
 const refVisible = (
   e: RefEntry | null,
   ok: (id?: string) => boolean,
-  byUrl = false,
+  okUrl?: (url?: string) => boolean,
 ): boolean => {
   if (!e) return true;
-  // Reference data names things by a vendor id: a PipesHub record id decides if
-  // it has one, otherwise the record stored at its address does.
-  if (byUrl && (e.recordId ?? refMeta(e) ?? '') === '') {
-    if ((e.webUrl ?? '') !== '') return ok(e.webUrl) || ok(e.id);
-    return (e.name ?? '') === '' && (e.id ?? '') === '';
+  if (okUrl === undefined) {
+    const id = refId(e);
+    if (id !== undefined && id !== '') return ok(id);
+    return (e.name ?? '') === '' && (e.webUrl ?? '') === '';
   }
-  const id = refId(e);
-  if (id !== undefined && id !== '') return ok(id);
-  return (e.name ?? '') === '' && (e.webUrl ?? '') === '';
+  const recordId = e.recordId ?? refMeta(e) ?? '';
+  if (recordId !== '') return ok(recordId);
+  return (e.webUrl ?? '') !== '' && okUrl(e.webUrl);
 };
 const refIds = (e: RefEntry | null): string[] => {
   const id = e === null ? undefined : refId(e);
@@ -219,12 +229,17 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     others.flatMap((m) => [
       ...(m.citations ?? []).map(recordIdOf),
       ...(m.attachments ?? []).map((a) => a?.recordId),
-      ...(m.referenceData ?? []).flatMap(refIds),
+      ...(m.referenceData ?? []).flatMap((e) => {
+        const id = e?.recordId ?? (e ? refMeta(e) : undefined);
+        return id === undefined || id === '' ? [] : [id];
+      }),
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
     ]) as string[],
     others.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
   );
-  const ok = (id?: string): boolean => id !== undefined && readable.has(id);
+  const ok = (id?: string): boolean => id !== undefined && readable.ids.has(id);
+  const okUrl = (u?: string): boolean =>
+    u !== undefined && readable.urls.has(u);
   return messages.map((m) => {
     if (ownerOf(m) === viewer.userId) return m;
     const view: Record<string, unknown> = { ...(m as object) };
@@ -237,7 +252,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       view.attachments = m.attachments.filter((a) => ok(a?.recordId));
     if (m.referenceData)
       view.referenceData = m.referenceData.map((e) =>
-        refVisible(e, ok, true) ? e : restrictedRef(),
+        refVisible(e, ok, okUrl) ? e : restrictedRef(),
       );
     if (m.appliedFilters)
       view.appliedFilters = {
@@ -296,10 +311,12 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
     const view: Record<string, unknown> = {
       ...o,
       citationIds: (o.citationIds ?? []).map((h) =>
-        isBareId(h) || readable.has(hitRecord(h) ?? '') ? h : { ...REDACTED },
+        isBareId(h) || readable.ids.has(hitRecord(h) ?? '')
+          ? h
+          : { ...REDACTED },
       ),
       records: Object.fromEntries(
-        recordEntries(o).filter(([k]) => readable.has(keyToRecordId(k))),
+        recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
       ),
     };
     return view as S;

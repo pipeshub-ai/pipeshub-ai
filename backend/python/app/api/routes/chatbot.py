@@ -1255,6 +1255,10 @@ async def _org_user_keys(
     return keys
 
 
+# Records read per address; an address that fills it is treated as unreadable.
+_RECORDS_PER_URL_LIMIT = 50
+
+
 class RecordAccessRequest(BaseModel):
     recordIds: list[str] = Field(default_factory=list, max_length=500)
     # Addresses of records known only by link (a tool's reference data): readable
@@ -1279,7 +1283,11 @@ async def check_viewer_record_access(
     urls = list(dict.fromkeys(u for u in payload.webUrls if u))
     by_url: dict[str, list[str]] = {}
     if urls:
-        for row in await graph_provider.get_records_by_weburls(urls, org_id):
+        try:
+            rows = await graph_provider.get_records_by_weburls(urls, org_id, per_address=_RECORDS_PER_URL_LIMIT)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+        for row in rows:
             by_url.setdefault(row.get("webUrl"), []).append(row["id"])
     try:
         readable = await accessible_node_ids(
@@ -1289,7 +1297,13 @@ async def check_viewer_record_access(
         raise HTTPException(status_code=503, detail="Access check unavailable") from exc
     return {
         "accessible": [r for r in ids if r in readable],
-        "accessibleUrls": [u for u in urls if by_url.get(u) and all(r in readable for r in by_url[u])],
+        "accessibleUrls": [
+            u for u in urls
+            if by_url.get(u)
+            # A full page means records may be cut off, so the address is not trusted.
+            and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
+            and all(r in readable for r in by_url[u])
+        ],
     }
 
 
