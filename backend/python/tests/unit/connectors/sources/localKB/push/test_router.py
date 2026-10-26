@@ -577,3 +577,19 @@ async def test_a_schema_body_that_stalls_is_cut_at_the_read_deadline() -> None:
         await A.read_bounded({}, stalls(), 1000, timeout_s=0.1)
 
     assert (e.value.status, e.value.reason) == (408, "BODY_TIMEOUT")
+
+
+@pytest.mark.parametrize("declared", ["²", "١٠٠٠٠"])
+async def test_a_content_length_in_non_ascii_digits_is_ignored_and_the_body_still_counted(declared: str) -> None:
+    """int() raises on some of them and reads others as a number; the read must not trust either."""
+    async def body() -> AsyncIterator[bytes]:
+        yield b'{"properties": {}}'
+
+    assert await A.read_bounded({"content-length": declared}, body(), 1000) == b'{"properties": {}}'
+
+    async def too_big() -> AsyncIterator[bytes]:
+        yield b"x" * 1001
+
+    with pytest.raises(PushRefusal) as e:
+        await A.read_bounded({"content-length": declared}, too_big(), 1000)
+    assert (e.value.status, e.value.reason) == (413, "PAYLOAD_TOO_LARGE")

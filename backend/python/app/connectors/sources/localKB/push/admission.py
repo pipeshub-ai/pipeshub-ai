@@ -130,7 +130,7 @@ def _too_large() -> PushRefusal:
 async def read_bounded(headers: Mapping[str, str], stream: AsyncIterator[bytes], limit: int, timeout_s: float | None = None) -> bytes:
     """A small body read chunk by chunk: 413 as soon as it passes ``limit``, 408 if it takes longer than ``timeout_s``."""
     declared = headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > limit:
+    if declared is not None and declared.isascii() and declared.isdigit() and int(declared) > limit:
         raise _too_large_for(limit)
     buf = bytearray()
     try:
