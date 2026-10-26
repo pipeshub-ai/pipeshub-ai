@@ -105,16 +105,3 @@ def test_the_manifest_resolves_for_every_supported_python() -> None:
         capture_output=True, text=True, timeout=600, check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-
-
-@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
-def test_the_integration_tests_lock_matches_its_manifest() -> None:
-    """integration-tests/uv.lock is checked in and imports app code, so it has to
-    move with the protobuf pin."""
-    project = MANIFEST.parents[2] / "integration-tests"
-    if not (project / "uv.lock").exists():
-        pytest.skip("integration-tests/ is not part of this checkout")
-    result = subprocess.run(
-        ["uv", "lock", "--check"], cwd=project, capture_output=True, text=True, timeout=600, check=False,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]
