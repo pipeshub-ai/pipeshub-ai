@@ -44,6 +44,8 @@ def test_plain_reads_run(sql: str) -> None:
     "SELECT `x;DELETE FROM t`",
     "SELECT 1 --x; DELETE FROM t",
     "SELECT 1 # ; DROP TABLE t",
+    # Redshift reads `#` as XOR, so the "comment" is code there.
+    "SELECT 1 # 2 INTO new_table FROM old",
     "SELECT 1 /* unterminated",
     # Postgres nests block comments, MySQL doesn't: the readings differ, so it's not a read.
     "SELECT 1 /* a /* b */ ' */ , pg_sleep(1) AS x -- '",
@@ -102,5 +104,6 @@ def test_hostile_text_is_decided_quickly(name: str) -> None:
     started = time.perf_counter()
     read_only_statement(sql)
     calls_side_effect_function(sql)
-    # The bad pattern took seconds (17 s at 40 characters); 0.1 s leaves room for a slow CI worker.
-    assert time.perf_counter() - started < 0.1
+    # The bad pattern took seconds (17 s at 40 characters); CI workers with coverage run ~3x slower
+    # than a laptop, so the bound only has to separate linear from exponential.
+    assert time.perf_counter() - started < 2.0

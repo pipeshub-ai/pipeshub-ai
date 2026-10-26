@@ -247,6 +247,8 @@ class TestSqlStatements:
         "SELECT * INTO new_table FROM (SELECT 1) insert",
         "WITH c AS (SELECT 1 AS a) SELECT a AS insert INTO new_table FROM c",
         "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
+        # Redshift reads `#` as XOR, so the "comment" is code there.
+        "SELECT 1 # 2 INTO new_table FROM old",
     ])
     def test_anything_else_needs_approval(self, sql: Any) -> None:  # noqa: ANN401
         assert not approvals.sql_keeps_its_kind(sql)

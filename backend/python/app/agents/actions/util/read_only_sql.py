@@ -183,13 +183,11 @@ def read_only_statement(query: str) -> tuple[str | None, str]:
         return None, "Blocked: the statement can't be read with certainty (comment, quote or escape)"
     if any(map(_acts_on_the_server, mains + comments)):
         return None, "Blocked: this statement calls a function that is not a plain read"
-    tokens = mains[0]
-    # What one dialect reads as a comment, another runs: its text must pass as part of a read too.
+    # `#` and `--x` are comments in one dialect and code in another (Redshift reads `#` as XOR),
+    # so any such text makes the statement two different statements: not a read.
     if comments:
-        text = " ".join(map(_plain, comments))
-        safe, reason = _is_query_safe("SELECT " + text)
-        if not safe or ";" in text:
-            return None, reason or "Blocked: send exactly one SQL statement per call."
+        return None, "Blocked: the statement can't be read with certainty (comment, quote or escape)"
+    tokens = mains[0]
     if any(token == ("p", ";") for token in tokens):
         return None, "Blocked: send exactly one SQL statement per call."
     first = tokens[0][1].upper() if tokens and tokens[0][0] == "w" else ""
