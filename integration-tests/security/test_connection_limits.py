@@ -488,6 +488,10 @@ class TestOAuthApps:
             # limit its user agreed to; the new reach comes with the next connection.
             lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
             assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
+            # The access token issued under the limit is not revoked either.
+            assert corpus["inside_record"] in _rest_search(
+                base_url, after["access_token"], corpus["inside_needle"],
+            )
             kept = refresh_token_grant(base_url, app, after["refresh_token"])
             assert _claims(kept["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
             assert corpus["outside_record"] not in _rest_search(
