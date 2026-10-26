@@ -26,6 +26,8 @@ info:
 
     **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body past these limits, is answered `500 INTERNAL_ERROR`, except a JSON body over 5 MB on `/mcp`, which is answered `413` with a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
+    **Request size.** On every route with a request validator, the body, query and path values are measured before the schema runs. An array over 10,000 items (`<path> can have at most 10000 items.`), an object over 10,000 keys (`<path> can have at most 10000 fields.`), more than 100,000 array items and object keys in the whole request (`The request holds too many items in total (the limit is 100000); the limit is reached at <path>.`) or nesting deeper than 64 levels (`<path> is nested more than 64 levels deep.`) is refused with `400 VALIDATION_ERROR` (detail code `TOO_BIG`, or `TOO_DEEP` for nesting; the path reads like `body.items`). The deployment can change the first three limits with `VALIDATION_MAX_ARRAY_LENGTH`, `VALIDATION_MAX_OBJECT_KEYS` and `VALIDATION_MAX_TOTAL_ITEMS`.
+
     **OAuth scopes.** On an operation whose `security` names `oauth2` scopes, an OAuth access token holding none of them gets `403 HTTP_FORBIDDEN` ("Insufficient scope. Required: ...") right after authentication. Session tokens are never scope-checked.
 
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
@@ -2715,9 +2717,9 @@ components:
         client_secret:
           type: string
           description: |
-            Client secret. Not checked by the validator, but client authentication cannot succeed
-            without it: when it is missing the route answers `200` and revokes nothing, for public and confidential clients
-            alike. A wrong secret is `401 invalid_client`.
+            Client secret. Required for a confidential client (missing or empty: `401 invalid_client`);
+            a public client, such as the first-party device app, is identified by `client_id` alone. A
+            wrong secret is `401 invalid_client`.
       required:
         - token
         - client_id
@@ -3688,6 +3690,7 @@ components:
             (not the full role-aware OAuth-app scope set). Defaults to every
             scope in `MCP_SCOPES` if omitted.
           example: ["kb:read", "semantic:write"]
+          maxItems: 100
         expiryDays:
           oneOf:
             - type: integer
@@ -4179,6 +4182,12 @@ components:
           type: string
           format: date-time
           description: Last update timestamp (ISO 8601)
+        signupChannel:
+          type: string
+          description: 'Where the signup came from: the `ref` tag it was made with, or `direct`. Absent on organizations created before it was recorded.'
+        signupReferrerDomain:
+          type: string
+          description: For a `direct` signup, the referring site's domain, when there was one.
       required:
         - _id
         - slug
@@ -16920,6 +16929,7 @@ components:
             Available flags:
             - ENABLE_BETA_CONNECTORS: Allow usage of beta connector integrations that may be unstable
             - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI (default: true)
+            - ENABLE_API_TOOLSETS: Allow admins to add actions from the OpenAPI spec of an internal REST API, and agents to call them (default: false)
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_PROJECTS: Organize conversations, files and instructions into project workspaces (default: false)
@@ -16927,6 +16937,9 @@ components:
             - ENABLE_SOFT_DELETE: Move deleted records to the trash instead of removing them at once (default: false)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
             - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
+            - ENABLE_ARTIFACT_WRITE (advanced): While indexing, also store each new version of a record's processed content as a set of files (default: false)
+            - ENABLE_ARTIFACT_READ_SHADOW (advanced): Also read those files when a record is read and compare them with the stored record; answers still come from the stored record (default: false)
+            - ENABLE_ARTIFACT_READ (advanced): Read those files instead of the stored record, falling back to the stored record (default: false)
             - ENABLE_KH_SCOPE_LISTING (Labs: All Records Cache): Build the All Records listing from per-connector visibility stored after each sync (Neo4j only; default: false)
           example:
             ENABLE_BETA_CONNECTORS: false
@@ -17659,9 +17672,10 @@ components:
         key:
           type: string
           description: |
-            Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_ACTIONS,
+            Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_API_TOOLSETS, ENABLE_ACTIONS,
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
-            ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
+            ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
+            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:
@@ -22760,6 +22774,13 @@ components:
               type: string
               description: Value of the `REDIS_MODE` environment variable of the Node.js process (`standalone` when unset)
               example: standalone
+        warnings:
+          type: array
+          items:
+            type: string
+          description: |
+            Present only when there is something to warn about: today, local storage on a deployment that
+            may run more than one app replica (`PIPESHUB_APP_MAX_REPLICAS` above 1).
     ServicesHealthResponse:
       type: object
       description: |
@@ -22890,7 +22911,7 @@ components:
       description: |
         Response body for `PUT /oauth-clients/{appId}/token-identity`
         (`oauth.app.controller.ts` `setTokenIdentity`). The app (never includes
-        `clientSecret`, and does not echo the chosen identity) is nested under `app`.
+        `clientSecret`; its `tokenIdentityUserId` is the chosen identity) is nested under `app`.
       required:
         - message
         - app
@@ -25196,8 +25217,7 @@ paths:
       responses:
         '200':
           description: |
-            Token revoked, or it was unknown, already revoked or issued to another client. Also the
-            answer when `client_secret` is missing, in which case nothing is revoked. No body.
+            Token revoked, or it was unknown, already revoked or issued to another client. No body.
         '400':
           description: |
             The body fails validation (`VALIDATION_ERROR`)
@@ -25217,7 +25237,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Client authentication failed (`invalid_client`) - unknown or inactive client, or wrong `client_secret`
+          description: |
+            Client authentication failed (`invalid_client`): an unknown or inactive `client_id`
+            (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
+            for confidential clients`), or a wrong `client_secret`.
           content:
             application/json:
               schema:
@@ -25735,6 +25758,11 @@ paths:
             Invalid request (validation error), including a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that
             is not a UUID, or no id at all or more than 50 once duplicates are dropped.
 
+            `allowedGrantTypes` holds `client_credentials` and `tokenIdentityUserId` is missing
+            (`HTTP_BAD_REQUEST`, `An application that uses client_credentials must name the service account
+            its tokens act as. ...`), or names a disabled service account (`That service account is
+            disabled. Enable it before pointing an application at it.`).
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
             application/json:
@@ -25971,6 +25999,11 @@ paths:
           description: |
             Validation error, including a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that
             is not a UUID, or no id at all or more than 50 once duplicates are dropped. `null` is accepted and lifts the limit.
+
+            The update adds `client_credentials` and the application is not bound to a service account
+            (`HTTP_BAD_REQUEST`, `Point this application at a service account before allowing
+            client_credentials. ...`), or the bound one is disabled (`That service account is disabled.
+            Enable it before pointing an application at it.`).
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -31258,9 +31291,9 @@ paths:
       summary: Rename, describe, disable or re-enable a service account
       description: |
         Disabling stops tokens that have already been issued, not only the next
-        sign-in. Renaming is passed on to the permission graph, which keeps its
-        own copy of the display name; disabling is not, because the graph does
-        not need it.
+        sign-in. A request that renames the account or names `isDisabled` (either
+        way, changed or not) is passed on to the permission graph, which keeps
+        its own copy of the name and of whether the account is disabled.
       operationId: updateServiceAccount
       security:
         - bearerAuth: []
@@ -32790,7 +32823,9 @@ paths:
                 permanentAddress:
                   type: object
                   additionalProperties: false
-                  description: Replaces the whole stored address; an `_id` sent here is dropped.
+                  description: |
+                    Merged into the stored address: fields left out keep their saved values, and `{}`
+                    changes nothing. An `_id` sent here is dropped.
                   properties:
                     addressLine1:
                       type: string
@@ -53025,7 +53060,7 @@ paths:
           description: |
             The body failed validation (`VALIDATION_ERROR`: `statusFilters` is
             not a list of strings, or `stages` is empty or holds a value other than
-            `classify`), or the connector ID is an unsafe path segment.
+            `classify` or `entities`), or the connector ID is an unsafe path segment.
           content:
             application/json:
               schema:
@@ -64234,6 +64269,11 @@ paths:
             capability check runs before saving. If any check fails, the response includes
             per-capability diagnostics.
 
+            Saving local storage on a deployment that may run more than one app replica
+            (`PIPESHUB_APP_MAX_REPLICAS` above 1) is refused (`HTTP_BAD_REQUEST`, `Local storage keeps
+            files on each server's own disk, and this deployment runs up to <n> app replicas: ... Use S3
+            or Azure Blob storage, or run a single replica.`).
+
             Every string is trimmed before validation, so text of only whitespace counts as
             empty.
 
@@ -69819,6 +69859,9 @@ paths:
         The repository check fails open: when the query service answers it with an error other
         than `401` or `403`, times out or cannot be reached, the tools are listed anyway.
 
+        An OAuth access token or personal access token that does not hold both `kb:write` and
+        `kb:upload` is offered the read-only tools only; session tokens get every tool.
+
         The server runs in stateless mode: each request gets its own MCP server, so no
         `Mcp-Session-Id` is issued or needed. The body is one JSON-RPC message or a batch (array)
         of them. A batch may hold at most one `initialize` request and no other message beside it
@@ -70470,8 +70513,8 @@ paths:
         account behind an email address before a session exists.<br><br>
         Returns the non-deleted users whose `email` equals the address, as a bare JSON array
         holding only `_id`, `orgId`, `email`, `fullName`, `role` and `hasLoggedIn` of each. The
-        array is empty when no account matches; the lookup is not limited to the organization
-        named in the token.<br><br>
+        array is empty when no account matches. When the token names an organization
+        (`orgId`), only that organization's accounts are returned.<br><br>
         <b>Note:</b> the address is read from the JSON <b>request body</b> of this `GET`
         request. An `email` query parameter is ignored and fails validation as a missing body
         field.<br><br>
@@ -72441,10 +72484,23 @@ paths:
             The email could not be rendered or sent (code `HTTP_INTERNAL_SERVER_ERROR`): an
             unknown or missing `emailTemplateType`, a missing `templateData`, incomplete
             `emailChangeNotice` data, no usable recipient address, a refused attachment, or an
-            SMTP failure. Also a request body that is not valid JSON (code `INTERNAL_ERROR`),
+            SMTP failure other than the two answered `502`. Also a request body that is not valid JSON (code `INTERNAL_ERROR`),
             which is answered before the SMTP and token checks.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The SMTP server is the problem (`BAD_GATEWAY`):
+            - it refused the username or password (`The email wasn't sent because the mail (SMTP) server
+              rejected the username or password. An admin can update them in Workspace settings > Mail.`)
+            - it could not be reached: a DNS failure, a refused connection, a connect or greeting timeout,
+              or sending paused after repeated failures (`The email wasn't sent because PipesHub couldn't
+              reach the mail (SMTP) server. An admin can check the host and port in Workspace settings >
+              Mail.`)
           content:
             application/json:
               schema:
