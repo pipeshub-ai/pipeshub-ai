@@ -120,6 +120,7 @@ from app.utils.chat_helpers import (
 from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
+from app.utils.stage_timer import span, spanned
 from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
@@ -1074,9 +1075,10 @@ class RetrievalService:
             })
 
             self.logger.debug(f"Fetching {len(record_ids_to_fetch)} records by permission-verified record IDs")
-            fetched_records = await self.graph_provider.get_records_by_record_ids(
-                record_ids_to_fetch, org_id
-            )
+            with span("records"):
+                fetched_records = await self.graph_provider.get_records_by_record_ids(
+                    record_ids_to_fetch, org_id
+                )
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
@@ -1196,7 +1198,8 @@ class RetrievalService:
                                 # a later hit left raw was neither expanded nor known
                                 # as a match, and could repeat a passage already shown.
                                 if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
+                                    with span("content"):
+                                        await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
                                 if virtual_record_id_to_record[virtual_id] is None:
                                     continue
                                 new_type_results.append(result)
@@ -1385,7 +1388,8 @@ class RetrievalService:
             match_scores: dict[int, float] = {}
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
-                flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
+                with span("content"):
+                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     child_results = group_child_results(result)
@@ -1669,6 +1673,7 @@ class RetrievalService:
             )
         return selection, scopes
 
+    @spanned("access")
     async def _resolve_search_scope(
         self,
         user_id: str,
@@ -1755,6 +1760,7 @@ class RetrievalService:
             return None, await _legacy(), user
         return containers, {}, user
 
+    @spanned("access")
     async def _permission_filter(
         self,
         org_id: str,
@@ -2390,12 +2396,14 @@ class RetrievalService:
                 f"{self.vector_db_service.get_service_name()} has no lexical index to search"
             )
         embedder = await self._ensure_sparse_embedder()
-        sparse = await asyncio.gather(*(embedder.embed_query(query) for query in queries))
+        with span("embed"):
+            sparse = await asyncio.gather(*(embedder.embed_query(query) for query in queries))
         return [
             ((vector if getattr(vector, "indices", None) is not None and len(vector.indices) else None), None)
             for vector in sparse
         ]
 
+    @spanned("access")
     async def _keep_permitted_hits(
         self,
         search_results: list[dict[str, Any]],
@@ -2621,7 +2629,7 @@ class RetrievalService:
 
         # The tasks gather() starts copy the context when they are created, so the
         # scope has to be open across the awaits, not just where the coroutines are built.
-        with narrow_workload(Workload.QUERY_EMBEDDING):
+        with narrow_workload(Workload.QUERY_EMBEDDING), span("embed"):
             if sparse_embedder is not None and supports_sparse:
                 # Parallelise dense and sparse embedding generation
                 sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
@@ -2838,6 +2846,7 @@ class RetrievalService:
             "message": message,
         }
 
+    @spanned("records")
     async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
         """Set ``connectorInstanceName``: the name the admin gave the record's connector.
 

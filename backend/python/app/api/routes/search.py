@@ -49,7 +49,8 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
-from app.utils.stage_timer import StageTimer
+from app.utils.request_deadline import deadline_after, search_deadline_seconds
+from app.utils.stage_timer import StageTimer, collect_spans, format_spans
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
 
@@ -426,6 +427,24 @@ async def _timeline_search(
     return results
 
 
+# Said when a search is stopped at SEARCH_DEADLINE_SECONDS. A vector store that
+# timed out answers SEARCH_INDEX_UNAVAILABLE before this, from retrieval.
+SEARCH_TIMED_OUT_MESSAGE = (
+    "This search took longer than {seconds:g} seconds, so it was stopped and no "
+    "results are shown. Try again, or narrow it with filters or a shorter date range."
+)
+
+
+def _timed_out_response(seconds: float) -> dict[str, Any]:
+    return {
+        "searchResults": [],
+        "records": [],
+        "status": Status.SEARCH_TIMED_OUT.value,
+        "status_code": 503,
+        "message": SEARCH_TIMED_OUT_MESSAGE.format(seconds=seconds),
+    }
+
+
 # A date-bounded search that found nothing in its dates answers 404 (no
 # accessible records); with matches from outside them it answers 200.
 _NOTHING_IN_DATES_STATUS = 404
@@ -493,73 +512,89 @@ async def search(
     span = _timeline_span(timeline, time_range) if timeline else None
     timer = StageTimer()
     limit = body.limit or DEFAULT_SEARCH_RESULT_LIMIT
+    # Inside the MCP server's wait for an answer (PIPESHUB_MCP_TIMEOUT_MS), so a
+    # slow search still answers: the vector search fits its budget inside it
+    # (app/services/vector_db/search_retry.py), and the rest is stopped here.
+    deadline = search_deadline_seconds()
+    guard = asyncio.timeout(deadline)
+    stages: dict[str, list[float]] = {}
     try:
-        async with call_scope(
-            principal_from_request_user(request.state.user),
-            Workload.SEARCH,
-            config_service=container.config_service(),
-            container=container,
-        ):
-            if body.rewriteQuery:
-                queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
-            else:
-                queries = _queries_for_search(body.query, None, None)
-            timer.mark("query_transform")
-            filter_groups = within_connection(body.filters, connection_limit(request.state.user))
+        with collect_spans() as stages, deadline_after(deadline):
+            async with guard, call_scope(
+                principal_from_request_user(request.state.user),
+                Workload.SEARCH,
+                config_service=container.config_service(),
+                container=container,
+            ):
+                if body.rewriteQuery:
+                    queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+                else:
+                    queries = _queries_for_search(body.query, None, None)
+                timer.mark("query_transform")
+                filter_groups = within_connection(body.filters, connection_limit(request.state.user))
 
-            async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
-                return await retrieval_service.search_with_filters(
-                    queries=queries,
-                    org_id=request.state.user.get("orgId"),
-                    user_id=request.state.user.get("userId"),
-                    limit=limit,
-                    filter_groups=filter_groups,
-                    knowledge_search=True,
-                    time_range=bounds,
+                async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
+                    return await retrieval_service.search_with_filters(
+                        queries=queries,
+                        org_id=request.state.user.get("orgId"),
+                        user_id=request.state.user.get("userId"),
+                        limit=limit,
+                        filter_groups=filter_groups,
+                        knowledge_search=True,
+                        time_range=bounds,
+                    )
+
+                if span is None:
+                    searched = run_search(time_range, limit)
+                else:
+                    # ``limit`` is the matches per period when the caller set it. A
+                    # caller who did not ask for a timeline meant it for the whole
+                    # search, so it does not raise each period's above the default.
+                    period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
+                    if automatic:
+                        period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
+                    searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
+                results = await _with_search_without_dates(searched, run_search, time_range, logger)
+                if span is None:
+                    # A timeline's ``limit`` is per period, so only a ranked search is cut.
+                    results = _apply_result_limit(results, limit, body.query)
+                await hide_record_parents_outside_connection(
+                    request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
                 )
+                hide_record_source_paths(request, results)
+                timer.mark("retrieval")
+                timer.emit(
+                    logger, "search", detail=format_spans(stages),
+                    rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
+                    timeline=timeline, timeline_auto=automatic or None,
+                )
+                custom_status_code = results.get("status_code", 500)
+                logger.info(f"Custom status code: {custom_status_code}")
 
-            if span is None:
-                searched = run_search(time_range, limit)
-            else:
-                # ``limit`` is the matches per period when the caller set it. A
-                # caller who did not ask for a timeline meant it for the whole
-                # search, so it does not raise each period's above the default.
-                period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
-                if automatic:
-                    period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
-                searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
-            results = await _with_search_without_dates(searched, run_search, time_range, logger)
-            if span is None:
-                # A timeline's ``limit`` is per period, so only a ranked search is cut.
-                results = _apply_result_limit(results, limit, body.query)
-            await hide_record_parents_outside_connection(
-                request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
-            )
-            hide_record_source_paths(request, results)
-            timer.mark("retrieval")
-            timer.emit(
-                logger, "search",
-                rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
-                timeline=timeline, timeline_auto=automatic or None,
-            )
-            custom_status_code = results.get("status_code", 500)
-            logger.info(f"Custom status code: {custom_status_code}")
+                _su_email = request.state.user.get("email")
+                record_event("search_performed", {
+                    "orgId": request.state.user.get("orgId"),
+                    "userId": request.state.user.get("userId"),
+                    "email": _su_email,
+                    "domain": domain_from_email(_su_email),
+                    "status_code": custom_status_code,
+                    "num_queries": len(queries),
+                    "search_type": "timeline" if timeline else "search",
+                })
 
-            _su_email = request.state.user.get("email")
-            record_event("search_performed", {
-                "orgId": request.state.user.get("orgId"),
-                "userId": request.state.user.get("userId"),
-                "email": _su_email,
-                "domain": domain_from_email(_su_email),
-                "status_code": custom_status_code,
-                "num_queries": len(queries),
-                "search_type": "timeline" if timeline else "search",
-            })
-
-            return JSONResponse(status_code=custom_status_code, content=results)
+                return JSONResponse(status_code=custom_status_code, content=results)
 
     except HTTPException:
         raise
+    except TimeoutError as e:
+        if deadline is None or not guard.expired():
+            # Not this route's deadline: a step's own timeout that got out.
+            logger.error("Search failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
+        timer.mark("retrieval")
+        timer.emit(logger, "search", detail=format_spans(stages), timed_out=f"{deadline:g}s")
+        logger.warning("Search stopped at its %gs deadline", deadline)
+        return JSONResponse(status_code=503, content=_timed_out_response(deadline))
     except Exception as e:
         logger.error("Search failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
