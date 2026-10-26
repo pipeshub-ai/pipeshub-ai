@@ -11,6 +11,7 @@ export {
   setSessionApiBaseUrl,
   getElectronApiBaseUrl,
   shouldSkipElectronServerUrlSetup,
+  forgetElectronServerUrl,
 } from './api-base-url-storage';
 export { streamingFetch } from './streaming-fetch';
 export {

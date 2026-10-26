@@ -55,6 +55,14 @@ export function clearElectronLogoutServerState(): void {
   clearSessionServerUrlState();
 }
 
+/** Leaving local mode: its loopback URL must not be offered, or reused, as a server. */
+export function forgetElectronServerUrl(): void {
+  if (typeof window === 'undefined') return;
+  clearServerUrlSetupAck();
+  clearSessionServerUrlState();
+  window.localStorage.removeItem(API_BASE_URL_STORAGE_KEY);
+}
+
 /** Session URL first (same-run Continue), then localStorage draft / post-login URL. */
 export function getElectronApiBaseUrl(): string {
   return getSessionApiBaseUrl() ?? getStoredApiBaseUrl() ?? '';
