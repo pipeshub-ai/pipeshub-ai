@@ -85,7 +85,7 @@
     "handlebars": "^4.7.10",
     "helmet": "^8.3.0",
     "inversify": "^6.2.1",
-    "ioredis": "^5.9.2",
+    "ioredis": "^6.0.0",
     "js-yaml": "^5.5.0",
     "jsonwebtoken": "^9.0.3",
     "jwk-to-pem": "^2.0.7",
