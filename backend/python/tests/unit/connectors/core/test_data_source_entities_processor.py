@@ -5809,7 +5809,7 @@ class TestProcessRecordRevisionMatch:
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email = AsyncMock(
-            side_effect=lambda email: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
+            side_effect=lambda email, **_: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
         )
         tx_store.batch_create_entity_relations = AsyncMock()
         mail = MailRecord(

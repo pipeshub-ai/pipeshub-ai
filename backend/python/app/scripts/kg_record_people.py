@@ -1,4 +1,4 @@
-"""Operator command: link existing records to the members they name (KG-13).
+"""Operator command: link existing records to the members they name.
 
 New and updated records are linked as they sync (``record_people``). This
 backfills the records synced before that, from the people their type
@@ -50,11 +50,13 @@ class _DryRunStore:
         self._graph = graph
         self.edges = 0
 
-    async def get_user_by_email(self, email: str) -> User | None:
-        return await self._graph.get_user_by_email(email)
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+        return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error)
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
-        return await self._graph.get_user_by_source_id(source_user_id, connector_id)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> User | None:
+        return await self._graph.get_user_by_source_id(source_user_id, connector_id, raise_on_error=raise_on_error)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
         return None
