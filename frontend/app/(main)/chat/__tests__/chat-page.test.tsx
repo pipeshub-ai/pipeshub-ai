@@ -21,7 +21,7 @@ vi.mock('@assistant-ui/react', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@assistant-ui/react')>()),
   AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useExternalStoreRuntime: () => ({}),
-  useThreadRuntime: () => ({ append }),
+  useAui: () => ({ thread: () => ({ append }) }),
 }));
 
 vi.mock('../components', async () => {

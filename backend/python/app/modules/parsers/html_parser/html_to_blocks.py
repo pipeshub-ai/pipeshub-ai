@@ -105,6 +105,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers.link_text import markdown_link_destination
 from app.modules.parsers.text_splitting import split_long_text
+from app.modules.transformers.block_container_validator import strip_base64_images
 
 logger = logging.getLogger(__name__)
 
@@ -1936,7 +1937,7 @@ class _DomWalker:
             type=BlockType.TEXT,
             sub_type=BlockSubType.CODE,
             format=DataFormat.CODE,
-            data=content.rstrip("\n"),
+            data=strip_base64_images(content.rstrip("\n")),
             parent_index=self._current_parent_index(),
             code_metadata=CodeMetadata(language=language),
         ))
@@ -2128,11 +2129,15 @@ class _DomWalker:
         format: DataFormat,
         parent_block_index: int | None = None,
     ) -> Block | None:
-        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        """Emit one or more TEXT blocks, splitting oversized content at parse time.
+
+        An image payload left in text (inside ``<pre>``, a table cell, or markup
+        that never became an ``<img>``) is replaced first, before the split.
+        """
         if not text or not text.strip():
             return None
 
-        chunks = split_long_text(text)
+        chunks = split_long_text(strip_base64_images(text))
         if parent_block_index is not None:
             last: Block | None = None
             for chunk in chunks:

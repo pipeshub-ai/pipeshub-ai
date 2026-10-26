@@ -1,7 +1,7 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -69,6 +69,8 @@ class StreamMessage(BaseModel):
     timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: str | None = None
+    # Verified (or fallback) org of the message; set by the consumer's envelope wrapper, never serialised.
+    org_ctx: Any = Field(default=None, exclude=True)
     is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
@@ -419,7 +421,9 @@ class MessagingEnvConfig:
         back in line until then, and the stranded sweep re-sends it (see
         ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
         such wait; a limit that would carry the record past this ends it FAILED
-        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        instead, unless the connector's other records were indexed meanwhile,
+        which means the record is only waiting its turn and its count starts
+        again. Zero turns deferral off, as does a disabled stranded sweep,
         which is what re-sends the record.
         """
         return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)

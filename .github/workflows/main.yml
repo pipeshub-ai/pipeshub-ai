@@ -302,6 +302,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The workflow trust check parses YAML; this is the version integration-tests/uv.lock pins.
+      - name: Install the scripts' test dependency
+        run: python3 -m pip install pyyaml==6.0.3
+
       - name: Test the coverage script
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 

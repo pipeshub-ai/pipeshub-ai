@@ -56,6 +56,8 @@ import {
   getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // ============================================================================
 // Validation Schemas
@@ -67,10 +69,10 @@ import { guardPathParams } from '../../../libs/middlewares/safe-path-params.midd
 const toolsetListSchema = z.object({
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     include_tools: z
@@ -105,7 +107,7 @@ const createToolsetInstanceSchema = z.object({
     instanceName: z.string().min(1, 'Instance name is required'),
     toolsetType: z.string().min(1, 'Toolset type is required'),
     authType: z.string().min(1, 'Auth type is required'),
-    authConfig: z.record(z.any()).optional(),
+    authConfig: z.record(z.string(), z.any()).optional(),
     baseUrl: z.string().optional(),
     oauthConfigId: z.string().optional(),
     oauthInstanceName: z.string().optional(),
@@ -185,7 +187,7 @@ const handleOAuthCallbackSchema = z.object({
  */
 const toolsetToolRulesSchema = z.object({
   body: z.object({
-    tools: z.record(z.enum(['allow', 'ask', 'block'])),
+    tools: z.record(z.string(), z.enum(['allow', 'ask', 'block'])),
   }),
   params: z.object({
     instanceId: z.string().min(1, 'Instance ID is required'),
@@ -229,10 +231,10 @@ const updateAgentToolsetInstanceSchema = z.object({
 const getMyToolsetsSchema = z.object({
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     includeRegistry: z
@@ -244,7 +246,9 @@ const getMyToolsetsSchema = z.object({
       .enum(['authenticated', 'not-authenticated'])
       .optional(),
     /** 'org' leaves the caller's own personal instances out (the admin catalog). */
-    scope: z.enum(['org']).optional(),
+    scope: z
+      .enum(['org'], messageForUnknownOption('Scope must be one of: org.'))
+      .optional(),
   }),
 });
 
@@ -255,10 +259,10 @@ const getMyToolsetsSchema = z.object({
 const getAgentToolsetsSchema = z.object({
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     includeRegistry: z

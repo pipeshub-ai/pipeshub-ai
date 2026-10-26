@@ -2101,7 +2101,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return None
 
             scheme_id = scheme_response.json().get("id")
-            if not scheme_id:
+            # Jira's built-in "Default Permission Scheme" has id 0, so only a missing id counts.
+            if scheme_id is None:
                 self.logger.warning(
                     "⚠️ Permission scheme for %s has no id — cannot fetch grants",
                     project_key,

@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import (
@@ -493,6 +494,11 @@ class IGraphDBProvider(ABC):
        During transition, providers should handle both old format (with _key, _from, _to)
        and new generic format to ensure smooth migration.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
+
 
     # ==================== Connection Management ====================
 
@@ -4432,6 +4438,26 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than answering an empty set, which would read
         as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
         """
         raise NotImplementedError
 

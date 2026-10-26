@@ -91,6 +91,14 @@ PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
 # of one such PR spend a whole hourly budget. Past this many, nothing more is inlined.
 PR_FILE_INLINE_MAX_FILES = 30
 
+# Diff and inlined file text kept per pull request. Parsing turns diff text into
+# blocks whose stored JSON is about ten times its size, and storage refuses a
+# record over 100 MB, so a PR whose diff deletes or re-adds the whole repository
+# (GitHub lists up to 3,000 files) failed outright. Past this, a file's change is
+# named but its text left out. 4 MiB is ~40 MB stored, and well above ordinary
+# PRs: the largest of 400 recent apache/airflow merges was 2.7 MB.
+PR_DIFF_TEXT_MAX_BYTES = 4 * 1024 * 1024
+
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a
 # single record cannot stall the stream indefinitely.
 ATTACHMENT_MAX_SIZE_BYTES = 25 * 1024 * 1024

@@ -1225,6 +1225,11 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            # The service account this agent searches knowledge as, by user
+            # node key. Absent on agents made before binding existed, and on
+            # any agent that is not a service agent; those still search as
+            # their creator. See _enrich_user_info_for_service_account_agent_chat.
+            "serviceAccountUserId": {"type": ["string", "null"]},
             "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},

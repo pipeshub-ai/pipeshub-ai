@@ -380,6 +380,7 @@ class TestAbstractMethodInventory:
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
         "get_virtual_record_ids_in_use",
+        "has_records_indexed_since",
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",

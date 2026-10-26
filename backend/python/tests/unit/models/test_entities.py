@@ -1115,6 +1115,18 @@ class TestWebpageRecord:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    def test_from_arango_record_reads_the_stored_access_rule(self) -> None:
+        """A page read back as OPEN when it is stored RESTRICTED is never re-checked when its restriction is lifted."""
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord.from_arango_record({}, self._record_doc(accessRule="RESTRICTED"))
+        assert rec.access_rule == AccessRule.RESTRICTED
+
+    def test_from_arango_record_without_an_access_rule_is_open(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        assert WebpageRecord.from_arango_record({}, self._record_doc()).access_rule == AccessRule.OPEN
+
 
 # ============================================================================
 # LinkRecord.from_arango_record tests (lines 703-709)

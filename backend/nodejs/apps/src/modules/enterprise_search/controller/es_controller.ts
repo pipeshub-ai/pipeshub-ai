@@ -27,7 +27,7 @@ import {
 } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -2604,7 +2604,7 @@ const deleteConversation = async (
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           session,
           runValidators: true,
         },
@@ -2633,7 +2633,7 @@ const deleteConversation = async (
       if (citationIds.length > 0) {
         await Citation.updateMany(
           {
-            _id: { $in: citationIds },
+            _id: { $in: citationIds as Types.ObjectId[] },
             orgId,
             isDeleted: false,
           },
@@ -2850,7 +2850,7 @@ const createShareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3037,7 +3037,7 @@ const createUnshareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3205,7 +3205,7 @@ export const setConversationProject = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       update,
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation project link');
@@ -3268,7 +3268,7 @@ export const setConversationProjectVisibility = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       { $set: { projectVisibility: visibility } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation visibility');
@@ -3585,7 +3585,7 @@ async function regenerateAnswersInternal(
         orgId as string | undefined,
         userId as string | undefined,
         agentKey,
-      ) as FilterQuery<IChatSessionDocument>,
+      ) as QueryFilter<IChatSessionDocument>,
     );
 
     // Validate conversation and message
@@ -4634,7 +4634,7 @@ export const forkConversation =
             conversationId,
             true,
             false,
-          ) as FilterQuery<IChatSessionDocument>),
+          ) as QueryFilter<IChatSessionDocument>),
           ...EXCLUDE_AGENT,
         }),
     });
@@ -4666,7 +4666,7 @@ export const forkAgentConversation =
             userId,
             agentKey,
             conversationId,
-          ) as FilterQuery<IChatSessionDocument>,
+          ) as QueryFilter<IChatSessionDocument>,
         ),
     });
   };
@@ -4874,7 +4874,7 @@ export const archiveConversation = async (
             $unset: { isPinned: 1 },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -4986,7 +4986,7 @@ export const unarchiveConversation = async (
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -5078,7 +5078,7 @@ const setConversationPinned =
         // Unpinning removes the field rather than storing `false`; see the schema.
         pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
         // Pinning is not an edit of the chat, so it must not change `updatedAt`.
-        { new: true, timestamps: false },
+        { returnDocument: 'after', timestamps: false },
       ).exec();
 
       if (!updated) {
@@ -5554,6 +5554,76 @@ export const search =
         requestId,
         message: 'Error searching query',
         error: error.message,
+      });
+      next(error);
+    }
+  };
+
+/**
+ * POST /api/v1/retrieve: ranked chunks with citations, for a developer's own
+ * RAG or agent. Unlike `search`, nothing is stored: no citation documents and
+ * no search history, since an app may call this on every request it serves.
+ */
+export const retrieve =
+  (
+    appConfig: AppConfig,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
+    const requestId = req.context?.requestId;
+    try {
+      const body = req.body as Record<string, unknown>;
+      if (typeof body.query === 'string') {
+        validateNoFormatSpecifiers(body.query, 'retrieve query');
+      }
+      // Only the fields the caller set, so the AI service's defaults apply.
+      const forwarded: Record<string, unknown> = {};
+      for (const key of [
+        'query',
+        'filters',
+        'limit',
+        'maxChunksPerRecord',
+        'rewriteQuery',
+        ...SEARCH_DATE_BOUNDS,
+      ]) {
+        if (body[key] !== undefined) forwarded[key] = body[key];
+      }
+
+      // The body may be missing on a broken upstream answer, so it is typed so.
+      const aiCommand = new AIServiceCommand<
+        Record<string, unknown> | undefined
+      >({
+        uri: `${appConfig.aiBackend}/api/v1/retrieve`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: forwarded,
+      });
+      let aiResponse: AIServiceResponse<Record<string, unknown> | undefined>;
+      try {
+        aiResponse = await aiCommand.execute();
+      } catch (error: unknown) {
+        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, {
+          cause: error,
+        });
+      }
+      const data = aiResponse.data;
+      if (data === undefined) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(
+          { response: { status: aiResponse.statusCode, data } },
+          'Retrieve',
+        );
+      }
+      res.status(HTTP_STATUS.OK).json({ requestId, ...data });
+    } catch (error: unknown) {
+      logger.error('Error retrieving chunks', {
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
       });
       next(error);
     }
@@ -8508,7 +8578,7 @@ export const archiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {
@@ -8613,7 +8683,7 @@ export const unarchiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {

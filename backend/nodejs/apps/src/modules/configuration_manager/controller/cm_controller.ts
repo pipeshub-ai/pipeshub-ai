@@ -1559,10 +1559,10 @@ export const createGoogleWorkspaceCredentials =
               googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
 
             if (!validationResult.success) {
-              const formattedErrors = validationResult.error.errors
+              const formattedErrors = validationResult.error.issues
                 .map((err) => {
                   const fieldName = err.path[0] || 'Unknown field';
-                  return `  • ${fieldName}: ${err.message}  `;
+                  return `  • ${String(fieldName)}: ${err.message}  `;
                 })
                 .join('');
 

@@ -13,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -23,6 +24,7 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
@@ -57,6 +59,7 @@ import {
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -220,6 +223,9 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
+      );
 
       // Ensure message broker topics/streams exist
       try {
@@ -669,6 +675,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
     );
 
     // code-graph status for the dashboard (repos and their graph status)

@@ -64,6 +64,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.code_indexing_flags import (
+    code_branch,
     code_exclude_globs,
     code_indexing_flags,
 )
@@ -146,27 +147,39 @@ class ReposSync:
     # 1. Entry point: dispatch + checkpoints
     # ------------------------------------------------------------------
 
+    def branch_for(self, repo: GhObject) -> str | None:
+        """The branch whose code is synced: the admin's pick, else the repo's default."""
+        return code_branch(self.c.sync_filters) or repo.default_branch
+
     async def run(self, repo: GhObject) -> bool:
         """Sync a repo's code: incremental when a checkpoint exists and the
-        default branch hasn't changed, full sync (re-baseline) otherwise.
+        synced branch hasn't changed, full sync (re-baseline) otherwise.
         Returns False when the code could not be brought up to date."""
         c = self.c
         owner, name = repo.owner.login, repo.name
-        default_branch = repo.default_branch
-        if not default_branch:
+        branch = self.branch_for(repo)
+        if not branch:
             self.logger.warning("Repo %s has no default branch (empty repo?); skipping code sync", repo.full_name)
             return True
 
-        branch_res = await c.runtime.ds_call(c.data_source.get_branch, owner, name, default_branch)
+        branch_res = await c.runtime.ds_call(c.data_source.get_branch, owner, name, branch)
         if not branch_res.success or not branch_res.data:
-            self.logger.error(
-                "Failed to fetch branch %s for %s: %s", default_branch, repo.full_name, branch_res.error
-            )
+            if branch_res.status_code == HttpStatusCode.NOT_FOUND.value and branch != repo.default_branch:
+                # Never fall back to the default branch: its files would replace the
+                # chosen branch's in the index without the admin asking for it.
+                self.logger.error(
+                    "Branch %s chosen in the connector's filters does not exist in %s; "
+                    "code not synced, existing records kept", branch, repo.full_name,
+                )
+            else:
+                self.logger.error(
+                    "Failed to fetch branch %s for %s: %s", branch, repo.full_name, branch_res.error
+                )
             return False
         commit = getattr(branch_res.data, "commit", None)
         current_sha = getattr(commit, "sha", None) if commit else None
         if not current_sha:
-            self.logger.error("No HEAD commit SHA on branch %s for %s", default_branch, repo.full_name)
+            self.logger.error("No HEAD commit SHA on branch %s for %s", branch, repo.full_name)
             return False
 
         self._policy = PathPolicy(
@@ -176,25 +189,25 @@ class ReposSync:
 
         checkpoint = await self._get_checkpoint(repo.id)
         last_sha = checkpoint.get(GitHubLiterals.LAST_COMMIT_SHA.value) if checkpoint else None
-        last_branch = checkpoint.get(GitHubLiterals.DEFAULT_BRANCH.value) if checkpoint else None
+        last_branch = checkpoint.get(GitHubLiterals.SYNCED_BRANCH.value) if checkpoint else None
 
         if last_sha is None:
             self.logger.info("No code checkpoint for %s; running full sync", repo.full_name)
             ok = await self._full_sync(repo, current_sha)
             if ok:
-                await self._update_checkpoint(repo, current_sha, default_branch)
+                await self._update_checkpoint(repo, current_sha, branch)
             else:
                 self.logger.warning("Full code sync for %s completed with errors; checkpoint not advanced", repo.full_name)
             return ok
 
-        if last_branch and last_branch != default_branch:
+        if last_branch and last_branch != branch:
             self.logger.info(
-                "Default branch changed for %s (%s -> %s); re-baselining with full sync",
-                repo.full_name, last_branch, default_branch,
+                "Synced branch changed for %s (%s -> %s); re-baselining with full sync",
+                repo.full_name, last_branch, branch,
             )
             ok = await self._full_sync(repo, current_sha)
             if ok:
-                await self._update_checkpoint(repo, current_sha, default_branch)
+                await self._update_checkpoint(repo, current_sha, branch)
             return ok
 
         if last_sha == current_sha:
@@ -203,13 +216,13 @@ class ReposSync:
 
         ok = await self._incremental_sync(repo, last_sha, current_sha)
         if ok:
-            await self._update_checkpoint(repo, current_sha, default_branch)
+            await self._update_checkpoint(repo, current_sha, branch)
             return True
 
         self.logger.warning("Incremental code sync failed for %s; falling back to full sync", repo.full_name)
         ok = await self._full_sync(repo, current_sha)
         if ok:
-            await self._update_checkpoint(repo, current_sha, default_branch)
+            await self._update_checkpoint(repo, current_sha, branch)
         else:
             self.logger.warning("Full sync fallback for %s completed with errors; checkpoint not advanced", repo.full_name)
         return ok
@@ -295,12 +308,12 @@ class ReposSync:
         except Exception:
             return None
 
-    async def _update_checkpoint(self, repo: GhObject, commit_sha: str, default_branch: str) -> None:
+    async def _update_checkpoint(self, repo: GhObject, commit_sha: str, branch: str) -> None:
         await self.c.record_sync_point.update_sync_point(
             self._checkpoint_key(repo.id),
             {
                 GitHubLiterals.LAST_COMMIT_SHA.value: commit_sha,
-                GitHubLiterals.DEFAULT_BRANCH.value: default_branch,
+                GitHubLiterals.SYNCED_BRANCH.value: branch,
                 GitHubLiterals.FULL_NAME.value: repo.full_name,
             },
         )
@@ -852,7 +865,7 @@ class ReposSync:
         # None, and the backfill's missing-only query never revisits an
         # already-dated record.
         dates = await self.timestamps.fetch_commit_dates(
-            repo.owner.login, repo.name, list(path_to_sha.keys())
+            repo.owner.login, repo.name, list(path_to_sha.keys()), commit_sha or self.branch_for(repo),
         )
         records: list[Record] = []
         for path, sha in path_to_sha.items():
@@ -939,7 +952,7 @@ class ReposSync:
         parent_path = path.rpartition("/")[0] if "/" in path else None
         external_id = tree_external_id(repo.id, path)
         parent_external_id = tree_external_id(repo.id, parent_path) if parent_path else None
-        weburl = f"{repo.html_url}/tree/{repo.default_branch}/{path}"
+        weburl = f"{repo.html_url}/tree/{self.branch_for(repo)}/{path}"
         record = FileRecord(
             id=str(uuid.uuid4()), org_id=c.data_entities_processor.org_id, record_name=name,
             record_type=RecordType.FILE.value, connector_name=c.connector_name, connector_id=c.connector_id,
@@ -996,7 +1009,7 @@ class ReposSync:
             parent_record_type=(RecordType.FILE if parent_external_id else None),
             # Pinned to the commit the file was synced at: a citation keeps
             # pointing at the lines it quoted after the branch moves (P-8, A-12).
-            weburl=f"{repo.html_url}/blob/{commit_sha or repo.default_branch}/{path}",
+            weburl=f"{repo.html_url}/blob/{commit_sha or self.branch_for(repo)}/{path}",
             commit_sha=commit_sha,
         )
         if not code_files_enabled:
@@ -1082,7 +1095,7 @@ class ReposSync:
         # the content indexed is the content the record describes (P-8).
         content_res = await c.runtime.ds_call(
             c.data_source.get_file_contents, repo.owner.login, repo.name, file_path,
-            getattr(record, "commit_sha", None) or repo.default_branch,
+            getattr(record, "commit_sha", None) or self.branch_for(repo),
         )
         if content_res.status_code == HttpStatusCode.NOT_FOUND.value:
             # The lookup may be remembered from before the default branch was
@@ -1103,12 +1116,12 @@ class ReposSync:
                     message=fresh_res.error,
                 )
             fresh = fresh_res.data
-            if (fresh.owner.login, fresh.name, fresh.default_branch) != (
-                repo.owner.login, repo.name, repo.default_branch,
+            if (fresh.owner.login, fresh.name, self.branch_for(fresh)) != (
+                repo.owner.login, repo.name, self.branch_for(repo),
             ):
                 repo = fresh
                 content_res = await c.runtime.ds_call(
-                    c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
+                    c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, self.branch_for(repo),
                 )
         if not content_res.success or content_res.data is None:
             raise_for_stream_fetch(

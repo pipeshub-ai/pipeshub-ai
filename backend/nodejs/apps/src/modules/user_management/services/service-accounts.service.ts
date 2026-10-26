@@ -309,7 +309,7 @@ export class ServiceAccountsService {
           ...(input.description === undefined ? { description: '' } : {}),
         },
       },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     if (!restored) {
@@ -346,7 +346,7 @@ export class ServiceAccountsService {
     const finished = await Users.findOneAndUpdate(
       { _id: restored._id, restoreOpId, isDeleted: false },
       { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     // Nothing matched, so something else has moved this account on while the
@@ -436,7 +436,7 @@ export class ServiceAccountsService {
           restoreOpId: { $exists: false },
         },
         { $set: { isDisabled: false } },
-        { new: true },
+        { returnDocument: 'after' },
       ).exec();
 
       if (!enabled) {
@@ -464,10 +464,20 @@ export class ServiceAccountsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      await Users.updateOne(
+      const written = await Users.updateOne(
         { _id: account._id, orgId, kind: 'service', isDeleted: false },
         { $set: changes },
       ).exec();
+
+      // Nothing matched means the account stopped being one between the read
+      // at the top of this method and this write — deleted, in practice.
+      // Nothing was stored, so there is nothing to tell the graph, and saying
+      // it anyway would leave the graph holding a state no database agrees
+      // with. On a deleted account that state is what a bound agent is
+      // checked against, so it would put a removed identity back in use.
+      if (written.matchedCount === 0) {
+        throw new NotFoundError('Service account not found');
+      }
     }
 
     // Disabling has to reach the tokens this account obtained to act as other
@@ -496,9 +506,22 @@ export class ServiceAccountsService {
     // it would go on reading with the reach of an account an administrator has
     // just switched off. Published on enabling too: a flag written only on the
     // way down would stay set after the account came back.
+    //
+    // Published whenever the request named `isDisabled`, not only when the
+    // stored value moved. If an earlier attempt wrote Mongo and then failed
+    // before publishing — token revocation throws, or the broker is down —
+    // the account is already disabled by the time the retry arrives, so
+    // nothing changed and a check on change alone would publish nothing. The
+    // graph would keep an account that is switched off in Mongo, and a bound
+    // agent would go on searching with it. The event carries the state rather
+    // than a transition, so publishing it twice says the same thing twice.
     const isDisabledNow = account.isDisabled === true;
     const disabledChanged = isDisabledNow !== wasDisabled;
-    if (input.fullName !== undefined || disabledChanged) {
+    if (
+      input.fullName !== undefined ||
+      input.isDisabled !== undefined ||
+      disabledChanged
+    ) {
       const updatedPayload: UserUpdatedEvent = {
         orgId,
         userId: idOf(account),

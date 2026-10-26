@@ -530,6 +530,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if drive_content_changed(existing_record, metadata):
                     is_updated = True
                     content_changed = await self._content_changed(existing_record, metadata, self.drive_data_source)
+                    # A native file's version also moves on a sharing change. With no new content it is
+                    # still written, as a rename is: a full sync unlinks every record it does not write,
+                    # and only the metadata path stores the new version without re-indexing the file.
+                    metadata_changed = metadata_changed or not content_changed
 
                 if existing_record and drive_id != existing_record.external_record_group_id:
                     is_updated = True

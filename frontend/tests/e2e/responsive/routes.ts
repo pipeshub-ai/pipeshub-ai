@@ -157,8 +157,9 @@ async function openRowMenu(page: Page, text: string | RegExp): Promise<void> {
   const row = page.getByRole('row').filter({ hasText: text }).filter({ visible: true }).first();
   await row.waitFor({ timeout: ACTION_TIMEOUT });
   if (!(await page.evaluate(() => matchMedia('(hover: none)').matches))) await row.hover({ timeout: ACTION_TIMEOUT });
-  // People tables name the trigger "More options"; other tables still expose the icon ligature.
-  await row.getByRole('button', { name: /^(more_horiz|More options)$/ }).click({ timeout: ACTION_TIMEOUT });
+  // People tables name the trigger "More options", knowledge base rows "More options for <name>";
+  // other tables still expose the icon ligature.
+  await row.getByRole('button', { name: /^(more_horiz|More options( for .+)?)$/ }).click({ timeout: ACTION_TIMEOUT });
 }
 
 /** Opens the mobile drawer, like drawer-open, on any page. */
@@ -212,8 +213,8 @@ export const ROUTES: AuditRoute[] = [
       if (await toggle.count()) {
         await toggle.click({ timeout: ACTION_TIMEOUT });
       } else {
-        // Phones keep the view toggle in the header's overflow menu.
-        await page.getByRole('button', { name: 'More options' }).click({ timeout: ACTION_TIMEOUT });
+        // Phones keep the view toggle in the header's overflow menu; each row's menu is "More options for <name>".
+        await page.getByRole('button', { name: 'More options', exact: true }).click({ timeout: ACTION_TIMEOUT });
         await page.getByRole('menuitem', { name: 'Grid view' }).click({ timeout: ACTION_TIMEOUT });
       }
     },

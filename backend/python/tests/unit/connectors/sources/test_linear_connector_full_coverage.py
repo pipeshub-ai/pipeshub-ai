@@ -27,6 +27,7 @@ from app.connectors.sources.linear.api_gateway import (
 )
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
     file_record_id,
 )
@@ -312,7 +313,18 @@ def _page(nodes, has_next=False, end_cursor=None) -> dict:
 
 
 class TestProjectHome:
-    """A project is filed under its first synced team by id; its other teams are shared groups."""
+    """A project is filed under its lead team, else its first synced team by id."""
+
+    def test_the_lead_team_is_the_home(self) -> None:
+        connector = _make_connector()
+        project = {"leadTeamId": "team-b", "teams": _teams(("team-a", False), ("team-b", True))}
+        assert connector._project_home(project, {"team-a", "team-b"}) == "team-b"
+
+    @pytest.mark.parametrize("lead_team_id", [None, "team-0"])
+    def test_without_a_synced_lead_team_the_first_by_id_is_the_home(self, lead_team_id) -> None:
+        connector = _make_connector()
+        project = {"leadTeamId": lead_team_id, "teams": _teams(("team-b", False), ("team-a", True))}
+        assert connector._project_home(project, {"team-a", "team-b"}) == "team-a"
 
     def test_first_synced_team_by_id_whatever_its_visibility(self) -> None:
         connector = _make_connector()
@@ -558,15 +570,16 @@ class TestProjectToRecords:
         assert ("proj-1" in connector._refreshed_project_ids) is refreshed
 
     @pytest.mark.asyncio
-    async def test_the_other_synced_teams_are_shared_groups_of_every_record(self) -> None:
-        """Linear shows a project, and its documents, links and files, to anyone who can
-        see one of its teams: each record is filed under the home team and shared with
-        the other synced ones."""
+    async def test_every_record_is_filed_under_the_lead_team_only(self) -> None:
+        """Shared into the other teams too, the documents, links and files were listed at
+        the top of each of those teams as well as under the project. The complete, empty
+        list drops the groups a record was shared into before."""
         project = _make_project_data(
             content=f"[spec.pdf]({self.UPLOAD})",
             external_links=_page([{"id": "link-1", "url": "https://example.com/spec", "label": "Spec"}]),
         )
-        project["teams"] = _teams(("team-2", True), ("team-9", False), ("team-1", True))
+        project["teams"] = _teams(("team-1", True), ("team-2", True))
+        project["leadTeamId"] = "team-2"
         connector = self._connector(project)
 
         records = await connector._project_to_records("proj-1", {"team-1", "team-2"})
@@ -574,13 +587,10 @@ class TestProjectToRecords:
         assert len(records) == 3
         assert isinstance(records[0][0], ProjectRecord)
         for record, permissions in records:
-            assert record.external_record_group_id == "team-1"
+            assert record.external_record_group_id == "team-2"
             assert permissions == []
-            # team-9 is not synced, so there is no group to share with.
-            assert record.shared_with_me_record_group_ids == ["team-2"]
+            assert record.shared_with_me_record_group_ids == []
             assert record.shared_groups_complete is True
-        # Each record gets its own list.
-        assert len({id(r.shared_with_me_record_group_ids) for r, _ in records}) == 3
 
     @pytest.mark.asyncio
     async def test_files_are_filed_again_on_every_read(self) -> None:
@@ -2859,14 +2869,14 @@ class TestSyncProjectsForTeams:
             ("proj-2", {"team-0", "team-1"}),
         ]
         assert connector.data_entities_processor.on_new_records.await_count == 2
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1705400000000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1705400000000
 
     @pytest.mark.asyncio
     async def test_sync_projects_incremental_filters_by_update_time(self) -> None:
         connector = _make_connector()
         connector.sync_filters = None
         connector._now = MagicMock(return_value=1705400000000)
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group()
 
         mock_ds = MagicMock()
@@ -2887,11 +2897,36 @@ class TestSyncProjectsForTeams:
         mock_to_records.assert_awaited_once_with("proj-1", {"team-1"})
 
     @pytest.mark.asyncio
+    async def test_a_checkpoint_under_the_old_key_reads_every_project_again(self) -> None:
+        """An unchanged project would otherwise keep the team edges from when it was
+        shared into its non-lead teams."""
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group()
+
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(return_value=_mock_paginated("projects", [{"id": "proj-1"}]))
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ), patch.object(
+            connector, "_project_to_records", new_callable=AsyncMock, return_value=[]
+        ):
+            await connector._sync_projects_for_teams([(rg, perms)])
+
+        assert mock_ds.projects.await_args.kwargs["filter"] == {
+            "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
+        }
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
     async def test_sync_projects_failed_page_keeps_checkpoint_and_notifies(self) -> None:
         connector = _make_connector()
         connector.notify = AsyncMock()
         connector._now = MagicMock(return_value=1705400000000)
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group()
 
         failure = GraphQLResponse(success=False, message="Internal error", status_code=500)
@@ -2908,7 +2943,7 @@ class TestSyncProjectsForTeams:
         ):
             await connector._sync_projects_for_teams([(rg, perms)])
 
-        saved = connector.projects_sync_point.store["projects"]
+        saved = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert saved["last_sync_time"] == 1705300000000
         assert saved["resume_cursor"] == "cursor-1"
         connector.notify.assert_awaited_once()
@@ -2934,7 +2969,7 @@ class TestSyncProjectsForTeams:
         assert [c.args[0] for c in connector._sleep.await_args_list] == [5, 15, 30, 60, 120, 240]
         assert mock_ds.projects.await_count == 7
         connector.notify.assert_not_awaited()
-        assert "projects" not in connector.projects_sync_point.store
+        assert PROJECTS_CHECKPOINT_KEY not in connector.projects_sync_point.store
 
 
 # ===================================================================

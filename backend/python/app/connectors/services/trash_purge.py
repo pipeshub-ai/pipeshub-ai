@@ -50,6 +50,7 @@ from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
 )
 from app.connectors.sources.local_fs.connector import LOCAL_FS_STORAGE_PATH_PREFIX
+from app.core.org_context import for_org, system
 from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
@@ -350,58 +351,59 @@ class TrashPurger:
         processed = 0
         while run.org_index < len(run.org_ids):
             org_id = run.org_ids[run.org_index]
-            while True:
-                stop = await self._stop_reason(deadline, processed, settings)
-                if stop:
-                    self.logger.info(
-                        "Trash purge %s %s after %d record(s) this pass; it resumes from its cursor",
-                        run.run_id, stop, processed,
+            with for_org(org_id, job="trash_purge"):
+                while True:
+                    stop = await self._stop_reason(deadline, processed, settings)
+                    if stop:
+                        self.logger.info(
+                            "Trash purge %s %s after %d record(s) this pass; it resumes from its cursor",
+                            run.run_id, stop, processed,
+                        )
+                        return stop
+                    page = await self.graph.get_purgeable_trashed_records(
+                        org_id,
+                        run.cutoff,
+                        after=tuple(run.after) if run.after else None,
+                        limit=settings.page_size,
+                        max_attempts=settings.max_attempts,
                     )
-                    return stop
-                page = await self.graph.get_purgeable_trashed_records(
-                    org_id,
-                    run.cutoff,
-                    after=tuple(run.after) if run.after else None,
-                    limit=settings.page_size,
-                    max_attempts=settings.max_attempts,
-                )
-                rows = [row for row in page.get("records") or [] if row["id"] not in self._failed]
-                run.pass_held += int(page.get("held") or 0)
-                if rows:
-                    try:
-                        published = await self._purge_page(org_id, rows, run, settings)
-                    except GraphLockUnavailableError as exc:
-                        self.logger.warning("Trash purge %s paused: %s", run.run_id, exc)
+                    rows = [row for row in page.get("records") or [] if row["id"] not in self._failed]
+                    run.pass_held += int(page.get("held") or 0)
+                    if rows:
+                        try:
+                            published = await self._purge_page(org_id, rows, run, settings)
+                        except GraphLockUnavailableError as exc:
+                            self.logger.warning("Trash purge %s paused: %s", run.run_id, exc)
+                            await self._save_state(state)
+                            return Outcome.PAUSED
+                        processed += len(rows)
+                        if not published:
+                            await self._save_state(state)
+                            return Outcome.PAUSED
+                    nxt = page.get("next")
+                    run.after = list(nxt) if nxt else None
+                    if run.after is None and run.pass_purged and run.pass_held:
+                        # Their children went in this walk, so some of them may go in the next.
+                        self.logger.debug(
+                            "Trash purge %s: walking org %s again for %d record(s) whose children were in the trash",
+                            run.run_id, org_id, run.pass_held,
+                        )
+                        run.pass_purged = run.pass_held = 0
                         await self._save_state(state)
-                        return Outcome.PAUSED
-                    processed += len(rows)
-                    if not published:
-                        await self._save_state(state)
-                        return Outcome.PAUSED
-                nxt = page.get("next")
-                run.after = list(nxt) if nxt else None
-                if run.after is None and run.pass_purged and run.pass_held:
-                    # Their children went in this walk, so some of them may go in the next.
-                    self.logger.debug(
-                        "Trash purge %s: walking org %s again for %d record(s) whose children were in the trash",
-                        run.run_id, org_id, run.pass_held,
-                    )
-                    run.pass_purged = run.pass_held = 0
+                        continue
                     await self._save_state(state)
-                    continue
-                await self._save_state(state)
-                if run.after is None:
-                    break
-                if settings.page_pause_ms:
-                    await self.sleep(settings.page_pause_ms / 1000)
-            removed, stop = await self._purge_kept_groups(org_id, deadline, processed, settings)
-            run.groups += removed
-            if stop:
-                # The org is not done: the next tick walks it again, which finds its trash
-                # already gone, then carries on with its groups.
-                await self._save_state(state)
-                self.logger.info("Trash purge %s %s while removing kept record groups", run.run_id, stop)
-                return stop
+                    if run.after is None:
+                        break
+                    if settings.page_pause_ms:
+                        await self.sleep(settings.page_pause_ms / 1000)
+                removed, stop = await self._purge_kept_groups(org_id, deadline, processed, settings)
+                run.groups += removed
+                if stop:
+                    # The org is not done: the next tick walks it again, which finds its trash
+                    # already gone, then carries on with its groups.
+                    await self._save_state(state)
+                    self.logger.info("Trash purge %s %s while removing kept record groups", run.run_id, stop)
+                    return stop
             run.org_index += 1
             run.after = None
             run.pass_purged = run.pass_held = 0
@@ -601,7 +603,8 @@ class TrashPurger:
         oldest: int | None = None
         try:
             for org_id in org_ids:
-                stats = await self.graph.get_trash_purge_stats(org_id, settings.max_attempts)
+                with for_org(org_id, job="trash_purge"):
+                    stats = await self.graph.get_trash_purge_stats(org_id, settings.max_attempts)
                 stuck += stats["stuck"]
                 pending += stats["trashed"] - stats["stuck"]
                 if stats["oldestDeletedAt"] is not None:
@@ -619,10 +622,11 @@ class TrashPurger:
     async def _org_ids(self) -> list[str]:
         # Raising: an empty answer from a failed read would start, and finish, a run that purged nothing.
         try:
-            orgs = [
-                *await self.graph.get_all_orgs(active=False, raise_on_error=True),
-                *await self.graph.get_all_orgs(active=False, is_external=True, raise_on_error=True),
-            ]
+            with system("trash_purge"):
+                orgs = [
+                    *await self.graph.get_all_orgs(active=False, raise_on_error=True),
+                    *await self.graph.get_all_orgs(active=False, is_external=True, raise_on_error=True),
+                ]
         except Exception as exc:
             raise TrashPurgeError(f"could not list the organizations; no run started: {exc}") from exc
         return sorted({str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")})

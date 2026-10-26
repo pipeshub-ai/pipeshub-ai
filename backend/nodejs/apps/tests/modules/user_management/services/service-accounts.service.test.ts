@@ -646,6 +646,56 @@ describe('ServiceAccountsService', () => {
       expect(payload.isDisabled).to.equal(true);
     });
 
+    it('tells it again when a disable is retried over an already-off account', async () => {
+      // An earlier attempt can write Mongo and then fail before publishing —
+      // token revocation throws, or the broker is down. By the time the retry
+      // arrives the account is already off, so nothing has changed; publishing
+      // only on a change would leave the graph holding an account that is
+      // switched off everywhere else, and a bound agent still searching with
+      // it.
+      stubAccount(true);
+
+      const { service, events } = makeService();
+      await service.update(orgId, id, { isDisabled: true });
+
+      expect(events.publishEvent.calledOnce).to.equal(true);
+      expect(events.publishEvent.firstCall.args[0].payload.isDisabled).to.equal(
+        true,
+      );
+    });
+
+    it('says nothing when the account was deleted while the write was in flight', async () => {
+      // `stubAccount` reads the account, then the write matches nothing
+      // because it was deleted in between. Nothing was stored, so telling the
+      // graph what we meant to store would leave it holding a state no
+      // database agrees with — and on a deleted account that is the state a
+      // bound agent is checked against.
+      const account: any = {
+        _id: id,
+        email: `svc-x-${orgId}@service.pipeshub.internal`,
+        fullName: 'Old name',
+        isDisabled: false,
+        save: sinon.stub().resolvesThis(),
+      };
+      sinon
+        .stub(Users, 'findOne')
+        .returns({ exec: sinon.stub().resolves(account) } as any);
+      sinon.stub(Users, 'updateOne').returns({
+        exec: sinon.stub().resolves({ matchedCount: 0 }),
+      } as any);
+
+      const { service, events } = makeService();
+      let threw = false;
+      try {
+        await service.update(orgId, id, { isDisabled: true });
+      } catch {
+        threw = true;
+      }
+
+      expect(threw).to.equal(true);
+      expect(events.publishEvent.called).to.equal(false);
+    });
+
     it('says nothing when neither the name nor the switch moved', async () => {
       stubAccount(false);
 

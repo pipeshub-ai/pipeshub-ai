@@ -374,12 +374,23 @@ class World:
             cur = repo.commits[cur].parent
         return out
 
-    def path_history(self, repo: Repo, path: str) -> list[Commit]:
-        """Commits on the default branch that changed ``path``, newest first."""
-        head = repo.head()
+    def resolve(self, repo: Repo, ref: str | None) -> str | None:
+        """The commit a ref names, as git does: HEAD (the default branch), a branch or a
+        full commit sha; None when it names nothing."""
+        if ref in (None, "", "HEAD"):
+            head = repo.head()
+            return head.sha if head else None
+        if ref in repo.branches:
+            return repo.branches[ref]
+        return ref if ref in repo.commits else None
+
+    def path_history(self, repo: Repo, path: str, sha: str | None = None) -> list[Commit]:
+        """Commits reachable from ``sha`` (default: the default branch) that changed
+        ``path``, newest first."""
+        start = sha or self.resolve(repo, None)
         out = []
-        for sha in self.ancestors(repo, head.sha) if head else []:
-            c = repo.commits[sha]
+        for commit_sha in self.ancestors(repo, start) if start else []:
+            c = repo.commits[commit_sha]
             prev = repo.commits[c.parent].tree.get(path) if c.parent else None
             if c.tree.get(path) != prev and (c.tree.get(path) is not None or prev is not None):
                 out.append(c)

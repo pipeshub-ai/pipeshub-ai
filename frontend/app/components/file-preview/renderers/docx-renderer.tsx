@@ -152,8 +152,10 @@ export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCit
 
         const parsed = await docxPreview.parseAsync(arrayBuffer, DOCX_PREVIEW_OPTIONS);
         neutralizeDocxSymbols((parsed as unknown as { parts?: unknown[] }).parts ?? []);
+        // docx-preview 0.4 returns the rendered nodes instead of filling a container.
+        const nodes = await docxPreview.renderDocument(parsed, DOCX_PREVIEW_OPTIONS);
         const container = document.createElement('div');
-        await docxPreview.renderDocument(parsed, container, undefined, DOCX_PREVIEW_OPTIONS);
+        for (const node of nodes) container.appendChild(node);
         if (cancelled) return;
 
         // If docx-preview produced no output (invalid file, silent failure,

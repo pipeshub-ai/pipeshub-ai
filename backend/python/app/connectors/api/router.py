@@ -6607,7 +6607,7 @@ async def _build_oauth_flow_config(
         )
 
         if not shared_oauth_config:
-            logger.error(f"OAuth config {oauth_config_id} not found or access denied")
+            logger.error(f"Shared OAuth config for {connector_type} not found or access denied (org {org_id})")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"OAuth config {oauth_config_id} not found or access denied"
@@ -9665,17 +9665,17 @@ async def _validate_admin_oauth_config_before_creation(
                         )
                 else:
                     oauth_instance_name = existing_oauth_config.get(OAUTH_INSTANCE_NAME, instance_name)
-                logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} can be updated with name '{oauth_instance_name}'")
+                logger.debug(f"Pre-validation: existing OAuth config for {connector_type} can be updated")
             else:
                 # Config not found, will create new one instead - check as new
                 oauth_instance_name = oauth_instance_name_from_request or instance_name
                 _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
-                logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} not found, will create new config with name '{oauth_instance_name}'")
+                logger.debug(f"Pre-validation: referenced OAuth config for {connector_type} not found, will create a new one")
         else:
             # Creating new - check for any name conflicts
             oauth_instance_name = oauth_instance_name_from_request or instance_name
             _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
-            logger.debug(f"Pre-validation: New OAuth config with name '{oauth_instance_name}' can be created")
+            logger.debug(f"Pre-validation: new OAuth config for {connector_type} can be created")
 
 
 async def _validate_non_admin_oauth_selection(

@@ -491,6 +491,115 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+def _is_live_identity(node: dict[str, Any]) -> bool:
+    """False once an account has been removed or switched off.
+
+    Two separate signals, because they are written by different things.
+    Soft-delete leaves the user node and clears `isActive`
+    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
+    from user management on the update event, and deliberately not stored in
+    `isActive` — a rename sets that one back to true, so a disable kept there
+    would not survive one.
+
+    Absence is read as live for both. Nodes written before these fields
+    existed carry neither, and treating those as dead would cut off agents
+    that work today.
+    """
+    return (
+        node.get("isActive", True) is not False
+        and node.get("isDisabled", False) is not True
+    )
+
+
+async def _resolve_service_account_binding(
+    service_account_user_id: str,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+) -> str:
+    """The `userId` of a service account an agent is being bound to.
+
+    Takes the account's `userId` — what the service-accounts API hands the
+    screen — and gives the same `userId` back, so what is stored is what a
+    picker sends and what it reads afterwards. The graph node's own key is
+    deliberately not used: it is minted locally and means nothing to the
+    service-accounts API, so a screen could neither send it nor match an
+    existing binding against the list it shows.
+
+    Refuses anything that is not a live service account of the caller's own
+    organisation. `kind` is the only thing trusted for "is this a service
+    account". It is told to the graph by user management rather than worked
+    out here, and without it this would have to fall back to the reserved
+    address, which would let an administrator aim an agent at a colleague
+    instead — the whole point of binding is to stop one person's reach being
+    lent out.
+
+    A deleted account is refused too. Soft-delete leaves the node in place and
+    only clears `isActive` (`entity.py` `_handle_user_deleted`), so `kind`
+    alone would still accept it and an agent would keep searching with the
+    reach of an account an administrator has removed.
+
+    The same 400 covers missing, wrong-org, not-a-service-account and deleted,
+    so this cannot be used to find out which user ids exist in another
+    organisation.
+    """
+    wanted = str(service_account_user_id or "").strip()
+    if not wanted:
+        raise InvalidRequestError("Choose a service account for this agent to search as.")
+
+    # raise_on_error, so a database that is down surfaces as a failure rather
+    # than as "no such account" — an administrator told the wrong one of those
+    # goes looking for a problem that is not there.
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
+    caller_org = str(caller_org_id or "").strip()
+    account_org = str((account or {}).get("orgId") or "").strip()
+
+    if (
+        not account
+        or not caller_org
+        or account_org != caller_org
+        or (account or {}).get("kind") != "service"
+        or not _is_live_identity(account)
+    ):
+        raise InvalidRequestError(
+            "That service account was not found in this organisation. Choose one "
+            "from Workspace \u2192 Service accounts, or create one there first."
+        )
+
+    return wanted
+
+
+async def _checked_service_account_binding(
+    requested: object,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    *,
+    is_service_account: bool,
+) -> str | None:
+    """The binding to store, refusing one the agent could not use.
+
+    `None` is allowed whatever the agent is. It means "search as the creator",
+    which is where every unbound agent already sits, and every agent document
+    carries this field as null — so a client that reads an agent and sends it
+    back unchanged must not be turned away.
+
+    Anything else is only meaningful on a service agent, and is refused rather
+    than quietly dropped: dropping it would leave an agent searching as its
+    creator, the wider identity, while whoever asked believed they had narrowed
+    it. On update, "is a service agent" means what the agent will be once the
+    request is applied, so one request may convert an agent and bind it.
+    """
+    if requested is None:
+        return None
+    if not is_service_account:
+        raise InvalidRequestError(
+            "Only a service agent searches as a service account. Make this "
+            "a service agent first, or leave the binding alone."
+        )
+    return await _resolve_service_account_binding(
+        requested, graph_provider, caller_org_id,
+    )
+
+
 async def _enrich_user_info_for_service_account_agent_chat(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
@@ -498,46 +607,129 @@ async def _enrich_user_info_for_service_account_agent_chat(
     caller_org_id: str,
 ) -> dict[str, Any]:
     """
-    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
-    permission checks must use the agent creator's real userId — the same identity whose
-    knowledge access configured the agent — not the service principal.
+    The identity a service agent searches knowledge as.
+
+    A service agent is invoked with a synthetic JWT (e.g. the Slack bot), which
+    is not a principal the permission graph knows, so retrieval has to run as
+    someone. Which someone is what this decides.
+
+    A bound service account, when the agent names one. Its reach is whatever an
+    administrator has shared with it, usually through group membership, so what
+    the agent can see is something granted rather than inherited.
+
+    Otherwise the agent's creator, which is where every agent made before
+    binding existed still stands. That is the older behaviour and it is worth
+    being plain about what it means: a service agent is shared with the whole
+    organisation, so everyone chatting with an unbound one searches with its
+    creator's access. Binding is how an administrator ends that; nothing here
+    ends it for them, because doing so silently would cut off agents that work
+    today.
+
+    Either way the identity must belong to the caller's own organisation. This
+    path skips check_agent_permission, so that is checked here instead.
     """
-    creator_key = agent.get("createdBy")
-    if not creator_key:
+    binding_user_id = agent.get("serviceAccountUserId")
+    bound = bool(binding_user_id)
+    what = "service account" if bound else "creator"
+    identity_key = binding_user_id or agent.get("createdBy")
+
+    if not identity_key:
         raise HTTPException(
             status_code=500,
             detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
         )
-    creator_doc = await graph_provider.get_document(
-        str(creator_key), CollectionNames.USERS.value
+    # A binding stores the account's `userId`, which is what the
+    # service-accounts API speaks; `createdBy` stores the graph node's own key.
+    # Two different identifiers, so two different lookups.
+    identity_doc = (
+        await graph_provider.get_user_by_user_id(str(identity_key), raise_on_error=True)
+        if bound
+        else await graph_provider.get_document(
+            str(identity_key), CollectionNames.USERS.value
+        )
     )
-    if not creator_doc:
+    if not identity_doc:
         raise HTTPException(
             status_code=500,
-            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} user not found; cannot resolve knowledge permissions.",
         )
-    creator_user_id = creator_doc.get("userId")
-    if not creator_user_id:
+    identity_user_id = identity_doc.get("userId")
+    if not identity_user_id:
         logger.error(
-            "Service account agent creator %s has no userId field",
-            creator_key,
+            "Service account agent %s %s %s has no userId field",
+            agent.get("_key"),
+            what,
+            identity_key,
         )
         raise HTTPException(
             status_code=500,
-            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} is missing userId; cannot resolve knowledge permissions.",
         )
-    creator_org = str(creator_doc.get("orgId") or "").strip()
+    identity_org = str(identity_doc.get("orgId") or "").strip()
     caller_org = str(caller_org_id or "").strip()
-    # This branch skips check_agent_permission; empty/mismatched org must not
-    # let a caller run retrieval as another tenant's creator.
-    if not creator_org or not caller_org or creator_org != caller_org:
-        raise AgentNotFoundError(str(agent.get("_key") or creator_key))
+    # Empty or mismatched org must not let a caller run retrieval as another
+    # tenant's identity. A binding is validated when it is set, but an account
+    # can be moved or removed afterwards, so it is checked again on every run.
+    if not identity_org or not caller_org or identity_org != caller_org:
+        raise AgentNotFoundError(str(agent.get("_key") or identity_key))
+    # A binding that is no longer a service account is refused rather than
+    # quietly used: whatever it has become, it was not what an administrator
+    # chose. Falling back to the creator here would be worse — it would widen
+    # the agent's reach at the moment the narrower identity stopped working.
+    if bound and identity_doc.get("kind") != "service":
+        logger.error(
+            "Agent %s is bound to %s, which is no longer a service account",
+            agent.get("_key"),
+            identity_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "This agent is bound to something that is no longer a service "
+                "account. An administrator needs to point it at one again."
+            ),
+        )
+    # Checked on every run, not only when the binding was set: an account can
+    # be removed or switched off long after an administrator bound it, and
+    # neither reaches here any other way. Falling back to the creator would be
+    # worse for the same reason as above — it widens the agent's reach at the
+    # moment the narrower identity stopped being allowed.
+    if bound and not _is_live_identity(identity_doc):
+        # Deleted wins when both are set. Soft-delete only merges `isActive`
+        # and leaves `isDisabled` as it found it, so an account switched off
+        # and then removed still carries the flag — and telling an
+        # administrator to switch it back on would send them after something
+        # that cannot work, since the account is gone from the list too.
+        switched_off = (
+            identity_doc.get("isDisabled") is True
+            and identity_doc.get("isActive") is not False
+        )
+        logger.error(
+            "Agent %s is bound to %s, which has been %s",
+            agent.get("_key"),
+            identity_key,
+            "switched off" if switched_off else "deleted",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                # Said separately, because what an administrator should do
+                # differs: a switched-off account can be switched back on and
+                # this agent works again, a deleted one cannot.
+                "This agent is bound to a service account that has been "
+                "switched off. Switch it back on, or point the agent at "
+                "another one."
+                if switched_off
+                else "This agent is bound to a service account that has been "
+                "deleted. An administrator needs to point it at another one."
+            ),
+        )
     synthetic = {
-        "userId": str(creator_user_id),
-        "orgId": creator_org,
-        "email": (creator_doc.get("email") or "").strip(),
+        "userId": str(identity_user_id),
+        "orgId": identity_org,
+        "email": (identity_doc.get("email") or "").strip(),
     }
-    return await _enrich_user_info(synthetic, creator_doc)
+    return await _enrich_user_info(synthetic, identity_doc)
 
 
 async def _assert_agent_belongs_to_caller_org(
@@ -2526,6 +2718,12 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
+        service_account_binding = await _checked_service_account_binding(
+            body.get("serviceAccountUserId"),
+            services["graph_provider"],
+            org_key,
+            is_service_account=is_service_account,
+        )
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
         else:
@@ -2554,6 +2752,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "serviceAccountUserId": service_account_binding,
             "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
@@ -3216,6 +3415,14 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        if "serviceAccountUserId" in body:
+            body["serviceAccountUserId"] = await _checked_service_account_binding(
+                body["serviceAccountUserId"],
+                services["graph_provider"],
+                org_key,
+                is_service_account=final_service_account,
+            )
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )

@@ -82,3 +82,20 @@ RETENTION = METRICS_BACKEND.counter(
 def record_retention(kind: str, outcome: str, count: int = 1) -> None:
     if count:
         RETENTION.inc(kind, outcome, value=float(count))
+
+
+# trigger: not_found (the gateway answered 404), signed_url (a 403 or 404 on a URL
+# signed in this call), ranged (a failed ranged download).
+# outcome: served (the mapping named a new document and it was read), unchanged
+# (same document: the original error is re-raised), no_mapping (no mapping any
+# more: the original error is re-raised), lookup_failed (the graph did not answer),
+# failed (the new document could not be read either).
+RECORD_READER_RELOOKUP = METRICS_BACKEND.counter(
+    "pipeshub_record_reader_relookup_total",
+    "Stored-record reads that took one fresh mapping lookup after the document read failed, by outcome",
+    ["outcome", "trigger"],
+)
+
+
+def record_reader_relookup(outcome: str, trigger: str) -> None:
+    RECORD_READER_RELOOKUP.inc(outcome, trigger)

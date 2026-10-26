@@ -16,6 +16,7 @@ import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/se
 import type { z } from 'zod'
 import type { authorizeConsentSchema } from '../../../../src/modules/oauth_provider/validators/oauth.validators'
 import type { TokenRequest } from '../../../../src/modules/oauth_provider/types/oauth.types'
+import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 
 type ConsentRequest = Parameters<OAuthProviderController['authorizeConsent']>[0]
 type TokenHttpRequest = Parameters<OAuthProviderController['token']>[0]
@@ -523,6 +524,35 @@ describe('OAuthProviderController', () => {
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
+    })
+
+    it('records oauth_token_issued with the grant, client and channel', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ orgId: 'o1', isConfidential: false, allowedGrantTypes: ['authorization_code'], allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({ accessToken: 'secret-at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read' })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+      eventBuffer.drain()
+
+      await controller.token({
+        body: { grant_type: 'authorization_code', client_id: 'cid', code: 'c', redirect_uri: 'https://example.com/cb' },
+        headers: { 'user-agent': 'cursor/1.2', 'x-pipeshub-channel': 'docs' },
+      } as any, mockRes, mockNext)
+
+      const events = eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')
+      expect(events).to.have.length(1)
+      expect(events[0].props).to.deep.equal({
+        grant_type: 'authorization_code', client_id: 'cid', user_agent: 'cursor/1.2', channel: 'docs',
+      })
+      expect(JSON.stringify(events[0])).to.not.include('secret-at')
+    })
+
+    it('records nothing when no token is issued', async () => {
+      eventBuffer.drain()
+      await controller.token({ body: { grant_type: 'password', client_id: 'cid' }, headers: {} } as any, mockRes, mockNext)
+      expect(eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')).to.be.empty
     })
 
     it('refuses a client_credentials grant when the identity is disabled', async () => {

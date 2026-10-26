@@ -41,6 +41,8 @@ import { Org } from '../../user_management/schema/org.schema';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { clientTags } from '../../../libs/services/telemetry/identity';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -409,6 +411,15 @@ export class OAuthProviderController {
       res.setHeader('Pragma', 'no-cache');
 
       res.json(tokenResponse);
+
+      // A refresh renews a grant already counted, so only first issuance is recorded.
+      if (tokenRequest.grant_type !== 'refresh_token') {
+        recordEvent('oauth_token_issued', {
+          grant_type: tokenRequest.grant_type,
+          client_id: clientId,
+          ...clientTags(req.headers),
+        });
+      }
     } catch (error) {
       // OAuth errors should return 400 with JSON body
       const oauthError = this.buildErrorResponse(error as Error);

@@ -101,6 +101,7 @@ from app.modules.agents.qna.chat_state import (
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.source_diversity import plain_ranking
+from app.services.graph_db.dated_scope import shared_dated_scope
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.env_utils import enabled_unless_off
 
@@ -466,6 +467,32 @@ class _Collected:
 
 
 async def _collect(
+    search: Any,  # noqa: ANN401
+    start_ms: int | None,
+    end_ms: int | None,
+    date_field: str,
+    log: logging.Logger,
+    *,
+    period_limit: int = PERIOD_SEARCH_LIMIT,
+    on_whole_span: Callable[[Any], None] | None = None,
+) -> _Collected | str:
+    """``_collect_searches``, with its dated searches sharing one permission walk.
+
+    Every search here is bounded within the span the caller gave (a missing
+    bound is open), so the graph walks what the user may reach once, for that
+    span, and each search keeps the records in its own dates
+    (``app.services.graph_db.dated_scope``).
+    """
+    after_key, before_key = _DATE_FIELDS[date_field][2:4]
+    span = {key: bound for key, bound in ((after_key, start_ms), (before_key, end_ms)) if bound is not None}
+    with shared_dated_scope(span):
+        return await _collect_searches(
+            search, start_ms, end_ms, date_field, log,
+            period_limit=period_limit, on_whole_span=on_whole_span,
+        )
+
+
+async def _collect_searches(
     search: Any,  # noqa: ANN401
     start_ms: int | None,
     end_ms: int | None,
