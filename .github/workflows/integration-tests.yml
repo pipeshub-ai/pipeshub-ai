@@ -625,8 +625,11 @@ jobs:
 
       # client_credentials grant: a fresh token every run, nothing rotates or is written back.
       # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
+      # A failed mint fails the Zendesk tests (they find no token), not the shard's other
+      # connectors, which would otherwise stop here before their services start.
       - name: Mint Zendesk test token
         if: ${{ matrix.shard == 'connectors-2' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk') }}
+        continue-on-error: true
         working-directory: integration-tests
         env:
           ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}
