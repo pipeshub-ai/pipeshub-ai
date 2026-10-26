@@ -2558,6 +2558,33 @@ class TestChecklistAudit:
         assert "app password rejected" in sent[0]["title"]
         assert set(db.records) == kept, "nothing is removed"
 
+    async def test_a_wipe_check_nextcloud_does_not_answer_is_asked_again_by_the_next_sync(
+        self, server, db, store
+    ) -> None:
+        """A throttled address gets 429 for the wipe check too; that is no answer, so a requested wipe still runs."""
+        connector = await synced(server, db, store)
+        server.wipe_requested = True
+        throttled = server.outage("POST", lambda p: p.endswith("/core/wipe/check"), lambda: httpx.Response(429, content=b"{}"))
+
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
+        assert db.records and not server.wipe_confirmed
+        throttled.end()
+
+        with pytest.raises(ConnectorInitError, match="remote wipe"):
+            await connector.run_sync()
+
+        assert db.records == {} and server.wipe_confirmed
+
+    async def test_a_password_nextcloud_has_not_flagged_is_not_asked_about_again(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.app_password = "revoked"
+        for _ in range(2):
+            with pytest.raises(ConnectorInitError, match="rejected the app password"):
+                await connector.run_sync()
+
+        assert len(server.calls("POST", "/index.php/core/wipe/check")) == 1, "a 404 is an answer: no wipe"
+
     async def test_an_unfinished_remote_wipe_is_asked_again_by_the_next_sync(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.wipe_requested = True
