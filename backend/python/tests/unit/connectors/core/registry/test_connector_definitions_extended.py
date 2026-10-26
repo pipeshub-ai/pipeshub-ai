@@ -23,7 +23,6 @@ from app.connectors.core.registry.connector import (
     SheetsConnector,
     SlackConnector,
     SlidesConnector,
-    ZendeskConnector,
 )
 
 
@@ -47,7 +46,6 @@ class TestAllConnectorsInit:
             (SlidesConnector, "Slides"),
             (AirtableConnector, "Airtable"),
             (LinearConnector, "Linear"),
-            (ZendeskConnector, "Zendesk"),
         ],
     )
     def test_name_attribute(self, cls, expected_name):
@@ -66,7 +64,6 @@ class TestAllConnectorsInit:
             (SlidesConnector, "Slides"),
             (AirtableConnector, "Airtable"),
             (LinearConnector, "Linear"),
-            (ZendeskConnector, "Zendesk"),
         ],
     )
     def test_connect_returns_true(self, cls, expected_name, capsys):
@@ -148,30 +145,6 @@ class TestStandaloneConnectors:
         c = LinearConnector()
         assert c.name == "Linear"
 
-    def test_zendesk_standalone_group(self):
-        c = ZendeskConnector()
-        assert c.name == "Zendesk"
-
-
-# ============================================================================
-# Zendesk: has multiple auth fields
-# ============================================================================
-
-
-class TestZendeskConnectorAuth:
-    """Zendesk has 3 auth fields (apiToken, email, subdomain)."""
-
-    def test_zendesk_init(self):
-        c = ZendeskConnector()
-        assert c.name == "Zendesk"
-
-    def test_zendesk_connect(self, capsys):
-        c = ZendeskConnector()
-        result = c.connect()
-        assert result is True
-        captured = capsys.readouterr()
-        assert "Connecting to Zendesk" in captured.out
-
 
 # ============================================================================
 # All connectors: can be called multiple times
@@ -182,7 +155,7 @@ class TestConnectIdempotent:
     @pytest.mark.parametrize("cls", [
         SlackConnector, CalendarConnector, MeetConnector, DocsConnector,
         SheetsConnector, FormsConnector, SlidesConnector,
-        AirtableConnector, LinearConnector, ZendeskConnector,
+        AirtableConnector, LinearConnector,
     ])
     def test_connect_called_twice(self, cls, capsys):
         c = cls()

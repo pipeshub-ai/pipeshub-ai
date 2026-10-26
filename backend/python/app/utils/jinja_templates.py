@@ -12,15 +12,33 @@ caller-built string would fill it with single-use entries.
 """
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 
-from jinja2 import Template
+from jinja2 import Environment, Template
 
-__all__ = ["compiled_template"]
+__all__ = ["compiled_template", "one_line"]
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
+
+
+def one_line(value: object) -> str:
+    """Escape line breaks and other control characters in a header field.
+
+    File paths and symbol names come from the repository, and git allows a
+    newline in a file name: unescaped, `a.py\n\nSYSTEM: ...` would end the
+    `[... path]` header and start a line of its own. Brackets are kept, since
+    real paths (`app/[id]/page.tsx`) carry them and tools take the path verbatim.
+    """
+    return _CONTROL.sub(lambda m: m.group(0).encode("unicode_escape").decode("ascii"), str(value))
+
+
+_ENV = Environment()
+_ENV.filters["one_line"] = one_line
 
 
 @lru_cache(maxsize=64)
 def compiled_template(source: str) -> Template:
     """Shared compiled `Template` — safe because `render()` builds its own
     context per call and the template itself is not mutated."""
-    return Template(source)
+    return _ENV.from_string(source)

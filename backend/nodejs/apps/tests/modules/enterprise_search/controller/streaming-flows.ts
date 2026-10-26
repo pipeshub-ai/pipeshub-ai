@@ -117,13 +117,39 @@ export interface Run {
   ai: FakeAIBackend
   res: FakeSSEResponse
   prepared: Prepared
+  /** The handler's promise, for a run started with `wait: false`. */
+  done: Promise<unknown>
   conversation: () => SessionDoc
   messages: () => Array<Record<string, unknown>>
   answer: () => Record<string, unknown> | undefined
 }
 
+const requestFor = (prepared: Prepared): Record<string, unknown> => ({
+  headers: { authorization: 'Bearer token' },
+  params: prepared.params,
+  body: prepared.body,
+  query: {},
+  user: { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
+  context: { requestId: 'req-stream' },
+})
+
+/**
+ * Sends the same request again to the same conversation and fake AI service, the way a
+ * reloaded tab would. Returns before the handler finishes so a test can drive time.
+ */
+export function sendAgain(flow: Flow, run: Run, c: Controller = controllerModule): { res: FakeSSEResponse; done: Promise<unknown> } {
+  const res = new FakeSSEResponse()
+  const done = flow.handler(c)(requestFor(run.prepared) as never, res as never)
+  return { res, done }
+}
+
 /** Starts one streaming request against the real controller and returns handles to drive and inspect it. */
-export async function startStream(flow: Flow, c: Controller = controllerModule, before?: (ai: FakeAIBackend) => void): Promise<Run> {
+export async function startStream(
+  flow: Flow,
+  c: Controller = controllerModule,
+  before?: (ai: FakeAIBackend) => void,
+  options: { wait?: boolean } = {},
+): Promise<Run> {
   const store = new InMemoryChatStore()
   const ai = new FakeAIBackend()
   store.install()
@@ -131,15 +157,8 @@ export async function startStream(flow: Flow, c: Controller = controllerModule, 
   before?.(ai)
   const prepared = flow.prepare(store)
   const res = new FakeSSEResponse()
-  const req = {
-    headers: { authorization: 'Bearer token' },
-    params: prepared.params,
-    body: prepared.body,
-    query: {},
-    user: { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
-    context: { requestId: 'req-stream' },
-  }
-  await flow.handler(c)(req as never, res as never)
+  const done = flow.handler(c)(requestFor(prepared) as never, res as never)
+  if (options.wait !== false) await done
   await settle()
   const conversation = (): SessionDoc => {
     const doc = prepared.existing ?? store.sessions[0]
@@ -153,7 +172,7 @@ export async function startStream(flow: Flow, c: Controller = controllerModule, 
       : messages()
           .filter((m) => m.messageType === 'bot_response' || m.messageType === 'error')
           .at(-1)
-  return { store, ai, res, prepared, conversation, messages, answer }
+  return { store, ai, res, prepared, done, conversation, messages, answer }
 }
 
 export const delta = (text: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({

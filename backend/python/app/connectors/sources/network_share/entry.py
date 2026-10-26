@@ -19,6 +19,8 @@ class DirectoryEntry:
     last_write_time: datetime | None
     file_id: int | None
     is_reparse: bool = False
+    # Windows FILE_ATTRIBUTE_* bits as the server reports them; 0 when unknown.
+    attributes: int = 0
 
 
 @dataclass(frozen=True)

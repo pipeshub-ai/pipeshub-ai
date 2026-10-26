@@ -509,8 +509,9 @@ class TestGetDocumentIdByVirtualRecordId:
             await bs.get_document_id_by_virtual_record_id("vr-1")
 
     @pytest.mark.asyncio
-    async def test_found_by_filter(self):
+    async def test_found_by_field_fallback(self) -> None:
         mock_gp = AsyncMock()
+        mock_gp.get_document = AsyncMock(return_value=None)
         mock_gp.get_nodes_by_filters = AsyncMock(
             return_value=[{"documentId": "doc-1", "fileSizeBytes": 1024}]
         )
@@ -520,9 +521,8 @@ class TestGetDocumentIdByVirtualRecordId:
         assert result["fileSizeBytes"] == 1024
 
     @pytest.mark.asyncio
-    async def test_found_by_key_fallback(self):
+    async def test_found_by_key(self) -> None:
         mock_gp = AsyncMock()
-        mock_gp.get_nodes_by_filters = AsyncMock(return_value=[])
         mock_gp.get_document = AsyncMock(
             return_value={"documentId": "doc-2", "fileSizeBytes": 2048}
         )
@@ -530,6 +530,7 @@ class TestGetDocumentIdByVirtualRecordId:
         result = await bs.get_document_id_by_virtual_record_id("vr-1")
         assert result["record_doc_id"] == "doc-2"
         assert result["fileSizeBytes"] == 2048
+        mock_gp.get_nodes_by_filters.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_not_found(self):
@@ -543,9 +544,7 @@ class TestGetDocumentIdByVirtualRecordId:
     @pytest.mark.asyncio
     async def test_found_but_no_document_id_field(self):
         mock_gp = AsyncMock()
-        mock_gp.get_nodes_by_filters = AsyncMock(
-            return_value=[{"fileSizeBytes": 1024}]
-        )
+        mock_gp.get_document = AsyncMock(return_value={"fileSizeBytes": 1024})
         bs = _make_blob_storage(graph_provider=mock_gp)
         result = await bs.get_document_id_by_virtual_record_id("vr-1")
         assert result["record_doc_id"] is None
@@ -554,6 +553,7 @@ class TestGetDocumentIdByVirtualRecordId:
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
         mock_gp = AsyncMock()
+        mock_gp.get_document = AsyncMock(return_value=None)
         mock_gp.get_nodes_by_filters = AsyncMock(side_effect=Exception("DB error"))
         bs = _make_blob_storage(graph_provider=mock_gp)
         with pytest.raises(Exception, match="DB error"):

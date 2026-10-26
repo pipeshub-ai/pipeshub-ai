@@ -86,7 +86,9 @@ def _record(kb_id: str, org_id: str, name: str, *, folder: bool = False) -> File
     )
 
 
-async def _store(graph: IGraphDBProvider, kb_id: str, record: FileRecord, *, legacy: bool = False) -> str:
+async def _store(
+    graph: IGraphDBProvider, kb_id: str, record: FileRecord, *, legacy: bool = False, parent: str | None = None,
+) -> str:
     node = record.to_arango_base_record()
     if legacy:
         del node["isDeleted"]
@@ -106,6 +108,13 @@ async def _store(graph: IGraphDBProvider, kb_id: str, record: FileRecord, *, leg
         [{**edge, "from_id": record.id, "from_collection": CollectionNames.RECORDS.value,
           "to_id": kb_id, "to_collection": CollectionNames.APPS.value, "entityType": "KB"}],
         collection=CollectionNames.BELONGS_TO.value,
+    )
+    # A root item hangs off the collection's App, a nested one off its folder.
+    above = (parent, CollectionNames.RECORDS.value) if parent else (kb_id, CollectionNames.APPS.value)
+    assert await graph.batch_create_edges(
+        [{**edge, "from_id": above[0], "from_collection": above[1],
+          "to_id": record.id, "to_collection": CollectionNames.RECORDS.value, "relationshipType": "PARENT_CHILD"}],
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     return record.id
 
@@ -164,20 +173,14 @@ async def kb(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
 
         legacy_file = await _store(graph, kb_id, _record(kb_id, org_id, "report.txt"), legacy=True)
         folder = await _store(graph, kb_id, _record(kb_id, org_id, "drafts", folder=True))
-        file_in_folder = await _store(graph, kb_id, _record(kb_id, org_id, "Report.txt"))
-        legacy_file_in_folder = await _store(graph, kb_id, _record(kb_id, org_id, "Notes.txt"), legacy=True)
+        file_in_folder = await _store(graph, kb_id, _record(kb_id, org_id, "Report.txt"), parent=folder)
+        legacy_file_in_folder = await _store(
+            graph, kb_id, _record(kb_id, org_id, "Notes.txt"), legacy=True, parent=folder,
+        )
         other_root_file = await _store(graph, kb_id, _record(kb_id, org_id, "notes.txt"))
         ids = [legacy_file, folder, file_in_folder, legacy_file_in_folder, other_root_file]
         seeded[CollectionNames.RECORDS.value] += ids
         seeded[CollectionNames.FILES.value] += ids
-        now = get_epoch_timestamp_in_ms()
-        assert await graph.batch_create_edges(
-            [{"from_id": folder, "from_collection": CollectionNames.RECORDS.value,
-              "to_id": child, "to_collection": CollectionNames.RECORDS.value,
-              "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}
-             for child in (file_in_folder, legacy_file_in_folder)],
-            collection=CollectionNames.RECORD_RELATIONS.value,
-        )
 
         for legacy in (legacy_file, legacy_file_in_folder):
             stored = await graph.get_document(legacy, CollectionNames.RECORDS.value)

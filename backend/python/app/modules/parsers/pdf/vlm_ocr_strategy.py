@@ -1,27 +1,42 @@
 import asyncio
 import base64
+import logging
 import os
 import re
 import tempfile
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import pdfplumber
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
-from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.utils.aimodels import (
     LLMProvider,
     coerce_message_content_to_text,
     get_generator_model,
     is_multimodal_llm,
 )
-from app.utils.llm import get_llm_for_role
+from app.utils.env_config import env_int
+from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
+from app.utils.opik import get_llm_invoke_config
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+
+# Every page is one model call, so a longer scan is refused rather than read at any cost.
+MAX_PAGES_ENV = "VLM_OCR_MAX_PAGES"
+DEFAULT_MAX_PAGES = 500
+
+
+def vlm_ocr_max_pages() -> int:
+    return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
 
 class VLMOCRStrategy(OCRStrategy):
@@ -95,7 +110,7 @@ You are a precise document OCR specialist. Convert the provided document image t
 # Output
 Return ONLY the extracted markdown. No preamble, no explanations, no commentary."""
 
-    def __init__(self, logger, config) -> None:
+    def __init__(self, logger: logging.Logger, config: "ConfigurationService") -> None:
         """
         Initialize VLM OCR strategy
 
@@ -154,11 +169,13 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 pass
 
             # 2. Scan all LLM configs for the best multimodal candidate
-            ai_models = await self.config.get_config(
-                config_node_constants.AI_MODELS.value,
-                use_cache=False
+            # `{}` until an admin saves AI settings, so a fresh org gets a readable error below.
+            raw_configs = (await load_ai_models(self.config)).get("llm")
+            llm_configs: list[dict[str, Any]] = (
+                [cast("dict[str, Any]", c) for c in cast("list[object]", raw_configs) if isinstance(c, dict)]
+                if isinstance(raw_configs, list)
+                else []
             )
-            llm_configs = ai_models.get("llm", [])
 
             if not llm_configs:
                 raise DocumentProcessingError(
@@ -298,7 +315,17 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         "chat_template_kwargs": {"enable_thinking": False},
                     }
 
-            response = await self.llm.ainvoke([message], **invoke_kwargs)
+            llm = self.llm
+            if llm is None:
+                raise DocumentProcessingError("VLM OCR has no model loaded")
+            response = await get_llm_gateway().invoke(
+                llm,
+                [message],
+                provider=provider_key(llm),
+                call_site="vlm_ocr",
+                config=get_llm_invoke_config(llm),
+                **invoke_kwargs,
+            )
 
             response_metadata = getattr(response, "response_metadata", {}) or {}
             if response_metadata.get("finish_reason") == "length":
@@ -378,14 +405,20 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         await self._preload_page_images()
 
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
+        # Why each page that failed after every retry was indexed empty.
+        unreadable: list[Exception] = []
 
-        async def process_page_with_retry(page, page_number: int) -> Dict[str, Any]:
+        async def process_page_with_retry(page: object, page_number: int) -> Dict[str, Any]:
             """Process page with retry logic (3 total attempts)"""
             async with semaphore:
                 last_error = None
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
                         return await self.process_page(page, page_number)
+                    except (NonRetryableError, LLMUnavailableError):
+                        # A provider that is down, or a call that must not be retried: blank pages
+                        # would index an empty document, so the record fails as a whole.
+                        raise
                     except Exception as e:
                         last_error = e
                         if attempt < self.MAX_RETRY_ATTEMPTS:
@@ -393,10 +426,19 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"
                             )
                         else:
-                            self.logger.error(
-                                f"❌ All retries failed for page {page_number}"
+                            # One page the model cannot read must not cost the document.
+                            self.logger.warning(
+                                "Page %s could not be read after %d attempts (%s); indexing it empty",
+                                page_number, attempt + 1, last_error,
                             )
-                            raise last_error
+                            unreadable.append(e)
+                            return {
+                                "page_number": page_number,
+                                "markdown": "",
+                                "width": getattr(page, "width", None),
+                                "height": getattr(page, "height", None),
+                            }
+                raise AssertionError("unreachable: the last attempt returns")
 
         tasks = [
             asyncio.create_task(process_page_with_retry(page, page_num + 1))
@@ -412,6 +454,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+        if pages and len(unreadable) == len(pages):
+            # Every page failing alike (no rendered images, output always truncated) is
+            # systemic: an empty document would be indexed as a success. Fail the record.
+            self.logger.error("❌ VLM OCR could not read any of the %d pages", len(pages))
+            raise unreadable[-1]
 
         doc_markdown = "\n\n---\n\n".join([page["markdown"] for page in pages_results])
         result = {
@@ -444,7 +492,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 tmp.close()
             self._pdf_path = tmp.name
             self.doc = pdfplumber.open(self._pdf_path)
-            self.logger.info(f"📚 Loaded PDF with {len(self.doc.pages)} pages")
+            page_count = len(self.doc.pages)
+            self.logger.info(f"📚 Loaded PDF with {page_count} pages")
+            max_pages = vlm_ocr_max_pages()
+            if page_count > max_pages:
+                raise DocumentProcessingError(
+                    f"The file is too large for OCR: {page_count} pages, more than the "
+                    f"{max_pages} read with OCR ({MAX_PAGES_ENV})"
+                )
 
             self.logger.debug("🤖 Getting multimodal LLM")
             self.llm = await self._get_multimodal_llm()

@@ -1,9 +1,11 @@
 'use client';
 
 import React from 'react';
-import { Flex, Heading, Text, Button, TextField, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import type { Breakpoint } from '@/lib/hooks/use-breakpoint';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { WorkspaceDocsButton } from '../../../components/workspace-docs-button';
+import { MOBILE_PAGE_PADDING_TOP } from '../../../components/settings-page-container';
 
 export interface Oauth2PageHeaderProps {
   title: string;
@@ -13,26 +15,11 @@ export interface Oauth2PageHeaderProps {
   onSearchChange: (value: string) => void;
   newApplicationLabel: string;
   onNewApplication: () => void;
-  docsOpenLabel: string;
-  /** Current Radix Themes breakpoint tier (from `useBreakpoint`). */
-  breakpoint: Breakpoint;
-}
-
-function isBelowMd(breakpoint: Breakpoint): boolean {
-  return (
-    breakpoint === 'initial' ||
-    breakpoint === 'xs' ||
-    breakpoint === 'sm'
-  );
-}
-
-function isInitialTier(breakpoint: Breakpoint): boolean {
-  return breakpoint === 'initial';
 }
 
 /**
- * Title + actions + search for OAuth 2.0 settings.
- * Stacks on viewports below Radix `md` (1024px); row layout at `md` and up.
+ * Title and subtitle on the left, New + Docs on the right (the workspace catalog header),
+ * search on its own row below. Wraps under the title on narrow screens.
  */
 export function Oauth2PageHeader({
   title,
@@ -42,102 +29,45 @@ export function Oauth2PageHeader({
   onSearchChange,
   newApplicationLabel,
   onNewApplication,
-  docsOpenLabel,
-  breakpoint,
 }: Oauth2PageHeaderProps) {
-  const compact = isBelowMd(breakpoint);
-  const veryNarrow = isInitialTier(breakpoint);
-
-  const actionsRow = (
-    <Flex
-      wrap="wrap"
-      align="center"
-      justify={compact ? 'start' : 'end'}
-      gap="3"
-      style={{ width: compact ? '100%' : 'auto' }}
-    >
-      <Button
-        size="2"
-        onClick={onNewApplication}
-        style={{
-          width: veryNarrow ? '100%' : undefined,
-          flex: veryNarrow ? undefined : '0 0 auto',
-        }}
-      >
-        <MaterialIcon name="add" size={16} color="currentColor" />
-        {newApplicationLabel}
-      </Button>
-      <IconButton
-        type="button"
-        variant="outline"
-        color="gray"
-        size="2"
-        aria-label={docsOpenLabel}
-        onClick={() => window.open('https://docs.pipeshub.com/developer/oauth2', '_blank')}
-      >
-        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-      </IconButton>
-    </Flex>
-  );
-
-  const searchField = (
-    <TextField.Root
-      size="2"
-      placeholder={searchPlaceholder}
-      value={searchValue}
-      onChange={(e) => onSearchChange(e.target.value)}
-      style={{
-        width: compact ? '100%' : '288px',
-        maxWidth: '100%',
-      }}
-    >
-      <TextField.Slot>
-        <MaterialIcon name="search" size={16} color="var(--slate-9)" />
-      </TextField.Slot>
-    </TextField.Root>
-  );
-
-  const titleBlock = (
-    <Flex direction="column" gap="2" style={{ minWidth: 0, maxWidth: '100%' }}>
-      <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-        {title}
-      </Heading>
-      <Text size="2" style={{ color: 'var(--slate-11)', wordBreak: 'break-word' }}>
-        {subtitle}
-      </Text>
-    </Flex>
-  );
-
-  const rightColumn = (
-    <Flex
-      direction="column"
-      align={compact ? 'stretch' : 'end'}
-      gap="3"
-      style={{
-        width: compact ? '100%' : 'auto',
-        minWidth: compact ? undefined : 0,
-        maxWidth: compact ? '100%' : undefined,
-      }}
-    >
-      {actionsRow}
-      {searchField}
-    </Flex>
-  );
+  const isMobile = useIsMobile();
 
   return (
     <Flex
-      direction={compact ? 'column' : 'row'}
-      align={compact ? 'stretch' : 'end'}
-      justify="between"
+      direction="column"
       gap="4"
-      style={{
-        paddingTop: '64px',
-        paddingBottom: '16px',
-        width: '100%',
-      }}
+      style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 16, width: '100%' }}
     >
-      {titleBlock}
-      {rightColumn}
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            {title}
+          </Heading>
+          <Text size="2" style={{ color: 'var(--slate-11)', wordBreak: 'break-word' }}>
+            {subtitle}
+          </Text>
+        </Flex>
+        <Flex align="center" gap="2" wrap="wrap" style={{ flexShrink: 0 }}>
+          <Button size="2" className="touch-hit" onClick={onNewApplication} style={{ cursor: 'pointer' }}>
+            <MaterialIcon name="add" size={16} color="currentColor" />
+            {newApplicationLabel}
+          </Button>
+          <WorkspaceDocsButton href="https://docs.pipeshub.com/developer/oauth2" />
+        </Flex>
+      </Flex>
+      <Box width={{ initial: '100%', sm: '288px' }}>
+        <TextField.Root
+          size="2"
+          placeholder={searchPlaceholder}
+          value={searchValue}
+          onChange={(e) => onSearchChange(e.target.value)}
+          style={{ width: '100%' }}
+        >
+          <TextField.Slot>
+            <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+          </TextField.Slot>
+        </TextField.Root>
+      </Box>
     </Flex>
   );
 }

@@ -240,13 +240,14 @@ export const startHarness = async ({
   container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(authMiddleware)
   container.bind<AppConfig>('AppConfig').toConstantValue(config)
   container.bind('EntitiesEventProducer').toConstantValue(entityEvents)
-  container.bind('RecordsEventProducer').toConstantValue(new RecordingProducer())
   container.bind('SyncEventProducer').toConstantValue(syncEvents)
   const crawlingContainer = new Container()
   crawlingContainer.bind(CrawlingSchedulerService).toConstantValue({
     scheduleJob: async () => undefined,
     removeJob: async () => undefined,
     getJobStatus: async () => null,
+    upsertRepeatingSchedule: async () => 'scheduled',
+    removeConnectorSchedules: async () => false,
   } as unknown as CrawlingSchedulerService)
 
   sinon

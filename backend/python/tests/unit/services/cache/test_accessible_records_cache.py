@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,10 +15,12 @@ import pytest
 
 from app.services.cache.accessible_records_cache import (
     AccessibleRecordsCache,
+    AccessibleRecordsInvalidator,
     _ttl_from_env,
 )
 from app.services.cache.interface import NoopAccessibleRecordsCache
 from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.loop_clients import LoopBoundClients
 from app.services.redis.standalone_provider import StandaloneRedisProvider
 from tests.support.loop_topology import on_loop, redis_tcp_server, worker_loop
 
@@ -28,19 +31,27 @@ USER = "user-1"
 
 
 class _FakePipeline:
-    """Matches redis-py: queueing (``delete``) is synchronous, only
-    ``execute()`` is awaited, and it is used as an async context manager."""
+    """Matches redis-py: queueing is synchronous, only ``execute()`` is
+    awaited, and it is used as an async context manager."""
 
     def __init__(self, redis: "FakeRedis") -> None:
         self._redis = redis
-        self._deletes: list[str] = []
+        self._ops: list[tuple] = []
 
     def delete(self, key):
-        self._deletes.append(key)
+        self._ops.append(("delete", key))
+        return self
+
+    def incr(self, key: str) -> "_FakePipeline":
+        self._ops.append(("incr", key))
+        return self
+
+    def expire(self, key: str, ttl: int) -> "_FakePipeline":
+        self._ops.append(("expire", key, ttl))
         return self
 
     async def execute(self):
-        return [await self._redis.delete(key) for key in self._deletes]
+        return [await getattr(self._redis, op)(*args) for op, *args in self._ops]
 
     async def __aenter__(self):
         return self
@@ -86,6 +97,20 @@ class FakeRedis:
         self.calls.append(("expire", key, ttl))
         self.expires[key] = ttl
         return True
+
+    async def incr(self, key: str) -> int:
+        self.calls.append(("incr", key))
+        value = int(self.strings.get(key) or 0) + 1
+        self.strings[key] = str(value)
+        return value
+
+    async def hdel(self, key: str, *fields: str) -> int:
+        self.calls.append(("hdel", key, *fields))
+        bucket = self.hashes.get(key, {})
+        removed = sum(1 for f in fields if bucket.pop(f, None) is not None)
+        if key in self.hashes and not bucket:
+            del self.hashes[key]
+        return removed
 
     async def delete(self, *keys):
         self.calls.append(("delete", *keys))
@@ -289,10 +314,10 @@ class TestSingleFlight:
     async def test_lock_table_never_grows(self) -> None:
         """The stripe array is fixed at construction, so no key count grows it."""
         cache = _cache(FakeRedis())
-        before = len(cache._locks)
+        before = len(cache._lock_stripes.get())
         for i in range(400):
             await cache.get_or_compute_kb(ORG, f"kb-{i}", _loader({}))
-        assert len(cache._locks) == before == cache.LOCK_STRIPES
+        assert len(cache._lock_stripes.get()) == before == cache.LOCK_STRIPES
 
     async def test_lock_table_bounded_while_every_lock_is_held(self) -> None:
         """The case the old per-key table failed.
@@ -302,15 +327,15 @@ class TestSingleFlight:
         bound. Striping cannot: the array is allocated once.
         """
         cache = _cache(FakeRedis())
-        held = list(cache._locks)
+        held = list(cache._lock_stripes.get())
         for lock in held:
             await lock.acquire()
         try:
-            assert len(cache._locks) == cache.LOCK_STRIPES
+            assert len(cache._lock_stripes.get()) == cache.LOCK_STRIPES
             # Distinct keys that would each have wanted their own lock.
             for i in range(50):
                 cache._lock_for(f"brand-new-key-{i}")
-            assert len(cache._locks) == cache.LOCK_STRIPES
+            assert len(cache._lock_stripes.get()) == cache.LOCK_STRIPES
         finally:
             for lock in held:
                 lock.release()
@@ -320,8 +345,8 @@ class TestSingleFlight:
         assert cache._lock_for("kb:x") is cache._lock_for("kb:x")
         # Stable across instances: crc32, not the per-process hash seed.
         other = _cache(FakeRedis())
-        assert cache._locks.index(cache._lock_for("kb:x")) == other._locks.index(
-            other._lock_for("kb:x")
+        assert cache._lock_stripes.get().index(cache._lock_for("kb:x")) == (
+            other._lock_stripes.get().index(other._lock_for("kb:x"))
         )
 
 
@@ -562,6 +587,186 @@ class TestInvalidation:
         assert not redis.calls
 
 
+class TestPermissionChangeDropsEveryAffectedUser:
+    """Through the invalidator, against the real key layout: every user of the
+    connector loses their entry, and nothing in another org or connector does."""
+
+    async def test_removal_clears_the_connectors_users_and_nothing_else(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        for user in ("user-a", "user-b"):
+            await cache.get_or_compute_user_connector(ORG, CONNECTOR, user, _loader({"v": "r"}))
+        await cache.get_or_compute_user_connector(ORG, "conn-other", "user-a", _loader({"v": "r"}))
+        await cache.get_or_compute_user_connector("org-2", CONNECTOR, "user-z", _loader({"v": "r"}))
+        await cache.get_or_compute_kb(ORG, KB, _loader({"k": "r"}))
+        invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+        invalidator.PERMISSION_CHANGE_SETTLE_SECONDS = 0.01
+
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+
+        loads: list[int] = []
+        for user in ("user-a", "user-b"):
+            assert await cache.get_or_compute_user_connector(
+                ORG, CONNECTOR, user, _loader({}, loads)
+            ) == {}
+        assert len(loads) == 2
+        assert cache._user_connector_key(ORG, "conn-other") in redis.hashes
+        assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
+        assert cache._kb_key(ORG, KB) in redis.strings
+        assert cache._connector_epoch_key("org-2", CONNECTOR) not in redis.strings
+        await asyncio.sleep(0.05)
+        assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
+
+
+
+class TestRecordIndexedAfterItsSync:
+    """The sync's delete runs when the sync completes; indexing finishes later.
+    A search in between cached the list without the record, and it stayed out
+    of search until the entry expired."""
+
+    async def test_it_is_searchable_once_indexing_finishes(self) -> None:
+        cache = _cache(FakeRedis())
+        invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+        invalidator.RECORD_INDEXED_SETTLE_SECONDS = 0.01
+        await invalidator.on_connector_sync_completed(CONNECTOR, ORG)
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({})
+        ) == {}
+
+        await invalidator.on_record_indexed(
+            connector_name="DRIVE", connector_id=CONNECTOR, org_id=ORG
+        )
+
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({"vr-1": "rec-1"})
+        ) == {"vr-1": "rec-1"}
+        await asyncio.sleep(0.05)
+
+
+def _held_loader(value: dict[str, str]) -> tuple:
+    """A loader that has read the graph and is still running until released."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def load() -> dict[str, str]:
+        started.set()
+        await release.wait()
+        return value
+
+    return load, started, release
+
+
+def _settling_invalidator(cache: AccessibleRecordsCache, settle: float) -> AccessibleRecordsInvalidator:
+    invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+    invalidator.PERMISSION_CHANGE_SETTLE_SECONDS = settle
+    return invalidator
+
+
+class TestFillFromBeforeAChangeIsNeverWritten:
+    """A fill that read the graph before a permission change used to write its
+    map once it finished, and if that was after the deletes the revoked access
+    came back for the full TTL. The connector epoch rejects it however slow."""
+
+    async def test_fill_held_open_past_the_settle_is_not_written(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        invalidator = _settling_invalidator(cache, 0.01)
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
+        await started.wait()
+
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+        await asyncio.sleep(0.05)
+        release.set()
+
+        assert await fill == {"old": "r"}, "the search itself is still answered"
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+
+    async def test_second_change_just_before_the_settle_fires(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        invalidator = _settling_invalidator(cache, 0.05)
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
+        await started.wait()
+        await asyncio.sleep(0.04)
+
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+        release.set()
+        await fill
+
+        # Rejected by the epoch, not saved by a delete still to come.
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+        await asyncio.sleep(0.15)
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+        assert invalidator._settling == {}
+
+    async def test_app_level_fill_is_rejected_too(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_app_connector(ORG, CONNECTOR, load))
+        await started.wait()
+
+        await cache.mark_connector_changed(ORG, CONNECTOR)
+        release.set()
+        await fill
+
+        assert cache._app_connector_key(ORG, CONNECTOR) not in redis.strings
+
+    async def test_change_between_check_and_write_removes_the_write(self) -> None:
+        cache: AccessibleRecordsCache
+
+        class _ChangeDuringWrite(FakeRedis):
+            async def hset(self, key: str, field: str, value: str) -> int:
+                await self.incr(cache._connector_epoch_key(ORG, CONNECTOR))
+                return await super().hset(key, field, value)
+
+        redis = _ChangeDuringWrite()
+        cache = _cache(redis)
+
+        await cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, _loader({"old": "r"}))
+
+        assert redis.hashes.get(cache._user_connector_key(ORG, CONNECTOR), {}).get(USER) is None
+
+    async def test_unreadable_epoch_skips_the_write_not_the_search(self) -> None:
+        class _EpochDown(FakeRedis):
+            async def get(self, key: str) -> str | None:
+                if ":cgen:" in key:
+                    raise ConnectionError("redis down")
+                return await super().get(key)
+
+        redis = _EpochDown()
+        cache = _cache(redis)
+
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({"v": "r"})
+        ) == {"v": "r"}
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+
+    async def test_an_unchanged_epoch_still_caches(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        await cache.invalidate_connector(ORG, CONNECTOR)
+        loads: list[int] = []
+
+        for _ in range(2):
+            await cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, _loader({"v": "r"}, loads))
+
+        assert len(loads) == 1
+
+    async def test_the_epoch_is_bumped_never_deleted(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        epoch = cache._connector_epoch_key(ORG, CONNECTOR)
+
+        await cache.invalidate_connector(ORG, CONNECTOR)
+        await cache.invalidate_connector(ORG, CONNECTOR)
+
+        assert redis.strings[epoch] == "2"
+        assert redis.expires[epoch] == AccessibleRecordsCache.EPOCH_TTL_SECONDS
+
+
 class TestCrossSlotSafety:
     """Regression test for R5: `invalidate_connector` deletes two keys
     (`capp:` and `cusr:`) that land in different Redis Cluster hash slots
@@ -791,3 +996,116 @@ class TestInvalidationFromTheIndexingWorkerLoop:
             finally:
                 await cache.close()
                 await inspect.close()
+
+
+class _LoopRecordingRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_on: asyncio.AbstractEventLoop | None = None
+
+    async def aclose(self) -> None:
+        self.closed_on = asyncio.get_running_loop()
+
+
+def _per_loop_cache() -> tuple[AccessibleRecordsCache, list[_LoopRecordingRedis]]:
+    built: list[_LoopRecordingRedis] = []
+
+    def factory() -> _LoopRecordingRedis:
+        built.append(_LoopRecordingRedis())
+        return built[-1]
+
+    return AccessibleRecordsCache(MagicMock(), LoopBoundClients(factory), 300, True), built
+
+
+class TestPerLoopState:
+    """One cache is shared by the server loop and every consumer's worker loop."""
+
+    def test_each_loop_gets_its_own_client_and_lock_stripes(self) -> None:
+        cache, built = _per_loop_cache()
+
+        async def use() -> tuple[object, asyncio.Lock]:
+            await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"}))
+            return cache._client(), cache._lock_for("kb:x")
+
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            client_a, stripe_a = a.run_until_complete(use())
+            client_b, stripe_b = b.run_until_complete(use())
+        finally:
+            a.close()
+            b.close()
+
+        assert client_a is not client_b
+        assert stripe_a is not stripe_b
+        assert built == [client_a, client_b]
+        assert all(client.calls for client in built)
+        assert all(client.closed_on is None for client in built)
+
+    def test_a_stripe_contended_on_one_loop_still_works_on_another(self) -> None:
+        """A Lock binds to its first waiter's loop; with one stripe array shared by every loop,
+        the second loop's contended miss raised "bound to a different event loop"."""
+        cache = _cache(FakeRedis())
+        calls: list = []
+
+        async def slow_loader() -> dict[str, str]:
+            calls.append(1)
+            await asyncio.sleep(0.01)
+            return {"vr-1": "rec-1"}
+
+        async def contended_miss() -> None:
+            await cache.invalidate_kb(ORG, KB)
+            await asyncio.gather(*[cache.get_or_compute_kb(ORG, KB, slow_loader) for _ in range(3)])
+
+        a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
+        try:
+            a.run_until_complete(contended_miss())
+            b.run_until_complete(contended_miss())
+        finally:
+            a.close()
+            b.close()
+
+        # Single-flight holds within each loop.
+        assert len(calls) == 2
+
+    def test_close_closes_each_loop_client_on_its_owning_loop(self) -> None:
+        cache, _ = _per_loop_cache()
+
+        async def current() -> _LoopRecordingRedis:
+            return cache._client()
+
+        owner = asyncio.new_event_loop()
+        thread = threading.Thread(target=owner.run_forever, daemon=True)
+        thread.start()
+        here = asyncio.new_event_loop()
+        try:
+            remote = asyncio.run_coroutine_threadsafe(current(), owner).result(timeout=5)
+            mine = here.run_until_complete(current())
+
+            here.run_until_complete(cache.close())
+
+            assert (remote.closed_on, mine.closed_on) == (owner, here)
+            assert cache.enabled is False
+        finally:
+            owner.call_soon_threadsafe(owner.stop)
+            thread.join(timeout=5)
+            owner.close()
+            here.close()
+
+    async def test_create_keeps_the_pinged_client_for_its_loop(self, monkeypatch) -> None:
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        config = MagicMock()
+        config.get_redis_config = AsyncMock(
+            return_value=MagicMock(host="localhost", port=6379, password=None, db=0)
+        )
+        built: list[FakeRedis] = []
+
+        def create_client(self, *a, **k) -> FakeRedis:
+            built.append(FakeRedis())
+            return built[-1]
+
+        with patch.object(StandaloneRedisProvider, "create_client", create_client):
+            cache = await AccessibleRecordsCache.create(MagicMock(), config)
+            await cache.get_or_compute_kb(ORG, KB, _loader({"a": "b"}))
+
+        assert len(built) == 1
+        assert ("get", cache._kb_key(ORG, KB)) in built[0].calls

@@ -1,8 +1,18 @@
 import re
 from collections.abc import Iterable
-from typing import Any, Dict, List, Optional
+from logging import Logger
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+    RecordRelations,
+)
+from app.services.graph_db.taxonomy import TAXONOMY_ENTITY_TYPE_BY_COLLECTION
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Connectors whose record groups are scoped by their root instead of by the full
 # descendant closure. Slack qualifies because grants sit on the channel and every
@@ -80,6 +90,61 @@ PATH_MAX_CANDIDATES = 64
 # Deepest a knowledge-base folder may sit; a folder directly in the collection is
 # depth 1. Enforced on folder create, upload and move.
 KB_MAX_FOLDER_DEPTH = 20
+
+
+# Bound on the chains enumerated by ancestor_chain_rows; chains only branch on
+# graph anomalies, so this is a safety net, not a tuning knob.
+ANCESTOR_CHAIN_ENUMERATION_CAP = 10_000
+
+
+class AncestorChainLimitError(ValueError):
+    """More ancestor chains than ANCESTOR_CHAIN_ENUMERATION_CAP: a cut list could
+    leave out the canonical chain, so no chain is picked."""
+
+
+def ancestor_chain_rows(
+    start: str,
+    links: list[dict[str, str]] | None,
+    *,
+    max_depth: int,
+) -> list[list[str]]:
+    """Every maximal ancestor chain from *start*, as id lists ``[start, parent, ...]``.
+
+    *links* are distinct ``{"child", "parent"}`` pairs, so parallel edges between
+    the same two nodes count once (the path count no longer doubles per level).
+    A chain never repeats a node and has at most *max_depth* steps, matching the
+    path traversals this replaces; ``select_canonical_chain_names`` picks one.
+    Raises AncestorChainLimitError past ANCESTOR_CHAIN_ENUMERATION_CAP chains.
+    """
+    parents: dict[str, list[str]] = {}
+    for link in links or []:
+        child, parent = link.get("child"), link.get("parent")
+        if child and parent and parent not in parents.setdefault(child, []):
+            parents[child].append(parent)
+    for ids in parents.values():
+        ids.sort()
+    rows: list[list[str]] = []
+    path = [start]
+    on_path = {start}
+
+    def walk() -> None:
+        nexts = [p for p in parents.get(path[-1], []) if p not in on_path] if len(path) <= max_depth else []
+        if not nexts:
+            if len(rows) >= ANCESTOR_CHAIN_ENUMERATION_CAP:
+                raise AncestorChainLimitError(
+                    f"{start} has more than {ANCESTOR_CHAIN_ENUMERATION_CAP} ancestor chains"
+                )
+            rows.append(list(path))
+            return
+        for parent in nexts:
+            path.append(parent)
+            on_path.add(parent)
+            walk()
+            on_path.discard(parent)
+            path.pop()
+
+    walk()
+    return rows
 
 
 def select_canonical_chain_names(
@@ -216,6 +281,16 @@ def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     return names
 
 
+# Record-node status fields a query may select on (interpolated, so only these names).
+RECORD_STATUS_FIELDS = frozenset({"indexingStatus", "parsingStatus", "extractionStatus"})
+
+
+def record_status_field(name: str) -> str:
+    if name not in RECORD_STATUS_FIELDS:
+        raise ValueError(f"not a record status field: {name!r}")
+    return name
+
+
 def build_connector_stats_response(
     rows: List[Dict[str, Any]],
     statuses: List[str],
@@ -230,7 +305,9 @@ def build_connector_stats_response(
     get_connector_stats query results.
 
     Args:
-        rows: Query results with recordType, indexingStatus, cnt
+        rows: Query results with recordType, indexingStatus, extractionStatus,
+            entitiesStatus (the record's ``entities`` stage state on its current
+            revision; absent or None when it has none), cnt
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
@@ -240,6 +317,8 @@ def build_connector_stats_response(
         Formatted stats response dictionary
     """
     indexing_status_counts = {s: 0 for s in statuses}
+    extraction_status_counts = dict.fromkeys(statuses, 0)
+    entities_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -249,6 +328,12 @@ def build_connector_stats_response(
         st = row.get("indexingStatus")
         if st in indexing_status_counts:
             indexing_status_counts[st] += cnt
+        ex = row.get("extractionStatus")
+        if ex in extraction_status_counts:
+            extraction_status_counts[ex] += cnt
+        en = row.get("entitiesStatus")
+        if en in entities_status_counts:
+            entities_status_counts[en] += cnt
         rt = row.get("recordType")
         if rt:
             if rt not in record_type_counts:
@@ -256,10 +341,16 @@ def build_connector_stats_response(
                     "recordType": rt,
                     "total": 0,
                     "indexingStatus": {s: 0 for s in statuses},
+                    "extractionStatus": dict.fromkeys(statuses, 0),
+                    "entitiesStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:
                 record_type_counts[rt]["indexingStatus"][st] += cnt
+            if ex in statuses:
+                record_type_counts[rt]["extractionStatus"][ex] += cnt
+            if en in statuses:
+                record_type_counts[rt]["entitiesStatus"][en] += cnt
 
     return {
         "orgId": org_id,
@@ -268,6 +359,8 @@ def build_connector_stats_response(
         "stats": {
             "total": total,
             "indexingStatus": indexing_status_counts,
+            "extractionStatus": extraction_status_counts,
+            "entitiesStatus": entities_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
     }
@@ -287,6 +380,33 @@ TRASH_STATE_FIELDS = (
     "purgeLastError",
     "trashedExternalRecordId",
 )
+
+# Bookkeeping the services keep on a stored record for their own use: the trash
+# state (the record endpoint refuses a trashed record, and a restore clears it),
+# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# taxonomy copy. No client reads them, and the record endpoint's response
+# schema rejects fields it does not list, so the endpoint leaves these out.
+# `deletedByUserId` predates the trash and is documented, so it stays in.
+INTERNAL_RECORD_FIELDS = frozenset({
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+    "rateLimitedSince",
+    "lastRepublishedAt",
+    "republishCount",
+    "duplicateReconcilePending",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+})
+
+
+def api_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
 TRASH_LIST_OTHER_ROOT_NAMES = 3
@@ -425,6 +545,63 @@ def trash_purge_row(
     }
 
 
+def cleans_taxonomy_points(record: dict[str, Any]) -> bool:
+    """Whether a deleted record's ``deleteRecord`` names its taxonomy entities
+    (``taxonomyRefs``): a knowledge-base record with vectors. Connector records
+    are left out: their deletes do not clean taxonomy points yet."""
+    return bool(record.get("virtualRecordId")) and (
+        record.get("origin") == OriginTypes.UPLOAD.value
+        or record.get("connectorName") == Connectors.KNOWLEDGE_BASE.value
+    )
+
+
+async def record_taxonomy_refs(
+    graph: "IGraphDBProvider", record_keys: Iterable[str], logger: Logger,
+) -> dict[str, list[dict[str, str]]]:
+    """The taxonomy entities each record links to, as ``{record key: [{"id",
+    "type"}]}``, read before a delete removes the edges so the indexing service
+    can then delete the entity points no other record reaches
+    (``EntityVectorStore.delete_unreached_entities``).
+
+    A failed read returns ``{}``: the delete must not fail over a cleanup, and
+    without refs the points stay as they always did.
+    """
+    keys = list(dict.fromkeys(str(key) for key in record_keys if key))
+    if not keys:
+        return {}
+    try:
+        links = await graph.get_record_taxonomy_links(keys, include_departments=True)
+    except Exception as exc:
+        logger.warning(
+            "Could not read the taxonomy links of %d deleted record(s); their entity points stay: %s",
+            len(keys), exc,
+        )
+        return {}
+    refs: dict[str, list[dict[str, str]]] = {}
+    for link in links:
+        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
+        record_key, entity_id = link.get("recordId"), link.get("entityId")
+        if not entity_type or not record_key or not entity_id:
+            continue
+        ref = {"id": str(entity_id), "type": entity_type}
+        bucket = refs.setdefault(str(record_key), [])
+        if ref not in bucket:
+            bucket.append(ref)
+    return refs
+
+
+async def deleted_record_taxonomy_refs(
+    graph: "IGraphDBProvider", records: Iterable[dict[str, Any]], logger: Logger,
+) -> dict[str, list[dict[str, str]]]:
+    """``record_taxonomy_refs`` for the records in ``records`` that
+    ``cleans_taxonomy_points``, keyed by ``_key`` (ArangoDB) or ``id`` (Neo4j)."""
+    return await record_taxonomy_refs(
+        graph,
+        [record.get("_key") or record.get("id") for record in records if cleans_taxonomy_points(record)],
+        logger,
+    )
+
+
 def jira_issue_browse_url_regex(issue_key: str) -> str:
     """A regex matching a Jira webUrl for exactly ``issue_key``.
 
@@ -433,3 +610,23 @@ def jira_issue_browse_url_regex(issue_key: str) -> str:
     the same under Neo4j's whole-string ``=~`` and Arango's substring REGEX_TEST.
     """
     return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"
+
+
+async def org_id_from_app_edge(graph_provider: "IGraphDBProvider", app_id: str) -> str | None:
+    """The org an app belongs to, from its org-app edge.
+
+    Connector apps created before ``orgId`` was stored on the document have
+    their org only on this edge. Neo4j returns a bare id in ``from_id``;
+    Arango a document handle in ``_from`` ("organizations/<key>").
+    """
+    edges = await graph_provider.get_edges_to_node(
+        f"{CollectionNames.APPS.value}/{app_id}",
+        CollectionNames.ORG_APP_RELATION.value,
+    )
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        source = edge.get("from_id") or edge.get("_from")
+        if source:
+            return str(source).rsplit("/", 1)[-1]
+    return None

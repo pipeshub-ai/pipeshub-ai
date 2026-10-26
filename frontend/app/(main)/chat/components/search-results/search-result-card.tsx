@@ -25,7 +25,7 @@ export function SearchResultCard({
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const { metadata, content, score } = result;
-  const config = getConnectorConfig(metadata.connector);
+  const config = getConnectorConfig(metadata.connector, metadata.connectorInstanceName);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
@@ -154,7 +154,7 @@ export function SearchResultCard({
             weight="medium"
             style={{ color: 'var(--slate-10)' }}
           >
-            {config.label}
+            {config.sourceLabel}
           </Text>
         </Flex>
       </Flex>

@@ -5,7 +5,7 @@ the model's dimension changed."""
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,8 +24,18 @@ from app.services.vector_db.models import (
 )
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.embedding_config import skip_bootstrap
+from tests.support.entity_vector_db import recreate_lock_redis
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ORG = "org-1"
+
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
 
 
 class _StatefulVectorDB:
@@ -276,12 +286,51 @@ class TestDimensionChange:
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
 
-    async def test_mismatch_without_the_leader_request_raises_even_when_enabled(self) -> None:
+    async def test_mismatch_without_the_leader_request_raises_when_it_holds_entities(self) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
+        db.scroll = AsyncMock(return_value=ScrollResult(points=[VectorPoint(id="p1", payload={})]))
         with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
              pytest.raises(VectorStoreError, match="dimension 768"):
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
+
+    async def test_an_indexing_store_recreates_a_mismatch_holding_no_entities(self) -> None:
+        store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
+        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+            await store._ensure_initialized()
+        db.delete_collection.assert_awaited_once()
+        assert db.create_collection.await_args.kwargs["config"].embedding_size == 1536
+
+    async def test_a_collection_another_replica_recreated_meanwhile_is_kept(self) -> None:
+        store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
+        db.get_collection_info.side_effect = [
+            VectorCollectionInfo(name="entities", exists=True, dense_dimension=768),
+            VectorCollectionInfo(name="entities", exists=True, dense_dimension=1536),
+        ]
+        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+            await store._ensure_initialized(recreate=True)
+        db.delete_collection.assert_not_awaited()
+        db.create_collection.assert_not_awaited()
+
+    async def test_a_collection_another_replica_created_first_is_used(self) -> None:
+        store, db, model = _init_store(None, 1536, recreate=True, embedding_config=OPENAI)
+        db.create_collection.side_effect = RuntimeError("Collection `entities` already exists!")
+        db.get_collection_info.side_effect = [
+            VectorCollectionInfo(name="entities", exists=False),
+            VectorCollectionInfo(name="entities", exists=True, dense_dimension=1536),
+        ]
+        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+            await store._ensure_initialized()
+        assert store._initialized
+        db.create_index.assert_awaited()
+
+    async def test_a_failed_create_with_no_usable_collection_raises(self) -> None:
+        store, db, model = _init_store(None, 1536, recreate=True, embedding_config=OPENAI)
+        db.create_collection.side_effect = RuntimeError("vector db down")
+        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+             pytest.raises(RuntimeError, match="vector db down"):
+            await store._ensure_initialized()
+        assert not store._initialized
 
     async def test_mismatch_recreates_when_enabled(self, caplog) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
@@ -380,6 +429,26 @@ class TestARecreatedCollectionReachesRunningServices:
         assert len(request.dense_query) == 4
 
 
+class TestEntitySearchRidesOutATransientStoreError:
+    async def test_a_timeout_then_an_answer_is_a_search_not_a_failure(self) -> None:
+        db = MagicMock()
+        db.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+        db.transient_search_error = MagicMock(return_value=None)
+        db.filter_collection = AsyncMock(return_value={})
+        db.query_nearest_points = AsyncMock(side_effect=[TimeoutError("search timed out"), [[]]])
+        db.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(
+            name="entities", exists=True, dense_dimension=2,
+        ))
+        store, _ = _store(db)
+        store._query_vector_cache["pricing"] = ([0.1, 0.2], None)
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            assert await store.search_entities("pricing", ORG, set(), {"c1"}) == []
+
+        assert db.query_nearest_points.await_count == 2
+        assert store._initialized is True
+
+
 async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
     """A query embedded by the old model, finishing after the store reset for
     a recreated collection, must not be cached: the next search for that text
@@ -398,8 +467,7 @@ async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
 
     store._dense_embeddings.embed_query = MagicMock(side_effect=_old_model_embed)
     in_flight = asyncio.create_task(store._query_vectors("pricing"))
-    while not started.is_set():
-        await asyncio.sleep(0.01)
+    assert await asyncio.to_thread(started.wait, 5)
     await store._reset_if_collection_changed()
     release.set()
     assert (await in_flight)[0] == [0.1, 0.2]
@@ -423,3 +491,38 @@ async def test_a_reset_waiting_on_a_reinitialisation_keeps_the_fresh_state() -> 
     await waiting
     assert store._initialized is True
     assert store._generation == generation
+
+
+async def test_an_entity_search_embeds_the_query_with_the_model_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the BGE query instruction on, the dense query vector is made from the instructed text; the sparse one is not."""
+    from app.utils.query_instruction import BGE_QUERY_INSTRUCTION
+
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    store._dense_embeddings.model = "BAAI/bge-large-en-v1.5"
+    store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+
+    await store._query_vectors("pricing")
+
+    store._dense_embeddings.embed_query.assert_called_once_with(BGE_QUERY_INSTRUCTION + "pricing")
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "false")
+    store._query_vector_cache.clear()
+    await store._query_vectors("pricing")
+    assert store._dense_embeddings.embed_query.call_args.args == ("pricing",)
+
+
+async def test_toggling_the_query_instruction_does_not_serve_a_stale_cached_vector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache is keyed by the text the model sees, so a flag change takes effect without clearing it."""
+    from app.utils.query_instruction import BGE_QUERY_INSTRUCTION
+
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    store._dense_embeddings.model = "BAAI/bge-large-en-v1.5"
+    store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "false")
+    await store._query_vectors("pricing")
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    await store._query_vectors("pricing")
+
+    assert store._dense_embeddings.embed_query.call_args.args == (BGE_QUERY_INSTRUCTION + "pricing",)

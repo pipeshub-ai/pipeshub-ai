@@ -9,7 +9,6 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
-from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -112,11 +111,12 @@ def connector(mock_logger, mock_data_entities_processor,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, error_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.error_code = error_code
     return r
 
 
@@ -165,15 +165,16 @@ class TestAzureFilesProcessorComprehensive:
             AzureFilesDataSourceEntitiesProcessor
         )
         proc.account_name = "myaccount"
+        proc.account_url = ""
         url = proc._generate_directory_url("myshare/subdir/folder")
-        assert "myaccount.file.core.windows.net" in url
-        assert "myshare" in url
+        assert url == "https://myaccount.file.core.windows.net/myshare/subdir/folder"
 
     def test_generate_directory_url_root(self):
         proc = AzureFilesDataSourceEntitiesProcessor.__new__(
             AzureFilesDataSourceEntitiesProcessor
         )
         proc.account_name = "myaccount"
+        proc.account_url = ""
         url = proc._generate_directory_url("myshare")
         assert url == "https://myaccount.file.core.windows.net/myshare"
 
@@ -418,9 +419,8 @@ class TestRunSyncComprehensive:
                 success=True, data=[{"name": "share1"}]
             ))
             connector._create_record_groups_for_shares = AsyncMock()
-            connector._sync_share = AsyncMock()
+            connector._sync_share = AsyncMock(return_value=(set(), True))
             connector.account_name = "testaccount"
-            connector.scope = ConnectorScope.TEAM.value
 
             await connector.run_sync()
 
@@ -458,6 +458,6 @@ class TestMiscComprehensive:
             return_value=(FilterCollection(), FilterCollection()),
         ):
             connector._create_record_groups_for_shares = AsyncMock()
-            connector._sync_share = AsyncMock()
+            connector._sync_share = AsyncMock(return_value=(set(), True))
             # incremental sync just calls run_sync under the hood after checking data_source
             await connector.run_incremental_sync()

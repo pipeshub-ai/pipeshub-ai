@@ -6,7 +6,15 @@ from typing import Literal
 from urllib.parse import urljoin
 
 import trafilatura
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import (
+    BeautifulSoup,
+    Comment,
+    Declaration,
+    Doctype,
+    NavigableString,
+    ProcessingInstruction,
+    Tag,
+)
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -41,8 +49,10 @@ SPLIT_TAGS = {             # HTML tags that should always start a new block
 SKIP_TAGS = {              # tags whose subtree we ignore completely
     "script", "style", "noscript", "nav", "footer",
     "header", "aside", "form", "svg",
-    "meta", "head",
+    "meta", "head", "template",
 }
+# Classes that hide text from sight but not from screen readers ("Skip to main content").
+SCREEN_READER_ONLY_CLASSES = frozenset({"sr-only", "visually-hidden", "screen-reader-text"})
 BLOCK_LEVEL_TAGS = {       # block-level tags that need separator but not a new block
     "div", "section", "article", "main", "details", "summary",
     "dl", "dt", "dd", "figure", "address",
@@ -94,6 +104,9 @@ def _strip_boilerplate(soup: BeautifulSoup) -> None:
         el.decompose()
     for el in list(soup.find_all(attrs={"aria-hidden": "true"})):
         el.decompose()
+    for el in list(soup.find_all(class_=True)):
+        if not el.decomposed and SCREEN_READER_ONLY_CLASSES.intersection(el.get("class", [])):
+            el.decompose()
 
     for el in list(soup.find_all(True)):
         if el.decomposed:
@@ -140,6 +153,9 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> N
     for child in node.children:
         # ── Plain text node ──────────────────────────────────────────────
         if isinstance(child, NavigableString):
+            # Markup notes, not page text, such as React's `<!--$-->` Suspense markers.
+            if isinstance(child, (Comment, Declaration, Doctype, ProcessingInstruction)):
+                continue
             text = str(child)
             if text.strip():      # skip pure-whitespace text nodes
                 buffer.append(text)
@@ -179,6 +195,9 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> N
             _flush_buffer(buffer, blocks)
             for br in child.find_all("br"):
                 br.replace_with("\n")
+            # A browser's text match stops at an image, so the text on each side is a separate run.
+            for img in child.find_all("img"):
+                img.insert_before("\n")
             inner = child.get_text("")
             if inner:
                 for chunk in _split_long_text(inner):

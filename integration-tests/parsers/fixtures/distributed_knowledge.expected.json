@@ -1175,7 +1175,9 @@
         "decorators": null,
         "qualified_name": null,
         "start_line": null,
-        "end_line": null
+        "end_line": null,
+        "pending_edges": null,
+        "type_table": null
       },
       "media_metadata": null,
       "file_metadata": null,
@@ -1315,7 +1317,9 @@
         "decorators": null,
         "qualified_name": null,
         "start_line": null,
-        "end_line": null
+        "end_line": null,
+        "pending_edges": null,
+        "type_table": null
       },
       "media_metadata": null,
       "file_metadata": null,

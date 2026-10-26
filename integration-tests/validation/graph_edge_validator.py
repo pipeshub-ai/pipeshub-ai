@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
+
+from helper import suite_extensions
 
 if TYPE_CHECKING:
     from helper.graph_provider import GraphProviderProtocol
@@ -25,6 +27,7 @@ if str(_RV_HELPER) not in sys.path:
     sys.path.insert(0, str(_RV_HELPER))
 
 from response_validator import (  # noqa: E402
+    ResponseSchema,
     assert_response_matches_schema,
     load_yaml_schema,
 )
@@ -51,7 +54,7 @@ _EDGE_COLLECTION_TO_YAML: Final[dict[str, str]] = {
     "permission": "permission.yaml",
     "belongsTo": "belongs_to.yaml",
     "inheritPermissions": "inherit_permissions.yaml",
-    "recordRelations": "record_relations.yaml",
+    "nodeRelations": "node_relations.yaml",
     "isOfType": "is_of_type.yaml",
     "userAppRelation": "user_app_relation.yaml",
     "entityRelations": "entity_relations.yaml",
@@ -65,6 +68,40 @@ _EDGE_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
 _ARANGO_SYSTEM_KEYS: Final[frozenset[str]] = frozenset({
     "_key", "_id", "_rev", "_from", "_to",
 })
+
+
+
+def load_edge_schema(
+    yaml_file: str, *, schema_dir: Path = _EDGE_SCHEMA_DIR, root: Path = suite_extensions.ROOT,
+) -> ResponseSchema:
+    """``schema_dir/yaml_file`` with the fields each extension's
+    ``schemas/edges/<yaml_file>`` adds (helper/suite_extensions.py).
+
+    An extension may add a field, or add enum values to a field it repeats
+    with the same type, ``required`` and everything else. Any other change to
+    a field is an error, so no check made here can be dropped or loosened.
+    """
+    schema = load_yaml_schema(schema_dir / yaml_file)
+    for directory in suite_extensions.extension_dirs(root):
+        extra = directory / "schemas" / "edges" / yaml_file
+        if extra.is_file():
+            _add_fields(schema, load_yaml_schema(extra), extra)
+    return schema
+
+
+def _add_fields(schema: ResponseSchema, extra: ResponseSchema, source: Path) -> None:
+    for name, added in extra.fields.items():
+        current = schema.fields.get(name)
+        if current is None:
+            schema.fields[name] = added
+            continue
+        if not (current.enum and added.enum):
+            raise ValueError(f"{source} redefines {name!r}; it may only add enum values to it")
+        widened = replace(current, enum=[*current.enum, *(v for v in added.enum if v not in current.enum)])
+        if replace(added, enum=widened.enum) != widened:
+            raise ValueError(f"{source} changes more than the enum of {name!r}")
+        schema.fields[name] = widened
+
 
 NodeKind = Literal[
     "user", "group", "role", "org", "record", "record_group", "app",
@@ -244,9 +281,8 @@ async def assert_graph_edges(
 
         yaml_file = _EDGE_COLLECTION_TO_YAML.get(exp.collection)
         if yaml_file:
-            schema_path = _EDGE_SCHEMA_DIR / yaml_file
-            if schema_path.exists():
-                schema = load_yaml_schema(schema_path)
+            if (_EDGE_SCHEMA_DIR / yaml_file).exists():
+                schema = load_edge_schema(yaml_file)
                 try:
                     assert_response_matches_schema(edge, schema)
                 except AssertionError as exc:
@@ -275,16 +311,44 @@ async def assert_graph_edges(
 # ---------------------------------------------------------------------------
 
 
+async def resolve_parent_record(
+    graph: GraphProviderProtocol,
+    record: Any,
+    connector_id: str,
+) -> Any | None:
+    """The stored record above *record*, or None when it has none."""
+    if not record.parent_external_record_id:
+        return None
+    return await graph.get_record_by_external_id(connector_id, record.parent_external_record_id)
+
+
+def _inherits_from_group(record: Any, parent: Any | None) -> bool:
+    """A record inherits from its record group only when no record of that group
+    is above it: a nested one inherits from its parent record. A synced parent of
+    another record group lists the record but lends it no audience."""
+    if not record.parent_external_record_id:
+        return True
+    return (
+        parent is not None
+        and not getattr(parent, "is_placeholder", False)
+        and bool(record.record_group_id)
+        and bool(parent.record_group_id)
+        and parent.record_group_id != record.record_group_id
+    )
+
+
 def build_record_edge_expectations(
     record: Any,
     connector_id: str,
     *,
     parent_relation_type: str | None = None,
+    parent: Any | None = None,
 ) -> list[EdgeExpectation]:
     """Build structural edge expectations from a validated Record entity.
 
     ``record`` should be a ``Record`` (or subclass) with fields populated from
-    the graph (the *actual* entity from step 2).
+    the graph (the *actual* entity from step 2). ``parent`` is what
+    ``resolve_parent_record`` returned for it.
     """
     from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
 
@@ -304,7 +368,8 @@ def build_record_edge_expectations(
             label="record belongsTo recordGroup",
         ))
 
-        if record.inherit_permissions:
+        from_group = _inherits_from_group(record, parent)
+        if record.inherit_permissions and from_group:
             exps.append(EdgeExpectation(
                 collection="inheritPermissions",
                 from_ref=rec_ref,
@@ -312,12 +377,13 @@ def build_record_edge_expectations(
                 label="record inheritPermissions recordGroup",
             ))
         else:
+            reason = "inherit=False" if not record.inherit_permissions else "nested under a record"
             exps.append(EdgeExpectation(
                 collection="inheritPermissions",
                 from_ref=rec_ref,
                 to_ref=rg_ref,
                 cardinality="none",
-                label="record NOT inheritPermissions (inherit=False)",
+                label=f"record NOT inheritPermissions recordGroup ({reason})",
             ))
 
     rt_value = record.record_type.value if hasattr(record.record_type, "value") else str(record.record_type)
@@ -348,12 +414,24 @@ def build_record_edge_expectations(
             rel_type = "PARENT_CHILD"
 
         exps.append(EdgeExpectation(
-            collection="recordRelations",
+            collection="nodeRelations",
             from_ref=parent_ref,
             to_ref=rec_ref,
             cardinality="at_least_one",
             expected_payload={"relationshipType": rel_type},
-            label=f"parent recordRelations ({rel_type}) -> record",
+            label=f"parent nodeRelations ({rel_type}) -> record",
+        ))
+
+        from_parent = record.inherit_permissions and not _inherits_from_group(record, parent)
+        exps.append(EdgeExpectation(
+            collection="inheritPermissions",
+            from_ref=rec_ref,
+            to_ref=parent_ref,
+            cardinality="exactly_one" if from_parent else "none",
+            label=(
+                "record inheritPermissions parentRecord" if from_parent
+                else "record NOT inheritPermissions parentRecord"
+            ),
         ))
 
     return exps

@@ -19,6 +19,8 @@ export interface UseToolsetTypeInstanceListOptions {
   refreshKey: number;
   /** Team page passes `isAdmin`; personal always passes true when on type detail. */
   enabled: boolean;
+  /** `org` on the team page: the organization's instances, without the admin's personal ones. */
+  scope?: 'org';
 }
 
 /**
@@ -29,6 +31,7 @@ export function useToolsetTypeInstanceList({
   instanceFilterTab,
   refreshKey,
   enabled,
+  scope,
 }: UseToolsetTypeInstanceListOptions) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -88,6 +91,7 @@ export function useToolsetTypeInstanceList({
           includeRegistry: false,
           toolsetType: toolsetTypeParam,
           authStatus,
+          scope,
         });
         if (cancelled) return;
         setTypeListInstances(res.toolsets);
@@ -125,6 +129,7 @@ export function useToolsetTypeInstanceList({
     toolsetTypeParam,
     typeListPage,
     refreshKey,
+    scope,
   ]);
 
   return {

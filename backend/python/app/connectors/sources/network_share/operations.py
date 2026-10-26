@@ -10,20 +10,15 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     not_downloadable,
+    not_found_at_source,
     to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOption,
-    FilterOptionsResponse,
-    IndexingFilterKey,
-)
+from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
-from app.connectors.sources.network_share.errors import ShareListingError
 from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
@@ -48,47 +43,8 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
-    from app.connectors.sources.network_share.entry import ShareInfo
     from app.connectors.sources.network_share.protocol import INetworkShareDataSource
     from app.models.permission import Permission
-
-
-def _disk_shares(shares: list[ShareInfo]) -> list[str]:
-    names: list[str] = []
-    for share in shares:
-        if share.share_type in {"ipc", "print", "device"}:
-            continue
-        name = share.name.strip()
-        if not name:
-            continue
-        names.append(name)
-    return names
-
-
-def _is_admin_share(name: str) -> bool:
-    """Windows admin shares: ADMIN$, IPC$, and a drive letter plus $ (C$, D$)."""
-    upper = name.upper()
-    if upper in {"IPC$", "ADMIN$"}:
-        return True
-    return len(upper) == 2 and upper[0].isalpha() and upper[1] == "$"
-
-
-def _drop_admin_shares(shares: list[ShareInfo]) -> list[ShareInfo]:
-    return [share for share in shares if not _is_admin_share(share.name)]
-
-
-async def resolve_shares(
-    sync_filters: FilterCollection,
-    configured_share: str | None,
-) -> list[str]:
-    """Names to crawl. An empty filter uses the configured share, not every listed disk."""
-    share_filter = sync_filters.get("shares")
-    selected = share_filter.value if share_filter and share_filter.value else []
-    if selected:
-        return [str(name) for name in selected if name]
-    if configured_share:
-        return [configured_share]
-    return []
 
 
 async def create_share_groups(
@@ -130,14 +86,26 @@ async def create_share_groups(
         await processor.on_new_record_groups(groups)
 
 
+def _under_any(external_id: str | None, roots: set[str]) -> bool:
+    if not external_id:
+        return False
+    return any(external_id == root or external_id.startswith(f"{root}/") for root in roots)
+
+
 async def prune_unseen(
     processor: DataSourceEntitiesProcessor,
     connector_id: str,
     seen: set[str],
     logger: Logger,
+    unread: set[str] | None = None,
 ) -> None:
+    """Delete the records this sync did not see, except those under ``unread``."""
+    keep = unread or set()
     records = await processor.get_records_by_record_type(connector_id, RecordType.FILE)
-    stale = [r for r in records if r.external_record_id not in seen]
+    stale = [
+        r for r in records
+        if r.external_record_id not in seen and not _under_any(r.external_record_id, keep)
+    ]
     if not stale:
         return
     logger.info("Removing %s records no longer in the synced shares", len(stale))
@@ -181,13 +149,9 @@ def make_walker(
     async def flush_moves(batch: list[tuple[str, FileRecord, list[Permission]]]) -> None:
         await processor.on_records_moved(batch)
 
-    def permissions_for(_record: FileRecord) -> list[Permission]:
-        return app_level_permissions(
-            scope=scope,
-            org_id=processor.org_id,
-            creator_email=creator_email,
-            created_by=created_by,
-        )
+    def permissions_for(record: FileRecord) -> list[Permission]:
+        record.rewrite_permissions = True
+        return []
 
     return ShareWalker(
         data_source=data_source,
@@ -245,7 +209,8 @@ async def walk_shares(
     indexing_filters: FilterCollection,
     record_sync_point: SyncPoint,
     prune: bool,
-) -> None:
+) -> list[str]:
+    """Walk and reconcile ``shares``. Returns the shares where nothing could be listed."""
     walker = make_walker(
         data_source=data_source,
         processor=processor,
@@ -259,7 +224,8 @@ async def walk_shares(
         creator_email=creator_email,
     )
     seen: set[str] = set()
-    complete = True
+    unread: set[str] = set()
+    unreadable: list[str] = []
     folder_scope = FolderScope.from_filters(sync_filters)
     for share_name in shares:
         if not share_name:
@@ -269,7 +235,9 @@ async def walk_shares(
                 share_name, sync_filters, indexing_filters
             )
             seen |= result.seen
-            complete = complete and result.complete
+            unread |= result.unread
+            if not result.complete and result.seen == {share_name}:
+                unreadable.append(share_name)
             if result.complete:
                 await clean_up_scope(
                     processor,
@@ -286,14 +254,21 @@ async def walk_shares(
                     record_sync_point, share_name, result.max_timestamp_ms
                 )
         except Exception:
-            complete = False
+            # Nothing tells which of its records the walk got to, so all of them stay.
+            unread.add(share_name)
+            unreadable.append(share_name)
             logger.exception("Error syncing share %s", share_name)
-    if prune and complete:
-        await prune_unseen(processor, connector_id, seen, logger)
-    elif prune and not complete:
+    if unread:
         logger.warning(
-            "Some listings failed; not removing records that were not seen this sync"
+            "Could not read %d paths; keeping the records stored under them: %s",
+            len(unread),
+            ", ".join(sorted(unread)[:20]),
         )
+    if prune:
+        # A folder that failed to list keeps its own records only, so one
+        # unreadable folder does not stop removals everywhere else on the share.
+        await prune_unseen(processor, connector_id, seen, logger, unread)
+    return unreadable
 
 
 def io_share_and_path(record: Record) -> tuple[str, str] | None:
@@ -340,6 +315,10 @@ async def stream_file(
         )
     share_name, file_path = path_info
     try:
+        # read_file opens the file on its first chunk, after this function has
+        # returned, where a missing file becomes a generic 500.
+        if await data_source.stat(share_name, file_path) is None:
+            raise not_found_at_source(display_name)
         return create_stream_record_response(
             data_source.read_file(share_name, file_path),
             filename=record.record_name,
@@ -405,62 +384,11 @@ async def reindex_records(
             )
             if existing:
                 built.id = existing.id
-            perms = app_level_permissions(
-                scope=scope,
-                org_id=processor.org_id,
-                creator_email=creator_email,
-                created_by=created_by,
-            )
-            updated.append((built, perms))
+            built.rewrite_permissions = True
+            updated.append((built, []))
         except Exception:
             logger.exception("Error checking record %s at source", record.id)
     if updated:
         await processor.on_new_records(updated)
     if unchanged:
         await processor.reindex_existing_records(unchanged)
-
-
-async def share_filter_options(
-    *,
-    data_source: INetworkShareDataSource | None,
-    configured_share: str | None,
-    page: int,
-    limit: int,
-    search: str | None,
-) -> FilterOptionsResponse:
-    if not data_source:
-        return FilterOptionsResponse(
-            success=False,
-            options=[],
-            page=page,
-            limit=limit,
-            has_more=False,
-            message="Connector is not initialized",
-        )
-    try:
-        shares = _drop_admin_shares(await data_source.list_shares())
-        names = _disk_shares(shares)
-    except ShareListingError as exc:
-        if configured_share:
-            names = [configured_share]
-        else:
-            return FilterOptionsResponse(
-                success=False,
-                options=[],
-                page=page,
-                limit=limit,
-                has_more=False,
-                message=str(exc),
-            )
-    if search:
-        needle = search.lower()
-        names = [n for n in names if needle in n.lower()]
-    start = max(page - 1, 0) * limit
-    window = names[start : start + limit]
-    return FilterOptionsResponse(
-        success=True,
-        options=[FilterOption(id=name, label=name) for name in window],
-        page=page,
-        limit=limit,
-        has_more=start + limit < len(names),
-    )

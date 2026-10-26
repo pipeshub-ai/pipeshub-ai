@@ -69,6 +69,7 @@ from app.services.skills.package_importer import (
     SkillPackageImporter,
 )
 from app.telemetry.identity import domain_from_email
+from app.utils.user_lookup import get_user_or_503
 
 
 async def _require_skills_enabled(request: Request) -> None:
@@ -428,7 +429,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
 
 async def _get_user_key(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> str:
     try:
-        user = await graph_provider.get_user_by_user_id(user_id)
+        user = await get_user_or_503(graph_provider, user_id)
         if not user or not isinstance(user, dict):
             raise HTTPException(status_code=404, detail="User not found")
         return user["_key"]

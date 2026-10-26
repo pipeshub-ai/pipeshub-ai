@@ -9,6 +9,7 @@ Authentication: https://docs.snowflake.com/en/developer-guide/sql-api/authentica
 """
 
 import logging
+import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urlunparse
@@ -28,6 +29,8 @@ try:
     import snowflake.connector as snowflake_connector  # type: ignore
 except ImportError:
     snowflake_connector = None
+
+_ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 class AuthType(str, Enum):
     """Authentication type for Snowflake connector."""
@@ -82,13 +85,18 @@ class SnowflakeRESTClientViaOAuth(HTTPClient):
         # Parse the account identifier as a URL
         parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
         # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        netloc = parsed.netloc or parsed.path.split("/")[0]
         # Remove the .snowflakecomputing.com suffix if present
         if netloc.endswith(".snowflakecomputing.com"):
             account = netloc[:-len(".snowflakecomputing.com")]
         else:
             # If no suffix, assume netloc is the account name
             account = netloc
+
+        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
+        # would let the value choose another server.
+        if not _ACCOUNT_NAME.fullmatch(account):
+            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
 
         # Build the base URL using urlunparse for proper URL construction
         base_url = urlunparse((
@@ -139,7 +147,7 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         """
         logger.debug(f"🔧 [PAT] SnowflakeRESTClientViaPAT.__init__ called")
         logger.debug(f"🔧 [PAT] account_identifier: '{account_identifier}'")
-        logger.debug(f"🔧 [PAT] pat_token (first 10 chars): '{pat_token[:10] if pat_token else 'None'}...'")
+        logger.debug(f"🔧 [PAT] pat_token present: {bool(pat_token)}")
         logger.debug(f"🔧 [PAT] timeout: {timeout}")
         
         # Initialize with PAT token using Bearer format
@@ -155,7 +163,8 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         self.pat_token = pat_token
         self._base_url = self._build_base_url(account_identifier)
         
-        logger.debug(f"🔧 [PAT] Final headers: {self.headers}")
+        # The header values carry the PAT itself.
+        logger.debug(f"🔧 [PAT] Final header names: {sorted(self.headers)}")
         logger.debug(f"🔧 [PAT] Final base_url: '{self._base_url}'")
         logger.info(f"🔧 [PAT] SnowflakeRESTClientViaPAT initialized successfully with base_url: '{self._base_url}'")
 
@@ -177,7 +186,7 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         logger.debug(f"🔧 [PAT] Parsed URL: scheme='{parsed.scheme}', netloc='{parsed.netloc}', path='{parsed.path}'")
 
         # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        netloc = parsed.netloc or parsed.path.split("/")[0]
         logger.debug(f"🔧 [PAT] Extracted netloc: '{netloc}'")
 
         # Remove the .snowflakecomputing.com suffix if present
@@ -188,6 +197,11 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
             # If no suffix, assume netloc is the account name
             account = netloc
             logger.debug(f"🔧 [PAT] No .snowflakecomputing.com suffix found, using netloc as account: '{account}'")
+
+        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
+        # would let the value choose another server.
+        if not _ACCOUNT_NAME.fullmatch(account):
+            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
 
         # Build the base URL using urlunparse for proper URL construction
         base_url = urlunparse((
@@ -379,7 +393,6 @@ class SnowflakeClient(IClient):
                 logger, config_service, connector_instance_id
             )
             logger.debug(f"🔧 [SnowflakeClient] Raw config_dict keys: {list(config_dict.keys()) if config_dict else 'None'}")
-            logger.debug(f"🔧 [SnowflakeClient] Raw config_dict: {config_dict}")
 
             config = SnowflakeConnectorConfig.model_validate(config_dict)
             logger.debug(f"🔧 [SnowflakeClient] Validated config - accountIdentifier: '{config.accountIdentifier}'")
@@ -418,7 +431,9 @@ class SnowflakeClient(IClient):
             return cls(client=client)
 
         except ValidationError as e:
-            logger.error(f"Invalid Snowflake connector configuration: {e}")
+            # str(e) echoes each rejected input, which can be a credential.
+            fields = [".".join(map(str, err["loc"])) for err in e.errors(include_input=False)]
+            logger.error(f"Invalid Snowflake connector configuration: fields {fields}")
             raise ValueError("Invalid Snowflake connector configuration") from e
         except Exception as e:
             logger.error(f"Failed to build Snowflake client from services: {str(e)}")

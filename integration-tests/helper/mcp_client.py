@@ -1,15 +1,21 @@
 """
-Read the surface a PipesHub MCP server presents to a host.
+Read the surface a PipesHub MCP server presents to a host, and call its tools.
 
 "Surface" is everything an MCP host sees before it calls a tool: the
 ``initialize`` result (server info, capabilities, instructions), the tool list
 (names, descriptions, input schemas, annotations), and the prompt list.
 The result is plain JSON so it can be stored as a golden file and diffed.
+
+``call_mcp_tool`` is a host's ``tools/call``. A tool that fails answers with
+``isError`` and a message rather than a JSON-RPC error, input validation
+included, so the result is returned either way for the test to judge.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
@@ -59,6 +65,41 @@ async def _read_surface(url: str, token: str) -> dict:
 def read_mcp_surface(base_url: str, token: str) -> dict:
     """Connect once with a bearer token and return the surface as plain JSON."""
     return asyncio.run(_read_surface(mcp_url(base_url), token))
+
+
+@dataclass(frozen=True)
+class McpToolResult:
+    is_error: bool
+    content: list[dict]
+
+    @property
+    def text(self) -> str:
+        return "\n".join(c.get("text", "") for c in self.content if c.get("type") == "text")
+
+    @property
+    def resources(self) -> list[dict]:
+        """Embedded resources, the shape ``pipeshub_download_record`` returns a file in."""
+        return [c["resource"] for c in self.content if c.get("type") == "resource"]
+
+    def json(self) -> Any:
+        """The text content parsed as JSON. Raises with the text attached when it is not."""
+        try:
+            return json.loads(self.text)
+        except json.JSONDecodeError as e:
+            raise AssertionError(f"expected a JSON tool result, got:\n{self.text[:2000]}") from e
+
+
+async def _call_tool(url: str, token: str, name: str, arguments: dict) -> McpToolResult:
+    async with Client(StreamableHttpTransport(url, auth=token)) as client:
+        result = await client.call_tool_mcp(name, arguments)
+    return McpToolResult(bool(result.isError), [_dump(c) for c in result.content])
+
+
+def call_mcp_tool(
+    base_url: str, token: str, name: str, arguments: dict | None = None
+) -> McpToolResult:
+    """One ``tools/call`` over a fresh session, as a stateless host makes it."""
+    return asyncio.run(_call_tool(mcp_url(base_url), token, name, arguments or {}))
 
 
 def mcp_initialize_raw(base_url: str, token: Optional[str], timeout: int = 30) -> requests.Response:

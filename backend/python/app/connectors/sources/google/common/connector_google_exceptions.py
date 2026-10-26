@@ -45,6 +45,13 @@ class GoogleMailError(GoogleConnectorError):
     pass
 
 
+class DriveSyncIncomplete(GoogleDriveError):
+    """A Drive run that could not read part of Drive. Raised at its end, after everything else it could do,
+    so the run is recorded as failed and read again next time."""
+
+    pass
+
+
 class DriveOperationError(GoogleDriveError):
     """Raised when a Drive operation fails"""
 
@@ -126,6 +133,15 @@ class AdminListError(AdminServiceError):
 
 class AdminDelegationError(AdminServiceError):
     """Raised when domain-wide delegation fails"""
+
+    pass
+
+
+class ServiceAccountKeyError(AdminAuthError, AdminDelegationError):
+    """The saved service account key cannot be loaded: not JSON, or not a usable key.
+
+    Both bases are kept because these failures were raised as one or the other before.
+    """
 
     pass
 

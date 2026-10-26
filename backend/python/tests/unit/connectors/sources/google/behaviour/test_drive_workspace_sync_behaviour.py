@@ -7,6 +7,7 @@ Our databases are in-memory fakes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -24,6 +25,10 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
+    GoogleDriveError,
+)
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.models.entities import User
 from app.models.permission import EntityType, PermissionType
@@ -76,7 +81,14 @@ class Workspace:
         return self.connector
 
     async def sync(self) -> None:
-        await (await self.connector_()).run_sync()
+        """One run. A run that left part of Drive unread ends with DriveSyncIncomplete, after doing everything
+        else it could; that is recorded in `incomplete` rather than raised, so a test checks what the run did
+        and, where it matters, that it was reported as incomplete."""
+        try:
+            await (await self.connector_()).run_sync()
+            self.incomplete = False
+        except DriveSyncIncomplete:
+            self.incomplete = True
 
     def names(self) -> set[str]:
         return {r.record_name for r in self.records.records.values() if not r.is_placeholder}
@@ -150,6 +162,23 @@ async def test_service_account_sign_in_uses_delegated_tokens_and_writes_no_setti
     assert {t["grant_type"] for t in ws.http.token_requests} == {"urn:ietf:params:oauth:grant-type:jwt-bearer"}
     assert ws.config_service.writes == []
     assert "credentials" not in ws.config
+
+
+async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Workspace) -> None:
+    await ws.sync()
+
+    admin_id = ws.world.users[ADMIN].user_id
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.app_users[ADMIN].source_user_id == admin_id
+
+
+async def test_an_admin_email_configured_as_an_alias_registers_the_primary_account(ws: Workspace) -> None:
+    ws.world.aliases["it@example.com"] = ADMIN
+    ws.config["auth"]["adminEmail"] = "it@example.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, ws.world.users[ADMIN].user_id)]
 
 
 async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None:
@@ -239,11 +268,34 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
     await ws.sync()
 
     grants = ws.grants("shared")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("outsider@other.org", "USER", "COMMENT"), ("eng@example.com", "GROUP", "READ")} <= grants
-    assert [g for g in grants if g[1] == "DOMAIN"], grants
-    linked = ws.grants("linked")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")} <= linked
-    assert {g[1] for g in linked} == {"USER", "ANYONE"}
+    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("eng@example.com", "GROUP", "READ")} <= grants
+    assert ("outsider@other.org", "USER", "READ") in grants, "a commenter is stored as a reader"
+    assert {g[1] for g in grants} == {"USER", "GROUP"}, "domain sharing names nobody, so it is not stored as a grant"
+    assert ws.grants("linked") == {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")}, (
+        "link sharing names nobody, so it is not stored as a grant"
+    )
+
+
+async def test_a_domain_share_and_a_domain_link_share_grant_no_one(ws: Workspace) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("dir", "Partners", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "partner.com"},
+    ])
+    ws.world.add_item("f-domain", "pricing.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "writer", "domain": "example.com"},
+    ])
+    ws.world.add_item("f-link", "roadmap.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": False},
+    ])
+    ws.world.add_item("f-later", "notes.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    ws.world.share("f-later", {"type": "domain", "role": "reader", "domain": "example.com"})
+    await ws.sync()
+
+    for external_id in ("dir", "f-domain", "f-link", "f-later"):
+        assert ws.grants(external_id) == {(ALICE, "USER", "OWNER")}, (
+            f"{external_id}: a share with a domain must not become a grant to the organization"
+        )
 
 
 async def test_a_file_shared_with_a_colleague_is_filed_under_their_shared_with_me(ws: Workspace) -> None:
@@ -272,6 +324,60 @@ async def test_shared_drives_become_record_groups_with_their_members(ws: Workspa
     assert ("eng@example.com", EntityType.GROUP, PermissionType.READ) in drive_grants
     assert {"spec.txt", "notes.txt", "more.txt"} <= ws.names()
     assert ws.records.records["sd-f1"].external_record_group_id == "sd-1"
+
+
+async def test_a_deleted_shared_drive_takes_its_record_group_and_records_with_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    ws.world.add_item("sd-f2", "notes.txt", parent="sd-1")
+    await ws.sync()
+    assert {"spec.txt", "notes.txt"} <= ws.names()
+
+    # Deleting a shared drive emits no change for its items; it just stops being listed.
+    ws.world.drives.pop("sd-1")
+    for file_id in ("sd-f1", "sd-f2"):
+        ws.world.files.pop(file_id)
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.record_groups
+    assert not {"spec.txt", "notes.txt"} & ws.names()
+
+
+async def test_an_empty_drive_listing_does_not_remove_drives_that_still_exist(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+
+    ws.http.route("GET", "/drive/v3/drives", lambda _req: {"kind": "drive#driveList", "drives": []})
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.deleted_groups
+    assert "spec.txt" in ws.names()
+
+
+async def test_a_shared_drive_filtered_out_is_not_treated_as_deleted(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-1"]})
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.deleted_groups, "a drive that still exists belongs to the filter cleanup"
+
+
+async def test_a_filtered_out_shared_drive_deleted_later_is_still_removed(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-1"]})
+    await ws.sync()
+
+    ws.world.drives.pop("sd-1")
+    ws.world.files.pop("sd-f1")
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.record_groups
 
 
 async def test_a_shared_drive_page_quota_error_is_retried(ws: Workspace, backoff_sleeps: list[float]) -> None:
@@ -315,11 +421,6 @@ async def test_the_shared_drive_filter_skips_excluded_drives(ws: Workspace) -> N
     assert "sd-2" not in ws.records.record_groups
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="When a shared drive's file listing fails part-way, the sync stops that drive but still "
-    "saves its checkpoint, so the files on the pages it never read are skipped for good.",
-)
 async def test_a_failed_shared_drive_page_does_not_save_the_drive_checkpoint(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
     for n in range(4):
@@ -333,12 +434,79 @@ async def test_a_failed_shared_drive_page_does_not_save_the_drive_checkpoint(ws:
     assert {f"f{n}.txt" for n in range(4)} <= ws.names()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A failed permission read is treated as 'this file is shared with nobody', so the next "
-    "change to the file replaces its stored access with an empty list and people lose access "
-    "(the rule from #3521/#3528 is that a failed read keeps what is stored).",
-)
+async def test_an_incomplete_shared_drive_listing_saves_no_drive_checkpoint(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    for n in range(4):
+        ws.world.add_item(f"sd-f{n}", f"f{n}.txt", parent="sd-1")
+    ws.world.incomplete_search_when = lambda r: r.query.get("driveId") == "sd-1"
+
+    await ws.sync()
+
+    assert {f"f{n}.txt" for n in range(4)} <= ws.names()
+    assert not any(key.endswith("_sd-1") for key in ws.sync_points.sync_points)
+    ws.world.incomplete_search_when = None
+    await ws.sync()
+    assert any(key.endswith("_sd-1") for key in ws.sync_points.sync_points)
+
+
+async def test_an_incomplete_user_listing_saves_no_user_checkpoint(ws: Workspace) -> None:
+    ws.world.add_item("a0", "alice-0.txt", parent="root-alice", owner=ALICE)
+    ws.world.incomplete_search_when = lambda r: (
+        r.identity == ALICE and not r.query.get("driveId") and "sharedWithMe" not in r.query.get("q", "")
+    )
+
+    await ws.sync()
+
+    assert "alice-0.txt" in ws.names()
+    assert ws.user_checkpoint(ALICE) is None
+    ws.world.incomplete_search_when = None
+    await ws.sync()
+    assert ws.user_checkpoint(ALICE) is not None
+
+
+async def test_an_incomplete_shared_with_me_listing_saves_no_user_checkpoint(ws: Workspace) -> None:
+    ws.world.add_item("a0", "alice-0.txt", parent="root-alice", owner=ALICE)
+    ws.world.incomplete_search_when = lambda r: (
+        r.identity == ALICE and "sharedWithMe" in r.query.get("q", "")
+    )
+
+    await ws.sync()
+
+    assert "alice-0.txt" in ws.names()
+    assert ws.user_checkpoint(ALICE) is None
+
+
+async def test_a_shared_drive_that_fails_part_way_through_a_full_resync_keeps_its_records(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    for n in range(4):
+        ws.world.add_item(f"sd-f{n}", f"f{n}.txt", parent="sd-1")
+    for n in range(6):
+        ws.world.add_item(f"a{n}", f"alice-{n}.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    before = ws.names()
+    ws.sync_points.sync_points.clear()
+    ws.http.fail("GET", "/drive/v3/files", 500, "backendError", when=lambda r: r.query.get("driveId") == "sd-1" and bool(r.query.get("pageToken")))
+
+    await ws.sync()
+
+    assert ws.names() == before
+
+
+async def test_a_user_whose_sync_fails_on_a_full_resync_keeps_their_records(ws: Workspace) -> None:
+    for n in range(2):
+        ws.world.add_item(f"a{n}", f"alice-{n}.txt", parent="root-alice", owner=ALICE)
+    for n in range(4):
+        ws.world.add_item(f"b{n}", f"bob-{n}.txt", parent="root-bob", owner=BOB)
+    await ws.sync()
+    before = ws.names()
+    ws.sync_points.sync_points.clear()
+    ws.http.refused_subjects.add(ALICE)
+
+    await ws.sync()
+
+    assert ws.names() == before
+
+
 async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -> None:
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
     await ws.sync()
@@ -348,15 +516,15 @@ async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -
     ws.http.fail("GET", "/drive/v3/files/shared/permissions", 500, "backendError")
     await ws.sync()
 
-    assert ws.records.records["shared"].record_name == "plan-v2.txt"
+    assert (BOB, "USER", "READ") in ws.grants("shared")
+    assert ws.incomplete, "a change whose permissions could not be read is not reported as synced"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert ws.records.records["shared"].record_name == "plan-v2.txt", "the change is read again"
     assert (BOB, "USER", "READ") in ws.grants("shared")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="If the second page of a file's permissions fails, the first page is saved as the "
-    "complete list, silently dropping everyone listed after it.",
-)
 async def test_a_permission_list_that_fails_on_a_later_page_is_not_saved_as_complete(ws: Workspace) -> None:
     ws.world.perm_page_size = 2
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE,
@@ -437,6 +605,19 @@ async def test_a_folder_moved_to_the_trash_takes_its_files_along(ws: Workspace) 
     await ws.sync()
 
     assert "dir" not in ws.records.records
+    assert "inside" not in ws.records.records
+
+
+async def test_a_folder_already_in_our_trash_is_removed_when_the_source_trashes_it(ws: Workspace) -> None:
+    ws.world.folder("dir", "Projects", parent="root-alice", owner=ALICE)
+    ws.world.add_item("inside", "draft.txt", parent="dir", owner=ALICE)
+    await ws.sync()
+    ws.records.records["dir"].is_deleted = True
+
+    ws.world.trash("dir")
+    await ws.sync()
+
+    assert "dir" not in ws.records.records, "the delete must take a folder that is in the trash"
     assert "inside" not in ws.records.records
 
 
@@ -646,7 +827,8 @@ async def test_a_file_a_synced_user_still_opens_through_a_nested_group_is_kept(w
     ws.world.add_group("emea@example.com", [ALICE])
     _file_shared_with_a_group_in_an_unwalked_drive(ws, ["emea@example.com"])
     await ws.sync()
-    assert ws.records.user_groups["sales@example.com"][1] == [], "sales@ has no direct user members"
+    assert [m.email for m in ws.records.user_groups["sales@example.com"][1]] == [ALICE], \
+        "sales@ holds Alice through emea@: Drive gives a nested group's members the outer group's access"
     assert ("sales@example.com", "GROUP", "READ") in ws.grants("g1")
     assert ALICE not in ws.records.perm_emails("g1"), "Alice's only access is sales@ through emea@"
 
@@ -802,7 +984,7 @@ async def test_a_removed_change_whose_refusal_clears_before_the_limit_is_decided
     assert user_sync_point(ws, ALICE)["heldRemovedChanges"] == []
 
 
-async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
+async def test_a_file_owned_outside_the_workspace_goes_once_no_synced_user_can_open_it(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
     )
@@ -813,9 +995,36 @@ async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_a
     ws.world.delete("c1")
     await ws.sync()
 
+    assert "c1" not in ws.records.records, "the owner can't be asked, and no synced user can open it"
+
+
+async def test_a_file_owned_outside_the_workspace_stays_while_another_synced_user_can_open_it(ws: Workspace) -> None:
+    ws.world.files["ext-root"] = FileState(
+        {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
+    )
+    ws.world.add_item("c1", "partner.txt", parent="ext-root", owner=PARTNER, perms=[reader(BOB), reader(ALICE)])
+    await ws.sync()
+
+    ws.world.unshare("c1", BOB)
+    await ws.sync()
+
     assert "c1" in ws.records.records
     assert BOB not in ws.records.perm_emails("c1")
-    assert ws.records.deleted == []
+    assert ALICE in ws.records.perm_emails("c1")
+
+
+async def test_a_file_whose_owner_is_not_synced_goes_when_its_last_synced_reader_loses_access(ws: Workspace) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("bob-dir", "Shared by Bob", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    ws.world.add_item("bob-f1", "brief.txt", parent="bob-dir", owner=BOB)
+    await ws.sync()
+    assert {"bob-dir", "bob-f1"} <= set(ws.records.records)
+
+    ws.world.unshare("bob-dir", ALICE)
+    await ws.sync()
+
+    assert "bob-dir" not in ws.records.records, "Bob still has it, but nobody PipesHub syncs can open it"
+    assert "bob-f1" not in ws.records.records
 
 
 async def test_a_file_deleted_from_a_shared_drive_is_deleted(ws: Workspace) -> None:
@@ -907,11 +1116,6 @@ async def test_a_failed_change_page_does_not_advance_the_users_checkpoint(ws: Wo
     assert {f"a{n}.txt" for n in range(4)} <= ws.names()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A database error while saving a changed file is logged and swallowed, and the user's "
-    "checkpoint still moves past the change, so that update is lost for good.",
-)
 async def test_a_database_failure_on_a_change_keeps_the_users_checkpoint(ws: Workspace) -> None:
     ws.world.add_item("a1", "draft.txt", parent="root-alice", owner=ALICE)
     await ws.sync()
@@ -924,11 +1128,6 @@ async def test_a_database_failure_on_a_change_keeps_the_users_checkpoint(ws: Wor
     assert ws.user_checkpoint(ALICE) == checkpoint
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Full sync of a user's My Drive stops at the first empty page even when Drive sent a "
-    "nextPageToken, then saves the checkpoint, so later pages are never synced.",
-)
 async def test_an_empty_page_with_a_next_token_does_not_end_a_users_full_sync(ws: Workspace) -> None:
     for n in range(4):
         ws.world.add_item(f"a{n}", f"a{n}.txt", parent="root-alice", owner=ALICE)
@@ -939,7 +1138,7 @@ async def test_an_empty_page_with_a_next_token_does_not_end_a_users_full_sync(ws
     assert {f"a{n}.txt" for n in range(4)} <= ws.names()
 
 
-async def test_one_bad_item_does_not_abort_the_users_sync(ws: Workspace) -> None:
+async def test_one_bad_item_does_not_abort_the_users_sync_but_holds_their_checkpoint(ws: Workspace) -> None:
     ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE)
     ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE)
     ws.world.add_item("a3", "also-good.txt", parent="root-alice", owner=ALICE)
@@ -949,7 +1148,21 @@ async def test_one_bad_item_does_not_abort_the_users_sync(ws: Workspace) -> None
 
     assert {"good.txt", "also-good.txt"} <= ws.names()
     assert "bad.txt" not in ws.names()
-    assert ws.user_checkpoint(ALICE) is not None
+    assert ws.incomplete, "a run that skipped an item is not reported as complete"
+    assert ws.user_checkpoint(ALICE) is None, "nothing else would bring the skipped item back"
+
+
+async def test_an_item_that_keeps_failing_holds_the_checkpoint_only_for_a_few_runs(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    ws.world.add_item("a1", "good.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_item("a2", "bad.txt", parent="root-alice", owner=ALICE)
+    ws.world.files["a2"].meta["modifiedTime"] = "garbage"
+
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+
+    assert ws.user_checkpoint(ALICE) is not None, "a feed must not stop for good on one item"
 
 
 # --- folder filter ------------------------------------------------------------
@@ -966,6 +1179,102 @@ async def test_a_folder_only_one_user_can_list_is_expanded_for_everyone(ws: Work
 
     assert {"Picked", "Sub", "deep.txt"} <= ws.names()
     assert "elsewhere.txt" not in ws.names()
+
+
+async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(ws: Workspace) -> None:
+    ws.world.hide_unreadable_parents = True
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("bob-parent", "Bob's projects", parent="root-bob", owner=BOB)
+    ws.world.folder("pick", "Picked", parent="bob-parent", owner=BOB, perms=[reader(ALICE)])
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert ws.records.records["pick"].parent_external_record_id is None, "Drive hides a parent Alice cannot open"
+
+    ws.world.share("bob-parent", reader(ALICE))
+    await ws.sync()
+
+    parent = ws.records.records.get("bob-parent")
+    assert parent is not None and not parent.is_placeholder and parent.record_name == "Bob's projects"
+    assert ws.records.records["pick"].parent_external_record_id == "bob-parent"
+
+
+async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.world.add_item("elsewhere", "elsewhere.txt", parent="root-bob", owner=BOB)
+    ws.world.add_shortcut("sc", "Link to Picked", parent="root-bob", owner=BOB, target_id="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["sc"]})
+
+    await ws.sync()
+
+    assert {"Picked", "deep.txt"} <= ws.names()
+    assert "elsewhere.txt" not in ws.names()
+
+
+async def test_a_shortcut_target_one_user_can_read_is_not_reused_for_another(ws: Workspace) -> None:
+    # The filler pushes Alice's shortcut onto a second page, so her sync fetches the target.
+    ws.world.add_item("target", "Target.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_item("filler", "filler.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_shortcut("sc-a", "Alice link", parent="root-alice", owner=ALICE, target_id="target")
+    ws.world.add_shortcut("sc-b", "Bob link", parent="root-bob", owner=BOB, target_id="target")
+
+    await ws.sync()
+
+    assert "Target.txt" in ws.names()
+    assert ws.records.perm_emails("target") == {ALICE}
+
+
+async def test_a_folder_shortcut_into_a_shared_drive_the_user_is_not_in_lists_its_contents(ws: Workspace) -> None:
+    ws.world.add_user("carol@example.com")
+    ws.world.add_drive("sd-x", "Carol's team", {"carol@example.com": "organizer"})
+    ws.world.folder("sd-x-dir", "Handbook", parent="sd-x", perms=[reader(BOB)])
+    ws.world.add_item("sd-x-page", "chapter-1.txt", parent="sd-x-dir")
+    ws.world.add_shortcut("sc", "Link", parent="root-bob", owner=BOB, target_id="sd-x-dir")
+
+    await ws.sync()
+
+    assert {"Handbook", "chapter-1.txt"} <= ws.names()
+    assert BOB in ws.records.perm_emails("sd-x-page")
+    assert ws.user_checkpoint(BOB) is not None
+
+
+async def test_an_incomplete_listing_of_a_folder_entering_scope_keeps_the_users_checkpoint(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-alice", owner=ALICE)
+    ws.world.folder("outside", "Outside", parent="root-alice", owner=ALICE)
+    ws.world.add_item("inner", "inner.txt", parent="outside", owner=ALICE)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    before = ws.user_checkpoint(ALICE)
+
+    ws.world.move("outside", "pick")
+    ws.world.incomplete_search_when = lambda r: (
+        r.query.get("q", "").startswith("trashed=false") and "'outside' in parents" in r.query.get("q", "")
+    )
+    await ws.sync()
+    assert ws.user_checkpoint(ALICE) == before
+
+    ws.world.incomplete_search_when = None
+    await ws.sync()
+    assert "inner.txt" in ws.names()
+
+
+async def test_an_incomplete_subfolder_expansion_fails_the_run_without_a_checkpoint(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-alice", owner=ALICE)
+    ws.world.folder("pick-sub", "Sub", parent="pick", owner=ALICE)
+    ws.world.add_item("deep", "deep.txt", parent="pick-sub", owner=ALICE)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    ws.world.incomplete_search_when = lambda r: (
+        r.query.get("q", "").startswith("mimeType=") and "'pick' in parents" in r.query.get("q", "")
+    )
+
+    with pytest.raises(GoogleDriveError):
+        await ws.sync()
+    assert ws.user_checkpoint(ALICE) is None
+
+    ws.world.incomplete_search_when = None
+    await ws.sync()
+    assert "deep.txt" in ws.names()
 
 
 async def test_a_transient_error_resolving_a_selected_folder_fails_the_run(ws: Workspace) -> None:
@@ -1224,6 +1533,61 @@ def selected_tree(ws: Workspace) -> None:
     ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["top"]})
 
 
+
+async def test_a_selected_folder_id_no_user_can_find_is_reported_to_the_admins(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await ws.connector_()).notify = notify
+    await ws.sync()
+
+    assert "deep.txt" in ws.names()
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
+
+async def test_selected_folders_no_user_could_be_asked_about_are_not_reported_missing(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    async def cannot_impersonate(user: object) -> None:
+        raise RuntimeError("impersonation failed")
+
+    connector = await ws.connector_()
+    connector.notify = notify
+    connector._build_user_drive_data_source = cannot_impersonate
+    with contextlib.suppress(Exception):
+        await ws.sync()
+
+    assert not [n for n in notices if "selected folders" in n["title"]]
+
+
+async def test_a_selected_folder_left_out_after_unrecognised_403s_is_reported(ws: Workspace) -> None:
+    two_selected_folders(ws)
+    ws.http.fail("GET", "/drive/v3/files/pick", 403, "someReasonDriveAddsLater")
+    for _ in range(4):
+        with pytest.raises(HttpError):
+            await ws.sync()
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await ws.connector_()).notify = notify
+    await ws.sync()
+
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in")
+
 async def test_narrowing_the_folder_filter_removes_what_it_leaves_out(ws: Workspace) -> None:
     selected_tree(ws)
     await ws.sync()
@@ -1276,6 +1640,43 @@ async def test_a_file_whose_name_has_no_extension_is_checked_by_its_stored_one(w
     assert ws.names() == {"Quarterly Report"}
 
 
+def deep_selected_folder(ws: Workspace, top_parent: str, **owner: str) -> None:
+    ws.world.folder("new", "New folder", parent=top_parent, **owner)
+    ws.world.folder("nested", "nested folder 2", parent="new", **owner)
+    ws.world.folder("pick", "test", parent="nested", **owner)
+    ws.world.folder("sub-1", "subfolder 1", parent="pick", **owner)
+    ws.world.add_item("deep", "deep.txt", parent="sub-1", **owner)
+    ws.world.add_item("mine", "mine.txt", parent="root-alice", owner=ALICE)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+
+
+async def assert_full_resync_keeps_the_path_to_the_selected_folder(ws: Workspace, group_id: str) -> None:
+    await ws.sync()
+    assert {"New folder", "nested folder 2", "test"} <= ws.names()
+
+    ws.sync_points.sync_points.clear()
+    await ws.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "deep.txt"} <= ws.names()
+    assert ws.records.deleted == []
+    assert ws.records.records["pick"].parent_external_record_id == "nested"
+    assert ws.records.records["nested"].parent_external_record_id == "new"
+    assert {ws.records.records[i].external_record_group_id for i in ("new", "nested")} == {group_id}
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_my_drive_folder(ws: Workspace) -> None:
+    deep_selected_folder(ws, "root-alice", owner=ALICE)
+
+    await assert_full_resync_keeps_the_path_to_the_selected_folder(ws, "root-alice")
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_shared_drive_folder(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    deep_selected_folder(ws, "sd-1")
+
+    await assert_full_resync_keeps_the_path_to_the_selected_folder(ws, "sd-1")
+
+
 async def test_filters_that_did_not_change_remove_nothing_on_later_syncs(ws: Workspace) -> None:
     selected_tree(ws)
     await ws.sync()
@@ -1301,6 +1702,25 @@ async def test_a_selected_folder_nobody_can_list_holds_back_the_removal(ws: Work
 
     assert "keep.txt" in ws.names()
     assert "drop.txt" not in ws.names()
+
+
+async def test_a_selected_folder_nobody_can_list_keeps_its_subtree_out_of_stale_cleanup(ws: Workspace) -> None:
+    # Enough files are seen that the unlisted subtree stays under the half-corpus limit.
+    ws.world.folder("main", "Main", parent="root-alice", owner=ALICE)
+    for n in range(4):
+        ws.world.add_item(f"keep-{n}", f"keep-{n}.txt", parent="main", owner=ALICE)
+    ws.world.folder("main-sub", "Main sub", parent="main", owner=ALICE)
+    ws.world.add_item("deep", "deep.txt", parent="main-sub", owner=ALICE)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["main"]})
+    await ws.sync()
+    assert "deep.txt" in ws.names()
+
+    ws.world.files["main"].meta["capabilities"]["canListChildren"] = False
+    narrow(ws, folder_ids={"operator": "in", "type": "list", "value": ["main"]})
+    await ws.sync()
+
+    assert "deep.txt" in ws.names()
+    assert ws.records.deleted == []
 
 
 async def test_a_failed_record_listing_removes_nothing_and_is_retried(ws: Workspace) -> None:
@@ -1399,12 +1819,6 @@ async def test_reindex_reads_the_file_as_a_user_who_can_see_it(ws: Workspace) ->
     assert {r.identity for r in ws.http.requests[before:] if r.path.startswith("/drive/")} == {ALICE}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Every file whose sharing can be read is reported as 'changed' (its permissions are always "
-    "marked as changed), so reindex re-saves an unchanged, already-indexed file instead of asking "
-    "for a reindex, and nothing is re-indexed.",
-)
 async def test_reindex_of_an_unchanged_indexed_file_asks_for_a_reindex(ws: Workspace) -> None:
     ws.world.folder("dir", "Docs", parent="root-alice", owner=ALICE)
     ws.world.add_item("a1", "same.txt", parent="dir", owner=ALICE)

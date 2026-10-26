@@ -498,8 +498,8 @@ test.describe('Chat — stop streaming (assistant)', () => {
     let cancelFired = false;
 
     // First turn completes normally so the slot's `convId` is a real,
-    // already-known id (not null) — required for the cooperative branch:
-    // `cancelStreamForSlot` hard-aborts immediately whenever `!convId`.
+    // already-known id (not null) so the cancel POST goes out immediately
+    // (`cancelStreamForSlot` defers it until the id exists on a brand-new chat).
     const firstTurn = {
       conversationId: convId,
       userMessageId: 'msg-user-thinking-1',

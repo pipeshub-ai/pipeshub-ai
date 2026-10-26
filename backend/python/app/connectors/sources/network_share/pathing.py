@@ -71,6 +71,32 @@ def is_lock_file(name: str) -> bool:
     return name.startswith(LOCK_PREFIX)
 
 
+# Folders and files no one searches for: version control, package caches, and what
+# Windows and macOS keep for themselves. Matched on the whole name, case-insensitively.
+EXCLUDED_NAMES = frozenset(
+    name.casefold()
+    for name in (
+        ".git",
+        ".svn",
+        ".hg",
+        "node_modules",
+        "__pycache__",
+        "$RECYCLE.BIN",
+        "System Volume Information",
+        "Thumbs.db",
+        "desktop.ini",
+        ".DS_Store",
+        ".Trashes",
+        ".Spotlight-V100",
+        ".fseventsd",
+    )
+)
+
+
+def is_excluded_name(name: str) -> bool:
+    return name.casefold() in EXCLUDED_NAMES
+
+
 def is_dot_entry(name: str) -> bool:
     return name in (".", "..")
 

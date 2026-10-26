@@ -320,7 +320,7 @@ class TestApplyCaptionMap:
 
 class TestReferencePositionGuard:
     def test_inline_replacer_skips_reference_positions(self):
-        import app.modules.parsers.markdown.docling_markdown_parser as mod
+        import app.modules.parsers.markdown.image_references as mod
 
         captured: dict[str, object] = {}
         real_sub = mod.re.sub

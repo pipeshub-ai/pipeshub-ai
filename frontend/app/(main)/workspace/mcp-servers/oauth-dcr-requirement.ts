@@ -1,4 +1,4 @@
-import type { McpOAuthDiscoveryResult } from './types';
+import type { McpOAuthConfigResponse, McpOAuthDiscoveryResult } from './types';
 
 export type DcrProbeState =
   | { status: 'idle' | 'loading' }
@@ -38,4 +38,19 @@ export function isOauthClientMissing(
     !hasExistingOAuthClient &&
     !(oauthClientId.trim() && oauthClientSecret.trim())
   );
+}
+
+/**
+ * The redirect URI an admin registers the OAuth app with. The server's answer is the address it
+ * actually sends (its configured public address, sub-path included); the page's own origin only
+ * stands in until that answer arrives.
+ */
+export function resolveMcpOAuthCallbackUrl(
+  dcrProbe: DcrProbeState,
+  savedConfig: Pick<McpOAuthConfigResponse, 'redirectUri'> | null | undefined,
+  origin: string | null = typeof window === 'undefined' ? null : window.location.origin
+): string | null {
+  const fromServer = (dcrProbe.status === 'done' ? dcrProbe.result.redirectUri : undefined) ?? savedConfig?.redirectUri;
+  if (fromServer) return fromServer;
+  return origin ? `${origin.replace(/\/$/, '')}/mcp-servers/oauth/callback/` : null;
 }

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -14,6 +16,10 @@ from app.config.constants.arangodb import (
 from app.connectors.sources.network_share.entry import DirectoryEntry
 from app.connectors.sources.network_share.pathing import normalize_rel_path
 from app.connectors.sources.network_share.record_mapper import (
+    FILE_ATTRIBUTE_HIDDEN,
+    FILE_ATTRIBUTE_OFFLINE,
+    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+    FILE_ATTRIBUTE_SYSTEM,
     MoveDecision,
     RecordMapper,
     SkipDecision,
@@ -39,6 +45,7 @@ def _entry(
     file_id: int | None = 99,
     created_time: datetime | None = NOW,
     last_write_time: datetime | None = NOW,
+    attributes: int = 0,
 ) -> DirectoryEntry:
     return DirectoryEntry(
         name=name,
@@ -48,6 +55,7 @@ def _entry(
         created_time=created_time,
         last_write_time=last_write_time,
         file_id=file_id,
+        attributes=attributes,
     )
 
 
@@ -112,6 +120,42 @@ class TestSkipRules:
         decision = _classify(_entry("link", is_symlink=True, is_directory=True))
         assert isinstance(decision, SkipDecision)
         assert decision.reason == "symlink"
+
+
+class TestNoiseAndSystemEntries:
+    @pytest.mark.parametrize(
+        "name", [".git", "node_modules", "$RECYCLE.BIN", "System Volume Information", "Thumbs.db", "DESKTOP.INI", ".DS_Store"]
+    )
+    def test_well_known_noise_is_skipped(self, name):
+        assert MAPPER.skip_reason(_entry(name, is_directory=True)) == "excluded-name"
+
+    @pytest.mark.parametrize("name", [".env", ".profile", "git", "my_node_modules", ".gitignore"])
+    def test_names_that_only_look_alike_are_kept(self, name):
+        assert MAPPER.skip_reason(_entry(name)) is None
+
+    def test_hidden_and_system_together_is_skipped(self):
+        entry = _entry("pagefile.sys", attributes=FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)
+
+        assert MAPPER.skip_reason(entry) == "hidden-system"
+
+    @pytest.mark.parametrize("attributes", [FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM])
+    def test_hidden_or_system_alone_is_kept(self, attributes):
+        assert MAPPER.skip_reason(_entry("notes.txt", attributes=attributes)) is None
+
+    @pytest.mark.parametrize("attributes", [FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS])
+    def test_a_file_on_slower_storage_is_listed_but_not_read_unasked(self, attributes):
+        decision = _classify(_entry("archive.pdf", attributes=attributes))
+
+        assert isinstance(decision, UpsertDecision)
+        assert decision.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    def test_a_folder_has_nothing_to_index(self):
+        decision = _classify(_entry("finance", is_directory=True))
+
+        assert decision.record.indexing_status == ProgressStatus.COMPLETED.value
+
+    def test_a_file_is_queued(self):
+        assert _classify(_entry("a.txt")).record.indexing_status == ProgressStatus.QUEUED.value
 
 
 class TestPathNormalization:

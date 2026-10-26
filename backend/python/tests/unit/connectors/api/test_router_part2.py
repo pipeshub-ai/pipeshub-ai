@@ -380,6 +380,7 @@ class TestUpdateOAuthInfrastructureFields:
         mock_registry.get_config.return_value = mock_registry_config
 
         config_service = AsyncMock()
+        config_service.get_config.return_value = {"frontend": {"publicEndpoint": "https://example.com"}}
         oauth_config: dict[str, Any] = {}
 
         with patch(
@@ -2093,6 +2094,30 @@ class TestGetConnectorInstanceFilters:
         assert result["success"] is True
         assert "filterOptions" in result
 
+    async def test_basic_auth_passes_the_saved_settings(self) -> None:
+        from app.connectors.api.router import get_connector_instance_filters
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", auth_type="BASIC_AUTH")
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=instance)
+        req.app.state.connector_registry.get_connector_metadata = AsyncMock(
+            return_value={"config": {"filters": {"endpoints": {}}}}
+        )
+        config_service = req.app.container.config_service()
+        config_service.get_config = AsyncMock(return_value={"auth": {"server": "fs01", "username": "u"}})
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router.resolve_config_service", return_value=config_service), \
+             patch(
+                 "app.connectors.api.router._get_connector_filter_options_from_config",
+                 new_callable=AsyncMock,
+                 return_value={},
+             ) as options:
+            result = await get_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert result["success"] is True
+        assert options.await_args.args[2] == {"server": "fs01", "username": "u"}
+
 
 # ===========================================================================
 # Route handler tests: save_connector_instance_filters
@@ -2100,6 +2125,30 @@ class TestGetConnectorInstanceFilters:
 
 class TestSaveConnectorInstanceFilters:
     """Tests for save_connector_instance_filters route handler."""
+
+    def test_the_route_is_marked_deprecated(self) -> None:
+        from app.connectors.api.router import router
+
+        (route,) = [
+            r for r in router.routes
+            if getattr(r, "path", None) == "/api/v1/connectors/{connector_id}/filters" and "POST" in r.methods
+        ]
+        assert route.deprecated is True
+
+    async def test_a_call_logs_that_it_is_deprecated(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors.api.router import save_connector_instance_filters
+
+        req = _make_request(is_admin=True, body={"filters": {}})
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=_make_instance())
+
+        with caplog.at_level(logging.WARNING, logger="test"), pytest.raises(HTTPException):
+            await save_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert any(
+            "Deprecated POST /api/v1/connectors/c1/filters" in r.getMessage()
+            and "/api/v1/connectors/c1/config/filters-sync" in r.getMessage()
+            for r in caplog.records
+        )
 
     async def test_no_filters_raises_400(self):
         from app.connectors.api.router import save_connector_instance_filters
@@ -2565,7 +2614,7 @@ class TestToggleRollsBackOnPublishFailure:
         connector_type: str = "Web",
         publish_error: Exception | None = RuntimeError("broker down"),
         cached: dict | None = None,
-        update_results: list | None = None,
+        revert_error: Exception | None = None,
         current_version: int = 5000,
     ):
         from app.connectors.api.router import toggle_connector_instance
@@ -2574,13 +2623,15 @@ class TestToggleRollsBackOnPublishFailure:
         req = _make_request(user_id="u1", is_admin=True, body={"type": "sync", **(body or {})})
         org = {"_key": "o1", "accountType": "individual"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            side_effect=lambda key, collection: (
-                {"_key": "c1", "updatedAtTimestamp": current_version}
-                if collection == CollectionNames.APPS.value
-                else org
-            )
-        )
+        graph_provider.get_document = AsyncMock(return_value=org)
+
+        async def compare_and_set(key, collection, updates, expected) -> bool:
+            if revert_error is not None:
+                raise revert_error
+            assert collection == CollectionNames.APPS.value
+            return expected == {"updatedAtTimestamp": current_version}
+
+        graph_provider.update_node_fields_if_match = AsyncMock(side_effect=compare_and_set)
         instance = _make_instance(
             connector_type=connector_type,
             scope="personal",
@@ -2590,9 +2641,7 @@ class TestToggleRollsBackOnPublishFailure:
         )
         registry = req.app.state.connector_registry
         registry.get_connector_instance = AsyncMock(return_value=instance)
-        registry.update_connector_instance = AsyncMock(
-            side_effect=update_results or [{"updatedAtTimestamp": 5000}, True]
-        )
+        registry.update_connector_instance = AsyncMock(return_value={"updatedAtTimestamp": 5000})
         req.app.container.connectors_map = dict(cached or {})
         req.app.container.messaging_producer.send_message = AsyncMock(side_effect=publish_error)
 
@@ -2606,6 +2655,7 @@ class TestToggleRollsBackOnPublishFailure:
                 result, error = None, exc
 
         updates = [c.kwargs["updates"] for c in registry.update_connector_instance.await_args_list]
+        updates += [c.args[2] for c in graph_provider.update_node_fields_if_match.await_args_list]
         return result, error, updates, req.app.container.connectors_map
 
     async def test_enable_publish_failure_reverts_is_active(self):
@@ -2649,7 +2699,7 @@ class TestToggleRollsBackOnPublishFailure:
     async def test_revert_failure_still_returns_original_error(self):
         _, error, updates, _ = await self._toggle(
             is_active=False,
-            update_results=[{"updatedAtTimestamp": 5000}, RuntimeError("db down")],
+            revert_error=RuntimeError("db down"),
         )
 
         assert error is not None and error.status_code == 500
@@ -2662,7 +2712,8 @@ class TestToggleRollsBackOnPublishFailure:
         )
 
         assert error is not None and error.status_code == 500
-        assert len(updates) == 1
+        # The revert was attempted against the version it wrote, and refused.
+        assert len(updates) == 2
         assert connectors_map == {"c1": conn}
         conn.cleanup.assert_not_awaited()
 
@@ -3033,6 +3084,48 @@ class TestGetActiveAgentInstances:
         )
         assert result["success"] is True
         assert "connectors" in result
+
+
+class TestConnectorListRoutesSurfaceRegistryErrors:
+    """A graph failure inside the real registry must reach the client as a 500, not an empty list."""
+
+    def _request_with_failing_registry(self) -> MagicMock:
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        gp = AsyncMock()
+        gp.get_filtered_connector_instances.side_effect = RuntimeError("graph down")
+        gp.get_user_connector_instances.side_effect = RuntimeError("graph down")
+        registry_container = MagicMock()
+        registry_container.data_store = AsyncMock(return_value=MagicMock(graph_provider=gp))
+        req = _make_request()
+        req.app.state.connector_registry = ConnectorRegistry(registry_container)
+        return req
+
+    async def test_list_returns_500(self) -> None:
+        from app.connectors.api.router import get_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_connector_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None,
+                is_authenticated=None, is_active=None, connector_type=None,
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_agents_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_agent_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_agent_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_connector_instances(self._request_with_failing_registry())
+        assert exc_info.value.status_code == 500
 
 
 # ===========================================================================

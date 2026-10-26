@@ -36,6 +36,7 @@ export interface AIModelsConfig {
   imageGeneration?: AIModelConfiguration[];
   tts?: AIModelConfiguration[];
   stt?: AIModelConfiguration[];
+  decision?: AIModelConfiguration[];
   /**
    * @deprecated Prompts are now stored at /services/systemPrompts via SystemPromptsConfig.
    * These fields remain here only so the OSS backward-compat GET fallback can read

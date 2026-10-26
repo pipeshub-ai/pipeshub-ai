@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "id": "claude-sonnet",
+      "display_name": "Claude Sonnet",
+      "max_input_tokens": 200000,
+      "capabilities": {
+        "image_input": true,
+        "thinking": true
+      },
+      "has_more": false
+    }
+  ],
+  "has_more": true,
+  "last_id": "claude-sonnet"
+}

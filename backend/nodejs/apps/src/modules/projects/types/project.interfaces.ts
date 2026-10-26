@@ -22,12 +22,18 @@ export interface IProjectMember {
 export interface IProjectKnowledgeScope {
   apps?: string[];
   kb?: string[];
+  /** Record groups, with the groups nested in them. */
+  recordGroups?: string[];
+  /** Folders or records, with everything under them. */
+  records?: string[];
 }
 
 /** Display-friendly mirror of `knowledgeScope`, for rendering scope chips without a round trip. */
 export interface IProjectAppliedFilters {
   apps?: IAppliedFilterNode[];
   kb?: IAppliedFilterNode[];
+  recordGroups?: IAppliedFilterNode[];
+  records?: IAppliedFilterNode[];
 }
 
 export interface IProject {

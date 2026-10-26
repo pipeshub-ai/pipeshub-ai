@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from app.agent_loop_lib.core.types import UserMessage
+from typing import TYPE_CHECKING
+
+from app.agent_loop_lib.core.finish_moves import finish_move
+from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import require_budget
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, TurnContext
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.scope import TurnScope
 
 """Deterministic per-turn guards, extracted from `Agent.run()`'s inline
 `if config.budget...`/`if config.cancellation_token...`/"2 turns left"
@@ -35,6 +41,7 @@ hooks`, see `control_plane.py`) for the specific roles that want them.
 
 __all__ = [
     "check_not_cancelled",
+    "deadline_note",
     "install_stall_detection",
     "install_supervisor_confidence_gate",
     "install_turn_guards",
@@ -67,47 +74,38 @@ def check_not_cancelled(cancellation_token: object):
     return _middleware
 
 
-_TASK_COMPLETE_TOOL = "task_complete"
-
-
-def _task_complete_granted(ctx: ModelCallContext) -> bool:
-    """Whether this run can call `task_complete`: registered, and inside an
-    explicit tool grant when the spec has one. PipesHub never registers it —
-    its runs end on a plain text reply."""
-    run = ctx.scope.run if ctx.scope is not None else None
-    if run is None or run.runtime.tool_registry is None:
-        return False
-    if not run.runtime.tool_registry.has(_TASK_COMPLETE_TOOL):
-        return False
-    return not run.spec.tool_names or _TASK_COMPLETE_TOOL in run.spec.tool_names
+def deadline_note(scope: TurnScope | None) -> str:
+    """The wrap-up line added to the latest tool result's loop footer,
+    naming only a way to finish this run actually has."""
+    return f"\n[loop: last tool round: {finish_move(scope)}; say which parts you could not confirm]"
 
 
 def warn_before_deadline(warn_at_turns_left: int = 2):
-    """PRE_MODEL middleware: nudges the model to wrap up `warn_at_turns_left`
+    """PRE_MODEL middleware: tells the model to wrap up `warn_at_turns_left`
     turns before `ctx.max_turns` is hit, so it can synthesize gracefully
     instead of running into the hard cap mid-thought.
 
-    Names `task_complete` only when the run can call it: told to call a
-    tool it does not have, the model has replied with a canned refusal."""
+    The note rides on the latest tool result's loop footer -- the channel the
+    `[loop: step N/MAX]` state already uses -- not on an injected user
+    message. An instruction posing as the user right after tool output reads
+    as a prompt attack: Azure OpenAI's content filter rejects such requests,
+    and the agent answered with a canned refusal.
+    Only this call's copy of the message changes; history keeps the plain
+    footer. With no tool result to carry it the note is skipped: the run
+    then has not been gathering anything to stop.
+    """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        if ctx.max_turns is not None and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left:
-            if _task_complete_granted(ctx):
-                finish = (
-                    "Synthesise everything you have found and call task_complete immediately "
-                    "with your best answer. Do not make any more search or scrape calls."
-                )
-            else:
-                finish = (
-                    "Reply with your final answer, based on everything you have found. "
-                    "Do not make any more tool calls unless one is essential to answer."
-                )
-            ctx.messages.append(UserMessage(
-                content=(
-                    f"[System: You have {warn_at_turns_left} turns remaining. "
-                    f"Stop gathering information now. {finish}]"
-                ),
-            ))
+        if (
+            ctx.max_turns is not None
+            and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left
+            and ctx.messages
+            and isinstance(ctx.messages[-1], ToolMessage)
+        ):
+            last = ctx.messages[-1]
+            ctx.messages[-1] = last.model_copy(
+                update={"step_footer": last.step_footer + deadline_note(ctx.scope)},
+            )
         await next_fn()
 
     return _middleware

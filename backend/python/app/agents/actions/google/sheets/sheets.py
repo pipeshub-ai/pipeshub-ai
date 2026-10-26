@@ -1,10 +1,19 @@
-import asyncio
 import json
 import logging
-from typing import List, Optional
+from typing import Any, Optional
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.google_api_errors import (
+    GoogleToolWording,
+    google_error_message,
+)
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+)
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -12,89 +21,80 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
-    ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
+from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
-from app.sources.client.http.http_response import HTTPResponse
-from app.sources.external.google.sheets.sheets import GoogleSheetsDataSource
+from app.sources.client.google.serialized_execute import SerializedExecute
 
 logger = logging.getLogger(__name__)
 
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="create_spreadsheet",
-        description="Create a new Google Sheet",
-        parameters=[
-            {"name": "title", "type": "string", "description": "Spreadsheet title", "required": False}
-        ],
-        tags=["spreadsheets", "create"]
+# Cells beyond this are cut from a read; ask for a smaller range to see the rest.
+_MAX_CELLS_RETURNED = 20_000
+_VALUE_INPUT_OPTIONS = ["USER_ENTERED", "RAW"]
+
+_SHEETS_WORDING = GoogleToolWording(
+    product="Google Sheets",
+    toolset="Sheets",
+    access="Google Sheets access",
+    not_found=(
+        "that spreadsheet or range. Check the spreadsheet id (the part of the link after /spreadsheets/d/) "
+        "and the sheet name in the range, for example 'Sheet1!A1:C10'."
     ),
-    ToolDefinition(
-        name="get_spreadsheet",
-        description="Get spreadsheet details",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True}
-        ],
-        tags=["spreadsheets", "read"]
-    ),
-    ToolDefinition(
-        name="get_values",
-        description="Get values from a range",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
-            {"name": "range", "type": "string", "description": "Range (e.g., A1:B10)", "required": True}
-        ],
-        tags=["spreadsheets", "read"]
-    ),
-    ToolDefinition(
-        name="update_values",
-        description="Update values in a range",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
-            {"name": "range", "type": "string", "description": "Range", "required": True},
-            {"name": "values", "type": "array", "description": "Values to update", "required": True}
-        ],
-        tags=["spreadsheets", "update"]
-    ),
-    ToolDefinition(
-        name="append_values",
-        description="Append values to a range",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
-            {"name": "range", "type": "string", "description": "Range", "required": True},
-            {"name": "values", "type": "array", "description": "Values to append", "required": True}
-        ],
-        tags=["spreadsheets", "append"]
-    ),
-    ToolDefinition(
-        name="clear_values",
-        description="Clear values from a range",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
-            {"name": "range", "type": "string", "description": "Range", "required": True}
-        ],
-        tags=["spreadsheets", "clear"]
-    ),
-    ToolDefinition(
-        name="batch_get_values",
-        description="Batch get values from multiple ranges",
-        parameters=[
-            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
-            {"name": "ranges", "type": "array", "description": "List of ranges", "required": True}
-        ],
-        tags=["spreadsheets", "read"]
-    ),
-]
+    gone="that spreadsheet has been deleted.",
+)
+
+_VALUES_ITEMS = {"type": "array", "items": {}}
+_RANGE_HELP = "A range in A1 notation, for example 'Sheet1!A1:C10', or just a sheet name for the whole sheet"
 
 
-# Register Google Sheets toolset
+class _SheetsInputError(ValueError):
+    """Bad tool arguments; the message says what to change and is safe to show the agent."""
+
+
+def _failure(error: Exception, action: str) -> tuple[bool, str]:
+    logger.error("Failed to %s: %s", action, error)
+    message = str(error) if isinstance(error, _SheetsInputError) else google_error_message(error, action, _SHEETS_WORDING)
+    return False, json.dumps({"error": message})
+
+
+def _spreadsheet_url(spreadsheet_id: str) -> str:
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
+
+def _rows(values: object) -> list[list[Any]]:
+    """Rows to write: a list of rows, each a list of cells; a single flat row is accepted too."""
+    if not isinstance(values, list) or not values:
+        raise _SheetsInputError("Pass the cells as a list of rows, for example [[\"Name\", \"Total\"], [\"North\", 42]].")
+    if not any(isinstance(row, list) for row in values):
+        return [values]
+    if not all(isinstance(row, list) for row in values):
+        raise _SheetsInputError("Every row must be a list of cells, for example [[\"North\", 42], [\"South\", 17]].")
+    return values
+
+
+def _capped(value_ranges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Whole rows of each range while one shared cell budget lasts; one entry per range, cut ones flagged."""
+    room = _MAX_CELLS_RETURNED
+    capped: list[dict[str, Any]] = []
+    for value_range in value_ranges:
+        rows = value_range.get("values", [])
+        kept: list[list[Any]] = []
+        for row in rows:
+            if len(row) > room:
+                break
+            kept.append(row)
+            room -= len(row)
+        capped.append({"range": value_range.get("range", ""), "values": kept, "truncated": len(kept) < len(rows)})
+    return capped
+
+
 @ToolsetBuilder("Sheets")\
     .in_group("Google Workspace")\
-    .with_description("Google Sheets integration for spreadsheet management and data operations")\
-    .with_category(ToolCategory.APP)\
+    .with_description("Google Sheets integration for reading and updating spreadsheets")\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Sheets",
@@ -104,10 +104,7 @@ tools: List[ToolDefinition] = [
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive.file"
-                ]
+                agent=list(GOOGLE_TOOLSET_SCOPES["sheets"]),
             ),
             token_access_type="offline",
             additional_params={
@@ -119,452 +116,235 @@ tools: List[ToolDefinition] = [
                 CommonFields.client_id("Google Cloud Console"),
                 CommonFields.client_secret("Google Cloud Console")
             ],
-            icon_path="/assets/icons/connectors/sheets.svg",
+            icon_path=IconPaths.connector_icon("sheets"),
             app_group="Google Workspace",
             app_description="Sheets OAuth application for agent integration"
         )
     ])\
-    .with_tools(tools)\
-    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/sheets.svg"))\
+    .configure(lambda builder: builder.with_icon(IconPaths.connector_icon("sheets"))
+        .add_documentation_link(DocumentationLink(
+            "Google Sheets API Setup",
+            "https://developers.google.com/workspace/guides/auth-overview",
+            "setup",
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Pipeshub Documentation",
+            "https://docs.pipeshub.com/toolsets/google-workspace/sheets",
+            "pipeshub",
+        )))\
     .build_decorator()
 class GoogleSheets:
-    """Sheets tool exposed to the agents using SheetsDataSource"""
-    def __init__(self, client: GoogleClient) -> None:
-        """Initialize the Google Sheets tool"""
-        """
-        Args:
-            client: Sheets client
-        Returns:
-            None
-        """
-        self.client = GoogleSheetsDataSource(client)
+    """Google Sheets tools for agents, on a Sheets v4 client built from the toolset's OAuth sign-in."""
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
+    def __init__(self, client: GoogleClient) -> None:
+        self.client = client
+        self._serial = SerializedExecute()
+
+    async def _execute(self, request: Any) -> dict[str, Any]:  # noqa: ANN401
+        return await self._serial.run(request.execute)
+
+    def _values(self) -> Any:  # noqa: ANN401
+        return self.client.spreadsheets().values()
 
     @tool(
         path="/tools/sheets/create_spreadsheet",
-        short_description="Create a new Google Sheet",
-        description="Create a new Google Sheets spreadsheet with an optional title.",
+        short_description="Create a Google Sheet",
+        description="Create a new Google spreadsheet in the connected account's Drive, optionally with named sheets (tabs).",
         parameters=[
-            ToolParameter(
-                name="title",
-                type=ParameterType.STRING,
-                description="Title of the spreadsheet",
-                required=False
-            )
+            ToolParameter(name="title", type=ParameterType.STRING, description="The spreadsheet's title", required=True),
+            ToolParameter(name="sheet_titles", type=ParameterType.ARRAY, items={"type": "string"}, description="Names of the sheets (tabs) to create; one 'Sheet1' if left out", required=False),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        args_summary=args_template("Creating Google Sheet \"{title}\"", "title"),
+        result_summary=entity_summary(lambda d: f"Created \"{d.get('title') or '?'}\"", path=()),
     )
-    async def create_spreadsheet(self, title: Optional[str] = None) -> tuple[bool, str]:
-        """Create a new Google Sheets spreadsheet"""
-        """
-        Args:
-            title: Title of the spreadsheet
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
+    async def create_spreadsheet(self, title: str, sheet_titles: Optional[list[str]] = None) -> tuple[bool, str]:
         try:
-            # Prepare spreadsheet data
-            spreadsheet_data = {}
-            if title:
-                spreadsheet_data = {
-                    "properties": {
-                        "title": title
-                    }
-                }
-
-            # Use GoogleSheetsDataSource method
-            spreadsheet = self._run_async(self.client.spreadsheets_create(
-                body=spreadsheet_data
-            ))
-
+            if not (title or "").strip():
+                raise _SheetsInputError("Give the new spreadsheet a title.")
+            body: dict[str, Any] = {"properties": {"title": title}}
+            if sheet_titles:
+                body["sheets"] = [{"properties": {"title": name}} for name in sheet_titles]
+            created = await self._execute(self.client.spreadsheets().create(body=body))
+            spreadsheet_id = created["spreadsheetId"]
             return True, json.dumps({
-                "spreadsheet_id": spreadsheet.get("spreadsheetId", ""),
-                "title": spreadsheet.get("properties", {}).get("title", ""),
-                "url": spreadsheet.get("spreadsheetUrl", ""),
-                "sheets": spreadsheet.get("sheets", []),
-                "message": "Spreadsheet created successfully"
+                "spreadsheet_id": spreadsheet_id,
+                "title": (created.get("properties") or {}).get("title", title),
+                "url": created.get("spreadsheetUrl") or _spreadsheet_url(spreadsheet_id),
+                "sheets": [(s.get("properties") or {}).get("title", "") for s in created.get("sheets", [])],
             })
         except Exception as e:
-            logger.error(f"Failed to create spreadsheet: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _failure(e, "create the spreadsheet")
 
     @tool(
         path="/tools/sheets/get_spreadsheet",
-        short_description="Get spreadsheet details",
-        description="Get a Google Sheets spreadsheet's metadata, sheets, and optionally grid data.",
+        short_description="List a Google Sheet's tabs",
+        description=(
+            "Get a spreadsheet's title, link and its sheets (tabs) with their sizes, without the cell values. "
+            "Use get_values to read cells."
+        ),
         parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet to retrieve",
-                required=True
-            ),
-            ToolParameter(
-                name="ranges",
-                type=ParameterType.STRING,
-                description="Comma-separated list of ranges to retrieve",
-                required=False
-            ),
-            ToolParameter(
-                name="include_grid_data",
-                type=ParameterType.BOOLEAN,
-                description="Whether to include grid data",
-                required=False
-            )
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id (the part of the link after /spreadsheets/d/)", required=True),
         ],
         tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        args_summary=args_template("Opening Google Sheet {spreadsheet_id}", "spreadsheet_id"),
+        result_summary=entity_summary(lambda d: f"\"{d.get('title') or '?'}\" has {len(d.get('sheets') or [])} sheet(s)", path=()),
     )
-    def get_spreadsheet(
-        self,
-        spreadsheet_id: str,
-        ranges: Optional[str] = None,
-        include_grid_data: Optional[bool] = None
-    ) -> tuple[bool, str]:
-        """Get a Google Sheets spreadsheet"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            ranges: Comma-separated list of ranges
-            include_grid_data: Whether to include grid data
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
+    async def get_spreadsheet(self, spreadsheet_id: str) -> tuple[bool, str]:
         try:
-            # Use GoogleSheetsDataSource method
-            spreadsheet = self._run_async(self.client.spreadsheets_get(
+            found = await self._execute(self.client.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
-                ranges=ranges,
-                includeGridData=include_grid_data
+                fields="spreadsheetId,spreadsheetUrl,properties.title,sheets.properties",
             ))
-
-            return True, json.dumps(spreadsheet)
+            sheets = []
+            for sheet in found.get("sheets", []):
+                props = sheet.get("properties") or {}
+                grid = props.get("gridProperties") or {}
+                sheets.append({
+                    "title": props.get("title", ""),
+                    "sheet_id": props.get("sheetId"),
+                    "rows": grid.get("rowCount"),
+                    "columns": grid.get("columnCount"),
+                })
+            return True, json.dumps({
+                "spreadsheet_id": found.get("spreadsheetId", spreadsheet_id),
+                "title": (found.get("properties") or {}).get("title", ""),
+                "url": found.get("spreadsheetUrl") or _spreadsheet_url(spreadsheet_id),
+                "sheets": sheets,
+            })
         except Exception as e:
-            logger.error(f"Failed to get spreadsheet: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _failure(e, "open the spreadsheet")
 
     @tool(
         path="/tools/sheets/get_values",
-        short_description="Get values from a range",
-        description="Get values from a spreadsheet range with optional formatting and dimension control.",
+        short_description="Read cells from a Google Sheet",
+        description="Read the values in one range of a spreadsheet, as rows of cells.",
         parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet",
-                required=True
-            ),
-            ToolParameter(
-                name="range",
-                type=ParameterType.STRING,
-                description="The range to retrieve (e.g., 'Sheet1!A1:C10')",
-                required=True
-            ),
-            ToolParameter(
-                name="major_dimension",
-                type=ParameterType.STRING,
-                description="Major dimension (ROWS or COLUMNS)",
-                required=False
-            ),
-            ToolParameter(
-                name="value_render_option",
-                type=ParameterType.STRING,
-                description="How values should be rendered (FORMATTED_VALUE, UNFORMATTED_VALUE, FORMULA)",
-                required=False
-            )
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
+            ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
         ],
         tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        args_summary=args_template("Reading {range} from Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
+        result_summary=entity_summary(lambda d: f"Read {len(d.get('values') or [])} row(s)", path=()),
     )
-    def get_values(
-        self,
-        spreadsheet_id: str,
-        range: str,
-        major_dimension: Optional[str] = None,
-        value_render_option: Optional[str] = None
-    ) -> tuple[bool, str]:
-        """Get values from a spreadsheet range"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            range: The range to retrieve
-            major_dimension: Major dimension for the data
-            value_render_option: How to render values
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
+    async def get_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:  # noqa: A002
         try:
-            # Use GoogleSheetsDataSource method
-            values = self._run_async(self.client.spreadsheets_values_get(
-                spreadsheetId=spreadsheet_id,
-                range=range,
-                majorDimension=major_dimension,
-                valueRenderOption=value_render_option
-            ))
-
-            return True, json.dumps(values)
+            found = await self._execute(self._values().get(spreadsheetId=spreadsheet_id, range=range))
+            return True, json.dumps(_capped([found])[0])
         except Exception as e:
-            logger.error(f"Failed to get values: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        path="/tools/sheets/update_values",
-        short_description="Update values in a range",
-        description="Update values in a spreadsheet range with a 2D array of data.",
-        parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet",
-                required=True
-            ),
-            ToolParameter(
-                name="range",
-                type=ParameterType.STRING,
-                description="The range to update (e.g., 'Sheet1!A1:C10')",
-                required=True
-            ),
-            ToolParameter(
-                name="values",
-                type=ParameterType.ARRAY,
-                description="2D array of values to write",
-                required=True,
-                items={"type": "array", "items": {"type": "string"}}
-            ),
-            ToolParameter(
-                name="value_input_option",
-                type=ParameterType.STRING,
-                description="How input data should be interpreted (RAW, USER_ENTERED)",
-                required=False
-            )
-        ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="update")],
-    )
-    def update_values(
-        self,
-        spreadsheet_id: str,
-        range: str,
-        values: List[List[str]],
-        value_input_option: Optional[str] = None
-    ) -> tuple[bool, str]:
-        """Update values in a spreadsheet range"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            range: The range to update
-            values: 2D array of values to write
-            value_input_option: How to interpret input data
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
-        try:
-            # Prepare update data
-            update_data = {
-                "values": values
-            }
-
-            # Use GoogleSheetsDataSource method
-            result = self._run_async(self.client.spreadsheets_values_update(
-                spreadsheetId=spreadsheet_id,
-                range=range,
-                valueInputOption=value_input_option,
-                body=update_data
-            ))
-
-            return True, json.dumps({
-                "spreadsheet_id": spreadsheet_id,
-                "updated_range": result.get("updatedRange", ""),
-                "updated_rows": result.get("updatedRows", 0),
-                "updated_columns": result.get("updatedColumns", 0),
-                "updated_cells": result.get("updatedCells", 0),
-                "message": "Values updated successfully"
-            })
-        except Exception as e:
-            logger.error(f"Failed to update values: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        path="/tools/sheets/append_values",
-        short_description="Append values to a range",
-        description="Append rows of values to the end of a spreadsheet range.",
-        parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet",
-                required=True
-            ),
-            ToolParameter(
-                name="range",
-                type=ParameterType.STRING,
-                description="The range to append to (e.g., 'Sheet1!A1:C10')",
-                required=True
-            ),
-            ToolParameter(
-                name="values",
-                type=ParameterType.ARRAY,
-                description="2D array of values to append",
-                required=True,
-                items={"type": "array", "items": {"type": "string"}}
-            ),
-            ToolParameter(
-                name="value_input_option",
-                type=ParameterType.STRING,
-                description="How input data should be interpreted (RAW, USER_ENTERED)",
-                required=False
-            )
-        ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="update")],
-    )
-    def append_values(
-        self,
-        spreadsheet_id: str,
-        range: str,
-        values: List[List[str]],
-        value_input_option: Optional[str] = None
-    ) -> tuple[bool, str]:
-        """Append values to a spreadsheet range"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            range: The range to append to
-            values: 2D array of values to append
-            value_input_option: How to interpret input data
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
-        try:
-            # Prepare append data
-            append_data = {
-                "values": values
-            }
-
-            # Use GoogleSheetsDataSource method
-            result = self._run_async(self.client.spreadsheets_values_append(
-                spreadsheetId=spreadsheet_id,
-                range=range,
-                valueInputOption=value_input_option,
-                body=append_data
-            ))
-
-            return True, json.dumps({
-                "spreadsheet_id": spreadsheet_id,
-                "updated_range": result.get("updatedRange", ""),
-                "updated_rows": result.get("updatedRows", 0),
-                "updated_columns": result.get("updatedColumns", 0),
-                "updated_cells": result.get("updatedCells", 0),
-                "message": "Values appended successfully"
-            })
-        except Exception as e:
-            logger.error(f"Failed to append values: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        path="/tools/sheets/clear_values",
-        short_description="Clear values from a range",
-        description="Clear all values from a spreadsheet range without removing formatting.",
-        parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet",
-                required=True
-            ),
-            ToolParameter(
-                name="range",
-                type=ParameterType.STRING,
-                description="The range to clear (e.g., 'Sheet1!A1:C10')",
-                required=True
-            )
-        ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="delete")],
-    )
-    async def clear_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:
-        """Clear values from a spreadsheet range"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            range: The range to clear
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
-        try:
-            # Use GoogleSheetsDataSource method
-            result = self._run_async(self.client.spreadsheets_values_clear(
-                spreadsheetId=spreadsheet_id,
-                range=range
-            ))
-
-            return True, json.dumps({
-                "spreadsheet_id": spreadsheet_id,
-                "cleared_range": result.get("clearedRange", ""),
-                "message": "Values cleared successfully"
-            })
-        except Exception as e:
-            logger.error(f"Failed to clear values: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _failure(e, "read the cells")
 
     @tool(
         path="/tools/sheets/batch_get_values",
-        short_description="Batch get values from multiple ranges",
-        description="Get values from multiple ranges in a spreadsheet in a single request.",
+        short_description="Read several ranges from a Google Sheet",
+        description="Read the values in several ranges of one spreadsheet in a single call.",
         parameters=[
-            ToolParameter(
-                name="spreadsheet_id",
-                type=ParameterType.STRING,
-                description="The ID of the spreadsheet",
-                required=True
-            ),
-            ToolParameter(
-                name="ranges",
-                type=ParameterType.ARRAY,
-                description="List of ranges to retrieve",
-                required=True,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="major_dimension",
-                type=ParameterType.STRING,
-                description="Major dimension (ROWS or COLUMNS)",
-                required=False
-            )
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
+            ToolParameter(name="ranges", type=ParameterType.ARRAY, items={"type": "string"}, description="Ranges in A1 notation, for example ['Sheet1!A1:B5', 'Totals']", required=True),
         ],
         tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
+        args_summary=args_template("Reading ranges from Google Sheet {spreadsheet_id}", "spreadsheet_id"),
+        result_summary=entity_summary(lambda d: f"Read {len(d.get('ranges') or [])} range(s)", path=()),
     )
-    def batch_get_values(
-        self,
-        spreadsheet_id: str,
-        ranges: List[str],
-        major_dimension: Optional[str] = None
-    ) -> tuple[bool, str]:
-        """Get values from multiple ranges in a spreadsheet"""
-        """
-        Args:
-            spreadsheet_id: The ID of the spreadsheet
-            ranges: List of ranges to retrieve
-            major_dimension: Major dimension for the data
-        Returns:
-            tuple[bool, str]: True if successful, False otherwise
-        """
+    async def batch_get_values(self, spreadsheet_id: str, ranges: list[str]) -> tuple[bool, str]:
         try:
-            # Use GoogleSheetsDataSource method
-            values = self._run_async(self.client.spreadsheets_values_batch_get(
-                spreadsheetId=spreadsheet_id,
-                ranges=ranges,
-                majorDimension=major_dimension
-            ))
-
-            return True, json.dumps(values)
+            if not ranges:
+                raise _SheetsInputError("Say which ranges to read, for example ['Sheet1!A1:B5'].")
+            found = await self._execute(self._values().batchGet(spreadsheetId=spreadsheet_id, ranges=ranges))
+            return True, json.dumps({"ranges": _capped(found.get("valueRanges", []))})
         except Exception as e:
-            logger.error(f"Failed to batch get values: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _failure(e, "read the cells")
+
+    @tool(
+        path="/tools/sheets/update_values",
+        short_description="Write cells in a Google Sheet",
+        description=(
+            "Overwrite the cells in a range with new values, starting at the range's top-left cell. "
+            "With USER_ENTERED (the default) values are read as if typed into the sheet, so '=SUM(A1:A3)' "
+            "becomes a formula and '2026-10-15' a date; RAW stores them exactly as given."
+        ),
+        parameters=[
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
+            ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
+            ToolParameter(name="values", type=ParameterType.ARRAY, items=_VALUES_ITEMS, description="Rows of cells, for example [[\"Name\", \"Total\"], [\"North\", 42]]", required=True),
+            ToolParameter(name="value_input_option", type=ParameterType.STRING, enum=_VALUE_INPUT_OPTIONS, description="USER_ENTERED or RAW", required=False, default="USER_ENTERED"),
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        args_summary=args_template("Writing {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
+        result_summary=entity_summary(lambda d: f"Updated {d.get('updated_cells', 0)} cell(s)", path=()),
+    )
+    async def update_values(
+        self, spreadsheet_id: str, range: str, values: list[list[Any]], value_input_option: str = "USER_ENTERED",  # noqa: A002
+    ) -> tuple[bool, str]:
+        try:
+            rows = _rows(values)
+            updated = await self._execute(self._values().update(
+                spreadsheetId=spreadsheet_id, range=range, valueInputOption=value_input_option or "USER_ENTERED",
+                body={"values": rows},
+            ))
+            return True, json.dumps({
+                "updated_range": updated.get("updatedRange", range),
+                "updated_rows": updated.get("updatedRows", 0),
+                "updated_cells": updated.get("updatedCells", 0),
+                "url": _spreadsheet_url(spreadsheet_id),
+            })
+        except Exception as e:
+            return _failure(e, "write the cells")
+
+    @tool(
+        path="/tools/sheets/append_values",
+        short_description="Add rows to a Google Sheet",
+        description=(
+            "Add rows after the last row of data in a range or sheet, without overwriting anything. "
+            "Use this to log entries or add records to a table."
+        ),
+        parameters=[
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
+            ToolParameter(name="range", type=ParameterType.STRING, description="The table to add to, for example 'Sheet1!A:D' or just 'Sheet1'", required=True),
+            ToolParameter(name="values", type=ParameterType.ARRAY, items=_VALUES_ITEMS, description="Rows to add, for example [[\"2026-10-15\", \"North\", 42]]", required=True),
+            ToolParameter(name="value_input_option", type=ParameterType.STRING, enum=_VALUE_INPUT_OPTIONS, description="USER_ENTERED or RAW", required=False, default="USER_ENTERED"),
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
+        args_summary=args_template("Adding rows to {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
+        result_summary=entity_summary(lambda d: f"Added {d.get('appended_rows', 0)} row(s)", path=()),
+    )
+    async def append_values(
+        self, spreadsheet_id: str, range: str, values: list[list[Any]], value_input_option: str = "USER_ENTERED",  # noqa: A002
+    ) -> tuple[bool, str]:
+        try:
+            rows = _rows(values)
+            appended = await self._execute(self._values().append(
+                spreadsheetId=spreadsheet_id, range=range, valueInputOption=value_input_option or "USER_ENTERED",
+                insertDataOption="INSERT_ROWS", body={"values": rows},
+            ))
+            updates = appended.get("updates") or {}
+            return True, json.dumps({
+                "updated_range": updates.get("updatedRange", ""),
+                "appended_rows": updates.get("updatedRows", 0),
+                "updated_cells": updates.get("updatedCells", 0),
+                "url": _spreadsheet_url(spreadsheet_id),
+            })
+        except Exception as e:
+            return _failure(e, "add the rows")
+
+    @tool(
+        path="/tools/sheets/clear_values",
+        short_description="Clear cells in a Google Sheet",
+        description="Erase the values in a range, keeping its formatting. This can't be undone from here, so confirm the range first.",
+        parameters=[
+            ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
+            ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
+        ],
+        # Destructive though it deletes nothing: the cells' values can't be got back, so it asks first.
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="destructive")],
+        args_summary=args_template("Clearing {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
+        result_summary=confirmation("Cleared {range}", "range"),
+    )
+    async def clear_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:  # noqa: A002
+        try:
+            if not (range or "").strip():
+                raise _SheetsInputError("Say which range to clear, for example 'Sheet1!A2:D50'.")
+            cleared = await self._execute(self._values().clear(spreadsheetId=spreadsheet_id, range=range, body={}))
+            return True, json.dumps({"cleared_range": cleared.get("clearedRange", range), "url": _spreadsheet_url(spreadsheet_id)})
+        except Exception as e:
+            return _failure(e, "clear the cells")

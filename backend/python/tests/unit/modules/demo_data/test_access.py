@@ -165,15 +165,28 @@ async def test_one_probe_finding_a_record_wins_over_another_failing() -> None:
 
 @pytest.mark.asyncio
 async def test_a_failed_app_listing_is_not_remembered_as_no_demo_or_no_real_data() -> None:
-    # Both providers answer [] when the listing query fails.
+    # The demo check asks the listing to raise when it fails; the real-data look
+    # still reads the providers' [] as a failure.
     graph = _graph([])
+    graph.get_org_apps = AsyncMock(side_effect=RuntimeError("graph unavailable"))
     assert await access.demo_connector_ids(graph, "org") == ()
+    assert graph.get_org_apps.await_args.kwargs["raise_on_error"] is True
+    graph.get_org_apps = AsyncMock(return_value=[])
     assert await org_has_real_data(graph, "org") is False
 
     graph.get_org_apps = AsyncMock(return_value=[DEMO, JIRA])
     graph.get_records_by_status = AsyncMock(return_value=["r"])
     assert await access.demo_connector_ids(graph, "org") == ("demo-1",)
     assert await org_has_real_data(graph, "org") is True
+
+
+@pytest.mark.asyncio
+async def test_an_org_without_the_demo_asks_for_demo_apps_only_and_remembers_the_answer() -> None:
+    graph = _graph([])
+    assert await access.demo_connector_ids(graph, "org") == ()
+    assert await access.demo_connector_ids(graph, "org") == ()
+    graph.get_org_apps.assert_awaited_once()
+    assert graph.get_org_apps.await_args.kwargs["app_type"] == access.DEMO_CONNECTOR_TYPE
 
 
 @pytest.mark.asyncio

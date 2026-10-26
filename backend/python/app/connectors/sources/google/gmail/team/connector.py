@@ -1,5 +1,5 @@
 import asyncio
-import base64
+import functools
 import io
 import logging
 import os
@@ -22,7 +22,6 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
-    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -46,7 +45,6 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.auth_builder import (
     AuthType,
-    OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import (
     AuthBuilder,
@@ -59,6 +57,7 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     FilterCategory,
@@ -71,6 +70,17 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
+from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
+from app.connectors.sources.google.common.gmail_endpoint import gmail_api_base_url
+from app.connectors.sources.google.common.gmail_errors import classify
+from app.connectors.sources.google.common.gmail_mailbox_sync import (
+    GmailMailboxApi,
+    GmailMailboxSync,
+    MailboxWindow,
+)
+from app.connectors.sources.google.common.gmail_message_parts import find_message_part, decode_body_data
+from app.connectors.sources.google.common.gmail_notices import GmailNotices
+from app.connectors.sources.google.common.gmail_sync_health import GmailSyncHealth
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -95,7 +105,7 @@ from app.models.entities import (
     USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
@@ -109,10 +119,32 @@ if TYPE_CHECKING:
 # Maximum concurrent borrows from the shared connector thread pool.
 _GMAIL_TEAM_MAX_CONCURRENCY = 4
 
+# The mailboxes the last complete directory listing had, kept in the users sync point.
+_MAILBOXES_SYNC_POINT_KEY = "mailboxes"
+
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
 # client and keeps one executor thread busy for that entire transfer.
 _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+
+
+# A Drive file attached from more than one mailbox must not share one record.
+# The Google user id does not change when the mailbox is renamed.
+_DRIVE_ATTACHMENT_MARK = "gdrive:"
+
+
+def drive_attachment_record_id(google_user_id: str, drive_file_id: str) -> str:
+    return f"{_DRIVE_ATTACHMENT_MARK}{google_user_id}:{drive_file_id}"
+
+
+def parse_drive_attachment_record_id(external_id: str | None) -> tuple[str, str] | None:
+    """Google user id and the bare Drive file id, or None."""
+    if not external_id or not external_id.startswith(_DRIVE_ATTACHMENT_MARK):
+        return None
+    user_id, sep, file_id = external_id[len(_DRIVE_ATTACHMENT_MARK):].partition(":")
+    if not sep or not user_id or not file_id:
+        return None
+    return user_id, file_id
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -269,10 +301,18 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set()  # confirmed workspace members, used to prioritize impersonation candidates
 
+        # What the current run could not do; decides its outcome and what a full sync may remove.
+        self._sync_health = GmailSyncHealth()
+
     async def init(self) -> bool:
         """Initialize the Google Gmail workspace connector with service account credentials and services."""
         try:
             self._gmail_executor = self._thread_lease(_GMAIL_TEAM_MAX_CONCURRENCY)
+            if gmail_api_base_url():
+                self.logger.warning(
+                    "Gmail calls for this connector go to %s (GMAIL_GOOGLE_API_BASE_URL), not to Google: "
+                    "only a test deployment should set it.", gmail_api_base_url()
+                )
 
             # Load connector config
             config = await self.config_service.get_config(
@@ -313,7 +353,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     config_service=self.config_service,
                     is_individual=False,  # This is a workspace connector
                     version="directory_v1",
-                    connector_instance_id=self.connector_id
+                    connector_instance_id=self.connector_id,
+                    api_base_url=gmail_api_base_url(),
                 )
 
                 # Create Google Admin Data Source from the client
@@ -341,6 +382,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     is_individual=False,  # This is a workspace connector
                     version="v1",
                     connector_instance_id=self.connector_id,
+                    api_base_url=gmail_api_base_url(),
                     delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
                 )
 
@@ -366,6 +408,18 @@ class GoogleGmailTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail workspace connector: {ex}", exc_info=True)
             raise
+
+    async def _delete_stale_drive_attachment(
+        self, drive_file_id: str, mailbox_email: str, scoped_id: str
+    ) -> None:
+        """Drop records stored under the bare Drive id or the mailbox email prefix."""
+        for stale_id in (drive_file_id, f"{mailbox_email}:{drive_file_id}"):
+            if not stale_id or stale_id == scoped_id:
+                continue
+            stale = await self._get_existing_record(stale_id)
+            if stale is None:
+                continue
+            await self.data_entities_processor.on_record_deleted(record_id=stale.id)
 
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
@@ -487,6 +541,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -496,30 +551,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 internet_message_id=internet_message_id,
             )
 
-            # Extract sender email from "from" header (may contain name)
-            sender_email = self._extract_email_from_header(from_email)
-
-            # Create permission based on whether user_email is the sender
-            permissions = []
-            if user_email:
-                # Normalize emails for comparison (case-insensitive)
-                user_email_lower = user_email.lower()
-                sender_email_lower = sender_email.lower() if sender_email else ""
-
-                if sender_email_lower and user_email_lower == sender_email_lower:
-                    # User is the sender - create owner permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    ))
-                else:
-                    # User is not the sender - create read permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    ))
+            # The mailbox record group holds the owner's grant. A message inherits
+            # from its label, which inherits from that mailbox.
+            permissions: list[Permission] = []
 
             self.logger.debug(
                 f"Processed message {message_id} in thread {thread_id}: "
@@ -545,7 +579,24 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
             return None
 
-    def _extract_attachment_infos(self, message: Dict) -> List[Dict]:
+    def _scoped_drive_attachment_id(
+        self, drive_file_id: str, mailbox_email: str | None, google_user_id: str | None = None
+    ) -> str | None:
+        user_id = google_user_id or (getattr(self, "_google_user_id_by_email", {}) or {}).get(
+            (mailbox_email or "").lower()
+        )
+        if not user_id or not drive_file_id:
+            self.logger.warning("Skipping Drive attachment %s: no Google user id for %s", drive_file_id, mailbox_email)
+            return None
+        return drive_attachment_record_id(user_id, drive_file_id)
+
+    def _extract_attachment_infos(
+        self,
+        message: Dict,
+        mailbox_email: str | None = None,
+        google_user_id: str | None = None,
+        keep_drive_record_id: str | None = None,
+    ) -> List[Dict]:
         """Extract attachment info from Gmail message payload.
 
         Args:
@@ -568,7 +619,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not body_data:
                 return []
             try:
-                decoded_data = base64.urlsafe_b64decode(body_data).decode('UTF-8')
+                decoded_data = decode_body_data(body_data).decode('UTF-8')
 
                 # Match Drive file URLs: https://drive.google.com/file/d/{file_id}/view?usp=drive_web
                 # This matches the exact pattern used in gmail_user_service.py
@@ -627,11 +678,17 @@ class GoogleGmailTeamConnector(BaseConnector):
                     # Handle Drive attachments (>25MB) with driveFileId in body
                     if drive_file_id:
                         seen_drive_file_ids.add(drive_file_id)
-                        # For Drive attachments, use driveFileId as external_record_id
+                        stable_drive_id = (
+                            keep_drive_record_id
+                            if keep_drive_record_id and drive_file_id == keep_drive_record_id
+                            else self._scoped_drive_attachment_id(drive_file_id, mailbox_email, google_user_id)
+                        )
+                        if not stable_drive_id:
+                            continue
                         attachments.append({
                             'attachmentId': None,  # Not available for Drive files
                             'driveFileId': drive_file_id,  # Use Drive file ID
-                            'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                            'stableAttachmentId': stable_drive_id,
                             'partId': part_id,
                             'filename': part.get('filename'),
                             'mimeType': mime_type,
@@ -675,10 +732,17 @@ class GoogleGmailTeamConnector(BaseConnector):
             for drive_file_id in unique_drive_file_ids:
                 if drive_file_id and drive_file_id not in seen_drive_file_ids:
                     seen_drive_file_ids.add(drive_file_id)
+                    stable_drive_id = (
+                        keep_drive_record_id
+                        if keep_drive_record_id and drive_file_id == keep_drive_record_id
+                        else self._scoped_drive_attachment_id(drive_file_id, mailbox_email, google_user_id)
+                    )
+                    if not stable_drive_id:
+                        continue
                     attachment_infos.append({
                         'attachmentId': None,  # Not available for Drive files
                         'driveFileId': drive_file_id,  # Use Drive file ID
-                        'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                        'stableAttachmentId': stable_drive_id,
                         'partId': 'unknown',  # Not associated with a specific part
                         'filename': None,  # Filename not available from link, will be fetched from Drive API
                         'mimeType': 'application/vnd.google-apps.file',  # Default for Drive files
@@ -775,6 +839,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         version="v3",
                         user_email=user_email,  # Use this user's credentials
                         connector_instance_id=self.connector_id,
+                        api_base_url=gmail_api_base_url(),
                         delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
                     )
 
@@ -808,6 +873,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                     )
                     # Continue with existing values from attachment_info
 
+            if is_drive_file and drive_file_id and stable_attachment_id != drive_file_id:
+                await self._delete_stale_drive_attachment(drive_file_id, user_email, stable_attachment_id)
+
             # Check for existing record
             existing_record = await self._get_existing_record(stable_attachment_id)
             is_new = existing_record is None
@@ -823,8 +891,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Create FileRecord
-            # For Drive files, use driveFileId as external_record_id
-            # For regular attachments, use stable_attachment_id (message_id_partId)
+            # Drive files use gdrive:{googleUserId}:{fileId}. Regular attachments use messageId~partId.
             file_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
@@ -845,6 +912,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -855,8 +923,9 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Inherit parent mail permissions
-            attachment_permissions = parent_mail_permissions
+            # An attachment inherits from its message. The copied grant is not written.
+            del parent_mail_permissions
+            attachment_permissions: list[Permission] = []
 
             attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
@@ -924,691 +993,62 @@ class GoogleGmailTeamConnector(BaseConnector):
                 continue
 
     async def _run_sync_with_yield(self, user_email: str) -> None:
-        """
-        Synchronizes Gmail mailbox contents for a specific user using yielding for non-blocking operation.
-        Routes to incremental sync if history_id exists, otherwise performs full sync.
+        """Syncs one user's mailbox: a full read, or the changes since the last sync (`GmailMailboxSync`)."""
+        self.logger.info(f"Starting sync for user {user_email}")
+        user_gmail_datasource = await self._create_user_gmail_client(user_email)
 
-        Args:
-            user_email: The user email address
-        """
-        try:
-            self.logger.info(f"Starting sync for user {user_email}")
+        async def datasource() -> GoogleGmailDataSource:
+            return user_gmail_datasource
 
-            # Create user-specific Gmail client with impersonation
-            user_gmail_datasource = await self._create_user_gmail_client(user_email)
+        received = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        window = MailboxWindow(
+            q=build_gmail_received_date_threads_query(received),
+            start_ms=received.get_datetime_start() if received else None,
+            end_ms=received.get_datetime_end() if received else None,
+        )
 
-            # Get sync point for this user
-            sync_point_key = generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email)
-            sync_point = await self.gmail_delta_sync_point.read_sync_point(sync_point_key)
+        async def build_records(message: Dict, thread_id: str) -> list[tuple[Record, list[Permission]]]:
+            return await self._records_for_message(user_email, message, thread_id)
 
-            # Check if history_id exists for incremental sync
-            history_id = sync_point.get('historyId') if sync_point else None
+        mailbox = GmailMailboxSync(
+            mailbox=user_email,
+            api=GmailMailboxApi(datasource, user_email, GmailCallPolicy(self.logger)),
+            build_records=build_records,
+            processor=self.data_entities_processor,
+            connector_id=self.connector_id,
+            sync_point=self.gmail_delta_sync_point,
+            sync_point_key=generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email),
+            health=self._sync_health,
+            logger=self.logger,
+            window=window,
+            batch_size=self.batch_size,
+        )
+        await mailbox.run()
+        self.logger.info(f"Finished sync for user {user_email}: {mailbox.stats}")
 
-            if history_id:
-                self.logger.info(f"History ID found for user {user_email}, performing incremental sync")
-                try:
-                    await self._run_sync_with_history_id(user_email, user_gmail_datasource, history_id, sync_point_key)
-                except HttpError as http_error:
-                    # Handle 404 error - history_id expired, fallback to full sync
-                    if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.warning(
-                            f"History ID {history_id} expired for user {user_email}, "
-                            f"falling back to full sync"
-                        )
-                        await self._run_full_sync(user_email, user_gmail_datasource, sync_point_key)
-                    else:
-                        raise
-            else:
-                self.logger.info(f"No history ID found for user {user_email}, performing full sync")
-                await self._run_full_sync(user_email, user_gmail_datasource, sync_point_key)
-
-        except Exception as ex:
-            self.logger.error(f"❌ Error in sync for user {user_email}: {ex}")
-            raise
-
-    async def _run_full_sync(
-        self,
-        user_email: str,
-        user_gmail_datasource: GoogleGmailDataSource,
-        sync_point_key: str
-    ) -> None:
-        """
-        Performs a full sync of Gmail mailbox contents for a specific user.
-
-        Args:
-            user_email: The user email address
-            user_gmail_datasource: User-specific Gmail data source client
-            sync_point_key: Sync point key for this user
-        """
-        try:
-            self.logger.info(f"Starting full sync for user {user_email}")
-
-            # Get user profile to extract historyId
-            try:
-                profile = await user_gmail_datasource.users_get_profile(userId=user_email)
-                history_id = profile.get('historyId')
-                self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
-            except Exception as e:
-                self.logger.warning(f"Failed to get historyId for user {user_email}: {e}")
-                history_id = None
-
-            # Initialize batch processing
-            batch_records = []
-            batch_count = 0
-            total_threads = 0
-            total_messages = 0
-            page_token = None
-            threads_q = build_gmail_received_date_threads_query(
-                self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
-            )
-            if threads_q:
-                self.logger.info(f"Full sync thread list query (RECEIVED_DATE): {threads_q!r}")
-
-            # Fetch threads with pagination
-            while True:
-                try:
-                    # Fetch threads list
-                    threads_response = await user_gmail_datasource.users_threads_list(
-                        userId=user_email,
-                        maxResults=100,
-                        pageToken=page_token,
-                        q=threads_q,
-                    )
-
-                    threads = threads_response.get('threads', [])
-                    if not threads:
-                        break
-
-                    self.logger.info(f"Fetched {len(threads)} threads for user {user_email}")
-                    total_threads += len(threads)
-
-                    # Process each thread
-                    for thread_data in threads:
-                        thread_id = thread_data.get('id')
-                        if not thread_id:
-                            continue
-
-                        try:
-                            # Get full thread with all messages
-                            thread = await user_gmail_datasource.users_threads_get(
-                                userId=user_email,
-                                id=thread_id,
-                                format="full"
-                            )
-
-                            messages = thread.get('messages', [])
-                            if not messages:
-                                continue
-
-                            # Process messages in thread sequentially (ascending order) using generator
-                            previous_message_id = None
-
-                            async for mail_update in self._process_gmail_message_generator(
-                                messages,
-                                user_email,
-                                thread_id
-                            ):
-                                try:
-                                    if not mail_update or not mail_update.record:
-                                        continue
-
-                                    mail_record = mail_update.record
-                                    permissions = mail_update.new_permissions or []
-
-                                    # Add email to batch
-                                    batch_records.append((mail_record, permissions))
-                                    batch_count += 1
-                                    total_messages += 1
-
-                                    # Create SIBLING relation if there was a previous message
-                                    if previous_message_id:
-                                        try:
-                                            await self.data_entities_processor.create_record_relation(
-                                                previous_message_id,
-                                                mail_record.id,
-                                                RecordRelations.SIBLING.value
-                                            )
-                                        except Exception as relation_error:
-                                            self.logger.error(f"Error creating sibling relation: {relation_error}")
-
-                                    # Update previous message ID
-                                    previous_message_id = mail_record.id
-
-                                    # Extract attachment_infos from message payload
-                                    message_id = mail_record.external_record_id
-                                    # Find the message in the messages list to extract attachment info
-                                    message = None
-                                    for msg in messages:
-                                        if msg.get('id') == message_id:
-                                            message = msg
-                                            break
-
-                                    if message:
-                                        attachment_infos = self._extract_attachment_infos(message)
-                                        external_record_group_id = mail_record.external_record_group_id
-
-                                        # Process attachments using generator
-                                        async for attach_update in self._process_gmail_attachment_generator(
-                                            user_email,
-                                            message_id,
-                                            attachment_infos,
-                                            permissions,
-                                            external_record_group_id,
-                                        ):
-                                            if attach_update and attach_update.record:
-                                                # Add attachment to SAME batch_records list
-                                                batch_records.append((attach_update.record, attach_update.new_permissions or []))
-                                                batch_count += 1
-
-                                    # Process batch when it reaches the size limit
-                                    if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records)
-                                        self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
-                                        batch_records = []
-                                        batch_count = 0
-
-                                        # Allow other operations to proceed
-                                        await asyncio.sleep(0.1)
-
-                                except Exception as msg_error:
-                                    self.logger.error(f"Error processing message: {msg_error}")
-                                    continue
-
-                        except Exception as thread_error:
-                            self.logger.error(f"Error processing thread {thread_id}: {thread_error}")
-                            continue
-
-                    # Check for next page
-                    next_page_token = threads_response.get('nextPageToken')
-                    if next_page_token:
-                        page_token = next_page_token
-
-                        # Save intermediate pageToken for resumability
-                        await self.gmail_delta_sync_point.update_sync_point(
-                            sync_point_key,
-                            {
-                                "pageToken": page_token,
-                                "historyId": history_id
-                            }
-                        )
-                    else:
-                        # No more pages
-                        break
-
-                except Exception as page_error:
-                    self.logger.error(f"Error fetching threads page: {page_error}")
-                    raise
-
-            # Process remaining records in batch
-            if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
-                self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
-
-            # Update sync point with final state (clear pageToken, keep historyId)
-            await self.gmail_delta_sync_point.update_sync_point(
-                sync_point_key,
-                {
-                    "pageToken": None,
-                    "historyId": history_id,
-                    "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                }
-            )
-
-            self.logger.info(
-                f"Completed full sync for user {user_email}: "
-                f"{total_threads} threads, {total_messages} messages"
-            )
-
-        except Exception as ex:
-            self.logger.error(f"❌ Error in full sync for user {user_email}: {ex}")
-            raise
-
-    async def _run_sync_with_history_id(
-        self,
-        user_email: str,
-        user_gmail_datasource: GoogleGmailDataSource,
-        start_history_id: str,
-        sync_point_key: str
-    ) -> None:
-        """
-        Performs an incremental sync of Gmail mailbox contents using history API.
-
-        RECEIVED_DATE applies to full sync via `users.threads.list(q=...)`. The history
-        API has no equivalent `q`; new messages from history are processed without
-        re-applying that date window so incremental sync stays consistent with
-        thread-level indexing.
-
-        Args:
-            user_email: The user email address
-            user_gmail_datasource: User-specific Gmail data source client
-            start_history_id: History ID to start from
-            sync_point_key: Sync point key for this user
-        """
-        try:
-            self.logger.info(f"Starting incremental sync for user {user_email} from historyId {start_history_id}")
-
-            # Initialize batch processing
-            batch_records = []
-            batch_count = 0
-            total_changes = 0
-            latest_history_id = start_history_id
-
-            # Fetch history changes for both INBOX and SENT labels
-            # Process INBOX first
-            try:
-                inbox_changes = await self._fetch_history_changes(
-                    user_gmail_datasource,
+    async def _records_for_message(
+        self, user_email: str, message: Dict, thread_id: str
+    ) -> list[tuple[Record, list[Permission]]]:
+        """A message's record followed by its attachments' records, with the indexing filters applied."""
+        out: list[tuple[Record, list[Permission]]] = []
+        async for mail_update in self._process_gmail_message_generator([message], user_email, thread_id):
+            if not mail_update or not mail_update.record:
+                continue
+            mail_record = mail_update.record
+            out.append((mail_record, mail_update.new_permissions or []))
+            attachment_infos = self._extract_attachment_infos(message, user_email)
+            out.extend([
+                (attach_update.record, attach_update.new_permissions or [])
+                async for attach_update in self._process_gmail_attachment_generator(
                     user_email,
-                    start_history_id,
-                    "INBOX"
+                    mail_record.external_record_id,
+                    attachment_infos,
+                    mail_update.new_permissions or [],
+                    mail_record.external_record_group_id,
                 )
-            except HttpError:
-                raise
-            except Exception as inbox_error:
-                self.logger.error(f"Error fetching INBOX history changes: {inbox_error}")
-                inbox_changes = {'history': []}
-
-            # Process SENT changes
-            try:
-                sent_changes = await self._fetch_history_changes(
-                    user_gmail_datasource,
-                    user_email,
-                    start_history_id,
-                    "SENT"
-                )
-            except HttpError:
-                raise
-            except Exception as sent_error:
-                self.logger.error(f"Error fetching SENT history changes: {sent_error}")
-                sent_changes = {'history': []}
-
-            # Combine and deduplicate changes
-            all_changes = self._merge_history_changes(inbox_changes, sent_changes)
-
-            # Process all history changes
-            for history_entry in all_changes.get('history', []):
-                try:
-                    processed = await self._process_history_changes(
-                        user_email,
-                        user_gmail_datasource,
-                        history_entry,
-                        batch_records
-                    )
-                    if processed:
-                        batch_count += processed
-                        total_changes += 1
-
-                        # Process batch when it reaches the size limit
-                        if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
-                            batch_records = []
-                            batch_count = 0
-
-                            # Allow other operations to proceed
-                            await asyncio.sleep(0.1)
-
-                except Exception as change_error:
-                    self.logger.error(f"Error processing history change: {change_error}")
-                    continue
-
-                # Update latest history ID from the entry
-                if history_entry.get('id'):
-                    latest_history_id = history_entry.get('id')
-
-            # Process remaining records in batch
-            if batch_records:
-                try:
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
-                except Exception as batch_error:
-                    self.logger.error(f"Error processing final batch: {batch_error}")
-
-            # Get latest historyId from user profile if available
-            try:
-                profile = await user_gmail_datasource.users_get_profile(userId=user_email)
-                current_history_id = profile.get('historyId')
-                if current_history_id:
-                    latest_history_id = current_history_id
-            except Exception as profile_error:
-                self.logger.warning(f"Failed to get current historyId from profile: {profile_error}")
-
-            # Update sync point with new historyId (even on partial failures)
-            try:
-                await self.gmail_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    {
-                        "pageToken": None,
-                        "historyId": latest_history_id,
-                        "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                    }
-                )
-            except Exception as sync_point_error:
-                self.logger.error(f"Error updating sync point: {sync_point_error}")
-
-            self.logger.info(
-                f"Completed incremental sync for user {user_email}: "
-                f"{total_changes} changes processed, latest historyId: {latest_history_id}"
-            )
-
-        except HttpError:
-            # Re-raise HttpError to be handled by caller (for 404 fallback)
-            raise
-        except Exception as ex:
-            self.logger.error(f"❌ Error in incremental sync for user {user_email}: {ex}")
-            # Try to update sync point even on error
-            try:
-                await self.gmail_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    {
-                        "pageToken": None,
-                        "historyId": start_history_id,  # Keep original on error
-                        "lastSyncTimestamp": get_epoch_timestamp_in_ms()
-                    }
-                )
-            except Exception:
-                pass  # Ignore sync point update errors during error handling
-            raise
-
-    async def _fetch_history_changes(
-        self,
-        user_gmail_datasource: GoogleGmailDataSource,
-        user_email: str,
-        start_history_id: str,
-        label_id: str
-    ) -> Dict:
-        """
-        Fetch history changes for a specific label with pagination.
-
-        Args:
-            user_gmail_datasource: User-specific Gmail data source client
-            user_email: The user email address
-            start_history_id: History ID to start from
-            label_id: Label ID to filter by (e.g., "INBOX", "SENT")
-
-        Returns:
-            Dictionary containing history changes
-        """
-        all_history = []
-        current_page_token = None
-
-        while True:
-            try:
-                history_response = await user_gmail_datasource.users_history_list(
-                    userId=user_email,
-                    startHistoryId=start_history_id,
-                    labelId=label_id,
-                    historyTypes=["messageAdded", "messageDeleted", "labelAdded"],
-                    maxResults=500,
-                    pageToken=current_page_token
-                )
-
-                history_entries = history_response.get('history', [])
-                if history_entries:
-                    all_history.extend(history_entries)
-
-                # Check for next page
-                next_page_token = history_response.get('nextPageToken')
-                if next_page_token:
-                    current_page_token = next_page_token
-                else:
-                    break
-
-            except HttpError:
-                # Re-raise HttpError (especially 404) to be handled by caller
-                raise
-            except Exception as e:
-                self.logger.error(f"Error fetching history changes for label {label_id}: {e}")
-                raise
-
-        return {'history': all_history}
-
-    def _merge_history_changes(self, inbox_changes: Dict, sent_changes: Dict) -> Dict:
-        """
-        Merge and deduplicate history changes from multiple labels.
-
-        Args:
-            inbox_changes: History changes from INBOX label
-            sent_changes: History changes from SENT label
-
-        Returns:
-            Merged history changes dictionary
-        """
-        merged_history = []
-        seen_history_ids = set()
-
-        for change in inbox_changes.get('history', []) + sent_changes.get('history', []):
-            history_id = change.get('id')
-            if history_id and history_id not in seen_history_ids:
-                seen_history_ids.add(history_id)
-                merged_history.append(change)
-
-        # Sort by history ID to maintain chronological order
-        merged_history.sort(key=lambda x: int(x.get('id', 0)))
-
-        return {'history': merged_history}
-
-    async def _process_history_changes(
-        self,
-        user_email: str,
-        user_gmail_datasource: GoogleGmailDataSource,
-        history_entry: Dict,
-        batch_records: List[Tuple[Record, List[Permission]]]
-    ) -> int:
-        """
-        Process a single history change entry.
-
-        Args:
-            user_email: The user email address
-            user_gmail_datasource: User-specific Gmail data source client
-            history_entry: History change entry from Gmail API
-            batch_records: List to append processed records to
-
-        Returns:
-            Number of records processed
-        """
-        records_processed = 0
-        seen_message_ids = set()
-
-        try:
-            # Handle message additions
-            messages_to_add = []
-            if "messagesAdded" in history_entry:
-                for message_added in history_entry["messagesAdded"]:
-                    message = message_added.get("message", {})
-                    message_id = message.get("id")
-                    if message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_add.append(message)
-
-            # Handle labels added (messages moved to INBOX/SENT)
-            if "labelsAdded" in history_entry:
-                for label_added in history_entry["labelsAdded"]:
-                    message = label_added.get("message", {})
-                    message_id = message.get("id")
-                    label_ids = label_added.get("labelIds", [])
-                    # Only process if message is being added to INBOX or SENT and not already seen
-                    if message_id and message_id not in seen_message_ids:
-                        if any(label in ["INBOX", "SENT"] for label in label_ids):
-                            seen_message_ids.add(message_id)
-                            messages_to_add.append(message)
-
-            # Process message additions
-            for message in messages_to_add:
-                try:
-                    message_id = message.get("id")
-                    if not message_id:
-                        continue
-
-                    # Check if message already exists
-                    existing_record = await self._get_existing_record(message_id)
-                    if existing_record:
-                        self.logger.debug(f"Message {message_id} already exists, skipping")
-                        continue
-
-                    # Fetch full message details
-                    try:
-                        full_message = await user_gmail_datasource.users_messages_get(
-                            userId=user_email,
-                            id=message_id,
-                            format="full"
-                        )
-                    except HttpError as http_error:
-                        if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                            self.logger.warning(f"Message {message_id} not found, may have been deleted")
-                        else:
-                            self.logger.error(f"Error fetching message {message_id}: {http_error}")
-                        continue
-                    except Exception as fetch_error:
-                        self.logger.error(f"Error fetching message {message_id}: {fetch_error}")
-                        continue
-
-                    if not full_message:
-                        self.logger.warning(f"Failed to fetch full message {message_id}")
-                        continue
-
-                    # Extract thread_id
-                    thread_id = full_message.get("threadId")
-                    if not thread_id:
-                        self.logger.warning(f"Message {message_id} has no threadId")
-                        continue
-
-                    # Get previous message in thread for sibling relation
-                    previous_message_record_id = await self._find_previous_message_in_thread(
-                        user_email,
-                        user_gmail_datasource,
-                        thread_id,
-                        message_id,
-                        full_message.get("internalDate"),
-                        batch_records
-                    )
-
-                    # Process message using existing function
-                    mail_update = await self._process_gmail_message(
-                        user_email,
-                        full_message,
-                        thread_id,
-                        previous_message_record_id
-                    )
-
-                    if mail_update and mail_update.record:
-                        mail_record = mail_update.record
-                        permissions = mail_update.new_permissions or []
-
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                            mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                        # Create SIBLING relation if there was a previous message
-                        if previous_message_record_id:
-                            try:
-                                await self.data_entities_processor.create_record_relation(
-                                    previous_message_record_id,
-                                    mail_record.id,
-                                    RecordRelations.SIBLING.value
-                                )
-                            except Exception as relation_error:
-                                self.logger.error(f"Error creating sibling relation: {relation_error}")
-
-                        # Add to batch
-                        batch_records.append((mail_record, permissions))
-                        records_processed += 1
-
-                        # Extract and process attachments
-                        attachment_infos = self._extract_attachment_infos(full_message)
-                        if attachment_infos:
-                            external_record_group_id = mail_record.external_record_group_id
-                            async for attach_update in self._process_gmail_attachment_generator(
-                                user_email,
-                                message_id,
-                                attachment_infos,
-                                permissions,
-                                external_record_group_id,
-                            ):
-                                if attach_update and attach_update.record:
-                                    batch_records.append((
-                                        attach_update.record,
-                                        attach_update.new_permissions or []
-                                    ))
-                                    records_processed += 1
-
-                except Exception as msg_error:
-                    self.logger.error(f"Error processing message addition: {msg_error}")
-                    continue
-
-            # Handle message deletions
-            messages_to_delete = []
-            seen_message_ids = set()  # Reset for deletions
-            if "messagesDeleted" in history_entry:
-                for message_deleted in history_entry["messagesDeleted"]:
-                    message = message_deleted.get("message", {})
-                    message_id = message.get("id")
-                    if message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_delete.append(message)
-
-            # Handle labels added with TRASH (messages moved to trash)
-            if "labelsAdded" in history_entry:
-                for label_added in history_entry["labelsAdded"]:
-                    message = label_added.get("message", {})
-                    message_id = message.get("id")
-                    label_ids = label_added.get("labelIds", [])
-                    if "TRASH" in label_ids and message_id and message_id not in seen_message_ids:
-                        seen_message_ids.add(message_id)
-                        messages_to_delete.append(message)
-
-            # Process message deletions
-            for message in messages_to_delete:
-                try:
-                    message_id = message.get("id")
-                    if not message_id:
-                        continue
-
-                    # Find existing record
-                    existing_record = await self._get_existing_record(message_id)
-                    if not existing_record:
-                        self.logger.debug(f"Message {message_id} not found in database, skipping deletion")
-                        continue
-
-                    # Delete the record and its attachments
-                    await self._delete_message_and_attachments(existing_record.id, message_id)
-                    records_processed += 1
-
-                except Exception as delete_error:
-                    self.logger.error(f"Error processing message deletion: {delete_error}")
-                    continue
-
-        except Exception as e:
-            self.logger.error(f"Error processing history change: {e}", exc_info=True)
-
-        return records_processed
-
-    async def _delete_message_and_attachments(self, record_id: str, message_id: str) -> None:
-        """
-        Delete a message record and its associated attachments.
-
-        Args:
-            record_id: Internal record ID
-            message_id: External message ID
-        """
-        try:
-            # Find and delete associated attachment records first
-            attachment_records = await self.data_entities_processor.get_records_by_parent(
-                self.connector_id, message_id, RecordTypes.FILE.value
-            )
-
-            for attachment_record in attachment_records:
-                try:
-                    await self.data_entities_processor.on_record_deleted(attachment_record.id)
-                    self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
-                except Exception as attach_error:
-                    self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
-
-            # Delete the main message record
-            await self.data_entities_processor.on_record_deleted(record_id)
-            self.logger.debug(f"Deleted message record {record_id} for message {message_id}")
-
-        except Exception as e:
-            self.logger.error(f"Error deleting message and attachments {message_id}: {e}")
+                if attach_update and attach_update.record
+            ])
+        return out
 
     async def _find_previous_message_in_thread(
         self,
@@ -1686,48 +1126,41 @@ class GoogleGmailTeamConnector(BaseConnector):
             return None
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
-        """
-        Process users in concurrent batches for improved performance.
+        """Syncs the mailboxes of people who have a PipesHub account and whose Google account can sign in, a few
+        at a time. A mailbox that fails is recorded (`_sync_health`) and the others go on."""
+        all_active_users = await self.data_entities_processor.get_all_active_users()
+        active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
-        Args:
-            users: List of users to process
-        """
-        try:
-            # Get all active users from organization
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            active_user_emails = {active_user.email.lower() for active_user in all_active_users}
+        # A suspended or archived account's owner cannot read that mailbox in Gmail, so it is not read here.
+        active_users = [
+            user for user in users
+            if user.email and user.email.lower() in active_user_emails and user.is_active is not False
+        ]
+        self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
+        if not active_users:
+            self.logger.warning("No active users to process")
+            return
 
-            # Filter users to sync (only active users)
-            active_users = [
-                user for user in users
-                if user.email and user.email.lower() in active_user_emails
-            ]
+        self._google_user_id_by_email = {
+            user.email.lower(): user.source_user_id
+            for user in active_users
+            if user.email and user.source_user_id
+        }
+        for i in range(0, len(active_users), self.max_concurrent_batches):
+            batch = active_users[i:i + self.max_concurrent_batches]
+            self.logger.info(f"Processing batch {i // self.max_concurrent_batches + 1} with {len(batch)} users")
+            results = await asyncio.gather(
+                *(self._run_sync_with_yield(user.email) for user in batch), return_exceptions=True
+            )
+            for user, result in zip(batch, results):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException):
+                    failure = self._sync_health.record(user.email, result, "mailbox")
+                    self.logger.error(f"❌ Mailbox of {user.email} not synced ({failure.value}): {result}")
+            await asyncio.sleep(1)  # Sleep between batches to prevent overwhelming the API
 
-            self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
-
-            if not active_users:
-                self.logger.warning("No active users to process")
-                return
-
-            # Process users in concurrent batches
-            for i in range(0, len(active_users), self.max_concurrent_batches):
-                batch = active_users[i:i + self.max_concurrent_batches]
-
-                self.logger.info(f"Processing batch {i // self.max_concurrent_batches + 1} with {len(batch)} users")
-
-                sync_tasks = [
-                    self._run_sync_with_yield(user.email)
-                    for user in batch
-                ]
-
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
-                await asyncio.sleep(1)  # Sleep between batches to prevent overwhelming the API
-
-            self.logger.info("Completed processing all user batches")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error processing users in batches: {e}")
-            raise
+        self.logger.info("Completed processing all user batches")
 
     async def _create_user_gmail_client(self, user_email: str) -> GoogleGmailDataSource:
         """
@@ -1748,6 +1181,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 version="v1",
                 user_email=user_email,  # Impersonate this user
                 connector_instance_id=self.connector_id,
+                api_base_url=gmail_api_base_url(),
                 delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
             )
 
@@ -1906,11 +1340,30 @@ class GoogleGmailTeamConnector(BaseConnector):
         # Otherwise, return the whole string (assuming it's just an email)
         return email_header
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector.
+        The service account acts as the configured admin, so that admin is the account."""
+        admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
+        if not self.admin_data_source or not admin_email:
+            return
+        email, source_user_id = None, None
+        try:
+            admin = await self.admin_data_source.users_get(userKey=admin_email)
+            email, source_user_id = admin.get("primaryEmail"), admin.get("id")
+        except Exception as e:
+            self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
+            return
+        await self.register_authenticated_source_user(email, source_user_id)
+
     async def run_sync(self) -> None:
         """
         Main entry point for the Google Gmail workspace connector.
         Implements workspace sync workflow: users → groups → record groups → process batches.
+        A run that could not read part of the Workspace raises at the end, so it is not recorded as a success
+        and a full sync removes nothing.
         """
+        self._sync_health = GmailSyncHealth()
         try:
             self.logger.info("Starting Google Gmail workspace connector sync")
 
@@ -1919,28 +1372,35 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.config_service, "gmail", self.connector_id, self.logger
             )
 
-            # Step 1: Sync users
+            await self._register_authenticated_identity()
+
             self.logger.info("Syncing users...")
             await self._sync_users()
 
-            # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
             await self._sync_user_groups()
 
-            # Step 3: Sync record groups for users
             self.logger.info("Syncing record groups...")
             await self._sync_record_groups(self.synced_users)
 
-            # Step 4: Process user mailboxes in batches
             self.logger.info("Processing user mailboxes in batches...")
-            # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
-
-            self.logger.info("Google Gmail workspace connector sync completed successfully")
-
         except Exception as e:
+            self._sync_health.record("workspace", e, "directory")
             self.logger.error(f"❌ Error in Google Gmail workspace connector run: {e}", exc_info=True)
+            await self._report_sync_problems()
             raise
+        await self._report_sync_problems()
+        self._sync_health.raise_if_incomplete()
+        self.logger.info("Google Gmail workspace connector sync completed successfully")
+
+    async def _report_sync_problems(self) -> None:
+        if self._sync_health.problems:
+            self.last_sync_summary = self._sync_health.summary()
+        await GmailNotices(self.notify, self._notification_title, workspace=True).report(self._sync_health)
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        return self._sync_health.coverage()
 
     async def _sync_users(self) -> None:
         """Sync all users from Google Workspace Admin API."""
@@ -1993,8 +1453,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                             if organizations and len(organizations) > 0:
                                 title = organizations[0].get("title")
 
-                            # Check if user is active (not suspended)
-                            is_active = not user.get("suspended", False)
+                            # Suspended and archived accounts cannot sign in to Gmail.
+                            is_active = not user.get("suspended", False) and not user.get("archived", False)
 
                             # Convert creation time to epoch milliseconds
                             source_created_at = None
@@ -2087,6 +1547,12 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 f"Error processing group {group.get('id', 'unknown')}: {e}",
                                 exc_info=True
                             )
+                            self._sync_health.unread_groups.append(group.get("email") or group.get("id", "unknown"))
+                            # Unknown is not empty: keep the stored members of this group.
+                            if group.get("email"):
+                                await self.data_entities_processor.note_kept_user_group(
+                                    self.connector_id, group["email"]
+                                )
                             continue
 
                     # Check for next page
@@ -2123,8 +1589,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.debug(f"Fetching members for group: {group.get('name', group_id)}")
             members = await self._fetch_group_members(group_id)
 
-            # Filter to only include user members (skip groups and customers)
-            user_members = [m for m in members if m.get("type") == "USER"]
+            # Filter to only include user members (skip groups and customers); a user reached
+            # both directly and through a nested group is listed once.
+            user_members = list({
+                m.get("id") or m.get("email"): m for m in members if m.get("type") == "USER"
+            }.values())
 
             # Create AppUserGroup object
             group_name = group.get("name", "")
@@ -2189,11 +1658,14 @@ class GoogleGmailTeamConnector(BaseConnector):
                     continue
 
             # Send to processor
-            if app_users:
+            if app_users or not user_members:
+                # The member read finished (it raises otherwise) and includes nested groups' members,
+                # so an empty list is real: write it, so the members of a group that was emptied go.
                 await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
                 self.logger.debug(f"Processed group '{group_name}' with {len(app_users)} members")
             else:
-                self.logger.debug(f"Group '{group_name}' has no user members, skipping")
+                self.logger.warning(f"Group '{group_name}': no member had an email, keeping stored members")
+                await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
 
         except Exception as e:
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
@@ -2216,6 +1688,9 @@ class GoogleGmailTeamConnector(BaseConnector):
             try:
                 result = await self.admin_data_source.members_list(
                     groupKey=group_id,
+                    # Members of nested groups too: they are members of this group in Workspace,
+                    # so a group of groups is not written as empty.
+                    includeDerivedMembership=True,
                     pageToken=page_token,
                     maxResults=200  # Maximum allowed by Google Admin API
                 )
@@ -2237,14 +1712,25 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         return members
 
+    def _mailbox_record_group_id(self, user_email: str) -> str:
+        return f"mailbox:{user_email}"
+
+    @staticmethod
+    def _owner_email_from_group(external_group_id: str | None) -> str | None:
+        """The mailbox owner encoded in a label or mailbox record-group id."""
+        group_id = external_group_id or ""
+        if group_id.startswith("mailbox:"):
+            return group_id.removeprefix("mailbox:") or None
+        email, sep, label = group_id.rpartition(":")
+        if sep and label in {"INBOX", "SENT", "OTHERS"} and "@" in email:
+            return email
+        return None
+
     async def _sync_record_groups(self, users: List[AppUser]) -> None:
-        """Sync record groups (INBOX and SENT) for users.
+        """One mailbox record group per user, with Inbox, Sent and Others under it.
 
-        For each user, creates two record groups (INBOX and SENT) with owner
-        permissions from the user to each record group.
-
-        Args:
-            users: List of AppUser objects to sync record groups for
+        The owner grant sits on the mailbox. The three labels inherit it. Gmail
+        labels are not separate audiences.
         """
         try:
             if not users:
@@ -2261,61 +1747,53 @@ class GoogleGmailTeamConnector(BaseConnector):
                         continue
 
                     self.logger.debug(f"Creating record groups for user: {user.email}")
+                    mailbox_id = self._mailbox_record_group_id(user.email)
+                    mailbox = RecordGroup(
+                        name=user.full_name or user.email,
+                        org_id=self.data_entities_processor.org_id,
+                        external_group_id=mailbox_id,
+                        description=f"Mailbox for {user.email}",
+                        connector_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        group_type=RecordGroupType.MAILBOX,
+                        permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                        inherit_permissions=False,
+                        source_created_at=user.source_created_at,
+                    )
+                    labels = [
+                        RecordGroup(
+                            name=f"{user.full_name} - {label_name}",
+                            org_id=self.data_entities_processor.org_id,
+                            external_group_id=f"{user.email}:{label_name}",
+                            parent_external_group_id=mailbox_id,
+                            description=f"Gmail label: {label_name}",
+                            connector_name=self.connector_name,
+                            connector_id=self.connector_id,
+                            group_type=RecordGroupType.MAILBOX,
+                            inherit_permissions=True,
+                            source_created_at=user.source_created_at,
+                        )
+                        for label_name in ["INBOX", "SENT", "OTHERS"]
+                    ]
 
-                    # Create record groups for INBOX and SENT
-                    for label_name in ["INBOX", "SENT", "OTHERS"]:
-                        try:
-                            # Create record group name: "{user.full_name} - {label_name}"
-                            record_group_name = f"{user.full_name} - {label_name}"
-
-                            # Create external_group_id: "{user.email}:{label_name}"
-                            external_group_id = f"{user.email}:{label_name}"
-
-                            # Create record group
-                            record_group = RecordGroup(
-                                name=record_group_name,
-                                org_id=self.data_entities_processor.org_id,
-                                external_group_id=external_group_id,
-                                description=f"Gmail label: {label_name}",
-                                connector_name=self.connector_name,
-                                connector_id=self.connector_id,
-                                group_type=RecordGroupType.MAILBOX,
-                                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
-                                source_created_at=user.source_created_at
-                            )
-
-                            # Create owner permission from user to record group
-                            owner_permission = Permission(
-                                email=user.email,
-                                type=PermissionType.OWNER,
-                                entity_type=EntityType.USER
-                            )
-
-                            # Submit to processor
-                            await self.data_entities_processor.on_new_record_groups(
-                                [(record_group, [owner_permission])]
-                            )
-
-                            total_record_groups_processed += 1
-                            self.logger.debug(
-                                f"Created record group '{record_group_name}' for user {user.email}"
-                            )
-
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error creating record group '{label_name}' "
-                                f"for user {user.email}: {e}",
-                                exc_info=True
-                            )
-                            continue
+                    # A suspended or archived account cannot read its mail in Gmail: its grant is taken off the
+                    # mailbox (the records stay, and the grant comes back when the account is reinstated).
+                    owner_grant = [self._create_owner_permission(user.email)] if user.is_active is not False else []
+                    await self.data_entities_processor.on_new_record_groups(
+                        [(mailbox, owner_grant)]
+                        + [(label, []) for label in labels]
+                    )
+                    total_record_groups_processed += 1 + len(labels)
 
                 except Exception as e:
+                    self._sync_health.record(user.email, e, "mailbox group")
                     self.logger.error(
                         f"Error processing record groups for user {user.email}: {e}",
                         exc_info=True
                     )
                     continue
 
+            await self._revoke_departed_mailboxes(users)
             self.logger.info(
                 f"✅ Successfully synced {total_record_groups_processed} record groups "
                 f"for {len(users)} users"
@@ -2325,25 +1803,48 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing record groups: {e}", exc_info=True)
             raise
 
+    async def _revoke_departed_mailboxes(self, users: List[AppUser]) -> None:
+        """People the directory no longer lists (deleted from the Workspace) lose their mailbox grant: Google
+        deletes their mail. The records stay until a full sync removes what it did not see. Only a complete,
+        non-empty listing is acted on, and only mailboxes this connector listed before."""
+        current = sorted({user.email.lower() for user in users if user.email})
+        if not current:
+            return
+        known = (await self.user_sync_point.read_sync_point(_MAILBOXES_SYNC_POINT_KEY) or {}).get("emails") or []
+        for email in sorted(set(known) - set(current)):
+            self.logger.info(f"{email} is no longer in the Workspace directory; removing their mailbox grant")
+            await self.data_entities_processor.on_new_record_groups([(
+                RecordGroup(
+                    name=email,
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._mailbox_record_group_id(email),
+                    description=f"Mailbox for {email}",
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.MAILBOX,
+                    permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                    inherit_permissions=False,
+                ),
+                [],
+            )])
+        await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current})
+
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Google Gmail workspace account."""
+        """Reads the admin's directory entry and mailbox: fails when the key, the delegation or a scope is not
+        accepted. Never raises."""
+        self.logger.info("Testing connection and access to Google Gmail workspace account")
         try:
-            self.logger.info("Testing connection and access to Google Gmail workspace account")
-            if not self.gmail_data_source:
-                self.logger.error("Gmail data source not initialized. Call init() first.")
+            if not self.gmail_data_source or not self.admin_data_source or not self.gmail_client \
+                    or not self.admin_client:
+                self.logger.error("Gmail Workspace clients not initialized. Call init() first.")
                 return False
-
-            if not self.admin_data_source:
-                self.logger.error("Admin data source not initialized. Call init() first.")
-                return False
-
-            if not self.gmail_client or not self.admin_client:
-                self.logger.warning("Google clients not initialized")
-                return False
-
+            admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
+            policy = GmailCallPolicy(self.logger, max_wait_s=15)
+            await policy.run(lambda: self.admin_data_source.users_get(userKey=admin_email), "directory check")
+            await policy.run(lambda: self.gmail_data_source.users_get_profile(userId=admin_email), "mailbox check")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error testing connection and access to Google Gmail workspace account: {e}")
+            self.logger.error(f"❌ Gmail Workspace connection test failed ({classify(e).value}): {e}")
             return False
 
     def get_signed_url(self, record: Record) -> Optional[str]:
@@ -2416,6 +1917,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 version="v3",
                 user_email=user_email,
                 connector_instance_id=self.connector_id,
+                api_base_url=gmail_api_base_url(),
                 delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
             )
             drive_service = drive_client.get_client()
@@ -2622,6 +2124,16 @@ class GoogleGmailTeamConnector(BaseConnector):
                 detail="Error converting file to PDF"
             )
 
+    async def _stream_call(self, gmail_data_source: GoogleGmailDataSource, request: object, what: str) -> Dict:
+        """One read for preview or indexing, retried through a brief rate limit or outage."""
+        policy = GmailCallPolicy(self.logger, max_wait_s=60)
+        return await policy.run(
+            lambda: gmail_data_source.execute(
+                functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+            ),
+            what,
+        )
+
     async def _stream_mail_record(
         self,
         gmail_service,
@@ -2640,13 +2152,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 .messages()
                 .get(userId="me", id=message_id, format="full")
             )
-            message = await gmail_data_source.execute(request.execute)
+            message = await self._stream_call(gmail_data_source, request, "message read")
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
-            raw_html = base64.urlsafe_b64decode(
-                mail_content_base64.encode("ASCII")
-            ).decode("utf-8", errors="replace")
+            raw_html = decode_body_data(mail_content_base64).decode("utf-8", errors="replace")
 
 
             latest_reply_html = ""
@@ -2713,14 +2223,19 @@ class GoogleGmailTeamConnector(BaseConnector):
         gmail_data_source = gmail_data_source or self.gmail_data_source
         if not gmail_data_source:
             raise connector_not_ready(self.display_name)
-        # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
-        # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
-        is_drive_file = "~" not in file_id
-
-        if is_drive_file:
-            # This is a Drive file, use Drive API directly
-            self.logger.info(f"Detected Drive file ID: {file_id}, using Drive API")
-            return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo, user_email)
+        parsed_drive = parse_drive_attachment_record_id(file_id)
+        if parsed_drive is not None:
+            _user_id, bare_drive_file_id = parsed_drive
+            self.logger.info(f"Detected Drive file ID: {bare_drive_file_id}, using Drive API")
+            return await self._stream_from_drive(
+                bare_drive_file_id, record, file_name, mime_type, convertTo, user_email
+            )
+        # Records written before the scoped id stored the bare Drive file id.
+        if "~" not in file_id:
+            self.logger.info(f"Detected legacy Drive file ID: {file_id}, using Drive API")
+            return await self._stream_from_drive(
+                file_id, record, file_name, mime_type, convertTo, user_email
+            )
 
         # Get parent message record using parent_external_record_id
         message_id = None
@@ -2758,7 +2273,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     .messages()
                     .get(userId="me", id=message_id, format="full")
                 )
-                message = await gmail_data_source.execute(request.execute)
+                message = await self._stream_call(gmail_data_source, request, "message read")
             except HttpError as access_error:
                 self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
                 raise map_source_status(
@@ -2769,21 +2284,17 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.error(f"Message or payload not found for message ID {message_id}")
                 raise not_found_at_source(self.display_name)
 
-            # Search for the part with matching partId
-            parts = message["payload"].get("parts", [])
-            for part in parts:
-                if part.get("partId") == part_id:
-                    actual_attachment_id = part.get("body", {}).get("attachmentId")
-                    if not actual_attachment_id:
-                        raise not_downloadable(
-                            "This attachment has no downloadable content in Gmail.",
-                            connector=self.display_name,
-                        )
-                    self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                    break
-            else:
+            part = find_message_part(message["payload"].get("parts"), part_id)
+            if part is None:
                 self.logger.error(f"Part {part_id} not found in message {message_id}")
                 raise not_found_at_source(self.display_name)
+            actual_attachment_id = part.get("body", {}).get("attachmentId")
+            if not actual_attachment_id:
+                raise not_downloadable(
+                    "This attachment has no downloadable content in Gmail.",
+                    connector=self.display_name,
+                )
+            self.logger.info(f"Found attachment ID: {actual_attachment_id}")
 
         # Try to get the attachment from Gmail
         try:
@@ -2793,10 +2304,10 @@ class GoogleGmailTeamConnector(BaseConnector):
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
             )
-            attachment = await gmail_data_source.execute(request.execute)
+            attachment = await self._stream_call(gmail_data_source, request, "attachment read")
 
             # Decode the attachment data
-            file_data = base64.urlsafe_b64decode(attachment["data"])
+            file_data = decode_body_data(attachment["data"])
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -2878,6 +2389,12 @@ class GoogleGmailTeamConnector(BaseConnector):
                     self.data_entities_processor, record.id, self.synced_user_emails, self.logger
                 )
                 if not candidates:
+                    # The grant lives on the mailbox, not the message. Indexing
+                    # streams with no caller, so impersonate the mailbox owner.
+                    owner_email = self._owner_email_from_group(record.external_record_group_id)
+                    if owner_email:
+                        candidates = [User(email=owner_email)]
+                if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
             # Route to appropriate handler based on record type
@@ -2958,7 +2475,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                await self.data_entities_processor.on_new_records(updated_records, replace_permissions=True)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records
@@ -3108,8 +2625,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing stable_attachment_id for record {record.id}")
                 return None
 
-            # Check if this is a Drive file (no tilde)
-            is_drive_file = "~" not in stable_attachment_id
+            parsed_drive = parse_drive_attachment_record_id(stable_attachment_id)
+            legacy_drive_file_id = (
+                stable_attachment_id if parsed_drive is None and "~" not in stable_attachment_id else None
+            )
+            is_drive_file = parsed_drive is not None or legacy_drive_file_id is not None
 
             if is_drive_file:
                 # For Drive files, we need to find the parent message to get permissions
@@ -3137,14 +2657,35 @@ class GoogleGmailTeamConnector(BaseConnector):
                     return None
 
                 # Extract attachment info from parent message
-                attachment_infos = self._extract_attachment_infos(parent_message)
+                google_user_id = None
+                bare_drive_file_id = legacy_drive_file_id
+                if parsed_drive is not None:
+                    google_user_id, bare_drive_file_id = parsed_drive
+                elif legacy_drive_file_id is not None:
+                    google_user_id = (getattr(self, "_google_user_id_by_email", {}) or {}).get(
+                        user_email.lower()
+                    )
+                    if google_user_id is None:
+                        for synced in getattr(self, "synced_users", []) or []:
+                            if (synced.email or "").lower() == user_email.lower() and synced.source_user_id:
+                                google_user_id = synced.source_user_id
+                                break
+                attachment_infos = self._extract_attachment_infos(
+                    parent_message,
+                    user_email,
+                    google_user_id=google_user_id,
+                    keep_drive_record_id=legacy_drive_file_id,
+                )
 
-                # Find matching Drive attachment by driveFileId
                 matching_attachment = None
                 for attach_info in attachment_infos:
-                    if attach_info.get('driveFileId') == stable_attachment_id:
+                    if attach_info.get("driveFileId") == bare_drive_file_id:
                         matching_attachment = attach_info
                         break
+                if matching_attachment is not None and legacy_drive_file_id is not None:
+                    # Keep this record's id. A new scoped id would be a second record.
+                    matching_attachment = dict(matching_attachment)
+                    matching_attachment["stableAttachmentId"] = legacy_drive_file_id
 
                 if not matching_attachment:
                     self.logger.warning(f"Drive attachment {stable_attachment_id} not found in parent message {parent_message_id}")
@@ -3231,7 +2772,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 return None
 
             # Extract attachment info from parent message
-            attachment_infos = self._extract_attachment_infos(parent_message)
+            attachment_infos = self._extract_attachment_infos(parent_message, user_email)
 
             # Find matching attachment by stableAttachmentId
             matching_attachment = None

@@ -28,7 +28,7 @@ export function DeleteConfirmDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t('dialog.areYouSure')}
-      message={t('workspace.archivedChats.deleteConfirmMessage')}
+      message={`${t('workspace.archivedChats.deleteConfirmMessage')} ${t('chat.deleteChatArtifactsNote')}`}
       confirmLabel={t('action.delete')}
       cancelLabel={t('action.cancel')}
       confirmVariant="danger"

@@ -54,7 +54,7 @@ export class ConfigService {
 
       config = {
         method: 'post' as const,
-        url: `${this.appConfig.authBackend}/api/v1/saml/updateAppConfig`,
+        url: `${this.appConfig.authBackend}/api/v1/userAccount/updateAppConfig`,
         headers: {
           Authorization: `Bearer ${scopedToken}`,
           'Content-Type': 'application/json',

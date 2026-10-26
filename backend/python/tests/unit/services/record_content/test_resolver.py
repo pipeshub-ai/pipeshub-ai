@@ -178,3 +178,85 @@ async def test_artifact_fallback_used_when_graph_none(graph, config):
 
     mock_registry.resolve.assert_called_once()
     assert result.record_id == "rec1"
+
+
+class TestArtifactsAreReadAsTheirOwner:
+    """A service-account agent reads knowledge as its creator, while the
+    artifacts of the chat belong to the person chatting."""
+
+    @staticmethod
+    def _record(record_type: object) -> MagicMock:
+        record = _make_record(origin="UPLOAD")
+        record.record_type = record_type
+        return record
+
+    async def _resolve(self, graph: AsyncMock, config: MagicMock, record: MagicMock, **kwargs: object) -> tuple:
+        graph.get_record_by_id.return_value = record
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        authorize = AsyncMock()
+        fetch = AsyncMock(return_value=b"data")
+        with (
+            patch.object(resolver._authorizer, "authorize", new=authorize),
+            patch.object(resolver._blob_strategy, "supports", return_value=True),
+            patch.object(resolver._blob_strategy, "fetch", new=fetch),
+            patch("app.services.record_content.resolver.build_resolved_content", return_value=_make_resolved()),
+        ):
+            await resolver.resolve(ref="rec1", max_bytes=1000, **kwargs)
+        return authorize.await_args.args[0], fetch.await_args.kwargs["actor"]
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_is_checked_and_fetched_as_its_owner(self, graph: AsyncMock, config: MagicMock) -> None:
+        from app.models.entities import RecordType
+
+        creator, caller = _make_actor(user_id="u-alice"), _make_actor(user_id="u-bob")
+
+        checked, fetched = await self._resolve(
+            graph, config, self._record(RecordType.ARTIFACT), actor=creator, artifact_actor=caller,
+        )
+
+        assert checked is caller and fetched is caller
+
+    @pytest.mark.asyncio
+    async def test_a_knowledge_record_is_still_read_as_the_run_user(self, graph: AsyncMock, config: MagicMock) -> None:
+        from app.models.entities import RecordType
+
+        creator, caller = _make_actor(user_id="u-alice"), _make_actor(user_id="u-bob")
+
+        checked, fetched = await self._resolve(
+            graph, config, self._record(RecordType.FILE), actor=creator, artifact_actor=caller,
+        )
+
+        assert checked is creator and fetched is creator
+
+    @pytest.mark.asyncio
+    async def test_without_an_artifact_owner_everything_is_read_as_the_run_user(self, graph: AsyncMock, config: MagicMock) -> None:
+        from app.models.entities import RecordType
+
+        creator = _make_actor(user_id="u-alice")
+
+        checked, _ = await self._resolve(graph, config, self._record(RecordType.ARTIFACT), actor=creator)
+
+        assert checked is creator
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_named_in_the_chat_is_looked_up_as_its_owner(self, graph: AsyncMock, config: MagicMock) -> None:
+        from app.models.entities import RecordType
+
+        record = self._record(RecordType.ARTIFACT)
+        graph.get_record_by_id = AsyncMock(side_effect=[None, record])
+        artifacts = MagicMock()
+        artifacts.resolve = AsyncMock(return_value=MagicMock(artifact_id="rec1"))
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config, artifact_registry=artifacts)
+        creator, caller = _make_actor(user_id="u-alice"), _make_actor(user_id="u-bob")
+
+        with (
+            patch.object(resolver._authorizer, "authorize", new=AsyncMock()),
+            patch.object(resolver._blob_strategy, "supports", return_value=True),
+            patch.object(resolver._blob_strategy, "fetch", new=AsyncMock(return_value=b"data")),
+            patch("app.services.record_content.resolver.build_resolved_content", return_value=_make_resolved()),
+        ):
+            await resolver.resolve(
+                actor=creator, artifact_actor=caller, ref="summary.pdf", conversation_id="conv-1", max_bytes=1000,
+            )
+
+        assert artifacts.resolve.await_args.kwargs["actor"] is caller

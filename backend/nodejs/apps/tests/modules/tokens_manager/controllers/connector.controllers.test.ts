@@ -33,9 +33,14 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  testConnectorConnection,
+  getConnectorEgressIps,
   getActiveAgentInstances,
+  reindexConnector,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -905,6 +910,25 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // saveConnectorInstanceFilterOptions
   // =========================================================================
   describe('saveConnectorInstanceFilterOptions', () => {
+    it('logs a deprecation warning when it saves', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { filters: { mimetype: ['pdf'] } }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { message: 'Filters saved' },
+      })
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(warn.calledWithMatch(sinon.match('Deprecated POST /api/v1/connectors/c1/filters'))).to.be.true
+    })
+
     it('should return an async handler function', () => {
       const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
       expect(handler).to.be.a('function')
@@ -1044,6 +1068,59 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  describe('testConnectorConnection', () => {
+    it('forwards only the auth values and instance id, and passes a failed check through as 200', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'PostgreSQL' }
+      req.body = { auth: { host: 'db', password: 'pw' }, connectorId: 'c1', extra: 'dropped' }
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: false, message: 'Timed out' },
+      })
+
+      await handler(req, res, next)
+
+      expect(execute.firstCall.args[0]).to.equal(
+        'http://connector-backend:8088/api/v1/connectors/registry/PostgreSQL/test-connection',
+      )
+      expect(execute.firstCall.args[3]).to.deep.equal({
+        auth: { host: 'db', password: 'pw' },
+        connectorId: 'c1',
+      })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ success: false, message: 'Timed out' })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('passes a backend rejection to next', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'Jira' }
+      req.body = { auth: {} }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 400,
+        data: { detail: 'Jira has no connection check' },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('getConnectorEgressIps', () => {
+    it('returns the connector service addresses', async () => {
+      const handler = getConnectorEgressIps(mockAppConfig)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true, egressIps: ['203.0.113.10'] },
+      })
+
+      await handler(req, res, next)
+
+      expect(res.json.calledWith({ success: true, egressIps: ['203.0.113.10'] })).to.be.true
     })
   })
 
@@ -1615,6 +1692,45 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // =========================================================================
   // Branch coverage: toggleConnectorInstance - fullSync boolean branch
   // =========================================================================
+  describe('toggleConnectorInstance - schedule reconcile', () => {
+    it('leaves the connector to the hourly repair when its settings cannot be read', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout'] })
+      try {
+        const scheduler = {
+          scheduleJob: sinon.stub(),
+          removeJob: sinon.stub(),
+          getJobStatus: sinon.stub(),
+          markReconcilePending: sinon.stub().resolves(),
+          clearReconcilePending: sinon.stub().resolves(),
+        }
+        const handler = toggleConnectorInstance(mockAppConfig, scheduler as any)
+        req.params = { connectorId: 'conn-1' }
+        req.body = { type: 'sync' }
+        sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([{ type: 'admin' }]) } as any)
+        const command = sinon.stub(connectorUtils, 'executeConnectorCommand')
+        // The instance summary a sync toggle reads first, then the toggle itself.
+        command.onCall(0).resolves({ statusCode: 200, data: { connector: { isActive: true } } })
+        command.onCall(1).resolves({ statusCode: 200, data: { success: true } })
+        command.rejects(new Error('connector service busy'))
+
+        await handler(req, res, next)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        for (let i = 0; i < 4; i++) await clock.tickAsync(30_000)
+
+        const reads = command.getCalls().slice(2)
+        expect(reads).to.have.length(3)
+        // Each read is aborted on its own timeout, not left running behind a race.
+        for (const read of reads) expect(read.args[4]).to.deep.equal({ timeoutMs: 10_000 })
+        // Persisted, so a restart before the hourly repair still owes the change.
+        expect(scheduler.markReconcilePending.calledOnceWithExactly('conn-1', 'bbbbbbbbbbbbbbbbbbbbbbbb')).to.be.true
+        expect(scheduler.clearReconcilePending.called).to.be.false
+        expect(scheduler.scheduleJob.called || scheduler.removeJob.called).to.be.false
+      } finally {
+        clock.restore()
+      }
+    })
+  })
+
   describe('toggleConnectorInstance - fullSync branch', () => {
     it('should include fullSync when it is a boolean true', async () => {
       const handler = toggleConnectorInstance(mockAppConfig)
@@ -1858,6 +1974,43 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     })
   })
 
+  describe('reindexConnector', () => {
+    it('forwards statusFilters and stages to the connector service', async () => {
+      const handler = reindexConnector(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { statusFilters: ['FAILED'], stages: ['classify'] }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true },
+      })
+
+      await handler(req, res, next)
+
+      expect(execStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/conn-1/reindex`,
+      )
+      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.POST)
+      expect(execStub.firstCall.args[3]).to.deep.equal({
+        statusFilters: ['FAILED'],
+        stages: ['classify'],
+      })
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('omits stages from the forwarded body when not provided', async () => {
+      const handler = reindexConnector(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { statusFilters: ['FAILED'] }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true },
+      })
+
+      await handler(req, res, next)
+
+      expect(execStub.firstCall.args[3]).to.deep.equal({ statusFilters: ['FAILED'] })
+    })
+  })
 })
 
 type StubbedResponse = Response & {
@@ -2078,6 +2231,40 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     expect(execStub.calledTwice).to.be.true
     expect(execStub.secondCall.args[1]).to.equal('POST')
     expect(res.status.calledWith(200)).to.be.true
+  })
+
+  for (const [status, detail] of [
+    [404, 'This connector was removed, or you no longer have access to it.'],
+    [403, 'Only administrators can update team connectors'],
+  ] as const) {
+    it(`answers ${status}, not 500, when the caller cannot open the connector`, async () => {
+      req.body = { type: 'sync' }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: status,
+        data: { detail },
+      })
+
+      await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+      expect(execStub.calledOnce).to.be.true
+      expect(res.status.called).to.be.false
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(status)
+      expect(error.message).to.equal(detail)
+    })
+  }
+
+  it('still answers 500 when the connectors service returns no connector', async () => {
+    req.body = { type: 'sync' }
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+      statusCode: 200,
+      data: {},
+    })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledOnce).to.be.true
+    expect(next.firstCall.args[0].statusCode).to.equal(500)
   })
 
   it('does not fetch the instance for agent toggles', async () => {

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import connector_coverage as cov  # noqa: E402
 
-PLACEHOLDERS = {"airtable", "calendar", "docs", "forms", "meet", "slides", "zendesk"}
+PLACEHOLDERS = {"airtable", "calendar", "docs", "forms", "meet", "slides"}
 
 
 class TestRegisteredConnectorsInThisRepo(unittest.TestCase):

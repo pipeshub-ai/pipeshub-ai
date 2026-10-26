@@ -76,12 +76,14 @@ class IRecordContentResolver(Protocol):
         conversation_id: str | None = None,
         max_bytes: int,
         session: aiohttp.ClientSession | None = None,
+        artifact_actor: "Actor | None" = None,
     ) -> "ResolvedRecordContent":
         """Resolve `ref` to bytes under `actor`'s permissions.
 
         `ref` is a PipesHub record ID, artifact ID, or artifact logical name
         (the last two are resolved via `ArtifactRegistryService` when
-        `conversation_id` is provided).
+        `conversation_id` is provided). Artifacts are read as `artifact_actor`
+        when it is given.
 
         Raises:
             RecordNotFoundError — ref does not map to any known record.

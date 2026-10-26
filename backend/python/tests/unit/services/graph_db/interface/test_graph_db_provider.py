@@ -10,11 +10,12 @@ Tests cover:
 - All abstract method signatures are present on the class
 """
 
+import asyncio
 import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -81,24 +82,29 @@ class TestModuleImports:
         fake_fastapi = types.ModuleType("fastapi")
         fake_fastapi.Request = type("Request", (), {})
 
-        with patch.object(
-            sys.modules["typing"], "TYPE_CHECKING", True
-        ), patch.dict(sys.modules, {"fastapi": fake_fastapi}):
-            importlib.reload(mod)
+        original = dict(vars(mod))
+        try:
+            with patch.object(
+                sys.modules["typing"], "TYPE_CHECKING", True
+            ), patch.dict(sys.modules, {"fastapi": fake_fastapi}):
+                importlib.reload(mod)
 
-        # After reload with TYPE_CHECKING=True, the guarded imports
-        # should have executed, bringing Request and entity types into scope.
-        assert hasattr(mod, "Request")
-        assert hasattr(mod, "AppRole")
-        assert hasattr(mod, "AppUser")
-        assert hasattr(mod, "AppUserGroup")
-        assert hasattr(mod, "FileRecord")
-        assert hasattr(mod, "Record")
-        assert hasattr(mod, "RecordGroup")
-        assert hasattr(mod, "User")
-
-        # Reload again without patch to restore normal state for other tests
-        importlib.reload(mod)
+            # After reload with TYPE_CHECKING=True, the guarded imports
+            # should have executed, bringing Request and entity types into scope.
+            assert hasattr(mod, "Request")
+            assert hasattr(mod, "AppRole")
+            assert hasattr(mod, "AppUser")
+            assert hasattr(mod, "AppUserGroup")
+            assert hasattr(mod, "FileRecord")
+            assert hasattr(mod, "Record")
+            assert hasattr(mod, "RecordGroup")
+            assert hasattr(mod, "User")
+        finally:
+            # A reload re-creates every class in the module (AccessCheck,
+            # IGraphDBProvider, ...); put the originals back, or code defined in
+            # the module builds instances other tests' imports never equal.
+            vars(mod).clear()
+            vars(mod).update(original)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +183,7 @@ class TestAbstractMethodInventory:
         "connect",
         "disconnect",
         "ensure_schema",
+        "ensure_pipeline_schema",
         # Transaction management
         "begin_transaction",
         "commit_transaction",
@@ -190,6 +197,19 @@ class TestAbstractMethodInventory:
         "get_all_documents",
         "get_documents_paginated",
         "batch_upsert_nodes",
+        "ensure_nodes",
+        "stage_state_get",
+        "stage_states_for_revision",
+        "stage_state_create",
+        "stage_state_compare_and_set",
+        "stage_states_stale",
+        "stage_states_delete_for_virtual_records",
+        "get_stage_states_with_records",
+        "stage_states_unheld_revisions",
+        "stage_states_delete_unheld_revisions",
+        "get_revision_pointers",
+        "get_record_content_revs",
+        "compare_and_set_record_fields",
         "delete_nodes",
         "update_node",
         "update_node_if_match",
@@ -211,14 +231,26 @@ class TestAbstractMethodInventory:
         "get_edges_to_node",
         "get_edges_from_node",
         "get_edges_from_node_with_target_name",
-        "get_related_nodes",
+        "get_neighbors_by_relationship_types",
+        "get_neighbors_for_nodes_by_relationship_types",
         "get_related_node_field",
         # Query operations
         "execute_query",
         "get_nodes_by_filters",
         "get_nodes_by_field_in",
+        "get_nodes_by_field_prefix",
+        "search_nodes_by_field_terms",
+        "delete_edges_touching_nodes",
+        "get_edge_rollup_by_file_prefix",
+        "get_file_paths_for_records",
+        "get_edges_by_target_keys",
+        "delete_edges_by_source_keys",
+        "count_nodes_by_filters",
+        "has_nodes_by_filters",
+        "get_nodes_updated_since",
         # Record operations
         "get_record_by_path",
+        "get_records_by_file_path",
         "get_record_by_external_id",
         "get_record_by_external_revision_id",
         "get_child_record_ids_by_relation_type",
@@ -235,7 +267,6 @@ class TestAbstractMethodInventory:
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
-        "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
         "update_indexing_status_for_record_ids",
@@ -246,6 +277,10 @@ class TestAbstractMethodInventory:
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
         "get_record_by_weburl",
+        "get_records_by_weburls",
+        "get_records_linking_to_weburls",
+        "get_issue_sites",
+        "get_address_links_batch",
         "get_records_by_parent",
         "get_records_by_record_type",
         "get_records_by_record_group",
@@ -257,9 +292,11 @@ class TestAbstractMethodInventory:
         "get_record_path",
         "get_record_path_segments",
         "get_descendant_virtual_record_ids",
+        "get_record_group_virtual_record_ids",
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
+        "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "get_record_people",
@@ -267,6 +304,7 @@ class TestAbstractMethodInventory:
         "get_record_group_organization",
         "stamp_external_org_parents",
         "get_taxonomy_entity_membership",
+        "get_unreached_taxonomy_entities",
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",
         "add_taxonomy_aliases",
@@ -275,6 +313,7 @@ class TestAbstractMethodInventory:
         "get_user_by_email",
         "get_user_by_source_id",
         "get_user_by_user_id",
+        "apply_verified_user_email",
         "get_graph_user_keys_by_mongo_user_ids",
         "get_account_type",
         "get_connector_stats",
@@ -289,7 +328,6 @@ class TestAbstractMethodInventory:
         "kb_exists",
         "_validate_folder_creation",
         "find_folder_by_name_in_parent",
-        "get_folder_contents",
         "validate_folder_in_kb",
         "create_kb_permissions",
         "count_kb_owners",
@@ -304,7 +342,6 @@ class TestAbstractMethodInventory:
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
-        "list_all_records",
         "list_kb_records",
         "list_accessible_artifacts",
         "get_artifact_detail",
@@ -322,6 +359,7 @@ class TestAbstractMethodInventory:
         "get_person_by_email",
         "upsert_person_by_email",
         "ensure_app_membership",
+        "create_edges_if_absent",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
@@ -342,41 +380,42 @@ class TestAbstractMethodInventory:
         "create_record_group_relation",
         "create_record_groups_relation",
         "create_inherit_permissions_relation_record_group",
+        "backfill_indexed_copy_flags",
+        "records_accept_indexed_copy",
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_virtual_record_ids_in_use",
+        "has_records_indexed_since",
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
-        "get_file_permissions",
+        "batch_upsert_node_relations",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
         "get_groups_with_permission_to_node",
         "check_record_access_with_details",
         "get_record_owner_source_user_email",
         # File/parent operations
-        "get_file_parents",
         # Sync point operations
         "get_sync_point",
         "upsert_sync_point",
+        "update_sync_point_if",
+        "backfill_block_name_folded",
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
+        "unlink_nodes_missed_by_full_sync",
         # Batch operations
         "batch_upsert_app_users",
         "batch_upsert_user_groups",
         "batch_upsert_app_roles",
         "batch_upsert_orgs",
-        "batch_upsert_domains",
-        "batch_upsert_anyone",
-        "batch_upsert_anyone_with_link",
-        "batch_upsert_anyone_same_org",
         "batch_create_user_app_edges",
         # Entity ID operations
         "get_entity_id_by_email",
         "bulk_get_entity_ids_by_email",
         # Connector operations
-        "process_file_permissions",
         "delete_records_and_relations",
         "delete_record",
         "delete_record_by_external_id",
@@ -395,6 +434,7 @@ class TestAbstractMethodInventory:
         "record_purge_failure",
         "get_trash_purge_stats",
         "purge_trash_kept_record_groups",
+        "delete_blocks_for_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -407,30 +447,30 @@ class TestAbstractMethodInventory:
         "batch_update_connector_status",
         "get_user_connector_instances",
         "get_filtered_connector_instances",
-        "get_user_accessible_team_app_ids",
         "store_page_token",
         "get_page_token_db",
         # Utility operations
         "check_collection_has_document",
         "check_edge_exists",
-        "get_failed_records_with_active_users",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_api_toolset_in_use",
+        "check_mcp_instance_in_use",
         "check_connector_in_use",
-        # Knowledge hub operations
-        "get_knowledge_hub_root_nodes",
-        "get_knowledge_hub_children",
-        "get_knowledge_hub_search",
+        # Knowledge hub operations. The three inventory tests below fail if one
+        # of these is removed or renamed, and one of them fails on additions too.
+        # Knowledge hub v2: the permission-model read queries. Browse, flatten
+        # and one partition of a global search are all the children method.
+        "get_knowledge_hub_root_nodes_v2",
+        "get_knowledge_hub_access_context_v2",
         "get_knowledge_hub_breadcrumbs",
         "get_knowledge_hub_context_permissions",
         "get_knowledge_hub_filter_options",
-        "get_knowledge_hub_node_info",
         "get_knowledge_hub_node_access",
         "get_linked_records",
         "get_knowledge_hub_parent_node",
         "validate_folder_exists_in_kb",
         "get_key_by_external_message_id",
-        "get_related_records_by_relation_type",
         "get_message_id_header_by_key",
         "get_related_mails_by_message_id_header",
         "check_connector_name_uniqueness",
@@ -462,10 +502,32 @@ class TestAbstractMethodInventory:
         # Upload validation
         "validate_folder_for_upload",
         # Record location / permission-aware trails
-        "filter_nodes_with_permission_role",
-        "filter_accessible_virtual_record_ids",
-        "filter_accessible_record_ids",
         "get_record_parent_adjacency",
+        # Named entities (NamedEntityGraphMixin implements them for both providers)
+        "create_named_entities_if_absent",
+        "find_named_entities",
+        "get_named_entities_by_ids",
+        "find_named_entities_by_key_prefix",
+        "get_named_entity_mentions_in_records",
+        "add_named_entity_aliases",
+        "query_named_entities",
+        "get_records_for_named_entities",
+        "get_named_entities_for_record",
+        "copy_named_entity_mentions",
+        "find_orphan_named_entities",
+        "delete_orphan_named_entities",
+        "mark_orphan_named_entities",
+        "clear_orphan_named_entity_marks",
+        "delete_dangling_named_entity_mentions",
+        "resolve_named_entity_redirects",
+        "replace_named_entity_values",
+        "delete_dangling_named_entity_values",
+        "schedule_named_entity_persist_retry",
+        "get_due_named_entity_persist_retries",
+        "clear_named_entity_persist_retry",
+        "schedule_named_entity_reextract",
+        # Migrations
+        "migrate_legacy_relation_edge",
     ]
 
     def test_all_expected_methods_are_abstract(self):
@@ -610,6 +672,86 @@ class TestConcreteMethodCalls:
         instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")
 
 
+class TestKhV3Shared:
+    """``_kh_v3_shared`` shares a computation among the callers waiting for it and keeps nothing."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_compute(self) -> None:
+        instance = _make_concrete_class()()
+        release = asyncio.Event()
+        calls = 0
+
+        async def compute() -> list[str]:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return ["grant"]
+
+        first = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), compute))
+        second = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), compute))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == [["grant"], ["grant"]]
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_other_key_computes_on_its_own(self) -> None:
+        instance = _make_concrete_class()()
+        release = asyncio.Event()
+
+        async def compute(value) -> str:
+            await release.wait()
+            return value
+
+        first = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), lambda: compute("one")))
+        second = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u2"), lambda: compute("two")))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == ["one", "two"]
+
+    @pytest.mark.asyncio
+    async def test_failed_compute_is_not_retained(self) -> None:
+        instance = _make_concrete_class()()
+        answers = iter([RuntimeError("graph down"), ["grant"]])
+
+        async def compute() -> list[str]:
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with pytest.raises(RuntimeError, match="graph down"):
+            await instance._kh_v3_shared(("grants", "u1"), compute)
+
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == ["grant"]
+
+    @pytest.mark.asyncio
+    async def test_call_after_the_first_finished_computes_again(self, monkeypatch) -> None:
+        monkeypatch.setenv("KH_BROWSE_GRANTS_TTL_SECONDS", "60")
+        instance = _make_concrete_class()()
+        answers = iter([["before revoke"], []])
+
+        async def compute() -> list[str]:
+            return next(answers)
+
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == ["before revoke"]
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_held_once_the_compute_finished(self, monkeypatch) -> None:
+        monkeypatch.setenv("KH_BROWSE_GRANTS_TTL_SECONDS", "60")
+        instance = _make_concrete_class()()
+
+        async def compute() -> list[str]:
+            return ["grant"]
+
+        await instance._kh_v3_shared(("grants", "u1"), compute)
+        await asyncio.sleep(0)
+
+        held = [value for name, value in vars(instance).items() if name.startswith("_kh_v3_")]
+        assert all(not value for value in held)
 class TestRecordLinkDefaults:
     """What a provider with real transactions (ArangoDB) runs for the writes Neo4j does in one statement."""
 
@@ -663,7 +805,174 @@ class TestRecordLinkDefaults:
         assert [call.args[:2] for call in instance.batch_delete_edges.await_args_list] == [
             ([self._edge("r1", "old")], "belongsTo"),
             ([self._edge("r1", "old")], "inheritPermissions"),
+            # The old group's hierarchy edge, or the record would still list under it.
+            ([self._hierarchy_edge("old", "recordGroups", "r1")], "nodeRelations"),
         ]
         instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
         instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
         instance.delete_edge.assert_not_awaited()
+        instance.batch_create_edges.assert_not_awaited()
+
+    @staticmethod
+    def _hierarchy_edge(parent_id: str, parent_collection: str, record_id: str) -> dict:
+        return {"from_id": parent_id, "from_collection": parent_collection, "to_id": record_id,
+                "to_collection": "records"}
+
+    @pytest.mark.asyncio
+    async def test_a_group_root_hangs_off_its_group(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.link_record_to_group("r1", "g1", inherit=True, browse_root=True, transaction="tx")
+
+        [edges, collection, transaction] = instance.batch_create_edges.await_args.args
+        assert collection == "nodeRelations" and transaction == "tx"
+        assert [(e["from_id"], e["to_id"], e["relationshipType"]) for e in edges] == [("g1", "r1", "PARENT_CHILD")]
+        instance.create_inherit_permissions_relation_record_group.assert_awaited_once_with("r1", "g1", "tx")
+
+    @pytest.mark.asyncio
+    async def test_a_nested_record_loses_the_group_hierarchy_edge(self) -> None:
+        """A record under a parent record must not also hang off its group: the traversal
+        would reach it from the group past every restriction in between."""
+        instance = _make_concrete_class()()
+
+        await instance.link_record_to_group("r1", "g1", inherit=False, browse_root=False, transaction="tx")
+
+        instance.batch_create_edges.assert_not_awaited()
+        assert ([self._hierarchy_edge("g1", "recordGroups", "r1")], "nodeRelations", "tx") in [
+            call.args for call in instance.batch_delete_edges.await_args_list
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_move_counts_only_the_inherit_edges_it_removed(self) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.side_effect = [1, 1, 1, 1]
+
+        removed = await instance.link_record_to_group(
+            "r1", "new", inherit=False, leaving_group_id="old", transaction="tx"
+        )
+
+        assert [call.args[1] for call in instance.batch_delete_edges.await_args_list] == [
+            "belongsTo", "inheritPermissions", "nodeRelations", "inheritPermissions"
+        ]
+        assert removed == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("inherit", "deleted", "removed"), [(False, 1, 1), (False, 0, 0), (True, 0, 0), (None, 0, 0)]
+    )
+    async def test_joining_a_group_reports_the_inherit_edge_it_removed(
+        self, inherit: bool | None, deleted: int, removed: int
+    ) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.return_value = deleted
+
+        assert await instance.link_record_to_group("r1", "g1", inherit=inherit, transaction="tx") == removed
+        assert instance.batch_delete_edges.await_count == (1 if inherit is False else 0)
+
+    @staticmethod
+    def _recording(instance: IGraphDBProvider) -> list[tuple]:
+        """Every call to the three writes a move is made of, in the order they ran."""
+        calls: list[tuple] = []
+        for name in ("delete_parent_child_edge_to_record", "batch_upsert_records", "create_record_relation"):
+            getattr(instance, name).side_effect = (
+                lambda *args, _name=name, **kwargs: calls.append((_name, args, kwargs))
+            )
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_another_parent(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        record = MagicMock(id="r1")
+
+        await instance.upsert_record_under_parent(record, "folder-2", "tx")
+
+        instance.get_document.assert_awaited_once_with("folder-2", "records", "tx", raise_on_error=True)
+        assert calls == [
+            ("delete_parent_child_edge_to_record", ("r1", "tx"), {}),
+            ("batch_upsert_records", ([record], "tx"), {"release_trashed_external_ids": True}),
+            ("create_record_relation", ("folder-2", "r1", "PARENT_CHILD", "tx"), {}),
+        ]
+        # Out of the KB root: the App edge goes, or the item lists in both places.
+        instance.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": record.connector_id, "from_collection": "apps", "to_id": "r1", "to_collection": "records"}],
+            "nodeRelations",
+            "tx",
+        )
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_to_the_root_hangs_it_off_its_knowledge_base(self) -> None:
+        """At the root the hub reaches a KB item only through its App."""
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+
+        await instance.upsert_record_under_parent(MagicMock(id="r1", connector_id="kb-1"), None, "tx")
+
+        assert [name for name, _, _ in calls] == ["delete_parent_child_edge_to_record", "batch_upsert_records"]
+        instance.get_document.assert_not_awaited()
+        [edges, collection, transaction] = instance.batch_create_edges.await_args.args
+        assert collection == "nodeRelations" and transaction == "tx"
+        assert [(e["from_id"], e["from_collection"], e["to_id"], e["relationshipType"]) for e in edges] == [
+            ("kb-1", "apps", "r1", "PARENT_CHILD")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_that_is_gone_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = None
+
+        # By name: other tests here reload the module, and its classes with it.
+        with pytest.raises(RuntimeError, match="Record r1 was not moved") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_in_the_trash_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = {"_key": "folder-2", "isDeleted": True}
+
+        with pytest.raises(RuntimeError, match="folder-2 is not in the graph or is in the trash") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_move_whose_old_edge_cannot_be_deleted_writes_nothing_more(self) -> None:
+        instance = _make_concrete_class()()
+        instance.delete_parent_child_edge_to_record.side_effect = RuntimeError("write-write conflict")
+
+        with pytest.raises(RuntimeError, match="write-write conflict"):
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        instance.batch_upsert_records.assert_not_awaited()
+        instance.create_record_relation.assert_not_awaited()
+
+
+class TestBatchedFieldsIfMatchDefault:
+    """Providers without a single-statement version get one conditional write
+    per row, with the same answer: the keys whose expectation held."""
+
+    async def test_writes_each_row_through_the_single_row_method(self) -> None:
+        provider = _make_concrete_class()()
+        calls = []
+
+        async def single(key, collection, updates, expected, transaction=None):  # noqa: ANN202
+            calls.append((key, collection, updates, expected, transaction))
+            return key != "moved-on"
+
+        provider.update_node_fields_if_match = single
+        rows = [
+            ("queued", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+            ("moved-on", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+        ]
+
+        applied = await provider.update_nodes_fields_if_match("records", rows, "txn")
+
+        assert applied == ["queued"]
+        assert [c[0] for c in calls] == ["queued", "moved-on"]
+        assert calls[0][1:] == ("records", rows[0][1], rows[0][2], "txn")

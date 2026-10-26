@@ -46,7 +46,9 @@ case "$ACTION" in
     in_container python3 /tmp/apply_instrumentation.py \
       /app/python/app/api/routes/chatbot.py \
       /app/python/app/agents/chat_modes/bridge.py || {
-      echo "!! phase patch failed — throughput/latency will be unavailable"; }
+      echo "!! phase patch failed — the anchors in instr/apply_instrumentation.py no longer"
+      echo "   match the running code. Nothing was written; fix the anchors and re-run."
+      exit 1; }
 
     echo "== wiring the backend-latency probe"
     in_container python3 - <<'PY'

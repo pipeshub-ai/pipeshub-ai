@@ -1,7 +1,14 @@
 import hashlib
 import json
 
-from app.models.blocks import Block, BlockGroup, BlockType, BlocksContainer, GroupType
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlocksContainer,
+    BlockType,
+    CitationMetadata,
+    GroupType,
+)
 from app.modules.reconciliation.service import (
 	ReconciliationMetadata,
 	ReconciliationService,
@@ -171,3 +178,46 @@ def test_apply_preserved_ids_noop_for_empty_mapping():
 
 	assert container.block_groups[0].id == "g1"
 	assert container.blocks[0].id == "b1"
+
+
+def _table(heading: str | None) -> BlocksContainer:
+    """A table on page 2: an optional heading line, the table group, and one row."""
+    page = CitationMetadata(page_number=2)
+    blocks = [Block(id="h", index=0, type=BlockType.TEXT, data=heading, citation_metadata=page)] if heading else []
+    blocks.append(Block(id="r", index=len(blocks), type=BlockType.TABLE_ROW, parent_index=0,
+                        data={"row_natural_language_text": "Total is 10"}, citation_metadata=page))
+    group = BlockGroup(id="t", index=0, type=GroupType.TABLE, data={"table_summary": "Totals"}, citation_metadata=page)
+    return BlocksContainer(blocks=blocks, block_groups=[group])
+
+
+def _hashes(container: BlocksContainer) -> dict[str, list[str]]:
+    return ReconciliationService().build_metadata(container).hash_to_block_ids
+
+
+def test_a_table_without_a_title_keeps_the_data_only_hash() -> None:
+    hashes = _hashes(_table(None))
+    assert hashes[_hash_for({"row_natural_language_text": "Total is 10"})] == ["r"]
+    assert hashes[_hash_for({"table_summary": "Totals"})] == ["t"]
+
+
+def test_a_changed_heading_marks_its_rows_and_summary_for_reindexing() -> None:
+    service = ReconciliationService()
+    old = service.build_metadata(_table("Consolidated Balance Sheets"))
+    same = service.build_metadata(_table("Consolidated Balance Sheets"))
+    new = service.build_metadata(_table("Consolidated Statements of Income"))
+
+    assert service.compute_diff(old, same)[0] == set()
+    to_index, to_delete, _ = service.compute_diff(old, new)
+    assert to_index == {"h", "r", "t"}
+    assert to_delete == {"h", "r", "t"}
+
+
+def test_a_parser_supplied_hash_is_replaced_when_the_table_has_a_title() -> None:
+    """JSON and SQL parsers set their own hashes, which know nothing of the title."""
+    container = _table("Consolidated Balance Sheets")
+    for item in (*container.blocks, *container.block_groups):
+        item.content_hash = "from-the-parser"
+    hashes = ReconciliationService().build_metadata(container).hash_to_block_ids
+
+    assert hashes["from-the-parser"] == ["h"]
+    assert "from-the-parser" not in {h for h, ids in hashes.items() if "r" in ids or "t" in ids}

@@ -2,7 +2,12 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
+import express from 'express'
+import { AddressInfo } from 'net'
 import { createMCPRouter } from '../../../../src/modules/mcp/routes/mcp.routes'
+import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BaseError } from '../../../../src/libs/errors/base.error'
+import { ExpiredTokenError, InvalidTokenError } from '../../../../src/libs/errors/oauth.errors'
 
 describe('MCP Routes — createMCPRouter', () => {
   let container: Container
@@ -246,6 +251,55 @@ describe('MCP Routes — createMCPRouter', () => {
 
       expect(router1).to.not.equal(router2)
       expect(router1.stack).to.have.length(router2.stack.length)
+    })
+  })
+
+  // =========================================================================
+  // 401 challenge: how an MCP client with no token finds where to authorize
+  // =========================================================================
+  describe('401 challenge', () => {
+    async function post(authError: Error): Promise<Response> {
+      mockAuthMiddleware.authenticate = (_req: any, _res: any, next: any) => next(authError)
+      mockAppConfig.oauthIssuer = 'https://pipeshub.example.com'
+      const app = express()
+      app.use('/mcp', createMCPRouter(container))
+      app.use((err: any, _req: any, res: any, _next: any) => {
+        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
+      })
+      const server = app.listen(0)
+      try {
+        const { port } = server.address() as AddressInfo
+        return await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', body: '{}' })
+      } finally {
+        server.close()
+      }
+    }
+
+    it('names the protected-resource metadata in WWW-Authenticate', async () => {
+      const res = await post(new UnauthorizedError('No token provided'))
+      expect(res.status).to.equal(401)
+      expect(res.headers.get('www-authenticate')).to.equal(
+        'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
+      )
+    })
+
+    for (const [name, error] of [
+      ['an expired token', new ExpiredTokenError('Access token has expired')],
+      ['an invalid or revoked token', new InvalidTokenError('Invalid access token')],
+    ] as const) {
+      it(`sends the same challenge for ${name}`, async () => {
+        const res = await post(error)
+        expect(res.status).to.equal(401)
+        expect(res.headers.get('www-authenticate')).to.equal(
+          'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
+        )
+      })
+    }
+
+    it('adds no challenge to an error that is not about authentication', async () => {
+      const res = await post(new Error('boom'))
+      expect(res.status).to.equal(500)
+      expect(res.headers.get('www-authenticate')).to.equal(null)
     })
   })
 })

@@ -10,6 +10,7 @@ import { toast } from '@/lib/store/toast-store';
 import { GuestGuard } from '@/app/components/ui/guest-guard';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { getOrgExists } from '@/lib/api/org-exists-public';
+import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import { useLanguageStore, type Language } from '@/lib/store/language-store';
 import { SUPPORTED_LANGUAGES } from '@/lib/i18n/supported-languages';
@@ -113,19 +114,13 @@ export default function SignUpPage() {
     });
 
     try {
-      const response = await AuthApi.signUp({
+      await AuthApi.signUp({
         email: email.trim(),
         password,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         registeredName: registeredName.trim(),
       });
-
-      setTokens(response.accessToken, response.refreshToken);
-      if (response.user) setUser(response.user);
-      toast.dismiss(toastId);
-      toast.success(t('auth.signUp.successToast'));
-      router.push('/onboarding');
     } catch (err: unknown) {
       type HttpErr = {
         response?: { data?: { error?: { message?: string }; message?: string }; status?: number };
@@ -148,6 +143,30 @@ export default function SignUpPage() {
       ) {
         setErrors((prev) => ({ ...prev, email: t('auth.signUp.errors.emailAlreadyExists') }));
       }
+      setLoading(false);
+      return;
+    }
+
+    // Creating the org returns no session, so sign in the way the login page does.
+    try {
+      await AuthApi.initAuth();
+      const session = await AuthApi.signInWithPassword(email.trim(), password);
+      if (!session.accessToken || !session.refreshToken) {
+        throw new Error('Sign-in returned no session');
+      }
+      setTokens(session.accessToken, session.refreshToken);
+      if (session.user) setUser(session.user);
+      else void fetchAndSetCurrentUser();
+      toast.dismiss(toastId);
+      toast.success(t('auth.signUp.successToast'));
+      router.push('/onboarding');
+    } catch {
+      // The account exists; only the automatic sign-in failed.
+      toast.dismiss(toastId);
+      toast.success(t('auth.signUp.accountCreatedToast'), {
+        description: t('auth.signUp.accountCreatedDescription'),
+      });
+      router.replace('/login');
     } finally {
       setLoading(false);
     }

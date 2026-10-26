@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Dialog, Button, Flex } from '@radix-ui/themes';
+import { Dialog, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -31,6 +31,12 @@ export interface DisableFirstDialogProps {
    * E.g. "remove this connector instance" or "save configuration changes".
    */
   actionLabel: string;
+
+  /**
+   * Source name (e.g. "Slack"). Set it when the connector stays disabled after
+   * the action, so the admin learns its records stay searchable with frozen access.
+   */
+  disabledNoticeSource?: string;
 
   /**
    * Called immediately after the connector has been successfully disabled.
@@ -66,6 +72,7 @@ export function DisableFirstDialog({
   connectorId,
   connectorName,
   actionLabel,
+  disabledNoticeSource,
   onProceed,
   container,
 }: DisableFirstDialogProps) {
@@ -165,6 +172,16 @@ export function DisableFirstDialog({
               })
             : t('workspace.connectors.disableFirstDialog.messageNoName', { action: actionLabel })}
         </Dialog.Description>
+
+        {disabledNoticeSource ? (
+          <Text
+            as="p"
+            size="2"
+            style={{ color: 'var(--slate-11)', lineHeight: '20px', marginTop: 'var(--space-3)' }}
+          >
+            {t('workspace.connectors.disabledSearchNotice', { source: disabledNoticeSource })}
+          </Text>
+        ) : null}
 
         <Flex justify="end" gap="2" mt="4">
           <Button

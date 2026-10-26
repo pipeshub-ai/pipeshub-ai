@@ -1,9 +1,15 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Badge } from '@radix-ui/themes';
-import { deriveRecordsStatus } from './derive-records-status';
+import { Flex, Text, Badge, Grid } from '@radix-ui/themes';
+import {
+  deriveClassificationStatus,
+  deriveEntitiesStatus,
+  deriveRecordsStatus,
+} from './derive-records-status';
+import { AiEnrichmentSection } from './ai-enrichment-section';
+import { IndexActionButton } from './index-action-button';
 import { StatCard } from './stat-card';
 import {
   OverviewStatsGridShimmer,
@@ -20,6 +26,10 @@ export interface IndexingStatsPanelProps {
   onRefresh?: () => Promise<void>;
   onReindexFailed?: () => Promise<void>;
   onManualIndex?: () => Promise<void>;
+  /** Re-runs only the classify stage for records whose classification failed. */
+  onRetryFailedClassification?: () => Promise<void>;
+  /** Re-runs only named-entity extraction for records whose entities stage failed. */
+  onRetryFailedEntities?: () => Promise<void>;
   onNavigateToRecords?: (statuses?: IndexingStatus[]) => void;
   /** Connector-only: shows a "Sync now" button beside Refresh. Omit for KB collections. */
   onSync?: () => Promise<void>;
@@ -37,6 +47,8 @@ export interface IndexingStatsPanelProps {
   isStopBusy?: boolean;
   isReindexFailedBusy?: boolean;
   isManualIndexBusy?: boolean;
+  isRetryClassificationBusy?: boolean;
+  isRetryEntitiesBusy?: boolean;
 }
 
 export function IndexingStatsPanel({
@@ -45,6 +57,8 @@ export function IndexingStatsPanel({
   onRefresh,
   onReindexFailed,
   onManualIndex,
+  onRetryFailedClassification,
+  onRetryFailedEntities,
   onNavigateToRecords,
   onSync,
   onStop,
@@ -55,19 +69,32 @@ export function IndexingStatsPanel({
   isStopBusy = false,
   isReindexFailedBusy = false,
   isManualIndexBusy = false,
+  isRetryClassificationBusy = false,
+  isRetryEntitiesBusy = false,
 }: IndexingStatsPanelProps) {
   const { t } = useTranslation();
   const showStatsShimmer = loading || isRefreshBusy;
-  const reindexActionsBusy = isReindexFailedBusy || isManualIndexBusy;
+  const reindexActionsBusy =
+    isReindexFailedBusy || isManualIndexBusy || isRetryClassificationBusy || isRetryEntitiesBusy;
 
   const recordsStatus = useMemo(
     () => (showStatsShimmer ? null : deriveRecordsStatus(stats)),
+    [stats, showStatsShimmer]
+  );
+  const classificationStatus = useMemo(
+    () => (showStatsShimmer ? null : deriveClassificationStatus(stats)),
+    [stats, showStatsShimmer]
+  );
+  const entitiesStatus = useMemo(
+    () => (showStatsShimmer ? null : deriveEntitiesStatus(stats)),
     [stats, showStatsShimmer]
   );
 
   const byRecordType = stats?.byRecordType ?? [];
   const showReindexFailedAction = Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
   const showManualIndexAction = Boolean(recordsStatus && recordsStatus.autoIndexOff > 0) && !showStatsShimmer;
+  // Held here so a Refresh, which unmounts the section while stats reload, keeps it open.
+  const [enrichmentOpen, setEnrichmentOpen] = useState(false);
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -82,8 +109,10 @@ export function IndexingStatsPanel({
           padding: 16,
         }}
       >
-        <Flex align="start" gap="2">
-          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0 }}>
+        {/* Wraps: when the actions do not fit beside the title (phones, long retry labels),
+            they move to their own row instead of squeezing the title to one letter per line. */}
+        <Flex align="start" gap="2" wrap="wrap">
+          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: '1 1 160px', minWidth: 0 }}>
             {t('workspace.connectors.overview.recordsStatus')}
           </Text>
           {showSyncActions && onRefresh && (
@@ -91,9 +120,9 @@ export function IndexingStatsPanel({
               direction="column"
               align="end"
               gap="1"
-              style={{ marginLeft: 'auto', flexShrink: 0 }}
+              style={{ marginLeft: 'auto', maxWidth: '100%', minWidth: 0 }}
             >
-              <Flex align="center" gap="1">
+              <Flex align="center" gap="1" wrap="wrap" justify="end">
                 {onStop ? (
                   <StatusActionButton
                     label={
@@ -131,7 +160,7 @@ export function IndexingStatsPanel({
                 />
               </Flex>
               {(showReindexFailedAction || showManualIndexAction) && recordsStatus && (
-                <Flex align="center" gap="1">
+                <Flex align="center" gap="1" wrap="wrap" justify="end">
                   {showReindexFailedAction && onReindexFailed && (
                     <IndexActionButton
                       label={`Reindex failed (${recordsStatus.failed})`}
@@ -165,7 +194,7 @@ export function IndexingStatsPanel({
         ) : recordsStatus ? (
           <Flex direction="column" gap="2">
             {/* Row 1: Total + Completed */}
-            <Flex gap="2" style={{ width: '100%' }}>
+            <Grid columns="2" gap="2" width="100%">
               <StatCard
                 label={t('workspace.connectors.overview.statTotal')}
                 value={recordsStatus.total}
@@ -178,9 +207,9 @@ export function IndexingStatsPanel({
                 subtitle={t('workspace.connectors.overview.statCompletedSub')}
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['COMPLETED']) : undefined}
               />
-            </Flex>
-            {/* Row 2: Failed, Processing, Queued, Manual indexing */}
-            <Flex gap="2" style={{ width: '100%' }}>
+            </Grid>
+            {/* Row 2: Failed, Processing, Queued, Manual indexing — two per row on phones */}
+            <Grid columns={{ initial: '2', sm: '4' }} gap="2" width="100%">
               <StatCard
                 label={t('status.failed')}
                 value={recordsStatus.failed}
@@ -206,9 +235,9 @@ export function IndexingStatsPanel({
                 subtitle={t('workspace.connectors.overview.statManualIndexingSub')}
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['AUTO_INDEX_OFF']) : undefined}
               />
-            </Flex>
+            </Grid>
             {/* Row 3: Empty, Unsupported, Not started */}
-            <Flex gap="2" style={{ width: '100%' }}>
+            <Grid columns={{ initial: '2', sm: '3' }} gap="2" width="100%">
               <StatCard
                 label={t('workspace.connectors.overview.statEmpty')}
                 value={recordsStatus.empty}
@@ -227,8 +256,28 @@ export function IndexingStatsPanel({
                 subtitle={t('workspace.connectors.overview.statNotStartedSub')}
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['NOT_STARTED']) : undefined}
               />
-            </Flex>
+            </Grid>
           </Flex>
+        ) : null}
+
+        {classificationStatus ? (
+          <AiEnrichmentSection
+            classification={classificationStatus}
+            entities={entitiesStatus}
+            open={enrichmentOpen}
+            onOpenChange={setEnrichmentOpen}
+            onRetryFailedClassification={
+              showSyncActions && onRetryFailedClassification
+                ? () => void onRetryFailedClassification()
+                : undefined
+            }
+            onRetryFailedEntities={
+              showSyncActions && onRetryFailedEntities ? () => void onRetryFailedEntities() : undefined
+            }
+            isRetryClassificationBusy={isRetryClassificationBusy}
+            isRetryEntitiesBusy={isRetryEntitiesBusy}
+            retryDisabled={reindexActionsBusy || isSyncBusy}
+          />
         ) : null}
       </Flex>
 
@@ -281,75 +330,6 @@ export function IndexingStatsPanel({
 }
 
 // Helper components
-const INDEX_ACTION_ICON_SIZE = 16;
-
-function IndexActionButton({
-  label,
-  icon,
-  color,
-  iconColor,
-  onClick,
-  disabled,
-  loading,
-}: {
-  label: string;
-  icon: string;
-  color: 'orange' | 'gray';
-  iconColor: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  loading?: boolean;
-}) {
-  const [isHovered, setIsHovered] = React.useState(false);
-  const isBusy = disabled || loading;
-  const backgroundColor =
-    color === 'orange'
-      ? isHovered && !isBusy
-        ? 'var(--orange-a4)'
-        : 'var(--orange-a3)'
-      : isHovered && !isBusy
-        ? 'var(--gray-a4)'
-        : 'var(--gray-a3)';
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={isBusy}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        height: 'var(--space-5)',
-        padding: '0 var(--space-2)',
-        borderRadius: 'max(var(--radius-1), var(--radius-full))',
-        border: 'none',
-        backgroundColor,
-        color: iconColor,
-        fontSize: 'var(--font-size-1)',
-        fontWeight: 500,
-        lineHeight: 'var(--line-height-1)',
-        width: 'max-content',
-        maxWidth: '100%',
-        flexShrink: 0,
-        whiteSpace: 'nowrap',
-        cursor: loading ? 'wait' : disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled && !loading ? 0.6 : 1,
-        transition: 'background-color 150ms ease',
-      }}
-    >
-      <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
-      {label}
-    </button>
-  );
-}
-
 function StatusActionButton({
   label,
   icon,

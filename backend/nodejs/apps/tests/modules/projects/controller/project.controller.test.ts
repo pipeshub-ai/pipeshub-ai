@@ -625,6 +625,25 @@ describe('project.controller', () => {
       }
     }
 
+    it("drops owner-only fields from other members' conversations", async () => {
+      stubNoTeamMemberships()
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'viewer', project: makeProjectDoc() })
+      const ownerOnly = { conversationErrors: [{ message: 'x', stack: 'at y' }], failReason: 'f', compactedSummary: 's' }
+      sinon.stub(ChatSession, 'find').returns(makeFindChain([
+        { _id: 'mine', userId: VALID_OID, ...ownerOnly },
+        { _id: 'theirs', userId: VALID_OID2, title: 't', ...ownerOnly },
+      ]) as any)
+      sinon.stub(ChatSession, 'countDocuments').resolves(2)
+
+      const req = createMockRequest({ params: { projectId: PROJECT_ID }, query: { page: 1, limit: 20 } })
+      const res = createMockResponse()
+      await getProjectConversations(createMockAppConfig())(req, res, createMockNext())
+
+      const [mine, theirs] = res.json.firstCall.args[0].conversations
+      expect(mine).to.include.keys('conversationErrors', 'failReason', 'compactedSummary')
+      expect(theirs).to.deep.equal({ _id: 'theirs', userId: VALID_OID2, title: 't' })
+    })
+
     it('asserts at least viewer access before querying sessions', async () => {
       stubNoTeamMemberships()
       const assertAccessStub = sinon

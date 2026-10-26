@@ -7,10 +7,15 @@ Usage (once per FastAPI app):
     pusher = setup_telemetry(app, service_name="query_service")
     # in lifespan startup:  await pusher.bind(config_service, logger).start()
     # in lifespan shutdown: await pusher.pusher.stop()
+
+With telemetry off (``TELEMETRY_COLLECTION_FLAG`` set to anything but ``true``, or
+unset in a build whose default is off), no middleware is registered and the bound
+pusher's ``start()`` is a no-op, so the call sites stay unchanged.
 """
 
 from fastapi import FastAPI
 
+from app.telemetry.flag import telemetry_enabled
 from app.telemetry.middleware import MetricsMiddleware
 from app.telemetry.pusher import MetricsPusher
 
@@ -22,7 +27,8 @@ def setup_telemetry(app: FastAPI, service_name: str) -> "PendingPusher":
     needs the ConfigurationService, which is only available inside the lifespan.
     Call ``.bind(config_service, logger)`` there to get a startable pusher.
     """
-    app.add_middleware(MetricsMiddleware, service_name=service_name)
+    if telemetry_enabled():
+        app.add_middleware(MetricsMiddleware, service_name=service_name)
     return PendingPusher(service_name)
 
 

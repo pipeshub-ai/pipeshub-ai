@@ -12,9 +12,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.posthog.posthog import PostHogClient
 from app.sources.external.posthog.posthog import PostHogDataSource
@@ -80,7 +80,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("PostHog")\
     .in_group("Analytics")\
     .with_description("PostHog integration for product analytics and event tracking")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             CommonFields.api_token("PostHog API Key", "phc_your-api-key"),

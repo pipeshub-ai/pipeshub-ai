@@ -1476,6 +1476,8 @@
                                 "read:audit-log:jira",
                                 "read:avatar:jira",
                                 "read:group:jira",
+                                "read:issue-security-level:jira",
+                                "read:issue-security-scheme:jira",
                                 "read:jira-user",
                                 "read:jira-work",
                                 "read:project-role:jira",
@@ -4694,7 +4696,7 @@
                     },
                     {
                         "title": "Pipeshub Documentation",
-                        "url": "https://docs.pipeshub.com/connectors/azure/azurefiles",
+                        "url": "https://docs.pipeshub.com/connectors/azure-files/azure-files",
                         "type": "pipeshub"
                     }
                 ],

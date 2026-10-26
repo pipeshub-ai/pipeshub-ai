@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+from collections import deque
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -405,6 +407,92 @@ class TestHeavyMemoryCap:
             mem_limit_bytes=4 * 1024 ** 3, mem_working_set_raw_bytes=4 * 1024 ** 3,
         )
         assert policy_mod.heavy_memory_cap(snap) == 1
+
+
+class TestMemoryCapsAcrossWorkerProcesses:
+    """Every worker process samples the same cgroup and sees the same free
+    memory, so a cap that hands each of them all of it lets N workers commit
+    N times what is free. Each worker's cap is its share, so the workers
+    together are held to what one process would be."""
+
+    # 32 CPUs split over 8 workers, the per-worker ceilings of a 768-record
+    # budget raised 8x; 24 GiB free, at 62.5% pressure (under MEM_SOFT).
+    CEILINGS = Ceilings(heavy=4, light=32, index_heavy=64, index_light=512)
+    SNAP = _snapshot(
+        cpu_quota=32.0,
+        mem_limit_bytes=64 * 1024 ** 3,
+        mem_working_set_bytes=40 * 1024 ** 3,
+    )
+
+    def _settle(self, worker_count: int) -> Limits:
+        limits = Limits(values={
+            Pool.HEAVY_PARSE: self.CEILINGS.heavy,
+            Pool.LIGHT_PARSE: self.CEILINGS.light,
+            Pool.INDEX_HEAVY: self.CEILINGS.index_heavy,
+            Pool.INDEX_LIGHT: self.CEILINGS.index_light,
+        })
+        state = ControllerState.initial()
+        for sample in range(20):
+            limits, state = next_limits(
+                limits, self.SNAP, self.CEILINGS, state, _no_demand(),
+                now=float(sample) * INTERVAL, interval=INTERVAL,
+                worker_count=worker_count,
+            )
+        return limits
+
+    def test_one_worker_is_held_only_by_its_own_ceilings(self) -> None:
+        limits = self._settle(1)
+        assert limits.get(Pool.HEAVY_PARSE) == 4  # free memory holds 16
+        assert limits.get(Pool.INDEX_HEAVY) == 64  # holds 160
+        assert limits.get(Pool.INDEX_LIGHT) == 512  # holds 1200
+
+    def test_eight_workers_together_hold_what_one_process_may(self) -> None:
+        limits = self._settle(8)
+        assert 8 * limits.get(Pool.HEAVY_PARSE) <= policy_mod.heavy_memory_cap(self.SNAP)
+        for pool in (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert 8 * limits.get(pool) <= policy_mod.index_memory_cap(self.SNAP, pool)
+        assert limits.get(Pool.HEAVY_PARSE) == 2
+        assert limits.get(Pool.INDEX_HEAVY) == 20
+        assert limits.get(Pool.INDEX_LIGHT) == 150
+
+    def test_exhausted_memory_leaves_each_worker_one(self) -> None:
+        """The cgroup's floor is split, not repeated: one index record or heavy
+        parse per worker, the least a worker's gate admits anyway."""
+        nearly_full = _snapshot(
+            mem_limit_bytes=4 * 1024 ** 3, mem_working_set_raw_bytes=4 * 1024 ** 3,
+        )
+        assert policy_mod.heavy_memory_cap(nearly_full, worker_count=8) == 1
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT, worker_count=8) == 1
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT) == policy_mod.COUNT_POOL_FLOOR
+
+    def test_braked_workers_together_stay_within_one_processes_floors(self) -> None:
+        """8 GiB free at 80% pressure: the hard brake takes every index pool
+        to its pressure floor. One process floors at 15 light and 2 heavy records;
+        eight workers must not floor at eight times that."""
+        ceilings_one = Ceilings(heavy=32, light=256, index_heavy=64, index_light=512)
+        snap = _snapshot(
+            cpu_quota=32.0,
+            mem_limit_bytes=40 * 1024 ** 3,
+            mem_working_set_bytes=32 * 1024 ** 3,
+        )
+
+        def settle(ceilings: Ceilings, workers: int) -> Limits:
+            limits = warm_start_limits(ceilings)
+            state = ControllerState.initial()
+            for sample in range(40):
+                limits, state = next_limits(
+                    limits, snap, ceilings, state, _no_demand(),
+                    now=float(sample) * 100.0, interval=INTERVAL, worker_count=workers,
+                )
+            return limits
+
+        one = settle(ceilings_one, 1)
+        each = settle(policy_mod.split_ceilings(ceilings_one, 8), 8)
+        assert one.get(Pool.INDEX_LIGHT) == 15
+        assert one.get(Pool.INDEX_HEAVY) == 2
+        assert 8 * each.get(Pool.INDEX_LIGHT) <= one.get(Pool.INDEX_LIGHT)
+        # One record per worker is the least a worker's gate admits.
+        assert each.get(Pool.INDEX_HEAVY) == 1
 
 
 class TestFloorFor:
@@ -1433,6 +1521,206 @@ class TestDownstreamBrake:
         assert state.hold_ewma == pytest.approx(10.0, rel=1e-3)
         assert state.hold_baseline == pytest.approx(10.0, rel=1e-2)
         assert not policy_mod._latency_hold(state)
+
+    # A pool of 15 light index permits. Chat messages hold a permit for
+    # 17.6 s; pull requests for 600 s. With 14 of the 15 permits on pull
+    # requests (what counting records gave them), a 15 s sample releases
+    # about one chat permit, and a pull request every third sample.
+    _CHAT_HOLD = 17.6
+    _PR_HOLD = 600.0
+
+    def _mixed_run(
+        self, *, report_holds: bool, downstream_factor: float = 1.0
+    ) -> tuple[Limits, bool]:
+        """Run chat alone, then chat beside pull requests. Returns the final
+        limits and whether the latency hold engaged at any point after the
+        pull requests arrived."""
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        limits = self._limits(16, 15)
+        state = ControllerState.initial()
+        samples: deque[tuple[float, ...]] = deque(maxlen=4)
+
+        def demand(holds: list[float]) -> dict[Pool, PoolDemand]:
+            return {
+                p: PoolDemand(
+                    permit_seconds=15 * INTERVAL,
+                    blocked_acquires=3,
+                    completions=len(holds),
+                    hold_seconds_by_sample=(
+                        (*samples, tuple(holds)) if report_holds else ()
+                    ),
+                )
+                for p in Pool
+            }
+
+        def step(i: int, holds: list[float]) -> None:
+            nonlocal limits, state
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand(holds), now=100.0 + i * INTERVAL,
+            )
+            samples.append(tuple(holds))
+
+        # Chat alone: all 15 permits turning over.
+        for i in range(5):
+            step(i, [self._CHAT_HOLD] * 13)
+        # Pull requests join.
+        held = False
+        for i in range(5, 30):
+            holds = [self._CHAT_HOLD * downstream_factor]
+            if i % 3 == 0:
+                holds.append(self._PR_HOLD * downstream_factor)
+            step(i, holds)
+            held = held or policy_mod._latency_hold(state.get(Pool.INDEX_LIGHT))
+        return limits, held
+
+    def test_a_few_large_records_read_as_a_slow_downstream_by_their_mean(self) -> None:
+        """What happens without reported holds: 225 permit-seconds over one
+        or two completions is 110-225 s a record, far over twice the chat
+        baseline, and the pool stops growing although nothing downstream
+        slowed."""
+        _limits, held = self._mixed_run(report_holds=False)
+        assert held
+
+    def test_a_few_large_records_do_not_hold_growth(self) -> None:
+        limits, held = self._mixed_run(report_holds=True)
+        assert not held
+        assert limits.get(Pool.INDEX_LIGHT) > 15
+
+    def test_a_downstream_slowdown_still_holds_growth(self) -> None:
+        """Every record taking three times as long moves the median too."""
+        _limits, held = self._mixed_run(report_holds=True, downstream_factor=3.0)
+        assert held
+
+    def _slowdown_from_15(
+        self, factor: float, per_sample: float | None = None
+    ) -> tuple[int, bool]:
+        """A pool of 15 at the start of slow start with a learned chat
+        baseline; then every record takes ``factor`` times as long, and each
+        sample releases ``per_sample`` holds (by default what a full pool of
+        such records would). Returns the limit when the hold first engages."""
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        limits = self._limits(16, 15)
+        state = ControllerState.initial()
+        learned = replace(
+            state.get(Pool.INDEX_LIGHT),
+            hold_ewma=self._CHAT_HOLD,
+            hold_baseline=self._CHAT_HOLD,
+            slow_start_step=1,
+        )
+        state = ControllerState(pools={**state.pools, Pool.INDEX_LIGHT: learned})
+        samples: deque[tuple[float, ...]] = deque([(self._CHAT_HOLD,) * 13] * 4, maxlen=4)
+        hold = self._CHAT_HOLD * factor
+        rate = per_sample if per_sample is not None else 15 * INTERVAL / hold
+        owed = 0.0
+        for i in range(12):
+            owed += rate
+            released = int(owed)
+            owed -= released
+            holds = (hold,) * released
+            demand = {
+                p: PoolDemand(
+                    permit_seconds=15 * INTERVAL,
+                    blocked_acquires=3,
+                    completions=released,
+                    hold_seconds_by_sample=(*samples, holds),
+                )
+                for p in Pool
+            }
+            samples.append(holds)
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=1000.0 + i * INTERVAL,
+            )
+            if policy_mod._latency_hold(state.get(Pool.INDEX_LIGHT)):
+                return limits.get(Pool.INDEX_LIGHT), True
+        return limits.get(Pool.INDEX_LIGHT), False
+
+    @pytest.mark.parametrize(
+        ("factor", "per_sample"),
+        [
+            (3.0, None),  # a full pool: about four releases a sample
+            (3.0, 1.5),
+            (3.0, 1.0),
+            (4.0, None),
+            (8.0, None),  # one or two releases a sample
+        ],
+    )
+    def test_a_slowdown_holds_growth_before_slow_start_runs_away(
+        self, factor: float, per_sample: float | None
+    ) -> None:
+        """The second slow sample engages the hold, while the pool is still
+        where the slowdown found it, however few permits a sample releases."""
+        limit, held = self._slowdown_from_15(factor, per_sample)
+        assert held
+        assert limit <= 16
+
+    @pytest.mark.parametrize("burst", [2, 4])
+    def test_large_records_finishing_together_do_not_move_the_estimate(
+        self, burst: int
+    ) -> None:
+        """A sample in which only pull requests finished, after a sample of
+        chat, changes nothing; nor does the chat sample after it."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        chat = (self._CHAT_HOLD,) * 13
+        for history in (
+            (chat, chat, (self._PR_HOLD,) * burst),
+            (chat, (self._PR_HOLD,) * burst, chat),
+        ):
+            demand = PoolDemand(
+                permit_seconds=15 * INTERVAL,
+                blocked_acquires=3,
+                completions=len(history[-1]),
+                hold_seconds_by_sample=history,
+            )
+            state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(self._CHAT_HOLD)
+
+    def test_a_few_slow_holds_among_fast_ones_are_left_out(self) -> None:
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=6,
+            hold_seconds_by_sample=(
+                (self._CHAT_HOLD,) * 4 + (self._PR_HOLD,) * 2,
+            ),
+        )
+        assert policy_mod._track_hold_time(state, demand).hold_ewma == pytest.approx(
+            self._CHAT_HOLD
+        )
+
+    def test_a_sample_counts_as_slow_only_when_every_hold_is(self) -> None:
+        """Two pull requests and one chat message, twice running: the chat
+        message says the pool is not slow."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        mixed = (self._CHAT_HOLD, self._PR_HOLD, self._PR_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=3,
+            hold_seconds_by_sample=(mixed, mixed),
+        )
+        state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(self._CHAT_HOLD)
+        assert not policy_mod._latency_hold(state)
+
+    def test_one_long_hold_after_sparse_samples_waits_for_the_next(self) -> None:
+        """One large record is all there is: it must not stand for the pool,
+        and neither may the mean."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=1,
+            hold_seconds_by_sample=((), (), (), (self._CHAT_HOLD,), (self._PR_HOLD,)),
+        )
+        assert policy_mod._track_hold_time(state, demand) == state
+
+    def test_without_reported_holds_the_mean_is_still_used(self) -> None:
+        state = PoolState(hold_ewma=2.0, hold_baseline=2.0)
+        demand = PoolDemand(permit_seconds=400.0, blocked_acquires=0, completions=40)
+        assert policy_mod._track_hold_time(state, demand).hold_ewma > 2.0
 
     def test_no_feedback_argument_keeps_the_old_behaviour(self) -> None:
         limits, _ = next_limits(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.types import Goal, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.modules.pipeline.planner.base import Plan, Planner, extract_trailing_confidence
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class DefaultPlanner(Planner):
             f"Success criteria:\n{chr(10).join(f'- {s}' for s in goal.success_criteria)}"
         )
         user_msg = UserMessage(content=user_text)
-        response = await self._model.complete(messages=[user_msg], system=_SYSTEM_PROMPT)
+        with llm_usage_source("planner"):
+            response = await self._model.complete(messages=[user_msg], system=_SYSTEM_PROMPT)
         text = response.message.text
         return Plan(goal=goal, text=text, confidence=extract_trailing_confidence(text))

@@ -28,6 +28,79 @@ function message(overrides: Partial<ConversationMessage>): ConversationMessage {
   } as ConversationMessage;
 }
 
+const WAITING = 'Waiting for your approval to run create_issue on Jira.';
+const CARD = { approvalId: 'ap-1', serverName: 'Jira', toolName: 'create_issue', expiresAt: 1_900_000_000_000 };
+
+describe('loadHistoricalMessages, an answered approval card', () => {
+  it('hides the answer and carries the reply on in the card\'s row, the call settled in place', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [
+          { type: 'tool_call', toolCallId: 'c0', toolName: 'search', status: 'completed' },
+          { type: 'sub_agent', runId: 'r', parts: [
+            { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD },
+          ] },
+          { type: 'text', content: WAITING, isFinal: true },
+        ],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({
+        _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.',
+        parts: [
+          { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'completed', approved: true, approvalAnswer: 'allowed' },
+          { type: 'text', content: 'Filed JIRA-7.', isFinal: true },
+        ],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'q2', messageType: 'user_query', content: 'thanks' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1'], ['user', 'q2']]);
+    expect(messages[1].content).toEqual([{ type: 'text', text: 'Filed JIRA-7.' }]);
+    expect(messages[1].metadata?.custom?.messageId).toBe('a2');
+    const parts = messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>;
+    expect(parts.map((p) => p.toolCallId ?? p.type)).toEqual(['c0', 'sub_agent', 'text', 'text']);
+    expect((parts[1].parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      toolCallId: 'c1', status: 'completed', approvalAnswer: 'allowed', approval: CARD,
+    });
+  });
+
+  it('keeps the next question\'s reply on its own row after an answer that failed', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'err', messageType: 'error', content: 'Error Generating Response, Please try again' }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'never mind, what is on my calendar?' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Two meetings.' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([
+      ['user', 'q'], ['assistant', 'a1'], ['user', 'q2'], ['assistant', 'a2'],
+    ]);
+    expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+
+  it('hides the error row of an answer whose run failed, leaving the card to answer again', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: deny' }),
+      message({ _id: 'err', messageType: 'error', content: 'Error Generating Response, Please try again' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1']]);
+    expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+});
+
 describe('loadHistoricalMessages', () => {
   it('drops a reply that was stopped before any text arrived', () => {
     // The backend saves this row when a stopped run's connection closes; the
@@ -35,6 +108,16 @@ describe('loadHistoricalMessages', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
       message({ _id: 'a', messageType: 'bot_response', content: '', status: 'stopped' }),
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['user']);
+  });
+
+  it('drops an empty stopped reply whose only part is the sign-in card', () => {
+    const parts = [{ type: 'mcp_sign_in', servers: [{ instanceId: 'inst-drive', serverName: 'Drive', scopes: [] }] }];
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
+      message({ _id: 'a', messageType: 'bot_response', content: '', status: 'stopped', parts } as Partial<ConversationMessage>),
     ]);
 
     expect(messages.map((m) => m.role)).toEqual(['user']);
@@ -238,12 +321,12 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toBeNull();
   });
 
-  it('does not treat an interstitial user message as answering the card', () => {
+  it('treats a message typed while the card was open as its answer and closes the card', () => {
     const payload = {
       name: 'ask_user_question',
       questions: [{ question: 'Which region?', options: ['EU', 'US'] }],
     };
-    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'ask me question' }),
       message({
         _id: 't',
@@ -255,10 +338,10 @@ describe('loadHistoricalMessages', () => {
       message({ _id: 'a2', messageType: 'bot_response', content: 'Hi!' }),
     ]);
 
-    expect(unansweredAskUserQuestion).toMatchObject({
-      assistantMessageId: 'a1',
-      status: 'pending',
-    });
+    expect(unansweredAskUserQuestion).toBeNull();
+    expect(messages[1].id).toBe('a1');
+    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
   });
 
   it('keeps an earlier unanswered card visible when a later card becomes pending', () => {
@@ -288,7 +371,8 @@ describe('loadHistoricalMessages', () => {
     ]);
 
     expect(messages[1].id).toBe('a1');
-    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toEqual(first);
+    // The second request was typed while the first card was open, so it answered that card.
+    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toEqual({ ...first, repliedInChat: true });
     expect(messages[3].id).toBe('a2');
     expect(messages[3].metadata?.custom?.persistedAskUserQuestion).toEqual(second);
     expect(unansweredAskUserQuestion).toMatchObject({
@@ -508,7 +592,7 @@ describe('loadHistoricalMessages', () => {
     ).toEqual(['q-proceed', 'q-topic']);
   });
 
-  it('keeps the card on its own row when the user chats on past an unanswered question', () => {
+  it('keeps the card on its own row, closed, when the user chats on past an unanswered question', () => {
     // The live path saves the new question's `tool_call` BEFORE the bot row, so
     // the resume's reply is merged away into the card row. The card must stay
     // addressed to the surviving row: a resume that binds to the merged-away id
@@ -558,8 +642,11 @@ describe('loadHistoricalMessages', () => {
 
     const rowIds = messages.filter((m) => m.role === 'assistant').map((m) => m.id);
     expect(rowIds).toEqual(['a1', 'a3', 'a4']);
-    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('a1');
-    expect(unansweredAskUserQuestion?.answers).toMatchObject({
+    // "you know ki i am in pune" was typed while the follow-up question was open: it answered it.
+    expect(unansweredAskUserQuestion).toBeNull();
+    const cardRow = messages.find((m) => m.id === 'a1');
+    expect(cardRow?.metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+    expect(cardRow?.metadata?.custom?.persistedAskUserQuestionAnswers).toMatchObject({
       'q-help': { questionUuid: 'q-help', selectedOptionIds: ['web'], userInputs: {} },
     });
   });
@@ -841,5 +928,118 @@ describe('loadHistoricalMessages', () => {
       },
     });
     expect(unansweredAskUserQuestion).toBeNull();
+  });
+});
+
+
+describe('an agent that re-asks a question the user already answered', () => {
+  const question = (uuid: string, text: string, labels: string[]) => ({
+    uuid,
+    question: text,
+    multiSelect: false,
+    options: labels.map((label, i) => ({ id: `${uuid}-o${i}`, label, isUserInput: false })),
+  });
+  const fiscalYear = question('q-fy', 'Which fiscal year should I use?', ['FY2024', 'Most recent matching pair']);
+  const scope = question('q-scope', 'Compare revenue or headcount?', ['Revenue', 'Headcount']);
+  const payload = (...questions: ReturnType<typeof question>[]) => ({ name: 'ask_user_question', questions });
+  const asked = (id: string, p: ReturnType<typeof payload>) =>
+    message({ _id: id, messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: p }] } as Partial<ConversationMessage>);
+  const said = (id: string, content: string) => message({ _id: id, messageType: 'user_query', content });
+  const replied = (id: string, content = '') => message({ _id: id, messageType: 'bot_response', content });
+  const picked = 'User selections:\n1. "Which fiscal year should I use?" → Most recent matching pair';
+
+  it('keeps the card closed when the same question comes back', () => {
+    const { unansweredAskUserQuestion, messages } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(fiscalYear)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+    const card = messages.find((m) => m.id === 'b1')?.metadata?.custom as Record<string, unknown>;
+    expect(Object.keys(card.persistedAskUserQuestionAnswers as object)).toEqual(['q-fy']);
+  });
+
+  it('keeps it closed when the model words the same question slightly differently', () => {
+    const reworded = question('q-fy-2', '  WHICH fiscal year should I use ', ['FY2024', 'Most recent matching pair']);
+    const { unansweredAskUserQuestion, messages } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(reworded)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+    const card = messages.find((m) => m.id === 'b1')?.metadata?.custom as { persistedAskUserQuestion: { questions: unknown[] } };
+    expect(card.persistedAskUserQuestion.questions).toHaveLength(1);
+  });
+
+  it('keeps it closed when the same question comes back more than once', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(fiscalYear)), replied('b2'),
+      said('u3', picked), asked('t3', payload(fiscalYear)), replied('b3'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+  });
+
+  it('keeps it closed when only one question of a two-question card comes back', () => {
+    const both =
+      'User selections:\n1. "Which fiscal year should I use?" → FY2024\n2. "Compare revenue or headcount?" → Revenue';
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear, scope)), replied('b1'),
+      said('u2', both), asked('t2', payload(fiscalYear)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+  });
+
+  it('still reopens the card for a question the user has not answered', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(scope)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
+    expect(unansweredAskUserQuestion?.payload.questions).toHaveLength(2);
+    expect(Object.keys(unansweredAskUserQuestion?.answers ?? {})).toEqual(['q-fy']);
+  });
+
+  it('still lets the user retry when the resume came back empty without asking again', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
+  });
+
+  it('treats the same question in a later turn as a new question', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'first'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), replied('b2', 'first answer'),
+      said('u3', 'second'), asked('t3', payload(fiscalYear)), replied('b3'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b3');
+  });
+});
+
+describe('loadHistoricalMessages, feedback', () => {
+  const fb = (isHelpful: boolean) => ({ isHelpful, categories: [] });
+  const feedbackOf = (feedback: Array<{ isHelpful: boolean }>) => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'hi' }),
+      message({ _id: 'a', messageType: 'bot_response', content: 'hello', feedback } as Partial<ConversationMessage>),
+    ]);
+    return (messages[1].metadata?.custom as { feedbackInfo?: { value?: string } }).feedbackInfo;
+  };
+
+  it('shows the latest rating, since each rating is appended', () => {
+    expect(feedbackOf([fb(true), fb(false)])).toEqual({ value: 'dislike' });
+    expect(feedbackOf([fb(false), fb(true)])).toEqual({ value: 'like' });
+    expect(feedbackOf([fb(true), fb(false), fb(true)])).toEqual({ value: 'like' });
+  });
+
+  it('shows no rating for an unrated reply', () => {
+    expect(feedbackOf([])).toBeUndefined();
   });
 });

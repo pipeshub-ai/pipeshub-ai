@@ -37,4 +37,17 @@ describe('PDFRenderer loader options', () => {
       expect(props.isEvalSupported).toBe(false);
     }
   });
+
+  it('loads the pdf.js worker shipped with the app, not a CDN copy', () => {
+    render(
+      <Theme>
+        <PDFRenderer fileUrl="https://files.example/report.pdf" fileName="report.pdf" />
+      </Theme>,
+    );
+
+    for (const props of loaderProps) {
+      expect(String(props.workerSrc)).toMatch(/pdfjs-dist\/build\/pdf\.worker\.min\.mjs$/);
+      expect(String(props.workerSrc)).not.toMatch(/unpkg|cdn/);
+    }
+  });
 });

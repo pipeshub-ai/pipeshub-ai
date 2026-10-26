@@ -40,18 +40,19 @@ def _neo4j() -> Neo4jProvider:
 
 
 class TestAppListsIncludeLinkedConnectors:
+
     async def test_arango_lists_linked_connectors_in_the_same_query(self) -> None:
         provider = _arango()
-        provider.execute_query = AsyncMock(return_value=[{"_key": "own-1"}, {"_key": "jira-1"}])
+        provider.execute_query = AsyncMock(return_value=["own-1", "jira-1"])
 
-        apps = await provider.get_user_apps(CREATOR_KEY)
+        assert await provider.get_user_app_ids(CREATOR_KEY) == ["own-1", "jira-1"]
 
-        assert [a["_key"] for a in apps] == ["own-1", "jira-1"]
         provider.execute_query.assert_awaited_once()
         query = provider.execute_query.await_args.args[0]
-        assert "FOR linked IN authenticatedAs" in query
-        assert "FILTER linked._from == @user_from" in query
-        assert 'DOCUMENT("apps", linked.connectorId)' in query
+        assert "FOR link IN authenticatedAs" in query
+        assert "FILTER link._from == @user_from" in query
+        assert 'DOCUMENT("apps", link.connectorId)' in query
+        assert "UNION_DISTINCT(direct, via_team, linked)" in query
 
     async def test_neo4j_lists_linked_connectors_in_the_same_query(self) -> None:
         provider = _neo4j()
@@ -64,14 +65,6 @@ class TestAppListsIncludeLinkedConnectors:
         assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)" in query
         assert "OPTIONAL MATCH (app3:App {id: linked.connectorId})" in query
 
-    async def test_neo4j_app_documents_come_from_the_same_query(self) -> None:
-        provider = _neo4j()
-        provider.client.execute_query = AsyncMock(return_value=[])
-
-        assert await provider.get_user_apps(CREATOR_KEY) == []
-
-        provider.client.execute_query.assert_awaited_once()
-        assert "collect(DISTINCT app3)" in provider.client.execute_query.await_args.args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +83,7 @@ class TestRetrievalCountsTheLinkedAccount:
         provider.execute_query.assert_awaited_once()
         query = provider.execute_query.await_args.args[0]
         assert "linked._from == userDoc._id AND linked.connectorId == @connectorId" in query
-        assert query.count("FOR principal_id IN principal_ids") == 7
+        assert query.count("FOR principal_id IN principal_ids") == 4
         assert " ANY userDoc._id " not in query
         # the only userId lookup is the caller's own
         assert query.count("user.userId == @userId") == 1
@@ -127,39 +120,6 @@ class TestRetrievalCountsTheLinkedAccount:
 # ---------------------------------------------------------------------------
 
 
-class TestRecordAccessCountsTheLinkedAccount:
-    async def test_arango_access_query_iterates_the_principals(self) -> None:
-        provider = _arango()
-        provider.get_document = AsyncMock(return_value={"_key": "rec-1", "connectorId": "jira-1"})
-        provider.http_client.execute_aql = AsyncMock(return_value=[None])
-
-        assert await provider.check_record_access_with_details(CREATOR_ID, ORG, "rec-1") is None
-
-        queries = [c.args[0] for c in provider.http_client.execute_aql.await_args_list]
-        access_queries = [q for q in queries if "LET allAccess" in q]
-        assert len(access_queries) == 1
-        query = access_queries[0]
-        assert "FILTER linked.connectorId == recordDoc.connectorId" in query
-        assert "FOR userDoc IN principals" in query
-        # both accounts' access paths are merged, so the highest role wins whichever holds it
-        assert "LET mergedAccess = FLATTEN(accessByPrincipal)" in query
-        assert query.count("user.userId == @userId") == 1
-
-    async def test_neo4j_access_query_iterates_the_principals(self) -> None:
-        provider = _neo4j()
-        provider.client.execute_query = AsyncMock(side_effect=[
-            [{"u": {"id": CREATOR_KEY, "userId": CREATOR_ID}}],
-            [],
-        ])
-        provider._get_user_app_ids = AsyncMock(return_value=["jira-1"])
-        provider.get_document = AsyncMock(return_value={"id": "rec-1", "connectorId": "jira-1"})
-
-        assert await provider.check_record_access_with_details(CREATOR_ID, ORG, "rec-1") is None
-
-        assert provider.client.execute_query.await_count == 2
-        access_query = provider.client.execute_query.await_args_list[-1].args[0]
-        assert "WHERE linked.connectorId = rec.connectorId" in access_query
-        assert "UNWIND [caller] + source_accounts AS u" in access_query
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +155,12 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_neo4j_permission_path_checks_all_principals(self) -> None:
         for name in ("neo4j record", "neo4j recordGroup"):
             query = _role_queries()[name]
-            assert query.count("OPTIONAL MATCH (principal)-") == 5, name
+            # Each of the five paths runs once per principal: its subquery takes the
+            # principal in, and reads it directly (user, org) or probes its membership.
+            assert query.count("WITH principal, target") == 5, name
+            assert query.count("MATCH (principal)-") == 3, name
+            assert query.count("EXISTS { (principal)-[:PERMISSION {type: 'USER'}]->(") == 2, name
+            assert "UNWIND principals AS principal" in query, name
             assert query.count("OPTIONAL MATCH (u)-") == 1, name
             assert "[u] + collect(DISTINCT source_account) AS principals" in query
 
@@ -221,13 +186,6 @@ class TestBuilderBackedMethodsRunOnceAsTheCaller:
         provider.http_client.execute_aql.assert_awaited_once()
         assert provider.http_client.execute_aql.await_args.kwargs["bind_vars"]["user_key"] == CREATOR_KEY
 
-    async def test_node_access(self) -> None:
-        provider = _neo4j()
-        provider.client.execute_query = AsyncMock(return_value=[])
-
-        assert await provider.get_knowledge_hub_node_access("rec-1", CREATOR_KEY, ORG, []) is None
-
-        provider.client.execute_query.assert_awaited_once()
 
     async def test_reindex_listings(self) -> None:
         provider = _neo4j()
@@ -240,17 +198,6 @@ class TestBuilderBackedMethodsRunOnceAsTheCaller:
         assert keys == [CREATOR_KEY, CREATOR_KEY]
 
 
-class TestNeo4jLinkedRecords:
-    async def test_the_link_counts_only_for_the_linked_records_own_connector(self) -> None:
-        provider = _neo4j()
-        provider.client.execute_query = AsyncMock(return_value=[])
-
-        await provider.get_linked_records("rec-1", ORG, CREATOR_KEY, ["LINKED_TO"])
-
-        provider.client.execute_query.assert_awaited_once()
-        query = provider.client.execute_query.await_args.args[0]
-        assert "WHERE linked.connectorId = v.connectorId" in query
-        assert "EXISTS { (u)-" not in query
 
 
 # ---------------------------------------------------------------------------
@@ -258,33 +205,6 @@ class TestNeo4jLinkedRecords:
 # ---------------------------------------------------------------------------
 
 
-class TestSearchCountsTheLinkedAccount:
-    def test_neo4j_paths_run_per_principal_scoped_to_the_links_connector(self) -> None:
-        query = _neo4j()._build_permission_paths_cypher("", "")
-
-        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)" in query
-        # four record-group paths and three direct record paths
-        assert query.count("UNWIND principals AS principal") == 7
-        assert query.count("linked_connector IS NULL OR rg.connectorId = linked_connector") == 4
-        assert query.count("linked_connector IS NULL OR record.connectorId = linked_connector") == 3
-
-    def test_neo4j_kb_app_paths_stay_the_callers_own(self) -> None:
-        query = _neo4j()._build_permission_paths_cypher("", "")
-        kb_paths = [block for block in query.split("CALL {") if "MATCH (u)-" in block and "kb_app" in block]
-
-        assert len(kb_paths) == 2
-        assert all("UNWIND principals" not in block.split("RETURN")[0] for block in kb_paths)
-
-    def test_arango_paths_run_per_principal_scoped_to_the_links_connector(self) -> None:
-        query = _arango()._build_knowledge_hub_permission_expansion_aql(
-            "", "", "true", "true", "", rg_seed_prefilter="", record_prefilter="", inherited_document_prefilter="",
-        )
-
-        assert query.count("FOR principal IN principals") == 7
-        assert query.count("principal.connectorId == null OR rg.connectorId == principal.connectorId") == 4
-        assert query.count("principal.connectorId == null OR record.connectorId == principal.connectorId") == 3
-        # only the two KB app seeds still start from the caller alone
-        assert query.count("user_from") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -292,53 +212,34 @@ class TestSearchCountsTheLinkedAccount:
 # ---------------------------------------------------------------------------
 
 
-class TestReindexPermissionChecks:
-    async def test_arango_record_check_iterates_the_principals_in_one_query(self) -> None:
-        provider = _arango()
-        provider.execute_query = AsyncMock(return_value=[{"permission": "READER", "source": "DIRECT"}])
+# ---------------------------------------------------------------------------
+# New model — the link enters through the access context, which the listing,
+# the batch access check and everything built on them read. Behaviour is covered
+# in tests/integration/graph_permissions/test_shadow_user.py on both backends.
+# ---------------------------------------------------------------------------
 
-        result = await provider._check_record_permissions("rec-1", CREATOR_KEY)
 
-        assert result["permission"] == "READER"
-        provider.execute_query.assert_awaited_once()
-        query = provider.execute_query.await_args.args[0]
-        assert "linked.connectorId == DOCUMENT(record_from).connectorId" in query
-        assert "FOR user_from IN principal_ids" in query
-        # the strongest principal wins, not just any principal with access
-        assert '"OWNER": 6' in query and "[final_permission] DESC" in query
-        assert provider.execute_query.await_args.kwargs["bind_vars"]["user_from"] == f"users/{CREATOR_KEY}"
+class TestAccessContextCountsTheLink:
+    def test_the_gate_opens_the_linked_connector(self) -> None:
+        cypher = Neo4jProvider._kh_gate_cypher()
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)" in cypher
+        assert "kh_linkedApp.orgId = $org_id" in cypher
+        aql = ArangoHTTPProvider._kh_gate_aql()
+        assert "FOR kh_link IN authenticatedAs" in aql
+        assert "linked.orgId == @org_id" in aql
 
-    async def test_arango_record_group_check_iterates_the_principals_in_one_query(self) -> None:
-        provider = _arango()
-        provider.execute_query = AsyncMock(return_value=[{"allowed": True, "role": "READER"}])
-
-        result = await provider._check_record_group_permissions("rg-1", CREATOR_KEY, ORG)
-
-        assert result["allowed"] is True
-        provider.execute_query.assert_awaited_once()
-        query = provider.execute_query.await_args.args[0]
-        assert "linked.connectorId == recordGroup.connectorId" in query
-        assert "FOR userDoc IN principals" in query
-
-    async def test_neo4j_checks_iterate_the_principals_in_one_query(self) -> None:
+    async def test_neo4j_grants_of_the_linked_account_stay_in_its_connector(self) -> None:
         provider = _neo4j()
         provider.client.execute_query = AsyncMock(return_value=[])
+        await provider.get_knowledge_hub_access_v3(CREATOR_KEY, ORG)
+        query = provider.client.execute_query.await_args.args[0]
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)" in query
+        assert "kh_lg.connectorId = kh_link.connectorId" in query
 
-        await provider._check_record_permissions("rec-1", CREATOR_KEY)
-        await provider._check_record_group_permissions("rg-1", CREATOR_KEY, ORG)
-
-        record_query, group_query = (c.args[0] for c in provider.client.execute_query.await_args_list)
-        assert "WHERE linked.connectorId = record.connectorId" in record_query
-        assert "UNWIND [caller] + source_accounts AS user" in record_query
-        assert "ORDER BY CASE permission WHEN 'OWNER' THEN 6" in record_query
-        assert "WHERE linked.connectorId = recordGroup.connectorId" in group_query
-        assert "ORDER BY result.allowed DESC, CASE result.role WHEN 'OWNER' THEN 6" in group_query
-
-    async def test_a_denied_result_stays_denied(self) -> None:
+    async def test_arango_grants_of_the_linked_account_stay_in_its_connector(self) -> None:
         provider = _arango()
-        provider.execute_query = AsyncMock(return_value=[{"permission": None, "source": "NONE"}])
-
-        result = await provider._check_record_permissions("rec-1", CREATOR_KEY)
-
-        assert result == {"permission": None, "source": "NONE"}
-        provider.execute_query.assert_awaited_once()
+        provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await provider.get_knowledge_hub_access_v3(CREATOR_KEY, ORG)
+        query = provider.http_client.execute_aql.await_args.args[0]
+        assert "LET linked_grants" in query
+        assert "granted.connectorId == kh_link.connectorId" in query
