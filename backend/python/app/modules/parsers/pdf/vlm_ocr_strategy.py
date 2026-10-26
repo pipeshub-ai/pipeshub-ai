@@ -12,7 +12,10 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
@@ -152,7 +155,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             BaseChatModel: Multimodal LLM instance
 
         Raises:
-            ValueError: If no multimodal LLM is found in configuration
+            MultimodalModelNotConfiguredError: If no multimodal LLM is configured
+            DocumentProcessingError: If the configuration could not be read
         """
         self.logger.info("🔍 Getting multimodal LLM for VLM OCR")
 
@@ -178,6 +182,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             )
 
             if not llm_configs:
+                # Not MultimodalModelNotConfiguredError: get_config answers a
+                # store it could not read with nothing, so an empty list may be
+                # an outage, which must stay retryable.
                 raise DocumentProcessingError(
                     "No LLM configurations found",
                     details={"required": "multimodal LLM"},
@@ -217,7 +224,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."
             )
             self.logger.error(error_msg)
-            raise DocumentProcessingError(
+            raise MultimodalModelNotConfiguredError(
                 error_msg,
                 details={"required": "multimodal LLM"},
             )

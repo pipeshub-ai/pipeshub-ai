@@ -15,7 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 from app.utils.opik import get_llm_invoke_config
@@ -107,7 +110,7 @@ class TestGetMultimodalLLM:
         })
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No multimodal LLM found"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -117,8 +120,10 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(return_value={"llm": []})
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No LLM configurations found"):
+        with pytest.raises(DocumentProcessingError, match="No LLM configurations found") as exc_info:
             await strategy._get_multimodal_llm()
+        # get_config answers an unreadable store with nothing: may be an outage, so retryable.
+        assert not isinstance(exc_info.value, MultimodalModelNotConfiguredError)
 
 
 # ============================================================================

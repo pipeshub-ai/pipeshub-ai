@@ -23,6 +23,7 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
     RecordStatusUpdateError,
@@ -694,6 +695,8 @@ def _reason(exc: BaseException | None) -> str:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

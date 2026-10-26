@@ -40,6 +40,16 @@ class PasswordProtectedError(DocumentProcessingError):
         super().__init__(message, doc_id, details)
 
 
+class MultimodalModelNotConfiguredError(DocumentProcessingError):
+    """No AI model that can read images is set up, so OCR cannot read the file.
+
+    A fact about the workspace's AI settings, not an outage: a retry fails the
+    same way until an admin adds such a model, so it is terminal like every
+    ``DocumentProcessingError``. Failing to *read* the settings is not this
+    error; that stays a plain ``DocumentProcessingError`` raised from its cause.
+    """
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 
