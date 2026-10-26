@@ -602,7 +602,7 @@ class TestResolveCssVarFallbacks:
 
     def test_no_var_unchanged(self) -> None:
         svg = '<svg><rect fill="#B4B4B4"/></svg>'
-        assert ImageParser._resolve_css_var_fallbacks(svg) == svg
+        assert ImageParser._resolve_css_var_fallbacks(svg) is svg
 
     def test_svg_with_css_var_colors_converts(self) -> None:
         """The file-icon SVGs that failed to index with "invalid literal for int() with base 16: 'ar'"."""

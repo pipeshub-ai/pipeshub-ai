@@ -335,6 +335,8 @@ class ImageParser:
         One pass with an explicit stack: the SVG comes from a document, so deep
         ``var()`` nesting must not recurse or rescan.
         """
+        if 'var(' not in svg_str:
+            return svg_str
         out: list[str] = []
         # One frame per open var(): [has_fallback, open parens inside it,
         # input index of "var(", output length at "var("].
