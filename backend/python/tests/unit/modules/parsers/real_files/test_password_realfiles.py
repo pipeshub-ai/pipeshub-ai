@@ -1,4 +1,4 @@
-"""Real encrypted and look-alike files through both pipelines (PW-1: T1-T5, T13).
+"""Real encrypted and look-alike files through both pipelines.
 
 Every file is generated here. The legacy pipeline is the real ``inspect_untrusted_pdf`` and
 ``EventProcessor.on_event`` dispatch; the service pipeline is the real route with a real

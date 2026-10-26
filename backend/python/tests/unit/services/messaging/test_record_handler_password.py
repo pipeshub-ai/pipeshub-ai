@@ -1,4 +1,4 @@
-"""A file that needs a password ends PASSWORD_PROTECTED, not FAILED (PW-1: T1, T5, T6, T7)."""
+"""A file that needs a password ends PASSWORD_PROTECTED, not FAILED."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

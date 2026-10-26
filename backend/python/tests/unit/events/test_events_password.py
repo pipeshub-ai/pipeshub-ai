@@ -1,4 +1,4 @@
-"""The legacy in-process pipeline stops on a password-protected file before any parser or OCR runs (PW-1: T1, T3, T4)."""
+"""The legacy in-process pipeline stops on a password-protected file before any parser or OCR runs."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

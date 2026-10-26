@@ -1,4 +1,4 @@
-"""Finding out from the file itself that it needs a password (PW-1: T3, T4, T5, T13)."""
+"""Finding out from the file itself that it needs a password."""
 from __future__ import annotations
 
 import struct
@@ -97,7 +97,7 @@ class TestMacroEnabled:
 
 
 class TestMalformedContainers:
-    """T13: a damaged container is never a crash or a hang, and never reads as encrypted."""
+    """A damaged container is never a crash or a hang, and never reads as encrypted."""
 
     def test_a_header_only_file(self) -> None:
         assert not has_encrypted_package(bytes.fromhex("D0CF11E0A1B11AE1") + b"\0" * 504)

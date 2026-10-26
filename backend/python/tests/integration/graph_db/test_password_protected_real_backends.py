@@ -1,4 +1,4 @@
-"""PASSWORD_PROTECTED on a real Neo4j and ArangoDB (PW-1: T7, T8, T9, T10, T11).
+"""PASSWORD_PROTECTED on a real Neo4j and ArangoDB.
 
 Requires the graph stack from
 deployment/docker-compose/docker-compose.integration.graph-db.yml (NEO4J_IT_URI,

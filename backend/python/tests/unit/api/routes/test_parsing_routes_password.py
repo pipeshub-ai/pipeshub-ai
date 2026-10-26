@@ -1,4 +1,4 @@
-"""The parsing service answers a password-protected file with 422 PASSWORD_REQUIRED (PW-1: T2, T3)."""
+"""The parsing service answers a password-protected file with 422 PASSWORD_REQUIRED."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
