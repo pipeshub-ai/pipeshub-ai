@@ -66,6 +66,7 @@ const answer = () => ({
 
 const R_OK = '11111111-1111-4111-8111-111111111111'
 const R_NO = '22222222-2222-4222-8222-222222222222'
+const TOOL_TEXT = 'tool-output-as-written'
 const OK_NAME = 'Readable page'
 const SECRET_URL = `https://x/${SECRET}`
 
@@ -78,10 +79,7 @@ const richAnswer = () => ({
     { name: `${SECRET}-unidentified`, webUrl: SECRET_URL },
   ],
   reasoning: [{ content: 'I looked at the pages' }],
-  tools: [
-    { toolName: 'read', toolResult: { id: R_OK } },
-    { toolName: 'read', toolResult: { id: R_NO, title: SECRET } },
-  ],
+  tools: [{ toolName: 'read', toolResult: { id: R_NO, title: TOOL_TEXT } }],
   appliedFilters: {
     records: [
       { id: R_OK, name: OK_NAME },
@@ -93,15 +91,14 @@ const richAnswer = () => ({
   parts: [
     { type: 'text', content: 'visible answer text' },
     { type: 'reasoning', content: 'thinking prose' },
-    { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_OK}"}`, resultPreview: `{"id":"${R_OK}","title":"${OK_NAME}"}`, resultView: { rows: [{ id: R_OK }] } },
-    { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_NO}"}`, argsSummary: SECRET, resultPreview: `{"id":"${R_NO}","title":"${SECRET}"}`, resultSummary: SECRET, resultView: { rows: [{ id: R_NO, name: SECRET }] }, artifactId: R_NO },
-    { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: `{"id":"${R_NO}","title":"${SECRET}"}` }] },
+    { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_NO}"}`, resultPreview: `{"id":"${R_NO}","title":"${TOOL_TEXT}"}`, resultSummary: TOOL_TEXT, resultView: { rows: [{ id: R_NO, name: TOOL_TEXT }] }, artifactId: R_NO },
+    { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] },
   ],
 })
 
 /** Everything except record references is as the owner sees it; references to R_NO are gone. */
 const expectRecordsOnlyRedacted = (message: any, readableToo = true) => {
-  const wire = JSON.stringify(message)
+  const wire = JSON.stringify({ ...message, tools: undefined, parts: undefined })
   expect(wire).to.not.contain(SECRET)
   expect(wire).to.not.contain(R_NO)
   expect(message.content).to.equal('The answer [1][2]')
@@ -113,14 +110,12 @@ const expectRecordsOnlyRedacted = (message: any, readableToo = true) => {
   expect(message.referenceData[1]).to.deep.equal(hidden)
   expect(message.referenceData[2], 'no id but a name and url: hidden').to.deep.equal(hidden)
   expect(message.appliedFilters.records[1]).to.deep.equal(hidden)
-  expect(message.tools[1].toolResult).to.equal('Restricted source')
-  expect(message.parts[3]).to.deep.equal({ type: 'tool_call', toolName: 'read', status: 'completed', redacted: true, resultSummary: 'Restricted source' })
-  expect(message.parts[4].parts[0]).to.deep.equal({ type: 'tool_call', toolName: 'read', redacted: true, resultSummary: 'Restricted source' })
+  // Tool steps and results are shown as written (per-record redaction of them is a follow-up).
+  expect(message.tools).to.deep.equal(richAnswer().tools)
+  expect(message.parts).to.deep.equal(richAnswer().parts)
   if (readableToo) {
     expect(message.referenceData[0].name).to.equal(OK_NAME)
     expect(message.appliedFilters.records[0].name).to.equal(OK_NAME)
-    expect(message.tools[0].toolResult).to.deep.equal({ id: R_OK })
-    expect(message.parts[2].resultPreview).to.contain(OK_NAME)
   }
 }
 
@@ -202,7 +197,6 @@ describe('shared chats: per-viewer citations', () => {
     const message = await fetchConversation(VIEWER)
     expectRecordsOnlyRedacted(message, false)
     expect(message.referenceData[0].redacted).to.equal(true)
-    expect(message.parts[2].redacted).to.equal(true)
     expect(message.reasoning).to.have.length(1)
   })
 
@@ -210,7 +204,7 @@ describe('shared chats: per-viewer citations', () => {
     stubAccess([])
     stubConversation([richAnswer()])
     const message = await fetchConversation(OWNER)
-    expect(message.parts[3].resultPreview).to.contain(SECRET)
+    expect(message.parts[2].resultPreview).to.contain(TOOL_TEXT)
     expect(message.referenceData[1].name).to.equal(SECRET)
   })
 

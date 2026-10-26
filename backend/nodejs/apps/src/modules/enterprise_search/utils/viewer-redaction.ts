@@ -5,7 +5,8 @@
  * tool result, search hit) loses its id, name, link and text and shows as a
  * placeholder. The owner sees everything.
  * Free text stays as written: the answer, reasoning prose and follow-up
- * questions (accepted residual risk, as before).
+ * questions (accepted residual risk, as before). Tool steps and their results
+ * are shown as written too; per-record redaction of them is a follow-up.
  */
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -95,18 +96,11 @@ interface RefEntry {
   webUrl?: string;
   metadata?: { recordId?: string } | Map<string, string>;
 }
-/** One entry of the agent-activity transcript (see IMessagePart). */
-interface PartEntry {
-  type?: string;
-  parts?: Array<PartEntry | null>;
-}
 export interface ViewerMessage {
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
   referenceData?: Array<RefEntry | null>;
   appliedFilters?: object;
-  tools?: Array<{ toolResult?: unknown } | null>;
-  parts?: Array<PartEntry | null>;
 }
 export interface ViewerSearch {
   userId?: unknown;
@@ -120,21 +114,6 @@ const restrictedRef = (): Record<string, unknown> => ({
   ...REDACTED,
   name: RESTRICTED,
 });
-// Stored message ids are a PipesHub record/node key: a UUID or a 24-hex key.
-const ID_TOKEN =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{24}\b/gi;
-const idsIn = (value: unknown): string[] =>
-  (JSON.stringify(value) as string | undefined)?.match(ID_TOKEN) ?? [];
-// Tool-call fields that can carry a record's id, name or text.
-const PART_RECORD_FIELDS = [
-  'args',
-  'argsSummary',
-  'resultPreview',
-  'resultSummary',
-  'resultView',
-  'approval',
-] as const;
-const PART_HIDDEN = new Set<string>([...PART_RECORD_FIELDS, 'artifactId']);
 const FILTER_LISTS = ['apps', 'kb', 'recordGroups', 'records', 'recordsExact'];
 
 const refId = (e: RefEntry): string | undefined => {
@@ -164,36 +143,6 @@ const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
       ? [[k, (f as Record<string, RefEntry[]>)[k]] as [string, RefEntry[]]]
       : [],
   );
-
-type Part = PartEntry & Record<string, unknown> & { redacted?: boolean };
-const partIds = (part: PartEntry | null): string[] => {
-  if (!part) return [];
-  const p = part as Part;
-  return [
-    ...PART_RECORD_FIELDS.flatMap((f) => idsIn(p[f])),
-    ...(part.parts ?? []).flatMap(partIds),
-  ];
-};
-const redactPart = (
-  part: PartEntry | null,
-  ok: (id?: string) => boolean,
-): Part | null => {
-  if (!part) return part;
-  const p: Part = { ...part };
-  if (PART_RECORD_FIELDS.some((f) => idsIn(p[f]).some((id) => !ok(id)))) {
-    const rest = Object.fromEntries(
-      Object.entries(p).filter(([k]) => !PART_HIDDEN.has(k)),
-    );
-    return {
-      ...rest,
-      redacted: true,
-      resultSummary: RESTRICTED,
-      ...(part.parts && { parts: part.parts.map((c) => redactPart(c, ok)) }),
-    };
-  }
-  if (part.parts) p.parts = part.parts.map((c) => redactPart(c, ok));
-  return p;
-};
 
 /** The cited document of a message citation: populated, or a bare id to look up. */
 const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
@@ -252,8 +201,6 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       ...(m.attachments ?? []).map((a) => a?.recordId),
       ...(m.referenceData ?? []).flatMap(refIds),
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
-      ...(m.parts ?? []).flatMap(partIds),
-      ...(m.tools ?? []).flatMap((t) => idsIn(t?.toolResult)),
     ]) as string[],
   );
   const ok = (id?: string): boolean => id !== undefined && readable.has(id);
@@ -281,13 +228,6 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
           ]),
         ),
       };
-    if (m.tools)
-      view.tools = m.tools.map((t) =>
-        t && idsIn(t.toolResult).some((id) => !ok(id))
-          ? { ...t, toolResult: RESTRICTED }
-          : t,
-      );
-    if (m.parts) view.parts = m.parts.map((x) => redactPart(x, ok));
     return view as M;
   });
 };
