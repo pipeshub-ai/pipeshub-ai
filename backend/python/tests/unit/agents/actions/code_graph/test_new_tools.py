@@ -137,3 +137,12 @@ async def test_impact_of_an_unresolved_symbol_is_an_error_not_an_empty_blast_rad
     out = await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/vs/b.py",
                             qualified_name="function:target")
     assert "No readable symbol" in out["error"]
+
+
+async def test_hidden_test_neighbours_say_how_to_list_them() -> None:
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    out = await get_neighbour_impl(**_ctx(QueryGraphProvider(file_roles={"rec-a": "test"})),
+                                   file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", edge_types=["CALLS"])
+    assert out["hidden_tests"] == 1 and "include_tests=true" in out["hint"]

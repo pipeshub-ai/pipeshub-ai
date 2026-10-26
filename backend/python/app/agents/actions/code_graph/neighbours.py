@@ -473,7 +473,10 @@ async def get_neighbour_impl(
         "neighbors": neighbors,
         **({"offset": offset} if offset else {}),
         "total": total,
-        **({"hidden_tests": len(hidden_tests)} if hidden_tests else {}),
+        **({"hidden_tests": len(hidden_tests),
+            # A bare count reads as "no test callers worth listing"; say how to see them.
+            "hint": (f"{len(hidden_tests)} neighbour(s) in test code are hidden; "
+                     "pass include_tests=true to list them.")} if hidden_tests else {}),
         # Silence reads as absence: a model that thinks it saw every neighbour
         # will state a wrong conclusion confidently. A walk that hit its
         # traversal cap is truncated even when every fetched row fits the page.
@@ -570,7 +573,8 @@ async def impact_impl(
             f"No readable symbol {qualified_name!r} in {file_path!r}. Use the repo-relative "
             "path and name search_code returns, e.g. `method:Class.name`."
         )}
-    out = {k: v for k, v in walk.items() if k not in ("neighbors", "chain", "note", "next", "hidden_tests")}
+    out = {k: v for k, v in walk.items()
+           if k not in ("neighbors", "chain", "note", "next", "hidden_tests", "hint")}
     files = _by_file(walk["neighbors"])
     out.update({"impacted_files": files, "impacted_symbols": sum(len(f["symbols"]) for f in files)})
     if not include_tests and walk.get("hidden_tests"):
