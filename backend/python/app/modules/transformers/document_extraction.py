@@ -233,6 +233,10 @@ class SubCategories(BaseModel):
     level2: str = Field(description="Level 2 subcategory")
     level3: str = Field(description="Level 3 subcategory")
 
+# Organisations kept per record; more is a listing, not what the record is about.
+MAX_EXTRACTED_ORGANIZATIONS = 10
+
+
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
         description="The list of departments this document belongs to", max_items=3
@@ -247,6 +251,14 @@ class DocumentClassification(BaseModel):
     topics: list[str] = Field(
         description="List of key topics/themes extracted from the document"
     )
+    organizations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Organizations the document names as parties, customers, vendors, "
+            "partners, employers, regulators or institutions, verbatim. Not "
+            "people, products, teams or the application the document came from."
+        ),
+    )
     summary: str = Field(
         description=(
             "Retrieval-facing summary. Sentence 1 must state document type, "
@@ -260,6 +272,22 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("organizations", mode="before")
+    @classmethod
+    def _clean_organizations(cls, value: object) -> list[str]:
+        # Capped here rather than with max_items: a rejected list would fail
+        # the whole parse and lose every other field to the summary fallback.
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        names: list[str] = []
+        for raw in value:
+            name = raw.strip() if isinstance(raw, str) else ""
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                names.append(name)
+        return names[:MAX_EXTRACTED_ORGANIZATIONS]
 
     @field_validator("languages", mode="after")
     @classmethod
@@ -282,6 +310,7 @@ def semantic_metadata_from_classification(classification: DocumentClassification
         departments=names(classification.departments),
         languages=names(classification.languages),
         topics=names(classification.topics),
+        organizations=list(getattr(classification, "organizations", None) or []),
         summary=classification.summary,
         categories=[category] if category else [],
         sub_category_level_1=optional_name(classification.subcategories.level1),
@@ -397,6 +426,7 @@ def find_code_summary_block(blocks: list[Block]) -> Optional[Block]:
         ):
             return block
     return None
+
 
 class DocumentExtraction(Transformer):
     def __init__(

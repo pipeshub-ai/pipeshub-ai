@@ -1,0 +1,766 @@
+{
+ "description": "Hand-labelled documents for organisation extraction (KG-13 slice 3b). Gold lists the organisations a document names as an organisation: companies, customers, vendors, partners, investors, regulators, government bodies, universities, non-profits. Not gold: people, products and services (Jira, Salesforce used as a CRM tool, iPhone), teams and departments, locations, generic words, the application the record came from, and the tenant itself (filtered after extraction). Each gold entry lists accepted spellings of one organisation. Written for this eval, not taken from customer data. Names that are fairly read either way (a company named as the tool it makes: \"Datadog\", \"DocuSign\", \"GitHub\") are listed under optional: predicting one is not a false positive, missing one is not a miss.",
+ "tenant": "Northwind Analytics",
+ "documents": [
+  {
+   "id": "d01",
+   "connector": "GMAIL",
+   "record_name": "Re: Q3 renewal — Acme Corp",
+   "record_type": "MAIL",
+   "text": "Hi Priya,\n\nThanks for the call this morning. Acme Corp has agreed to renew for another 12 months at the current rate of $84,000. Their procurement lead, Daniel Ortiz, asked that we route the paperwork through their reseller, CDW, as they did last year. Legal at Northwind Analytics will send the order form by Friday.\n\nBest,\nMarcus Lee\nAccount Executive, Northwind Analytics",
+   "gold": [
+    [
+     "Acme Corp",
+     "Acme"
+    ],
+    [
+     "CDW"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d02",
+   "connector": "DRIVE",
+   "record_name": "MSA_Globex_signed.pdf",
+   "record_type": "FILE",
+   "text": "MASTER SERVICES AGREEMENT\n\nThis Master Services Agreement is entered into as of March 1, 2026 between Globex Corporation, a Delaware corporation (\"Customer\"), and Northwind Analytics, Inc. (\"Provider\").\n\n1. Services. Provider shall deliver the analytics platform described in each Order Form.\n2. Subprocessors. Provider uses Amazon Web Services, Inc. for hosting and Twilio Inc. for SMS notifications.\n3. Governing law. This Agreement is governed by the laws of the State of Delaware.\n\nSigned for Customer: Hank Scorpio, CEO. Signed for Provider: Jane Whitfield, COO.",
+   "gold": [
+    [
+     "Globex Corporation",
+     "Globex"
+    ],
+    [
+     "Amazon Web Services",
+     "AWS",
+     "Amazon Web Services, Inc."
+    ],
+    [
+     "Twilio",
+     "Twilio Inc."
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d03",
+   "connector": "SLACK",
+   "record_name": "#sales-wins",
+   "record_type": "MESSAGE",
+   "text": "Big win team! :tada: Initech just signed the enterprise tier. Shoutout to @kara for the demo and to the Slack huddle crew for late-night pricing work. Next up: Umbrella Health wants a security review before they sign.",
+   "gold": [
+    [
+     "Initech"
+    ],
+    [
+     "Umbrella Health"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d04",
+   "connector": "JIRA",
+   "record_name": "SUP-4412 Export fails for customer workspace",
+   "record_type": "TICKET",
+   "text": "Reporter: Tom Becker\nPriority: High\n\nCustomer Hooli reports CSV export times out on workspaces above 2M rows. Repro on staging with their sample. Logs in Datadog show the worker OOM-killed. Linked to the Snowflake connector upgrade. Please check with the platform team before the Thursday release.",
+   "gold": [
+    [
+     "Hooli"
+    ]
+   ],
+   "optional": [
+    [
+     "Datadog"
+    ],
+    [
+     "Snowflake"
+    ]
+   ]
+  },
+  {
+   "id": "d05",
+   "connector": "CONFLUENCE",
+   "record_name": "Vendor security review: Stripe",
+   "record_type": "WEBPAGE",
+   "text": "Vendor: Stripe, Inc.\nScope: card payments for self-serve plans.\nCertifications: PCI DSS Level 1 (attested by Coalfire), SOC 2 Type II.\nData residency: US and EU (Ireland).\nRisk owner: Finance.\nDecision: approved by the Security team on 2026-02-11. Re-review due February 2027.",
+   "gold": [
+    [
+     "Stripe",
+     "Stripe, Inc."
+    ],
+    [
+     "Coalfire"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d06",
+   "connector": "DRIVE",
+   "record_name": "Board deck Q2 2026.pptx",
+   "record_type": "FILE",
+   "text": "Q2 2026 Board Update\n\nRevenue: $4.2M ARR (+18% QoQ).\nNew logos: Wayne Enterprises, Stark Industries, Cyberdyne Systems.\nChurn: Soylent lost after budget freeze.\nFunding: Series B led by Sequoia Capital with participation from Index Ventures closed in April.\nHiring: 6 engineers, 2 AEs.",
+   "gold": [
+    [
+     "Wayne Enterprises"
+    ],
+    [
+     "Stark Industries"
+    ],
+    [
+     "Cyberdyne Systems",
+     "Cyberdyne"
+    ],
+    [
+     "Soylent"
+    ],
+    [
+     "Sequoia Capital",
+     "Sequoia"
+    ],
+    [
+     "Index Ventures"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d07",
+   "connector": "SLACK",
+   "record_name": "#eng-standup",
+   "record_type": "MESSAGE",
+   "text": "Yesterday: finished the retry logic for the ingestion worker, reviewed Ana's PR. Today: pairing with Raj on the flaky test, then on-call handover. Blockers: none.",
+   "gold": [],
+   "optional": []
+  },
+  {
+   "id": "d08",
+   "connector": "OUTLOOK",
+   "record_name": "Invoice INV-2026-0311 from Contoso Ltd",
+   "record_type": "MAIL",
+   "text": "Dear Accounts Payable,\n\nPlease find attached invoice INV-2026-0311 for consulting services delivered in February, total EUR 12,400, payable within 30 days to our account at Deutsche Bank AG.\n\nKind regards,\nBilling team\nContoso Ltd, Berlin",
+   "gold": [
+    [
+     "Contoso Ltd",
+     "Contoso"
+    ],
+    [
+     "Deutsche Bank AG",
+     "Deutsche Bank"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d09",
+   "connector": "NOTION",
+   "record_name": "Hiring plan 2026",
+   "record_type": "WEBPAGE",
+   "text": "Engineering hiring plan 2026. Target: 12 hires. Sources: referrals, university partnerships with Carnegie Mellon University and the University of Waterloo, and the recruiting agency Hired Talent Partners. Budget approved by the CFO. Interview loop: recruiter screen, take-home, onsite.",
+   "gold": [
+    [
+     "Carnegie Mellon University",
+     "CMU"
+    ],
+    [
+     "University of Waterloo"
+    ],
+    [
+     "Hired Talent Partners"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d10",
+   "connector": "DRIVE",
+   "record_name": "Data processing addendum.docx",
+   "record_type": "FILE",
+   "text": "DATA PROCESSING ADDENDUM\n\nThis DPA forms part of the agreement between the Customer and the Processor. The Processor shall comply with the General Data Protection Regulation and cooperate with the competent supervisory authority, including the Irish Data Protection Commission. Standard Contractual Clauses adopted by the European Commission apply to transfers outside the EEA.",
+   "gold": [
+    [
+     "Data Protection Commission",
+     "Irish Data Protection Commission"
+    ],
+    [
+     "European Commission"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d11",
+   "connector": "JIRA",
+   "record_name": "ENG-901 Upgrade Jira automation rules",
+   "record_type": "TICKET",
+   "text": "Our Jira automation rules break after the Atlassian Cloud migration. Move the release-notes rule to the new trigger and update the Confluence page that documents it. Also bump the GitHub Actions workflow to use the new token.",
+   "gold": [
+    [
+     "Atlassian"
+    ]
+   ],
+   "optional": [
+    [
+     "GitHub"
+    ]
+   ]
+  },
+  {
+   "id": "d12",
+   "connector": "GMAIL",
+   "record_name": "Intro: Northwind <> Pied Piper",
+   "record_type": "MAIL",
+   "text": "Hi Richard, hi Jane —\n\nMaking the intro I promised. Richard runs Pied Piper, which is building compression for video archives; Jane is COO at Northwind. Both of you mentioned Raviga Capital at the YC demo day, so I thought there might be overlap.\n\nCheers,\nMonica",
+   "gold": [
+    [
+     "Pied Piper"
+    ],
+    [
+     "Raviga Capital",
+     "Raviga"
+    ],
+    [
+     "Y Combinator",
+     "YC"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d13",
+   "connector": "SALESFORCE",
+   "record_name": "Opportunity notes: Massive Dynamic",
+   "record_type": "DEAL",
+   "text": "Discovery call with Massive Dynamic. Current stack: Tableau for dashboards, homegrown ETL. Evaluating us against Looker. Decision committee includes their CIO and the data team lead. Their parent company, Bell Holdings, requires vendor onboarding through Coupa.",
+   "gold": [
+    [
+     "Massive Dynamic"
+    ],
+    [
+     "Bell Holdings"
+    ]
+   ],
+   "optional": [
+    [
+     "Tableau"
+    ],
+    [
+     "Looker"
+    ],
+    [
+     "Coupa"
+    ]
+   ]
+  },
+  {
+   "id": "d14",
+   "connector": "CONFLUENCE",
+   "record_name": "Incident 2026-03-04 postmortem",
+   "record_type": "WEBPAGE",
+   "text": "Summary: 47 minutes of degraded search for EU tenants. Root cause: a Cloudflare configuration change on our side routed traffic to a drained origin. Customers affected: Vandelay Industries opened a P1. Actions: add a canary for routing changes; review on-call runbook. Timeline in UTC.",
+   "gold": [
+    [
+     "Cloudflare"
+    ],
+    [
+     "Vandelay Industries",
+     "Vandelay"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d15",
+   "connector": "DRIVE",
+   "record_name": "Expense policy.pdf",
+   "record_type": "FILE",
+   "text": "Expense Policy (effective January 2026)\n\nEmployees may book travel through the company travel tool. Meals are reimbursed up to $75 per day. Mileage follows the IRS standard rate. Receipts must be submitted within 30 days. Corporate cards are issued by the bank on approval of the employee's manager.",
+   "gold": [
+    [
+     "IRS",
+     "Internal Revenue Service"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d16",
+   "connector": "SLACK",
+   "record_name": "#partnerships",
+   "record_type": "MESSAGE",
+   "text": "FYI the Microsoft co-sell agreement is live — we can now be listed in Azure Marketplace. Google Cloud partnership still waiting on their legal. Ping me if a customer asks about AWS Marketplace, we're not there yet.",
+   "gold": [
+    [
+     "Microsoft"
+    ],
+    [
+     "Google Cloud",
+     "Google"
+    ],
+    [
+     "AWS",
+     "Amazon Web Services"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d17",
+   "connector": "OUTLOOK",
+   "record_name": "RFP response due: City of Springfield",
+   "record_type": "MAIL",
+   "text": "Team, the City of Springfield RFP for a records analytics platform closes on April 30. Mandatory: SOC 2 report, references from two public sector customers (Shelbyville County and the Springfield Board of Education have agreed), and a bid bond. Partner Accenture will submit the implementation section.",
+   "gold": [
+    [
+     "City of Springfield"
+    ],
+    [
+     "Shelbyville County"
+    ],
+    [
+     "Springfield Board of Education"
+    ],
+    [
+     "Accenture"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d18",
+   "connector": "NOTION",
+   "record_name": "Product roadmap Q3",
+   "record_type": "WEBPAGE",
+   "text": "Q3 roadmap: (1) natural language search over spreadsheets; (2) SSO with Okta and Azure AD; (3) audit log export; (4) usage-based billing. Stretch: offline mode for the mobile app.",
+   "gold": [],
+   "optional": [
+    [
+     "Okta"
+    ],
+    [
+     "Microsoft",
+     "Azure AD"
+    ]
+   ]
+  },
+  {
+   "id": "d19",
+   "connector": "GMAIL",
+   "record_name": "Your Delta itinerary",
+   "record_type": "MAIL",
+   "text": "Thank you for choosing Delta Air Lines. Confirmation G7K2LP. Flight DL 1123 from Boston (BOS) to San Francisco (SFO), May 14, 8:05 AM. Hotel: Hilton San Francisco Union Square, booked via Expedia.",
+   "gold": [
+    [
+     "Delta Air Lines",
+     "Delta"
+    ],
+    [
+     "Hilton"
+    ]
+   ],
+   "optional": [
+    [
+     "Expedia"
+    ]
+   ]
+  },
+  {
+   "id": "d20",
+   "connector": "DRIVE",
+   "record_name": "Competitive landscape.xlsx",
+   "record_type": "FILE",
+   "text": "Competitor | Segment | Pricing | Notes\nThoughtSpot | Enterprise | Per user | Strong search UX\nSisense | Mid-market | Platform fee | Embedded analytics\nMode Analytics | SMB | Per seat | Acquired by ThoughtSpot\nPreset | SMB | Per seat | Built on Apache Superset",
+   "gold": [
+    [
+     "ThoughtSpot"
+    ],
+    [
+     "Sisense"
+    ],
+    [
+     "Mode Analytics",
+     "Mode"
+    ],
+    [
+     "Preset"
+    ]
+   ],
+   "optional": [
+    [
+     "Apache Software Foundation",
+     "Apache"
+    ]
+   ]
+  },
+  {
+   "id": "d21",
+   "connector": "JIRA",
+   "record_name": "SEC-77 Pen test findings",
+   "record_type": "TICKET",
+   "text": "Findings from the annual penetration test by NCC Group: two medium (missing rate limit on login, verbose error messages) and one low. Remediate mediums before the Q2 SOC 2 audit with our auditors, Prescient Assurance.",
+   "gold": [
+    [
+     "NCC Group"
+    ],
+    [
+     "Prescient Assurance"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d22",
+   "connector": "SLACK",
+   "record_name": "#random",
+   "record_type": "MESSAGE",
+   "text": "Who's in for lunch at the taco place? Also reminder that the office is closed Monday for the holiday.",
+   "gold": [],
+   "optional": []
+  },
+  {
+   "id": "d23",
+   "connector": "CONFLUENCE",
+   "record_name": "Customer reference: Oscorp",
+   "record_type": "WEBPAGE",
+   "text": "Oscorp (biotech, 4,000 employees) uses Northwind to analyse clinical trial operations data. Champion: Dr. Otto Octavius, VP Research Ops. Previously used SAS. Results: report build time from 3 days to 2 hours. Approved for public use by Oscorp's communications team.",
+   "gold": [
+    [
+     "Oscorp"
+    ]
+   ],
+   "optional": [
+    [
+     "SAS",
+     "SAS Institute"
+    ]
+   ]
+  },
+  {
+   "id": "d24",
+   "connector": "GMAIL",
+   "record_name": "Offer letter — Northwind Analytics",
+   "record_type": "MAIL",
+   "text": "Dear Sam,\n\nWe are delighted to offer you the position of Senior Data Engineer at Northwind Analytics. Your start date is June 2. Benefits are administered by Gusto and health insurance is provided through Blue Shield of California. Please sign via DocuSign by May 20.\n\nWelcome aboard,\nPeople Team",
+   "gold": [
+    [
+     "Gusto"
+    ],
+    [
+     "Blue Shield of California",
+     "Blue Shield"
+    ]
+   ],
+   "optional": [
+    [
+     "DocuSign"
+    ]
+   ]
+  },
+  {
+   "id": "d25",
+   "connector": "DRIVE",
+   "record_name": "Partner agreement Tyrell.pdf",
+   "record_type": "FILE",
+   "text": "RESELLER AGREEMENT between Northwind Analytics, Inc. and Tyrell Corp. (\"Reseller\"). Territory: Japan and South Korea. Reseller may appoint sub-resellers with prior written consent; Weyland-Yutani Co. is pre-approved. Payments in USD to Silicon Valley Bank.",
+   "gold": [
+    [
+     "Tyrell Corp.",
+     "Tyrell",
+     "Tyrell Corporation"
+    ],
+    [
+     "Weyland-Yutani Co.",
+     "Weyland-Yutani"
+    ],
+    [
+     "Silicon Valley Bank",
+     "SVB"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d26",
+   "connector": "SLACK",
+   "record_name": "#support-escalations",
+   "record_type": "MESSAGE",
+   "text": "Escalation from the client: dashboards blank since this morning. Turns out their SSO certificate expired. Told them to rotate it in their IdP. Closing once they confirm.",
+   "gold": [],
+   "optional": []
+  },
+  {
+   "id": "d27",
+   "connector": "OUTLOOK",
+   "record_name": "Conference sponsorship: Data Council",
+   "record_type": "MAIL",
+   "text": "Hi Marketing,\n\nData Council confirmed our silver sponsorship for the Austin event. Booth next to dbt Labs and Fivetran. The Linux Foundation is running the open-source track. Please send logos by March 15.\n\nThanks, Events",
+   "gold": [
+    [
+     "Data Council"
+    ],
+    [
+     "dbt Labs"
+    ],
+    [
+     "Fivetran"
+    ],
+    [
+     "Linux Foundation",
+     "The Linux Foundation"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d28",
+   "connector": "NOTION",
+   "record_name": "Meeting notes 2026-04-02",
+   "record_type": "WEBPAGE",
+   "text": "Attendees: Jane, Marcus, Priya. Discussed Q2 pipeline; Acme renewal on track; Globex expansion depends on their budget cycle. Action: Priya to prepare pricing for 500 seats. Next meeting in two weeks.",
+   "gold": [
+    [
+     "Acme Corp",
+     "Acme"
+    ],
+    [
+     "Globex Corporation",
+     "Globex"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d29",
+   "connector": "JIRA",
+   "record_name": "OPS-220 Rotate AWS keys",
+   "record_type": "TICKET",
+   "text": "Rotate the IAM access keys used by the backup job. Store the new keys in Vault, update the Terraform variables, and confirm the nightly snapshot to S3 succeeds.",
+   "gold": [],
+   "optional": [
+    [
+     "AWS",
+     "Amazon Web Services",
+     "Amazon"
+    ],
+    [
+     "HashiCorp"
+    ]
+   ]
+  },
+  {
+   "id": "d30",
+   "connector": "DRIVE",
+   "record_name": "Press release draft.docx",
+   "record_type": "FILE",
+   "text": "FOR IMMEDIATE RELEASE\n\nNorthwind Analytics partners with Databricks to bring natural language analytics to the lakehouse\n\nSAN FRANCISCO, May 6, 2026 — Northwind Analytics today announced a partnership with Databricks. Early customers include Gringotts Bank and the Royal Botanic Gardens, Kew. \"This is a big step,\" said Jane Whitfield, COO.",
+   "gold": [
+    [
+     "Databricks"
+    ],
+    [
+     "Gringotts Bank",
+     "Gringotts"
+    ],
+    [
+     "Royal Botanic Gardens, Kew",
+     "Royal Botanic Gardens",
+     "Kew Gardens"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d31",
+   "connector": "GMAIL",
+   "record_name": "Fwd: Audit request from KPMG",
+   "record_type": "MAIL",
+   "text": "Forwarding — KPMG (Globex's auditors) asked for our SOC 2 bridge letter and a list of subprocessors. Can Security send by Wednesday? They also want confirmation that we are not subject to sanctions by OFAC.",
+   "gold": [
+    [
+     "KPMG"
+    ],
+    [
+     "Globex Corporation",
+     "Globex"
+    ],
+    [
+     "OFAC",
+     "Office of Foreign Assets Control"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d32",
+   "connector": "CONFLUENCE",
+   "record_name": "Onboarding: engineering",
+   "record_type": "WEBPAGE",
+   "text": "Welcome! Day 1: laptop setup, access to GitHub, Linear and PagerDuty. Day 2: read the architecture doc and run the stack locally with Docker. Week 1: ship a small bug fix. Ask questions in #eng-help.",
+   "gold": [],
+   "optional": [
+    [
+     "GitHub"
+    ],
+    [
+     "Linear"
+    ],
+    [
+     "PagerDuty"
+    ],
+    [
+     "Docker"
+    ]
+   ]
+  },
+  {
+   "id": "d33",
+   "connector": "SALESFORCE",
+   "record_name": "Case 00118: Billing dispute",
+   "record_type": "CASE",
+   "text": "Customer Wonka Industries disputes the March invoice: they were charged for 250 seats but downgraded to 200 on March 3. Their finance contact, Charlie Bucket, attached the confirmation email. Credit note approved by billing.",
+   "gold": [
+    [
+     "Wonka Industries",
+     "Wonka"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d34",
+   "connector": "DRIVE",
+   "record_name": "Research summary.pdf",
+   "record_type": "FILE",
+   "text": "Literature summary on retrieval-augmented generation. Key papers from Meta AI (RAG, 2020), Google DeepMind (RETRO), and Stanford University (DSPy). Benchmarks: Natural Questions and HotpotQA. Our evaluation follows the methodology of the Allen Institute for AI.",
+   "gold": [
+    [
+     "Meta AI",
+     "Meta"
+    ],
+    [
+     "Google DeepMind",
+     "DeepMind"
+    ],
+    [
+     "Stanford University",
+     "Stanford"
+    ],
+    [
+     "Allen Institute for AI",
+     "AI2"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d35",
+   "connector": "SLACK",
+   "record_name": "#legal",
+   "record_type": "MESSAGE",
+   "text": "Heads up: Cooley sent the redlines on the Series B docs. Main open point is the pro-rata right for Index. Also, the trademark filing with the USPTO for the new logo went through.",
+   "gold": [
+    [
+     "Cooley",
+     "Cooley LLP"
+    ],
+    [
+     "Index Ventures",
+     "Index"
+    ],
+    [
+     "USPTO",
+     "United States Patent and Trademark Office"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d36",
+   "connector": "OUTLOOK",
+   "record_name": "Webinar follow-up",
+   "record_type": "MAIL",
+   "text": "Thanks for attending our webinar on self-serve analytics! The recording and slides are linked below. Reply to this email to book a 30-minute session with one of our solutions engineers.",
+   "gold": [],
+   "optional": []
+  },
+  {
+   "id": "d37",
+   "connector": "NOTION",
+   "record_name": "Vendor list",
+   "record_type": "WEBPAGE",
+   "text": "Office: WeWork (Market St). Payroll: Gusto. Laptops: purchased from Apple via the business store. Legal counsel: Cooley LLP. Accounting: Pilot. Insurance broker: Vouch.",
+   "gold": [
+    [
+     "WeWork"
+    ],
+    [
+     "Gusto"
+    ],
+    [
+     "Apple"
+    ],
+    [
+     "Cooley LLP",
+     "Cooley"
+    ],
+    [
+     "Pilot"
+    ],
+    [
+     "Vouch"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d38",
+   "connector": "GMAIL",
+   "record_name": "Northwind newsletter — April",
+   "record_type": "MAIL",
+   "text": "This month at Northwind Analytics: we shipped spreadsheet search, welcomed 4 new teammates, and hosted a meetup with the Bay Area Data Engineers group. Coming soon: usage-based billing.",
+   "gold": [
+    [
+     "Bay Area Data Engineers"
+    ]
+   ],
+   "optional": []
+  },
+  {
+   "id": "d39",
+   "connector": "DRIVE",
+   "record_name": "SOW-7 Umbrella Health.docx",
+   "record_type": "FILE",
+   "text": "STATEMENT OF WORK No. 7 under the MSA between Umbrella Health Systems, LLC and Northwind Analytics, Inc. Deliverables: HIPAA-compliant deployment, integration with Epic via the hospital's interface engine, and training for 40 analysts. Fees: $96,000 fixed.",
+   "gold": [
+    [
+     "Umbrella Health Systems, LLC",
+     "Umbrella Health Systems",
+     "Umbrella Health"
+    ]
+   ],
+   "optional": [
+    [
+     "Epic",
+     "Epic Systems"
+    ]
+   ]
+  },
+  {
+   "id": "d40",
+   "connector": "JIRA",
+   "record_name": "CUS-55 Wayne Enterprises SSO setup",
+   "record_type": "TICKET",
+   "text": "Set up SAML SSO for Wayne Enterprises. Their IdP is Ping Identity. Contact: Lucius Fox. Need the metadata XML and a test user before go-live on the 15th.",
+   "gold": [
+    [
+     "Wayne Enterprises"
+    ],
+    [
+     "Ping Identity"
+    ]
+   ],
+   "optional": []
+  }
+ ]
+}

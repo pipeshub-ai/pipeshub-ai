@@ -125,10 +125,10 @@ _VARIANTS: dict[str, _Variant] = {
         description=(
             _Edit(
                 "every record directly inside a record_group, every record naming a person, every "
-                "record of an organization's account, or the record itself",
+                "record of an organization's account or naming the organization, or the record itself",
                 "every record directly inside a record_group, every record naming a person, every "
-                "record of an organization's account, every record that mentions a named entity, "
-                "or the record itself",
+                "record of an organization's account or naming the organization, every record that "
+                "mentions a named entity, or the record itself",
             ),
         ),
         parameters=(
