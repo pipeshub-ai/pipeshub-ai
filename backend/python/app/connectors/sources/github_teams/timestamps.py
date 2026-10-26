@@ -172,10 +172,11 @@ class TimestampBackfill:
 
         file_paths = list(path_to_record_ids.keys())
         owner, name = repo.owner.login, repo.name
+        ref = c.repos.branch_for(repo)
         for offset in range(0, len(file_paths), _BATCH_SIZE):
             await c.runtime.refresh_token_if_needed()
             batch_paths = file_paths[offset:offset + _BATCH_SIZE]
-            dates_by_path, failure = await self._fetch_commit_dates(owner, name, batch_paths)
+            dates_by_path, failure = await self._fetch_commit_dates(owner, name, batch_paths, ref)
             patches = []
             for file_path in batch_paths:
                 created_ms, updated_ms = dates_by_path.get(file_path, (None, None))
@@ -270,9 +271,10 @@ class TimestampBackfill:
             )
 
     async def fetch_commit_dates(
-        self, owner: str, name: str, paths: list[str]
+        self, owner: str, name: str, paths: list[str], ref: str | None = None,
     ) -> dict[str, tuple[int | None, int | None]]:
-        """``{path: (created_ms, updated_ms)}`` from each path's first/last commit.
+        """``{path: (created_ms, updated_ms)}`` from each path's first/last commit
+        in the history of ``ref`` (a branch or commit; None = the default branch).
 
         Batched over GraphQL: ~2 queries per 100 paths (against GraphQL's own
         point budget, not the REST core quota) instead of 2 REST requests per
@@ -285,17 +287,17 @@ class TimestampBackfill:
         dates when a path is missing, and the backfill only revisits records
         with no dates, so a changed file would keep its old modified date.
         """
-        results, failure = await self._fetch_commit_dates(owner, name, paths)
+        results, failure = await self._fetch_commit_dates(owner, name, paths, ref)
         if failure is None:
             missing = [path for path in paths if path not in results]
             if missing:
                 # A rate limit here leaves the rest missing; the stored dates stay.
-                rest_dates, _limited = await self._fetch_dates_rest(owner, name, missing)
+                rest_dates, _limited = await self._fetch_dates_rest(owner, name, missing, ref)
                 results.update(rest_dates)
         return results
 
     async def _fetch_commit_dates(
-        self, owner: str, name: str, paths: list[str]
+        self, owner: str, name: str, paths: list[str], ref: str | None = None,
     ) -> tuple[dict[str, tuple[int | None, int | None]], _GraphqlFailure | None]:
         """The dates, and the rate limit that stopped the fetch early, if any.
 
@@ -310,7 +312,7 @@ class TimestampBackfill:
         remaining = list(paths)
         while remaining:
             chunk, rest = remaining[:size], remaining[size:]
-            chunk_dates, failure = await self._fetch_dates_graphql(owner, name, chunk)
+            chunk_dates, failure = await self._fetch_dates_graphql(owner, name, chunk, ref)
             results.update(chunk_dates)
             if failure is None:
                 remaining = rest
@@ -333,7 +335,7 @@ class TimestampBackfill:
                 "GraphQL commit-date batch failed for %s/%s (%s); falling back to REST for %s path(s).",
                 owner, name, failure.detail, len(chunk),
             )
-            rest_dates, rest_failure = await self._fetch_dates_rest(owner, name, chunk)
+            rest_dates, rest_failure = await self._fetch_dates_rest(owner, name, chunk, ref)
             results.update(rest_dates)
             if rest_failure is not None:
                 self.logger.warning(
@@ -345,7 +347,7 @@ class TimestampBackfill:
         return results, None
 
     async def _fetch_dates_graphql(
-        self, owner: str, name: str, paths: list[str]
+        self, owner: str, name: str, paths: list[str], ref: str | None = None,
     ) -> tuple[dict[str, tuple[int | None, int | None]], _GraphqlFailure | None]:
         """Batched dates for up to ``_GRAPHQL_ALIAS_BATCH`` paths.
 
@@ -361,7 +363,7 @@ class TimestampBackfill:
         the paths that needed it out, so they stay undated and are asked again.
         """
         c = self.c
-        variables = {"owner": owner, "name": name}
+        variables = {"owner": owner, "name": name, "ref": ref or "HEAD"}
 
         fields = " ".join(
             f"p{i}: history(first: 1, path: {json.dumps(path)}) "
@@ -446,7 +448,7 @@ class TimestampBackfill:
         return found, None
 
     async def _fetch_dates_rest(
-        self, owner: str, name: str, paths: list[str]
+        self, owner: str, name: str, paths: list[str], ref: str | None = None,
     ) -> tuple[dict[str, tuple[int | None, int | None]], _GraphqlFailure | None]:
         """Per-path REST fallback: 2 requests per path against the core quota.
 
@@ -466,7 +468,7 @@ class TimestampBackfill:
                     return
                 try:
                     res = await c.runtime.ds_call(
-                        c.data_source.list_commits_first_and_last, owner, name, path,
+                        c.data_source.list_commits_first_and_last, owner, name, path, ref,
                     )
                     if not res.success:
                         failure = _classify_failure(res)
@@ -526,9 +528,10 @@ def aggregate_folder_timestamps(
 
 
 def _history_query(fields: str) -> str:
+    # ``object(expression:)`` resolves a branch name, a commit sha or HEAD alike.
     return (
-        "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) "
-        "{ defaultBranchRef { target { ... on Commit { " + fields + " } } } } }"
+        "query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) "
+        "{ object(expression: $ref) { ... on Commit { " + fields + " } } } }"
     )
 
 
@@ -537,8 +540,7 @@ def _commit_target(res: Any) -> dict | None:
     if not getattr(res, "success", False) or not isinstance(res.data, dict):
         return None
     repository = res.data.get("repository")
-    branch = repository.get("defaultBranchRef") if isinstance(repository, dict) else None
-    target = branch.get("target") if isinstance(branch, dict) else None
+    target = repository.get("object") if isinstance(repository, dict) else None
     return target if isinstance(target, dict) else None
 
 

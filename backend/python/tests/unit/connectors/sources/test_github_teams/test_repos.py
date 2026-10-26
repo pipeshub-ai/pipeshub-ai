@@ -149,11 +149,12 @@ class TestTimestampBackfill:
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps._fetch_commit_dates = AsyncMock(return_value=({"src/main.py": (100, 200)}, None))
+        c.repos = sync
 
         await sync.timestamps.backfill_repo(repo)
 
         sync.timestamps._fetch_commit_dates.assert_awaited_once_with(
-            repo.owner.login, repo.name, ["src/main.py"],
+            repo.owner.login, repo.name, ["src/main.py"], repo.default_branch,
         )
         [patches] = _patch_calls(c, "records")
         [patch] = patches
@@ -226,7 +227,7 @@ class TestTimestampBackfill:
 
 
 def _graphql_response(target: dict) -> object:
-    return ok_response({"repository": {"defaultBranchRef": {"target": target}}})
+    return ok_response({"repository": {"object": target}})
 
 
 class TestFetchCommitDates:

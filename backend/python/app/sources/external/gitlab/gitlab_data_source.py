@@ -669,6 +669,24 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
+    #   gitlab/filters.py - FiltersHelper._branch_filter_options
+    def list_branches(
+        self,
+        project_id: int | str,
+        search: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> GitLabResponse:
+        """One page of a project's branches, by name; ``search`` matches part of the name."""
+        params: dict[str, object] = {"page": page, "per_page": per_page, "get_all": False}
+        if search:
+            params["search"] = search
+        try:
+            return GitLabResponse(success=True, data=self._project(project_id).branches.list(**params))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
     #   gitlab/repos.py - ReposSync._sync_repo_incremental
     def compare_commits(
         self,
