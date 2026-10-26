@@ -30057,17 +30057,17 @@ paths:
                     items:
                       type: object
                       additionalProperties: false
-                      required: [id, _key, _id, userId, email, name, isActive]
+                      required: [id, userId, email, name, isActive]
                       properties:
                         id:
                           type: string
                           description: Graph node id
                         _key:
                           type: string
-                          description: Same as `id`
+                          description: Same as `id`; sent only when the graph store is Neo4j
                         _id:
                           type: string
-                          description: '`users/<id>`'
+                          description: '`users/<id>`; sent only when the graph store is Neo4j'
                         userId:
                           type: string
                           format: ObjectId
