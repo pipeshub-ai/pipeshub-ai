@@ -566,3 +566,14 @@ def test_a_schema_body_over_the_limit_is_refused_before_it_is_parsed(client, h, 
 
     for r in (declared, streamed):
         assert r.status_code == 413 and error(r)["reason"] == "PAYLOAD_TOO_LARGE"
+
+
+async def test_a_schema_body_that_stalls_is_cut_at_the_read_deadline() -> None:
+    async def stalls() -> AsyncIterator[bytes]:
+        yield b'{"properties":'
+        await asyncio.sleep(3600)
+
+    with pytest.raises(PushRefusal) as e:
+        await A.read_bounded({}, stalls(), 1000, timeout_s=0.1)
+
+    assert (e.value.status, e.value.reason) == (408, "BODY_TIMEOUT")

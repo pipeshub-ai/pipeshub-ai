@@ -1933,7 +1933,9 @@ async def put_kb_schema(
         await service.authorize(kb_id, user.get("userId"), ["OWNER"])
         try:
             body = push_api.SchemaIn.model_validate_json(
-                await admission.read_bounded(request.headers, request.stream(), admission.MAX_SCHEMA_BYTES)
+                await admission.read_bounded(
+                    request.headers, request.stream(), admission.MAX_SCHEMA_BYTES, admission.SCHEMA_READ_TIMEOUT_S,
+                )
             )
         except ValidationError as e:
             first = e.errors()[0]

@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 MAX_BODY_BYTES = 16 << 20
 #: A schema is at most 256 properties of short names and labels.
 MAX_SCHEMA_BYTES = 1 << 20
+#: Time to read it; 1 MiB needs far less, so a sender that pauses is cut.
+SCHEMA_READ_TIMEOUT_S = 10.0
 READ_SLOTS = 4
 SLOT_WAIT_S = 5.0
 MIN_RATE_BPS = 64 * 1024
@@ -125,16 +127,20 @@ def _too_large() -> PushRefusal:
     return PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is larger than 16 MiB.", extra={"limit": "body", "limitBytes": MAX_BODY_BYTES})
 
 
-async def read_bounded(headers: Mapping[str, str], stream: AsyncIterator[bytes], limit: int) -> bytes:
-    """A small body read chunk by chunk: refused with 413 as soon as it passes ``limit``."""
+async def read_bounded(headers: Mapping[str, str], stream: AsyncIterator[bytes], limit: int, timeout_s: float | None = None) -> bytes:
+    """A small body read chunk by chunk: 413 as soon as it passes ``limit``, 408 if it takes longer than ``timeout_s``."""
     declared = headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > limit:
         raise _too_large_for(limit)
     buf = bytearray()
-    async for chunk in stream:
-        buf += chunk
-        if len(buf) > limit:
-            raise _too_large_for(limit)
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for chunk in stream:
+                buf += chunk
+                if len(buf) > limit:
+                    raise _too_large_for(limit)
+    except TimeoutError:
+        raise PushRefusal(408, "BODY_TIMEOUT", "The body arrived too slowly.") from None
     return bytes(buf)
 
 
