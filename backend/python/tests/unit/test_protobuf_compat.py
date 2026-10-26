@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 MANIFEST = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -43,6 +44,11 @@ APP_MODULES = [
     "app.sources.client.gcs.gcs",
     "app.sources.client.snowflake.snowflake",
 ]
+
+
+def _lowest_python() -> str:
+    spec = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))["project"]["requires-python"]
+    return next(s.version for s in SpecifierSet(spec) if s.operator == ">=")
 
 
 def _protobuf_requirement() -> Requirement:
@@ -91,7 +97,11 @@ def test_the_manifest_resolves_for_every_supported_python() -> None:
     Before the protobuf pin was lifted it failed for Python 3.14, where the
     Google libraries need protobuf 6, which kept any lockfile from being made."""
     result = subprocess.run(
-        ["uv", "pip", "compile", str(MANIFEST), "--universal", "--quiet", "--output-file", "/dev/null"],
+        [
+            "uv", "pip", "compile", str(MANIFEST), "--universal", "--quiet", "--output-file", "/dev/null",
+            # Universal mode starts at the running Python, not at the manifest's lower bound.
+            "--python-version", _lowest_python(),
+        ],
         capture_output=True, text=True, timeout=600, check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
