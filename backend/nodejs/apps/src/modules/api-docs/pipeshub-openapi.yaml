@@ -8688,7 +8688,10 @@ components:
         mimeType:
           type: string
           minLength: 1
-          description: MIME type of the uploaded file.
+          description: |
+            MIME type of the stored file. For an image whose bytes are a JPEG or a PNG it is
+            `image/jpeg` or `image/png` as the bytes say, whatever type was declared; other
+            files keep the declared type. Files, images included, are stored as sent.
         extension:
           type: string
           minLength: 1
@@ -8744,9 +8747,10 @@ components:
         - Suggests follow-up questions based on the conversation
 
         **History:** a new conversation starts with no history, and
-        history is never accepted from the caller. A body carrying a
-        non-empty `previousConversations` is rejected with 400 (an empty
-        list is ignored). Send follow-up questions to
+        history is never accepted from the caller. A body carrying
+        `previousConversations` with any value but an empty list (`null`, a
+        string or an object included) is rejected with 400; an empty list is
+        dropped. Send follow-up questions to
         `POST /conversations/{conversationId}/messages`; the server replays
         the stored conversation.
 
@@ -9017,8 +9021,9 @@ components:
         omitted; `AgentStreamCreateConversationRequest` additionally requires
         it. Unknown fields are stripped during validation, except
         `previousConversations`: history is never accepted from the caller,
-        so a non-empty `previousConversations` is rejected with 400 (an
-        empty list is ignored). Follow-up turns go to
+        so `previousConversations` with any value but an empty list (`null`,
+        a string or an object included) is rejected with 400; an empty list
+        is dropped. Follow-up turns go to
         `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
         where the server replays the stored conversation.
       required:
@@ -9272,9 +9277,11 @@ components:
             the app sends them (`User selections:` followed by one
             `N. "question" → answer` line each). When present, the turn is
             re-run with these answers instead of the saved ones, and they are
-            saved in their place. Rejected with 400 when the reply being
-            regenerated did not follow a question card, or when the request
-            also edits the question (`query` or `attachments`).
+            saved in their place. Over 8000 characters, or text not starting with
+            `User selections:`, is refused with `400 VALIDATION_ERROR`. A reply
+            that did not follow a question card, or a request that also edits
+            the question (`query` or `attachments`), is refused after the stream
+            opens: a 200 stream ending in a `RUN_ERROR` (see the operation).
           example: "User selections:\n1. \"Which region?\" → EU"
         modelKey:
           type: string
@@ -11345,9 +11352,7 @@ components:
         that the bounds left out come back apart from the results, in
         `searchResponse.outsideDates`. With the setting off, no such search runs and
         `outsideDates` is omitted.
-      required:
-        - query
-        - limit
+      required: [query]
       properties:
         query:
           type: string
@@ -11375,6 +11380,7 @@ components:
 
             Left out, it is `10`. A numeric string (`"2"`) is accepted and read as a number; a
             fractional number is refused with `400 VALIDATION_ERROR`.
+          default: 10
         createdAfter:
           type: string
           maxLength: 64
@@ -14042,6 +14048,9 @@ components:
             is refused rather than ignored, so a request cannot quietly create
             an agent that searches as its creator. Omit it and the agent
             searches as its creator.
+            Whitespace around it is removed first; 1-128 characters.
+          minLength: 1
+          maxLength: 128
         toolsets:
           type: array
           maxItems: 100
@@ -14415,6 +14424,9 @@ components:
             request may convert an agent and bind it. Null is accepted on any
             agent and clears the binding, going back to searching as the
             agent's creator.
+            Whitespace around it is removed first; 1-128 characters.
+          minLength: 1
+          maxLength: 128
         toolsets:
           type: array
           maxItems: 100
@@ -41096,6 +41108,12 @@ paths:
             Invalid request — `query` is missing, empty or over 100,000
             characters, contains markup or printf-style format specifiers, or
             another field fails validation.
+
+            A `previousConversations` field holding anything but an empty list (`HTTP_BAD_REQUEST`,
+            `previousConversations is not accepted. Conversation history is read from the stored
+            conversation: create the conversation, then send follow-up questions to its messages
+            endpoint.`). Checked after authentication and before the body validator; an empty list is
+            dropped.
           content:
             application/json:
               schema:
@@ -41222,6 +41240,12 @@ paths:
             Invalid request — `query` is missing, empty, or exceeds the
             100000-character limit, or another field fails validation
             (for example a malformed `recordIds` or `currentTime`).
+
+            A `previousConversations` field holding anything but an empty list (`HTTP_BAD_REQUEST`,
+            `previousConversations is not accepted. Conversation history is read from the stored
+            conversation: create the conversation, then send follow-up questions to its messages
+            endpoint.`). Checked after authentication and before the body validator; an empty list is
+            dropped.
           content:
             application/json:
               schema:
@@ -41314,10 +41338,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: >
-            Invalid `conversationId` (`VALIDATION_ERROR`), no files, or an
-            unsupported MIME type (`HTTP_BAD_REQUEST`). Size and count limits
-            are not answered here but with `500`.
+          description: |
+            Invalid `conversationId` (`VALIDATION_ERROR`), no files, or an unsupported MIME type (`HTTP_BAD_REQUEST`). Size and count limits are not answered here but with `500`.
+
+            An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
+            image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
+            megapixels`), is refused too (`HTTP_BAD_REQUEST`).
           content:
             application/json:
               schema:
@@ -41461,9 +41487,7 @@ paths:
             Defaults to `owned` when omitted.
           schema:
             type: string
-            enum:
-              - owned
-              - shared
+            enum: [owned, shared]
             default: owned
         - name: page
           in: query
@@ -41478,10 +41502,9 @@ paths:
           in: query
           required: false
           description: |
-            Page size. Defaults to 10; values above 100 are refused. A fraction is not
-            refused; it is truncated (`5.5` reads as 5).
+            Page size. Defaults to 10; values above 100, and fractions, are refused (`400 VALIDATION_ERROR`).
           schema:
-            type: number
+            type: integer
             minimum: 1
             maximum: 100
             default: 10
@@ -41491,26 +41514,21 @@ paths:
           description: Sort field. Invalid values fall back to `lastActivityAt`.
           schema:
             type: string
-            enum:
-              - createdAt
-              - lastActivityAt
-              - title
+            enum: [createdAt, lastActivityAt, title]
         - name: sortOrder
           in: query
           required: false
           description: Sort direction. Defaults to `desc` unless set to `asc`.
           schema:
             type: string
-            enum:
-              - asc
-              - desc
+            enum: [asc, desc]
         - name: conversationId
           in: query
           required: false
           description: When set, restricts results to that conversation ID (if visible under the chosen `source`).
           schema:
             type: string
-            pattern: '^[0-9a-fA-F]{24}$'
+            pattern: ^[0-9a-fA-F]{24}$
         - name: search
           in: query
           required: false
@@ -41527,7 +41545,7 @@ paths:
           schema:
             type: string
             format: date-time
-            pattern: '^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:?\d{2})$'
+            pattern: ^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:?\d{2})$
         - name: endDate
           in: query
           required: false
@@ -41537,7 +41555,7 @@ paths:
           schema:
             type: string
             format: date-time
-            pattern: '^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:?\d{2})$'
+            pattern: ^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-]\d{2}:?\d{2})$
         - name: shared
           in: query
           required: false
@@ -41558,7 +41576,7 @@ paths:
             `unassigned` to list conversations with no `projectId`.
           schema:
             type: string
-            pattern: '^(unassigned|[0-9a-fA-F]{24})$'
+            pattern: ^(unassigned|[0-9a-fA-F]{24})$
       responses:
         '200':
           description: List of conversations for the requested source
@@ -41898,6 +41916,8 @@ paths:
           description: |
             Bad request — for example, missing or invalid `source` (must be `owned` or `shared`),
             invalid date query params, invalid `search` shape, or search text over the length limit.
+
+            `limit` that is not a whole number is refused too (`VALIDATION_ERROR`).
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -44528,6 +44548,9 @@ paths:
             `user_query` each produce a 200 stream holding the opening
             `CUSTOM` `conversation_created` frame and one root `RUN_ERROR`
             (`code: streaming_error`) whose `message` names the cause.
+
+            Two refusals about `answers` arrive the same way: `Answers can only replace the answers to a
+            question card.` and `An edit cannot also replace the answers to a question card.`
           content:
             text/event-stream:
               schema:
@@ -46039,6 +46062,9 @@ paths:
         `projectVisibility: project`. Access to the project is asserted
         first, so a private conversation belonging to a *different* project
         member never leaks through this endpoint.
+
+        On rows the caller does not own, `conversationErrors`, `failReason` and
+        `compactedSummary` are left out.
       operationId: getProjectConversations
       x-pipeshub-sdk: false
       security:
@@ -47093,7 +47119,6 @@ paths:
         '422':
           description: |
             The search service refused the request after the gateway accepted it:
-            - `limit` is a fractional number (`HTTP_UNPROCESSABLE_ENTITY`, "Limit must be a whole number.")
             - `filters.entityFilters` matches too many records the caller can read. Narrow it:
               a tighter range, a name, or fewer kinds.
             - the selection below app level covers more nodes than one search may (50,000 by
@@ -47106,10 +47131,7 @@ paths:
         '500':
           description: |
             Unexpected server error while executing the search, or the
-            upstream AI search service was unreachable. Also returned
-            (`INTERNAL_ERROR`) when `limit` is omitted: the search runs, but
-            the search document cannot be saved without a `limit`, so the
-            hits are lost and no `searchId` is returned. Also returned,
+            upstream AI search service was unreachable. Also returned,
             before the token is checked, when the request carries a body
             that is not valid JSON: the body parser fails and the failure is
             reported with code `INTERNAL_ERROR`, not as a `400`.
@@ -47154,9 +47176,8 @@ paths:
         Results are sorted by most recent activity by default.
 
         `pagination.totalCount` (and with it `totalPages` and `hasNextPage`)
-        counts every search stored in the deployment, across all users and
-        organizations, not the caller's history: a caller with no searches
-        still sees a non-zero `totalCount`.
+        counts the searches the listing itself holds: the caller's own and those
+        shared with them in their organization.
       operationId: searchHistory
       x-pipeshub-sdk: true
       security:
@@ -48293,6 +48314,10 @@ paths:
             reasoning entry, an unregistered toolset name, two MCP servers of one
             type, wrong types, ...). Rules the AI backend applies answer
             `HTTP_BAD_REQUEST`.
+
+            `serviceAccountUserId` without `isServiceAccount` is refused (`VALIDATION_ERROR` on
+            `serviceAccountUserId`: `Only a service agent searches as a service account. Set
+            isServiceAccount, or leave the binding out.`).
           content:
             application/json:
               schema:
@@ -48862,10 +48887,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: >
-            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, or an
-            unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not
-            looked up. Multer's own rejections are not a 400: see 500.
+          description: |
+            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up. Multer's own rejections are not a 400: see 500.
+
+            An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
+            image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
+            megapixels`), is refused too (`HTTP_BAD_REQUEST`).
           content:
             application/json:
               schema:
@@ -49023,6 +49050,12 @@ paths:
             field (checked by this route after authentication; the app-wide filter
             skips POST and PUT under `/agents/`) answers
             `HTTP_BAD_REQUEST`.
+
+            A `previousConversations` field holding anything but an empty list (`HTTP_BAD_REQUEST`,
+            `previousConversations is not accepted. Conversation history is read from the stored
+            conversation: create the conversation, then send follow-up questions to its messages
+            endpoint.`). Checked after authentication and before the body validator; an empty list is
+            dropped.
           content:
             application/json:
               schema:
@@ -49223,6 +49256,9 @@ paths:
             `threadId`, and `parentRunId`. Additional backend-defined
             agent/tool events may be emitted.
             Clients should ignore unknown event names.
+
+            Two refusals about `answers` arrive the same way: `Answers can only replace the answers to a
+            question card.` and `An edit cannot also replace the answers to a question card.`
           content:
             text/event-stream:
               schema:
@@ -50744,7 +50780,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
     post:
       tags:
         - Agents
@@ -50825,6 +50860,12 @@ paths:
             handlers) answer `HTTP_BAD_REQUEST` before a conversation is saved;
             this route checks markup itself, after authentication, because the
             app-wide filter skips POST and PUT under `/agents/`.
+
+            A `previousConversations` field holding anything but an empty list (`HTTP_BAD_REQUEST`,
+            `previousConversations is not accepted. Conversation history is read from the stored
+            conversation: create the conversation, then send follow-up questions to its messages
+            endpoint.`). Checked after authentication and before the body validator; an empty list is
+            dropped.
           content:
             application/json:
               schema:
