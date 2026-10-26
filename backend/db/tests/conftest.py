@@ -66,7 +66,10 @@ def cluster(request, tmp_path_factory):
     if request.param is None:
         pytest.skip("no PostgreSQL binaries (set MIGRATE_TEST_PG_BINS)")
     if request.param == "external":
-        yield Cluster("", Path("."), int(os.environ["MIGRATE_TEST_PG_EXTERNAL"].rsplit(":", 1)[1]))
+        host, port = os.environ["MIGRATE_TEST_PG_EXTERNAL"].rsplit(":", 1)
+        if host not in ("127.0.0.1", "localhost"):  # the fixtures drop databases and roles, and always connect to 127.0.0.1
+            pytest.fail(f"MIGRATE_TEST_PG_EXTERNAL host {host!r} is not supported: the fixtures connect to 127.0.0.1")
+        yield Cluster("", Path("."), int(port))
         return
     root = tmp_path_factory.mktemp("pg")
     port = _free_port(int(os.environ.get("MIGRATE_TEST_PG_PORT_BASE", "62000")))

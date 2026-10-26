@@ -51,7 +51,10 @@ def permanent(exc: psycopg.Error) -> bool:
 
 
 def read_epochs(url: str) -> dict[str, int]:
-    user = psycopg.conninfo.conninfo_to_dict(url).get("user", "")
+    try:
+        user = psycopg.conninfo.conninfo_to_dict(url).get("user", "")
+    except psycopg.ProgrammingError as exc:
+        raise ValueError(f"PG_WAIT_URL is not a valid connection string: {reason(exc)}") from exc
     if not (m := _LOGIN.match(user)):
         raise ValueError("PG_WAIT_URL must be a pipeshub_<service>_login URL")
     with psycopg.connect(url, autocommit=False, prepare_threshold=None, connect_timeout=5) as conn, conn.transaction():
@@ -65,7 +68,12 @@ def main() -> int:
         log("PG_WAIT_URL is not set", error=True)
         return 2
     wanted = heads()
-    deadline = time.monotonic() + float(os.environ.get("PG_WAIT_TIMEOUT_S", "3600"))
+    try:
+        timeout = float(os.environ.get("PG_WAIT_TIMEOUT_S", "3600"))
+    except ValueError:
+        log("PG_WAIT_TIMEOUT_S must be a number of seconds", error=True)
+        return 2
+    deadline = time.monotonic() + timeout
     last = ""
     while True:
         try:

@@ -17,6 +17,14 @@ def test_the_url_must_be_a_service_login(monkeypatch):
         wait_schema.read_epochs("postgresql://pipeshub_jobs:x@127.0.0.1:1/pipeshub")
 
 
+def test_a_malformed_url_or_timeout_is_a_configuration_error_not_a_wait(monkeypatch):
+    monkeypatch.setenv("PG_WAIT_URL", "postgresql://[bad")
+    assert wait_schema.main() == 2                                   # exit 2 at once, not an hour of retries ending in 1
+    monkeypatch.setenv("PG_WAIT_URL", "postgresql://pipeshub_node_login@127.0.0.1:1/x")
+    monkeypatch.setenv("PG_WAIT_TIMEOUT_S", "soon")
+    assert wait_schema.main() == 2
+
+
 def test_waits_for_the_migration_and_passes_once_at_head(db, monkeypatch, capsys):
     cluster, name = db
     url = cluster.url(name, "pipeshub_node_login").replace("postgresql+psycopg://", "postgresql://")

@@ -76,7 +76,7 @@ privilege outside the schema, only on tables that opted in with `p_vetted`/`p_ve
 bootstrap. Why: RLS hides indexes behind operators that are not leakproof; the function applies the org predicate itself, so the planner
 may use the index, and everything it can touch is bounded by its owner.
 
-Write the function as an entry in `<module>/vetted/manifest.yaml` (format and the template: `lib/vetted.py`). Every field is checked against a strict schema: identifiers match `^[a-z_][a-z0-9_]*$`, types and `returns` come from a short list, `default` and `no_org` are a number, NULL, true/false or a plain quoted string, flags are booleans, and the body may RAISE only a constant EXCEPTION with an SQLSTATE; the generator quotes identifiers as `quote_ident` does and generate the SQL:
+Write the function as an entry in `<module>/vetted/manifest.yaml` (format and the template: `lib/vetted.py`). Every field is checked against a strict schema: identifiers match `^[a-z_][a-z0-9_]*$`, types and `returns` come from a short list, `default` and `no_org` are a number, NULL, true/false or a plain quoted string, flags are booleans, and the body may RAISE only a constant EXCEPTION with an SQLSTATE; the generator quotes identifiers as `quote_ident` does. Generate the SQL with:
 
     python -m db.lib.vetted render versions/<module>/vetted/manifest.yaml     # writes versions/<module>/vetted/<name>.sql
     python -m db.lib.vetted check  versions/<module>/vetted/manifest.yaml     # CI: the checked-in SQL is what the manifest says
@@ -110,7 +110,7 @@ The surface snapshot lists each function's owner, flags, settings and a hash of 
 Per function the manifest drives a generated suite (`tests/test_vetted.py`): no org, a foreign org, the own org, index use, validation,
 privileges, catalog, timing and shadowing by a caller's temp table.
 
-**Plan gate.** `vetted_harness.check_plans` fails on a sequential scan of an org-scoped table with more than 1,000 estimated rows (tables are analysed first) and on a missing index, matched as a whole name. It uses `vetted_harness.plans_auto_explain` loads `auto_explain` in an administrator session (LOAD needs superuser), switches to the
+**Plan gate.** `vetted_harness.check_plans` fails on a sequential scan of an org-scoped table with more than 1,000 estimated rows (tables are analysed first) and on a missing index, matched as a whole name. `vetted_harness.plans_auto_explain` loads `auto_explain` in an administrator session (LOAD needs superuser), switches to the
 service role, calls the function seven times and reads the nested plans from the notices (the plpgsql plan cache goes generic after five
 calls). Where LOAD is not allowed (managed platforms), `plan_explain` switches to the vetted role and EXPLAINs the function's query with the
 org set; `check_index` falls back to it by itself.
