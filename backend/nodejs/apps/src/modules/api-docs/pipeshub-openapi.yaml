@@ -872,8 +872,10 @@ components:
         documentPath:
           type: string
         createdAt:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: When the document was created (epoch milliseconds).
+      required: [_id, documentName, documentPath]
     StoragePurgeResult:
       type: object
       required:
@@ -920,9 +922,8 @@ components:
             type: string
           description: |
             Headers to send with the request, exactly as given: the signed
-            `Content-Type` on S3, `x-ms-blob-type` on Azure, the storage token
+            `Content-Type` on S3, `x-ms-blob-type` and `Content-Type` on Azure, the storage token
             on local storage.
-    # ==================== COMMON SCHEMAS ====================
     ArtifactGalleryItem:
       type: object
       additionalProperties: false
@@ -34497,9 +34498,7 @@ paths:
                   type: array
                   items:
                     type: object
-                    required:
-                      - key
-                      - value
+                    required: [key]
                     properties:
                       key:
                         type: string
@@ -34590,7 +34589,8 @@ paths:
       summary: Remove a document and its stored files (service-to-service)
       description: |
         Removes every stored copy of the document's file (the current file and
-        each version), then the document record. Called when the record that
+        each version), then the document record. For an artifact-set document (one
+        content revision) the revision's whole file tree is removed. Called when the record that
         owned the document is deleted. A document that is already gone counts
         as purged, so the call is safe to repeat. If a stored file cannot be
         removed the record is kept and the call answers 503, so it can be retried.
@@ -34623,10 +34623,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: A stored file could not be removed; the document was kept so the removal can be retried.
+          description: |
+            A stored file could not be removed; the document was kept so the removal can be retried
+            (`Could not remove the stored files; the document was kept so the removal can be retried`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/records/{virtualRecordId}/purge:
     delete:
       tags:
@@ -34636,7 +34646,8 @@ paths:
         Removes the virtual record's processed-content documents
         (`record_{virtualRecordId}` and `metadata_{virtualRecordId}`) wherever
         they are filed in the organisation, plus anything at the older flat
-        path `records/{virtualRecordId}`, together with their stored files.
+        path `records/{virtualRecordId}`, together with their stored files, and every stored
+        content revision of it (`record-revisions/{virtualRecordId}/...`) with all its files.
         Records with identical content share one virtual record id, so the
         caller purges only once no record uses it. Safe to repeat.
       operationId: internalPurgeVirtualRecordDocuments
@@ -34668,10 +34679,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: A stored file could not be removed; its document was kept so the removal can be retried.
+          description: |
+            A stored file could not be removed; its document was kept so the removal can be retried
+            (`Could not remove the stored files; the document was kept so the removal can be retried`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/conversations/{conversationId}/purge:
     delete:
       tags:
@@ -34756,6 +34777,7 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/StoredRecordDocument'
+                required: [documents]
         '400':
           description: |
             The paging parameters are not valid.
@@ -34806,6 +34828,7 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/StoredRecordDocument'
+                required: [documents]
         '400':
           description: |
             The virtual record id is not valid.
@@ -34838,6 +34861,7 @@ paths:
         ids do not change. A copy already at `newPath` with the new tag counts
         as moved, so the call is safe to repeat. `missing` lists ids with no
         such document.
+        Stored content revisions (artifact sets) are not moved.
       operationId: internalRelocateVirtualRecords
       security:
         - scopedToken: []
@@ -35116,7 +35140,8 @@ paths:
                       contentType:
                         type: string
                         maxLength: 127
-                        description: The file's media type, e.g. `application/json`.
+                        description: The file's media type, e.g. `application/json` (otherwise `Not a media type`).
+                        pattern: ^[\w.+-]+/[\w.+-]+$
       responses:
         '200':
           description: The revision's document and one upload URL per file.
@@ -35149,7 +35174,9 @@ paths:
                       $ref: '#/components/schemas/ArtifactFileUrl'
         '400':
           description: |
-            The body is not valid (an id, a revision, or a path that is not accepted).
+            The body is not valid (`VALIDATION_ERROR`): `Not a virtual record id`, `rev must be 8 to 64
+            lowercase hex characters`, `Not a file an artifact set can hold`, `Not a media type`, `Each
+            path may appear only once`, or no files or more than 1000.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -35164,6 +35191,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The body names a different organisation than the storage token. Nothing was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Conflict (`CONFLICT`). Possible causes:
+            - The revision was deleted and not yet purged (`This revision was deleted; purge it before
+              writing it again`)
+            - The revision is stored on another storage than the configured one (`This revision is
+              stored on <vendor>, not on the configured <type> storage`)
           content:
             application/json:
               schema:
@@ -35253,7 +35291,9 @@ paths:
         - $ref: '#/components/parameters/InternalDocumentId'
       responses:
         '200':
-          description: How many documents were removed (0 if it was already gone).
+          description: |
+            How many documents were removed: 0 if it was already gone, or if the id names a
+            document that is not an artifact set, which is left alone.
           content:
             application/json:
               schema:
@@ -35362,6 +35402,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The revision is stored on another storage than the configured one (`CONFLICT`, `This revision is stored on <vendor>, not on the configured <type> storage`). Checked after the `403` and the `404`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
   /document/internal/artifacts/{documentId}/files/{path}:
@@ -35409,7 +35456,10 @@ paths:
                     type: integer
         '400':
           description: |
-            The document id or path is not valid, the body was not sent as bytes, or storage is not local.
+            The document id or path is not valid, the body was not sent as bytes (`Send the file as the
+            request body with Content-Type application/octet-stream`), or storage is not local
+            (`Artifact files are served by the API only on local storage; use the signed URLs`; on S3 or
+            Azure a missing revision is answered `404` first).
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -35428,14 +35478,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '413':
-          description: The file is larger than 100 MB.
+        '409':
+          description: |
+            The revision is stored on another storage than the configured one (`CONFLICT`, `This revision is stored on <vendor>, not on the configured <type> storage`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            Internal server error. Also returned for a body larger than 100 MB: the raw body parser
+            fails and the error is reported as `INTERNAL_ERROR`, not `413`.
+
+            Also returned, before authentication, when the request carries a body that is not valid JSON: the body parser fails and reports code `INTERNAL_ERROR`, not a `400`.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: The file could not be saved. Safe to retry.
           content:
@@ -35460,16 +35521,65 @@ paths:
             type: string
       responses:
         '200':
-          description: The file.
+          description: |
+            The file, typed by its extension: `application/json` for `.json`, the image type for
+            `.png`, `.jpg` and `.webp`, `application/octet-stream` for `.jsonl`.
+          headers:
+            Accept-Ranges:
+              description: Always `bytes`.
+              schema:
+                type: string
           content:
+            application/json:
+              schema:
+                type: string
+                format: binary
             application/octet-stream:
               schema:
                 type: string
                 format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
         '206':
-          description: The requested byte range of the file.
+          description: |
+            The requested byte range of the file, typed as for `200`.
+          headers:
+            Accept-Ranges:
+              description: Always `bytes`.
+              schema:
+                type: string
+            Content-Range:
+              description: '`bytes <start>-<end>/<size>`.'
+              schema:
+                type: string
           content:
+            application/json:
+              schema:
+                type: string
+                format: binary
             application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
               schema:
                 type: string
                 format: binary
@@ -35489,17 +35599,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such revision or file.
+          description: No such revision in the caller's organisation, or no such file in it (`File not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The revision is stored on another storage than the configured one (`CONFLICT`, `This revision is stored on <vendor>, not on the configured <type> storage`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '416':
-          description: The requested range is outside the file.
-          content:
-            application/json:
+          description: The requested range is outside the file. The body is empty.
+          headers:
+            Content-Range:
+              description: '`bytes */<size>`.'
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                type: string
         '500':
           $ref: '#/components/responses/BodyParserFailure'
   /document/internal/{documentId}/download:
@@ -37821,7 +37939,7 @@ paths:
         **Folder features:**
 
         - Organize records hierarchically
-        - Support nested subfolders (unlimited depth)
+        - Support nested subfolders, up to 20 levels deep
         - Inherit parent KB permissions
 
         **Naming rules:**
@@ -37836,7 +37954,9 @@ paths:
           same name under another parent, does not clash.
 
         **Request:** only `folderName` and the `folderId` query parameter are read; other body
-        fields and query parameters are ignored.
+        fields and query parameters are ignored, except a `folderId`, `parentId` or
+        `parent_id` in the body and a `parentId` or `parent_id` query parameter, which are
+        refused with `400`.
 
         **Access:** a caller with no role on the knowledge base gets `404`
         (`Knowledge base <kbId> not found`), a `READER` gets `403`.
@@ -37990,22 +38110,37 @@ paths:
         - Knowledge Base
       summary: Create subfolder
       description: |
-        Create a nested subfolder inside an existing parent folder.
+        Create a nested subfolder inside an existing parent folder, named by the `folderId`
+        path parameter. It runs the same validator and handler as
+        `POST /knowledgeBase/{kbId}/folder`. A `folderId` query parameter is still read: one
+        that names a different folder than the path is refused with `400`.
 
         **Required permission:** WRITER or higher
 
         **Folder features:**
 
         - Organize records hierarchically
-        - Support nested subfolders (unlimited depth)
+        - Support nested subfolders, up to 20 levels deep
         - Inherit parent KB permissions
 
         **Naming rules:**
 
-        - 1–255 characters
-        - XSS protection applied
+        - Whitespace around the name is removed first; then 1–255 characters
+        - A name holding an HTML tag, a `javascript:` URL or an inline event handler is
+          refused with `400` before authentication; one holding a printf-style format
+          specifier (`%s`, `%x`, `%n`, `%p`) is refused with `400` by the gateway controller
         - Spaces and special characters allowed
-        - Duplicate names rejected within the same parent (`409`)
+        - A name already used by a folder in the same parent is refused with `409`, ignoring
+          case (`Reports` and `rEPORTS` clash). A file of the same name, or a folder of the
+          same name under another parent, does not clash.
+
+        **Request:** only `folderName` and the `folderId` query parameter are read; other body
+        fields and query parameters are ignored, except a `folderId`, `parentId` or
+        `parent_id` in the body and a `parentId` or `parent_id` query parameter, which are
+        refused with `400`.
+
+        **Access:** a caller with no role on the knowledge base gets `404`
+        (`Knowledge base <kbId> not found`), a `READER` gets `403`.
 
         **Response:** Returns `id` and `name` for the created folder.
       operationId: createSubfolder
@@ -38020,13 +38155,25 @@ paths:
           description: Knowledge base ID
           schema:
             type: string
+            format: uuid
         - name: folderId
           in: path
           required: true
-          description: Parent folder ID
+          description: |
+            Parent folder ID. An id that is not a folder of this knowledge base (unknown, or a
+            file) is answered `404`.
           schema:
             type: string
             format: uuid
+        - name: folderId
+          in: query
+          required: false
+          description: |
+            Optional. When sent, it must equal the `folderId` path parameter (`Conflicting
+            folderId in path and query parameters`).
+          schema:
+            type: string
+            minLength: 1
       requestBody:
         required: true
         description: "Request payload"
@@ -38039,10 +38186,31 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  description: Name of the folder
+                  pattern: \S
+                  not:
+                    pattern: (?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]
+                  description: |
+                    Name of the folder. Whitespace around it is removed first, so a name made
+                    only of whitespace is refused as empty.
                   example: "Project Documents"
               required:
                 - folderName
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                folderName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  pattern: \S
+                  not:
+                    pattern: (?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]
+                  description: |
+                    Name of the folder. Whitespace around it is removed first, so a name made
+                    only of whitespace is refused as empty.
+                  example: Project Documents
+              required: [folderName]
       responses:
         '200':
           description: Folder created successfully
@@ -38054,9 +38222,23 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - Missing or empty folder name
-            - Folder name exceeds 255 characters
-            - XSS or invalid characters in folder name
+            - `folderName` missing, `null`, not a string, empty or only whitespace, or longer
+              than 255 characters; `kbId` or the path `folderId` not a UUID; the query `folderId`
+              empty (`VALIDATION_ERROR`)
+            - The query `folderId` names a different folder than the path (`HTTP_BAD_REQUEST`,
+              `Conflicting folderId in path and query parameters`)
+            - A `folderId`, `parentId` or `parent_id` in the body, or a `parentId` or `parent_id`
+              query parameter (`VALIDATION_ERROR`, `To create a subfolder, use the subfolder route.`):
+              name the parent in the path only
+            - `folderName` contains an HTML tag, a `javascript:` URL or an inline event handler
+              (`HTTP_BAD_REQUEST`). This check runs before authentication.
+            - `folderName` contains a format specifier (`HTTP_BAD_REQUEST`)
+            - The parent is already 20 levels deep
+              (`Folders can be nested at most 20 levels deep. ...`)
+            - `kbId` or `folderId` holds a character that cannot stand in a URL path segment (`/`, `\`, `?`,
+              `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`)
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
             application/json:
               schema:
@@ -38072,13 +38254,17 @@ paths:
             Forbidden. Possible reasons:
 
             - OAuth token lacks the `kb:write` scope
-            - User lacks WRITER or higher permission on the knowledge base
+            - User is `READER` (`... OWNER or WRITER role required, but your role is: READER.`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base or parent folder not found
+          description: |
+            - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
+              role on it
+            - `Parent folder <folderId> not found in KB <kbId>`: `folderId` is not a folder of
+              this knowledge base (unknown id, or a file)
           content:
             application/json:
               schema:
@@ -38094,7 +38280,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Internal server error while creating folder
+          description: |
+            Internal server error while creating folder.
+
+            A request body that is not valid JSON is also answered `500` (`INTERNAL_ERROR`), before authentication.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
           content:
             application/json:
               schema:
