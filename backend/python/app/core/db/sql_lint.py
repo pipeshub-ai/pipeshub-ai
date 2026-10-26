@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _CALLS = {"fetch", "fetchrow", "fetchval", "execute", "executemany"}
-_SQL_START = re.compile(r"\s*(/\*.*?\*/\s*)*(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
+_SQL_START = re.compile(r"\s*(?:/\*(?:[^*]|\*(?!/))*\*/\s*)*(select|insert|update|delete|with|merge|set|reset|declare|create|listen|unlisten|"
                         r"prepare|execute|deallocate|discard|close|fetch|move|savepoint|release|rollback|commit|begin|end|abort|start)\b", re.I | re.S)
 _TAG = re.compile(r"/\*\s*pipeshub:[A-Za-z0-9_.]{1,80}\s*\*/")
 _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
