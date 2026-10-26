@@ -173,20 +173,25 @@ class TestOAuthClient:
 
 class TestIssuePagination:
     async def test_all_pages_are_read_and_the_next_run_starts_after_the_last_issue(self, api, db, checkpoints, search) -> None:
+        subtask = issue(4, "2024-05-02T09:00:00.000+0000")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        subtask["fields"]["parent"] = {"id": "1", "key": "ENG-1"}
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(2, "2024-05-01T11:00:00.000+0000")], "nextPageToken": "T2"})
-        search.add("ENG", "T2", {"issues": [issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
+        search.add("ENG", "T2", {"issues": [subtask, issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
             {"id": "900", "filename": "log.txt", "mimeType": "text/plain", "size": 12, "created": "2024-05-02T15:00:00.000+0000"},
         ])]})
         connector, _ = await ready_connector(db, checkpoints)
 
         stats = await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert set(tickets(db)) == {"1", "2", "3"}
-        assert stats["total_synced"] >= 3 and stats["failed_project_keys"] == []
+        assert set(tickets(db)) == {"1", "2", "3", "4"}
+        assert stats["total_synced"] >= 4 and stats["failed_project_keys"] == []
         assert [b.get("nextPageToken") for b in search.bodies if "parent in (" not in b["jql"]] == [None, "T2"]
         assert search.bodies[0]["jql"] == 'project = "ENG" ORDER BY updated ASC, id ASC'
         # A project's first read reaches every sub-task itself, so none is read a second time.
         assert not [b for b in search.bodies if "parent in (" in b["jql"]]
+        assert tickets(db)["4"].parent_external_record_id == "1"
+        assert sum(r.external_record_id == "4" for batch in db.record_batches for r in batch) == 1
         attachment = db.records["attachment_900"]
         assert isinstance(attachment, FileRecord) and attachment.parent_external_record_id == "3"
         assert db.records["1"].weburl == f"{SITE}/browse/ENG-1"

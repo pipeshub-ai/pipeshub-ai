@@ -707,15 +707,16 @@ class TestSubtasksFollowTheirParent:
 
     @pytest.mark.asyncio
     async def test_a_failed_subtask_read_keeps_the_parents_for_the_next_sync(self) -> None:
-        """The cursor has already passed the parent, so only the checkpoint brings it back."""
+        """The parents wait in the checkpoint, and the cursor does not pass the batch."""
         _, _, point = await self._run(stored={}, batch_issues=self._parent_and_subtask(), fail_subtasks=True)
         assert json.loads(point["subtask_parents"]) == ["1001"]
-        assert point["last_issue_updated"] == 1_700_000_100_000
+        assert point["last_issue_updated"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_parents_left_by_a_failed_sync_are_read_again_with_nothing_new(self) -> None:
         _, calls, point = await self._run(stored={"subtask_parents": json.dumps(["1001"])})
-        assert calls[1:] == [{"stored_only": True, "parent_ids": ["1001"]}]
+        assert calls[0] == {"stored_only": True, "parent_ids": ["1001"]}
+        assert [call["parent_ids"] for call in calls[1:]] == [None]
         assert json.loads(point["subtask_parents"]) == []
 
     @pytest.mark.asyncio

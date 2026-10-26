@@ -4120,13 +4120,16 @@ class JiraConnector(BaseConnector):
         # Fetch and process issues in batches
         total_issues_processed = 0
         batch_number = 0
-        # Issues whose sub-tasks are still to be read again, left by a sync that failed first.
+        # Issues whose sub-tasks a failed sync did not read again; they are read first.
         try:
-            reread_parent_ids: list[str] = list(json.loads((project_sync_data or {}).get("subtask_parents") or "[]"))
+            unsettled_parents: list[str] = list(json.loads((project_sync_data or {}).get("subtask_parents") or "[]"))
         except (TypeError, ValueError):
-            reread_parent_ids = []
+            unsettled_parents = []
         last_issue_updated_in_batch = None
         stats = {"new_count": 0, "updated_count": 0}
+        if unsettled_parents:
+            unsettled_parents = await self._settle_subtasks(
+                project_key, project_id, jira_users, stats, unsettled_parents, [])
 
         async for issues_batch, _has_more, last_issue_timestamp in self._fetch_issues_batched(
             project_key,
@@ -4157,21 +4160,18 @@ class JiraConnector(BaseConnector):
                 continue
 
             self.logger.info(f"📦 Processing batch {batch_number} for project {project_key}: {batch_size} records")
-            if not is_new_project:  # a full read reaches every sub-task itself
-                parents = [
-                    item[0].external_record_id for item in issues_batch
-                    if isinstance(item[0], TicketRecord) and not item[0].parent_external_record_id
-                ]
-                if parents:
-                    # Saved before the cursor passes these parents: the cursor alone would not
-                    # bring them back if their sub-tasks then failed to be read.
-                    reread_parent_ids = list(dict.fromkeys([*reread_parent_ids, *parents]))
-                    await self._update_project_sync_checkpoint(
-                        project_key, subtask_parents=json.dumps(reread_parent_ids))
+            parents = [] if is_new_project else [  # a full read reaches every sub-task itself
+                item[0].external_record_id for item in issues_batch
+                if isinstance(item[0], TicketRecord) and not item[0].parent_external_record_id
+            ]
 
             # Process this batch
             await self._process_new_records(issues_batch, project_key, stats)
             total_issues_processed += batch_size
+            if parents:
+                # Before the cursor passes these parents, which would not bring them back.
+                unsettled_parents = await self._settle_subtasks(
+                    project_key, project_id, jira_users, stats, parents, unsettled_parents)
 
             # Update checkpoint AFTER successful processing
             if last_issue_updated_in_batch:
@@ -4191,15 +4191,6 @@ class JiraConnector(BaseConnector):
                 last_issue_updated=last_issue_updated_in_batch
             )
 
-        if reread_parent_ids:
-            failures_before = self._issue_build_failures
-            await self._reread_subtasks(project_key, project_id, jira_users, stats, reread_parent_ids)
-            if self._issue_build_failures == failures_before:
-                await self._update_project_sync_checkpoint(project_key, subtask_parents="[]")
-            else:
-                self.logger.warning(
-                    f"Some sub-tasks of {project_key} could not be read again; re-reading them next sync"
-                )
 
         if reread:
             self.logger.info(
@@ -4368,6 +4359,28 @@ class JiraConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key, security_levels=json.dumps(levels, sort_keys=True)
             )
+
+    async def _settle_subtasks(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
+        parent_ids: list[str], unsettled: list[str],
+    ) -> list[str]:
+        """Read the sub-tasks of ``parent_ids`` again and return the parents still unsettled.
+
+        The parents are saved in the project checkpoint first, beside those an earlier
+        read left unsettled, so a failed search or a skipped sub-task is retried next sync.
+        The saved list holds one batch and its failures, never a whole sync.
+        """
+        pending = list(dict.fromkeys([*unsettled, *parent_ids]))
+        await self._update_project_sync_checkpoint(project_key, subtask_parents=json.dumps(pending))
+        failures_before = self._issue_build_failures
+        await self._reread_subtasks(project_key, project_id, users, stats, parent_ids)
+        if self._issue_build_failures != failures_before:
+            self.logger.warning(
+                f"Some sub-tasks of {project_key} could not be read again; re-reading them next sync"
+            )
+            return pending
+        await self._update_project_sync_checkpoint(project_key, subtask_parents=json.dumps(unsettled))
+        return unsettled
 
     async def _reread_subtasks(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
