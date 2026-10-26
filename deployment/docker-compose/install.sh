@@ -1779,7 +1779,7 @@ if $FLAG_PRINT_ENV_ONLY; then
     else
       # This mode starts nothing, so it does not pull either; the bundle is
       # built by the printed command once the image is on this host.
-      _ca_bundle_step="docker run --rm -i --network none --entrypoint python3 ${_ca_image} -c '${CA_BUNDLE_PY}' <${CA_DIR}/custom-ca.pem >${CA_DIR}/ca-bundle.pem"
+      _ca_bundle_step="docker run --rm -i --network none --entrypoint python3 ${_ca_image} -c '${CA_BUNDLE_PY}' <${CA_DIR}/custom-ca.pem >${CA_DIR}/ca-bundle.pem.tmp && chmod 644 ${CA_DIR}/ca-bundle.pem.tmp && mv ${CA_DIR}/ca-bundle.pem.tmp ${CA_DIR}/ca-bundle.pem || rm -f ${CA_DIR}/ca-bundle.pem.tmp"
     fi
   fi
   _build_flag=""

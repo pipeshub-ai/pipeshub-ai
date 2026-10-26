@@ -884,6 +884,32 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   check "asking for the current tag is a no-op with a clear message" "$out" "Already on image tag 0.7.0-slim"
 )
 
+echo
+echo "== In-tree installer: --print-env-only bundle command keeps the existing bundle =="
+(
+  # The printed command used to redirect straight into ca-bundle.pem, so a
+  # failed `docker run` (image not pulled yet) truncated the bundle the running
+  # app has mounted.
+  work="$TMP_ROOT/print-bundle"; mkdir -p "$work/certs" "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=x\nMONGO_PASSWORD=y\nAPP_PORT=3000\nPROJECT_NAME=testproj\n' >"$work/.env"
+  printf 'services: {}\n' >"$work/docker-compose.ca.yml"
+  printf 'NEW-CA\n' >"$work/certs/custom-ca.pem"
+  printf 'PUBLIC\nOLD-CA\n' >"$work/certs/ca-bundle.pem"
+  # Fake docker: the image is absent and `run` fails; everything else succeeds.
+  printf '%s\n' '#!/bin/sh' \
+    'case "$1 $2" in "image inspect") exit 1 ;; "run --rm") cat >/dev/null; exit 1 ;; esac' \
+    'exit 0' >"$work/bin/docker"
+  chmod +x "$work/bin/docker"
+  out="$(cd "$work" && PATH="$work/bin:$PATH" bash ./install.sh --upgrade --print-env-only 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g')" || true
+  step="$(printf '%s\n' "$out" | grep -m1 '^ *docker run ' | sed 's/^ *//')"
+  check "--print-env-only prints the bundle build command" "$step" "docker run --rm -i --network none"
+  (cd "$work" && PATH="$work/bin:$PATH" bash -c "$step") || true
+  check "a failed printed bundle command keeps the existing bundle" "$(cat "$work/certs/ca-bundle.pem")" "OLD-CA"
+  [[ -e "$work/certs/ca-bundle.pem.tmp" ]] && fail "a failed printed bundle command leaves no temp file" || pass "a failed printed bundle command leaves no temp file"
+)
+
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
 FAIL="$(wc -l <"$FAIL_FILE" | tr -d ' ')"
 printf "Results: %s passed, %s failed\n" "$PASS" "$FAIL"
