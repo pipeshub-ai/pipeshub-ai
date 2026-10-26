@@ -5,7 +5,15 @@ name: Base images
 #   python-deps-<hash>  runtime-<hash>  models-bge-<hash>
 # Floating tags (python-deps, runtime, models-bge) move only from main.
 # A release calls this workflow when the hash tags it needs are not published yet.
+#
+# The daily mirror of main's earlier setup is kept: it copies the Docker Hub
+# floating tags to GHCR as they are, so GHCR follows a base that was published to
+# Docker Hub some other way (an earlier release, a hand-run build) within a day.
+# Run the workflow by hand with mode "mirror" to sync sooner. CI pulls GHCR
+# anonymously and falls back to Docker Hub, so the package must be public.
 on:
+  schedule:
+    - cron: '17 4 * * *'
   push:
     branches:
       - main
@@ -17,6 +25,15 @@ on:
       - 'scripts/docker/base_tag.sh'
   workflow_call:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'build: publish the content-hash bases for this ref; mirror: copy the current Docker Hub tags to GHCR'
+        required: true
+        default: build
+        type: choice
+        options:
+          - build
+          - mirror
 
 permissions:
   contents: read
@@ -30,9 +47,50 @@ env:
   HUB_IMAGE: docker.io/pipeshubai/pipeshub-ai-base
 
 jobs:
+  mirror:
+    name: Mirror Docker Hub tags to GHCR
+    # A fork's copy of the schedule must not try to push here.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && (github.event_name == 'schedule' || inputs.mode == 'mirror')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+
+      - name: Copy the tags that changed
+        run: |
+          set -euo pipefail
+          {
+            echo "| Tag | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for tag in python-deps python-deps-slim runtime; do
+            if ! hub="$(crane digest "${HUB_IMAGE}:${tag}")"; then
+              echo "::error::Could not read ${HUB_IMAGE}:${tag} from Docker Hub. Check that the tag is published (see the header of Dockerfile.base), then run this workflow again."
+              exit 1
+            fi
+            ghcr="$(crane digest "${GHCR_IMAGE}:${tag}" 2>/dev/null || true)"
+            if [ "$hub" = "$ghcr" ]; then
+              echo "| \`${tag}\` | skipped, already ${hub} |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              crane copy "${HUB_IMAGE}:${tag}" "${GHCR_IMAGE}:${tag}"
+              echo "| \`${tag}\` | copied ${hub} (GHCR had ${ghcr:-nothing}) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
   hash:
     name: Content hash
-    if: github.repository == 'pipeshub-ai/pipeshub-ai'
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
     runs-on: ubuntu-latest
     outputs:
       hash: ${{ steps.tag.outputs.hash }}
@@ -48,7 +106,8 @@ jobs:
   build:
     name: Build ${{ matrix.name }} (${{ matrix.arch }})
     needs: hash
-    if: github.repository == 'pipeshub-ai/pipeshub-ai'
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -134,7 +193,8 @@ jobs:
   publish:
     name: Publish ${{ matrix.name }}
     needs: [hash, build]
-    if: github.repository == 'pipeshub-ai/pipeshub-ai'
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
