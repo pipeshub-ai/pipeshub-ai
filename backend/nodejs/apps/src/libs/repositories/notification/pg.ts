@@ -77,7 +77,9 @@ export class PgNotificationRepository implements NotificationRepository {
         docs.map((d) => {
           const v = f(d);
           if (v === undefined || v === null) return null;
-          return typeof v === 'object' ? JSON.stringify(v) : String(v);
+          return typeof v === 'object'
+            ? JSON.stringify(v)
+            : (v as string | number | boolean).toString();
         });
       const { rows: out } = await k.query<Row>(
         `/* pipeshub:platform.notification_insert */ INSERT INTO platform.notifications AS n

@@ -1365,7 +1365,8 @@ export class PgConversationRepository implements ConversationRepository {
         seq,
         newObjectId(),
         m.messageType,
-        m.content ?? '', // the document schema defaulted a missing text to ''
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- callers can omit the text; the document schema defaulted it to ''
+        m.content ?? '',
         m.contentFormat ?? 'MARKDOWN',
         m.status ?? null,
         m.confidence ?? null,
@@ -1434,6 +1435,7 @@ export class PgConversationRepository implements ConversationRepository {
           k.orgId,
           oid,
           stamped.messageType,
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- callers can omit the text; the document schema defaulted it to ''
           stamped.content ?? '',
           stamped.contentFormat ?? 'MARKDOWN',
           stamped.status ?? null,
