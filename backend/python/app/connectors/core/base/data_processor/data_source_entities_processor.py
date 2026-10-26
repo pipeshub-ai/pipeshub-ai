@@ -3342,6 +3342,14 @@ class DataSourceEntitiesProcessor:
                         external_id=new_record.external_record_id,
                         visibility=RecordVisibility.LIVE,
                     )
+                    if duplicate is not None and duplicate.id != old_record.id and _owned_elsewhere(
+                        duplicate, self.org_id
+                    ):
+                        self.logger.error(
+                            "Skipping move of %s: the record holding its new external id (%s) belongs to another org",
+                            old_external_id, duplicate.id,
+                        )
+                        continue
                     if duplicate is not None and duplicate.id != old_record.id:
                         self.logger.warning(
                             "Retiring duplicate record %s: external id %s is already "

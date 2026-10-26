@@ -113,6 +113,26 @@ class TestAnExternalIdResolvingToAnotherOrg:
         assert tx_store.get_record_by_external_id.await_count == 1
 
 
+    @pytest.mark.asyncio
+    async def test_a_duplicate_of_another_org_is_not_retired(self) -> None:
+        proc = _make_processor()
+        proc._get_storage_cleanup = MagicMock(return_value=None)
+        tx_store = _make_tx_store()
+        old_record = _make_record(id="mine")
+        duplicate = _make_record(id="theirs", org_id="org-2", external_record_id="ext-2")
+
+        async def lookup(*_args, visibility=None, **_kwargs) -> object:
+            return old_record if visibility is None else duplicate
+
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=lookup)
+        _transaction_returning(proc, tx_store)
+
+        await proc.on_records_moved([("ext-1", _make_record(external_record_id="ext-2"), [])])
+
+        tx_store.delete_record_by_key.assert_not_awaited()
+        tx_store.batch_upsert_nodes.assert_not_awaited()
+
+
 class TestPermissionsOfAnotherRecord:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
