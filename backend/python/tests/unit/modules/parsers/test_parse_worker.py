@@ -31,7 +31,7 @@ def test_trims_the_heap_after_each_job() -> None:
         parse_worker.write_frame(requests, (sum, ([1, 2],)))
         parse_worker.write_frame(requests, (sum, ([3, 4],)))
     # main() ignores SIGINT for good; pytest's own handler must survive it.
-    with patch.object(parse_worker, "_release_freed_memory") as trim, \
+    with patch.object(parse_worker, "release_freed_memory") as trim, \
             patch.object(parse_worker.threading, "Thread"), \
             patch.object(parse_worker.signal, "signal"):
         parse_worker.main(request_r, reply_w)

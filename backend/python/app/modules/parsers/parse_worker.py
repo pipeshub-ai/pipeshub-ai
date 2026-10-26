@@ -14,7 +14,6 @@ stream out of step.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import os
 import pickle
 import signal
@@ -25,6 +24,7 @@ import time
 import traceback
 from typing import BinaryIO
 
+from app.utils.memory_release import release_freed_memory
 from app.utils.process_hardening import mark_process_non_dumpable
 
 _LENGTH = struct.Struct("!Q")
@@ -88,17 +88,6 @@ def _exit_with_parent(parent_pid: int) -> None:
     os._exit(0)
 
 
-def _release_freed_memory() -> None:
-    """Hand the heap a job freed back to the OS.
-
-    glibc keeps it for reuse, and workers stay up between jobs: inspecting a
-    300 MB PDF left three of them holding 3.3 GB they no longer used while a
-    fourth parsed it, and the service was OOM-killed.
-    """
-    with contextlib.suppress(OSError, AttributeError):  # not glibc (macOS, musl)
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-
-
 def main(request_fd: int, reply_fd: int) -> None:
     # This process was handed the service's environment, secrets included, and
     # exec reset the non-dumpable mark the service set on itself. Without it a
@@ -127,7 +116,9 @@ def main(request_fd: int, reply_fd: int) -> None:
             failure = RuntimeError(f"The parse result could not be sent back: {exc}")
             write_frame(replies, (False, failure, traceback.format_exc()))
         request = reply = None
-        _release_freed_memory()
+        # Workers stay up between jobs: inspecting a 300 MB PDF left three of
+        # them holding 3.3 GB freed heap while a fourth parsed it (OOM kill).
+        release_freed_memory()
 
 
 if __name__ == "__main__":
