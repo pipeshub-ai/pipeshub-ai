@@ -123,7 +123,7 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('after release', conv.findById(s1._id));
   await step('recordRunState', conv.recordRunState(s1._id, {
     status: 'Failed', failReason: 'boom', lastActivityAt: now + 5, modelInfo: { modelKey: 'k2', modelName: undefined },
-    appendError: { message: 'bad thing', errorType: 'x', stack: 's', metadata: new Map([['code', 'E1']]) },
+    appendError: { message: 'bad thing', errorType: 'x', stack: 's', metadata: new Map([['code', 'code-1']]) },
   }));
   await step('recordRunState clear', conv.recordRunState(s1._id, { status: 'Complete', failReason: null }));
   await step('recordRunState unknown', conv.recordRunState(newId(), { status: 'Complete' }));

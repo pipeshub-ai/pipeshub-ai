@@ -471,7 +471,7 @@ export class PgConversationRepository implements ConversationRepository {
     );
     return sessionDto(rows[0] as SessionRow, k.orgId, {
       ...DOC_SHAPE,
-      internal: true,
+      withInternals: true,
     });
   }
 

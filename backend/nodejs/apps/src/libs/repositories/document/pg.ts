@@ -347,12 +347,12 @@ async function insert(
   );
   const { rows } = await k.query<Row>(
     fill(
-      `/* pipeshub:content.document_insert */ INSERT INTO content.documents (@{M0})
-       VALUES (@{M1})@{M2} RETURNING @{COLS}`,
+      `/* pipeshub:content.document_insert */ INSERT INTO content.documents (@{P0})
+       VALUES (@{P1})@{P2} RETURNING @{COLS}`,
       {
-        M0: values.map(([c]) => c).join(', '),
-        M1: marks.join(', '),
-        M2: keyed ? ' ON CONFLICT DO NOTHING' : '',
+        P0: values.map(([c]) => c).join(', '),
+        P1: marks.join(', '),
+        P2: keyed ? ' ON CONFLICT DO NOTHING' : '',
         COLS,
       },
     ),
@@ -385,8 +385,8 @@ export class PgDocumentRepository implements DocumentRepository {
       assertOrg(k, orgId);
       const { rows } = await k.query<Row>(
         fill(
-          `/* pipeshub:content.document_get */ SELECT @{COLS} FROM content.documents WHERE org_id = $1 AND id = $2@{M1}`,
-          { COLS, M1: live ? ' AND NOT is_deleted' : '' },
+          `/* pipeshub:content.document_get */ SELECT @{COLS} FROM content.documents WHERE org_id = $1 AND id = $2@{P1}`,
+          { COLS, P1: live ? ' AND NOT is_deleted' : '' },
         ),
         [k.orgId, oid],
       );
@@ -471,9 +471,9 @@ export class PgDocumentRepository implements DocumentRepository {
       sets.push(`updated_at = ${p.add(new Date())}`);
       const { rows } = await k.query<Row>(
         fill(
-          `/* pipeshub:content.document_update */ UPDATE content.documents SET @{M0}
-          WHERE org_id = @{M1} AND id = @{M2}@{M3} RETURNING @{COLS}`,
-          { M0: sets.join(', '), M1: org, M2: rowId, M3: guard, COLS },
+          `/* pipeshub:content.document_update */ UPDATE content.documents SET @{P0}
+          WHERE org_id = @{P1} AND id = @{P2}@{P3} RETURNING @{COLS}`,
+          { P0: sets.join(', '), P1: org, P2: rowId, P3: guard, COLS },
         ),
         p.values,
       );
@@ -500,8 +500,8 @@ export class PgDocumentRepository implements DocumentRepository {
     await inUnit(undefined, { write: true }, async (k) => {
       await k.query(
         fill(
-          `/* pipeshub:content.document_remove_unstored */ DELETE FROM content.documents WHERE org_id = $1 AND id = $2 AND @{M0} IS NULL`,
-          { M0: col },
+          `/* pipeshub:content.document_remove_unstored */ DELETE FROM content.documents WHERE org_id = $1 AND id = $2 AND @{P0} IS NULL`,
+          { P0: col },
         ),
         [k.orgId, oid],
       );
@@ -551,9 +551,9 @@ export class PgDocumentRepository implements DocumentRepository {
         fill(
           `/* pipeshub:content.document_claim_upload */ UPDATE content.documents
             SET upload_lease_token = $3, upload_lease_expires_at = $4, updated_at = $5
-          WHERE org_id = $1 AND id = $2 AND @{M0} IS NULL AND (upload_lease_expires_at IS NULL OR upload_lease_expires_at <= $5)
+          WHERE org_id = $1 AND id = $2 AND @{P0} IS NULL AND (upload_lease_expires_at IS NULL OR upload_lease_expires_at <= $5)
           RETURNING @{COLS}`,
-          { M0: col, COLS },
+          { P0: col, COLS },
         ),
         [k.orgId, oid, leaseToken, new Date(now + leaseMs), new Date(now)],
       );
@@ -672,12 +672,12 @@ export class PgDocumentRepository implements DocumentRepository {
       const { rows } = await k.query<Row>(
         fill(
           `/* pipeshub:content.document_flat_envelopes */ SELECT id, document_name, document_path FROM content.documents
-          WHERE org_id = @{M1} AND NOT is_deleted AND (@{M2})@{M3} ORDER BY id LIMIT @{M4}`,
+          WHERE org_id = @{P1} AND NOT is_deleted AND (@{P2})@{P3} ORDER BY id LIMIT @{P4}`,
           {
-            M1: org,
-            M2: flat,
-            M3: afterId === undefined ? '' : ` AND id > ${p.add(afterId)}`,
-            M4: p.add(limit),
+            P1: org,
+            P2: flat,
+            P3: afterId === undefined ? '' : ` AND id > ${p.add(afterId)}`,
+            P4: p.add(limit),
           },
         ),
         p.values,
@@ -727,8 +727,8 @@ export class PgDocumentRepository implements DocumentRepository {
       const org = p.add(k.orgId);
       const { rows } = await k.query<Row>(
         fill(
-          `/* pipeshub:content.document_subtree */ SELECT @{TREE_COLS}, is_deleted FROM content.documents WHERE org_id = @{M1} AND @{M2}`,
-          { TREE_COLS, M1: org, M2: underPrefix(p, path) },
+          `/* pipeshub:content.document_subtree */ SELECT @{TREE_COLS}, is_deleted FROM content.documents WHERE org_id = @{P1} AND @{P2}`,
+          { TREE_COLS, P1: org, P2: underPrefix(p, path) },
         ),
         p.values,
       );
@@ -833,8 +833,8 @@ export class PgDocumentRepository implements DocumentRepository {
     sets.push(`updated_at = ${p.add(new Date())}`);
     await k.query(
       fill(
-        `/* pipeshub:content.document_set_fields */ UPDATE content.documents SET @{M0} WHERE org_id = @{M1} AND id = @{M2}`,
-        { M0: sets.join(', '), M1: org, M2: rowId },
+        `/* pipeshub:content.document_set_fields */ UPDATE content.documents SET @{P0} WHERE org_id = @{P1} AND id = @{P2}`,
+        { P0: sets.join(', '), P1: org, P2: rowId },
       ),
       p.values,
     );
@@ -855,14 +855,14 @@ export class PgDocumentRepository implements DocumentRepository {
       const { rows } = await k.query<Row>(
         fill(
           `/* pipeshub:content.document_page_by_connector */ SELECT id, document_name, document_path FROM content.documents
-          WHERE org_id = @{M0} AND (@{M1} OR @{M2})@{M3}
-          ORDER BY id LIMIT @{M4}`,
+          WHERE org_id = @{P0} AND (@{P1} OR @{P2})@{P3}
+          ORDER BY id LIMIT @{P4}`,
           {
-            M0: org,
-            M1: tagged,
-            M2: under,
-            M3: afterId === undefined ? '' : ` AND id > ${p.add(afterId)}`,
-            M4: p.add(limit),
+            P0: org,
+            P1: tagged,
+            P2: under,
+            P3: afterId === undefined ? '' : ` AND id > ${p.add(afterId)}`,
+            P4: p.add(limit),
           },
         ),
         p.values,
@@ -889,8 +889,8 @@ export class PgDocumentRepository implements DocumentRepository {
         const { rows } = await k.query<Row>(
           fill(
             `/* pipeshub:content.document_tagged_outside */ SELECT id, document_path FROM content.documents
-            WHERE org_id = @{M0} AND @{M1} AND NOT COALESCE(@{M2}, false) AND id > @{M3} ORDER BY id LIMIT 500`,
-            { M0: org, M1: tagged, M2: under, M3: p.add(after) },
+            WHERE org_id = @{P0} AND @{P1} AND NOT COALESCE(@{P2}, false) AND id > @{P3} ORDER BY id LIMIT 500`,
+            { P0: org, P1: tagged, P2: under, P3: p.add(after) },
           ),
           p.values,
         );
@@ -919,8 +919,8 @@ export class PgDocumentRepository implements DocumentRepository {
       const { tagged, under } = connectorCondition(p, scope);
       const r = await k.query(
         fill(
-          `/* pipeshub:content.document_delete_by_connector */ DELETE FROM content.documents WHERE org_id = @{M0} AND (@{M1} OR @{M2})`,
-          { M0: org, M1: tagged, M2: under },
+          `/* pipeshub:content.document_delete_by_connector */ DELETE FROM content.documents WHERE org_id = @{P0} AND (@{P1} OR @{P2})`,
+          { P0: org, P1: tagged, P2: under },
         ),
         p.values,
       );

@@ -110,7 +110,7 @@ interface SessionShape {
   /** Reads that selected `-__v` leave it out. */
   version: boolean;
   /** Only a freshly created session carries its internal fields. */
-  internal?: boolean;
+  withInternals?: boolean;
   /** Shared-with-me lists drop the member list. */
   omitSharedWith?: boolean;
 }
@@ -173,7 +173,7 @@ export function sessionDto(
   o.createdAt = r.created_at;
   o.updatedAt = r.updated_at;
   if (s.version) o.__v = r.version;
-  if (s.internal) {
+  if (s.withInternals) {
     o.sessionType = r.session_type;
     o.nextSeq = r.next_seq ?? 0;
   }

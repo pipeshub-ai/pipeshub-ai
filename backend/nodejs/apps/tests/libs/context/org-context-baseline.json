@@ -3,6 +3,7 @@
   "app.ts": 2,
   "libs/services/outbox/outbox.dispatcher.ts": 1,
   "libs/services/telemetry/telemetry.service.ts": 1,
+  "libs/services/ttl-sweeper.service.ts": 1,
   "modules/crawling_manager/services/connector_schedule_sweep.ts": 1,
   "modules/crawling_manager/services/crawling_worker.ts": 1,
   "modules/desktop_proxy/socket/desktop-proxy.gateway.ts": 1,
