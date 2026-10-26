@@ -511,9 +511,34 @@ describe('ConnectorPanel: editing saved credentials', () => {
     expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
     await act(async () => finishSave({}));
 
-    await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledWith('conn-1'));
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
     expect(useConnectorsStore.getState().panelConnectorId).toBe('conn-2');
     expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+  });
+
+  it('leaves the loading and error state of a connector opened without closing the panel', async () => {
+    savedJiraConfig();
+    let failSave: (reason: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((_, reject) => (failSave = reject)));
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'new-token' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+    const loadsBefore = api.getConnectorConfig.mock.calls.length;
+
+    act(() => {
+      const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isAuthenticated: false, isConfigured: false });
+      useConnectorsStore.getState().openPanel(other, other._key, 'team');
+    });
+    await waitFor(() => expect(useConnectorsStore.getState().isLoadingConfig).toBe(false));
+    await act(async () => failSave({ type: 'VALIDATION_ERROR', message: 'Token rejected by Jira.' }));
+
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
+    const s = useConnectorsStore.getState();
+    expect(s.panelConnectorId).toBe('conn-2');
+    expect(s.saveError).toBeNull();
+    expect(s.isLoadingConfig).toBe(false);
+    expect(api.getConnectorConfig.mock.calls.slice(loadsBefore).map((call) => call[0])).not.toContain('conn-1');
   });
 });
 

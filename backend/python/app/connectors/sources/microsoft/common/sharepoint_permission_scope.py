@@ -189,6 +189,12 @@ class SharePointPermissionScopeReader:
                     response.status_code,
                 )
             retry_after = response.headers.get('Retry-After', '')
+            if retry_after.isdigit() and int(retry_after) > SHAREPOINT_REST_MAX_RETRY_AFTER_S:
+                # Waiting that long would hold up the sync, and asking sooner would be refused
+                # again: give up for this run, so the answer is asked for again on the next one.
+                raise SharePointRestError(
+                    f"SharePoint REST asked to wait {retry_after}s for {url}", response.status_code
+                )
             delay = int(retry_after) if retry_after.isdigit() else 2 ** attempt
             await asyncio.sleep(min(delay, SHAREPOINT_REST_MAX_RETRY_AFTER_S))
             attempt += 1

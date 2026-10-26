@@ -147,6 +147,8 @@ export function ConnectorPanel() {
     connectorId: string;
     auth: Record<string, unknown>;
   } | null>(null);
+  /** Counts edit-mode auth saves, so only the latest one clears the saving state. */
+  const authSaveGenRef = useRef(0);
   useEffect(() => {
     if (authAwaitingDisable && (!isPanelOpen || authAwaitingDisable.connectorId !== panelConnectorId)) {
       setAuthAwaitingDisable(null);
@@ -549,6 +551,14 @@ export function ConnectorPanel() {
 
   /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */
   const saveEditedAuth = useCallback(async (editId: string, finalAuth: Record<string, unknown>) => {
+    // The loading, error and tab state is the panel's, shared by every connector it shows: a save
+    // that finishes after the panel moved on to another connector leaves that state alone.
+    const editType = connectorType;
+    const isStillOpen = () => {
+      const s = useConnectorsStore.getState();
+      return s.panelConnectorId === editId && s.panelConnector?.type === editType;
+    };
+    const saveGen = ++authSaveGenRef.current;
     setIsSavingAuth(true);
     try {
       setSaveError(null);
@@ -561,11 +571,9 @@ export function ConnectorPanel() {
         baseUrl: browserOAuthBaseUrl(),
       });
 
-      const editType = connectorType;
-      const isStillOpen = () => {
-        const s = useConnectorsStore.getState();
-        return s.panelConnectorId === editId && s.panelConnector?.type === editType;
-      };
+      if (!isStillOpen()) {
+        return;
+      }
       let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
       try {
         setIsLoadingConfig(true);
@@ -596,10 +604,13 @@ export function ConnectorPanel() {
         setPanelActiveTab('configure');
       }
     } catch (err: unknown) {
-      const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError'));
-      setSaveError(message);
+      if (isStillOpen()) {
+        setSaveError(getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError')));
+      }
     } finally {
-      setIsSavingAuth(false);
+      if (authSaveGenRef.current === saveGen) {
+        setIsSavingAuth(false);
+      }
     }
   }, [
     connectorType,

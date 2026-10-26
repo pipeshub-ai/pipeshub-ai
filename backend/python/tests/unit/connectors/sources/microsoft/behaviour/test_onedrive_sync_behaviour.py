@@ -2122,6 +2122,22 @@ class TestLookups:
 
         assert db.inherit_edges["f1"] is True
 
+    async def test_a_longer_retry_after_than_the_cap_is_not_retried_early(
+        self, cloud, tenant, db, checkpoints, sharepoint_rest
+    ) -> None:
+        inheritance_drive(tenant)
+        serve_unique_items(cloud, FOLDER_UNIQUE_ID, SHARED_UNIQUE_ID, inheriting=(INHERITING_UNIQUE_ID,))
+        cloud.on("GET", item_lookup_path(INHERITING_UNIQUE_ID), [
+            json_response({"error": "throttled"}, status=429, headers={"Retry-After": "120"}),
+            {"d": {"Id": 3, "HasUniqueRoleAssignments": False}},
+        ])
+        connector = await certificate_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert db.inherit_edges["f1"] is False, "unanswered this run: it keeps the access list OneDrive reports for it"
+        assert sharepoint_calls(cloud).count(f"item {INHERITING_UNIQUE_ID}") == 1, "asked again next run, not sooner"
+
     async def test_one_sharepoint_token_serves_the_whole_run(self, cloud, tenant, db, checkpoints, sharepoint_rest) -> None:
         inheritance_drive(tenant)
         serve_unique_items(cloud, FOLDER_UNIQUE_ID, SHARED_UNIQUE_ID, inheriting=(INHERITING_UNIQUE_ID,))
