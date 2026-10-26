@@ -940,6 +940,9 @@ async def _sweep_retired_revisions(
         _retention_cursor = next_key
         if next_key is None or report.cut_short:
             break
+        # A pause can last ORPHAN_SCAN_MAX_PAUSE_SECONDS; do not sleep through the deadline.
+        if deadline is not None and deadline - time.monotonic() <= ORPHAN_SCAN_MAX_PAUSE_SECONDS:
+            break
         await pacer.pause()
     if total.cut_short:
         logger.info(

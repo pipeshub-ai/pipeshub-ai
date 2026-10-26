@@ -14,10 +14,15 @@ from collections import Counter
 import pytest
 
 from tests.integration.test_revision_retention_storage_e2e import (  # noqa: F401
-    _Lifecycle, graph, life, target, logger,
+    TARGETS, _Lifecycle, graph, life, target, logger,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# Module marks are not inherited through the fixture import, so the skip is repeated.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio,
+    pytest.mark.skipif(not TARGETS, reason="set RETENTION_IT_TARGETS or ARTIFACTS_IT_STORAGE_URL to a running storage service"),
+]
 SEED = int(os.environ.get("QA_SEED", str(time.time_ns() % 2**31)))
 ROUNDS = int(os.environ.get("QA_RACE_ROUNDS", "40"))
 

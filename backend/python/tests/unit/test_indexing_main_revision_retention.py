@@ -212,3 +212,19 @@ async def test_the_tick_starts_no_page_once_the_budget_is_spent(monkeypatch: pyt
     await _tick(pages)
 
     assert pages.calls == [None] and m._retention_cursor == "a"
+
+
+async def test_the_pause_between_pages_never_runs_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Less budget left than the longest pause: the tick ends instead of sleeping through its deadline."""
+    monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "3")
+    pages = _Pages({None: ("a", _report()), "a": (None, _report())})
+    container = _make_container()
+
+    with patch.object(m, "RevisionRetentionSweep", pages), patch.object(m, "LoopShare") as share:
+        share.return_value.pause = AsyncMock()
+        await m._sweep_retired_revisions(
+            app_container=container, graph_provider=MagicMock(), logger=MagicMock(), lease_held=lambda: True,
+        )
+
+    assert pages.calls == [None] and m._retention_cursor == "a"
+    share.return_value.pause.assert_not_awaited()
