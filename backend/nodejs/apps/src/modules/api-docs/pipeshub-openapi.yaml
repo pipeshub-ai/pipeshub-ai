@@ -25153,7 +25153,9 @@ paths:
               or approved device code whose `knowledgeLimit` the app's current limit no longer
               contains, because the app's limit was narrowed after it was issued ("The
               application's permissions changed after you allowed it. Sign in again."). A widened
-              limit does not refuse it; the token carries the limit the user agreed to.
+              limit does not refuse it; the token carries the limit the user agreed to. Also a
+              `refresh_token` that another refresh presenting it at the same time rotated first
+              ("Refresh token has already been used"); only one of them gets a new pair.
             - `unsupported_grant_type` - the app does not have the grant
             - `invalid_scope` - a requested scope is not allowed for the app, or the token would carry
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
