@@ -88,3 +88,26 @@ def test_a_single_line_longer_than_the_cap_is_cut_where_it_must_be() -> None:
 @pytest.mark.parametrize("text", ["", "\n\n", "   \n"])
 def test_nothing_to_fence_gives_nothing(text: str) -> None:
     assert fenced_code(text, "diff") == ""
+
+
+@pytest.mark.parametrize("text", [
+    "1234567890\n1234567890\nabcdefghij\n",
+    "1234567890\n1234567890\n\n\nabcdefghij\n",
+    "1234567890\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nabcdefghij\n",
+])
+def test_blank_lines_at_a_split_are_kept(text: str) -> None:
+    # Each block loses its trailing newlines to the parser and a block boundary
+    # restores one, so blank lines at a cut must not end a piece.
+    blocks = _code_blocks(fenced_code(text, "python", max_chars=25))
+    assert len(blocks) > 1
+    assert "\n".join(blocks) == text.rstrip("\n")
+
+
+def test_a_long_text_is_cut_by_offset_with_every_character_kept() -> None:
+    from app.utils.markdown_code import _cut_lines
+
+    text = "".join(f"line {i}\n" for i in range(5000)) + "x" * 300
+    pieces = _cut_lines(text, 1000)
+    assert "".join(pieces) == text
+    assert all(len(p) <= 1000 for p in pieces)
+    assert all(p.endswith("\n") for p in pieces[:-2])
