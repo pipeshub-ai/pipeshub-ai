@@ -2627,7 +2627,7 @@ export class UserController {
         throw new BadRequestError('User ID is required');
       }
 
-      const { page, limit, search } = req.query;
+      const { page, limit, search, includeServiceAccounts } = req.query;
 
       // Validate search parameter for XSS and format specifiers
       if (search) {
@@ -2652,6 +2652,11 @@ export class UserController {
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
+      // Forwarded, not decided here: the connector service holds the query that
+      // returns these rows, and it checks the caller's role before honouring it.
+      if (includeServiceAccounts === 'true') {
+        queryParams.append('includeServiceAccounts', 'true');
+      }
       const queryString = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {

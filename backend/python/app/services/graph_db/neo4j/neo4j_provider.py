@@ -23940,7 +23940,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -23956,10 +23958,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(u.fullName) CONTAINS toLower($search) OR toLower(u.email) CONTAINS toLower($search))"
 
+            # The row carries `userId`, which is the id an agent stores when it
+            # is bound to a service account, so this listing decides who learns
+            # that a machine identity exists. The null arm is load-bearing: a
+            # node written before `kind` existed has no such property, and in
+            # Cypher `u.kind <> 'service'` on a missing property is null, which
+            # drops the row rather than keeping it.
+            kind_where = "" if include_service_accounts else (
+                "AND (u.kind IS NULL OR u.kind <> 'service')"
+            )
+
             # Query to get users with their team memberships
             users_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             ORDER BY u.fullName ASC
             SKIP $offset
             LIMIT $limit
@@ -23977,7 +23989,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Count total users for pagination
             count_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             RETURN count(DISTINCT u) AS total_count
             """
 

@@ -25670,7 +25670,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -25685,6 +25687,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)
                 """
 
+            # The row carries `userId`, which is the id an agent stores when it
+            # is bound to a service account, so this listing decides who learns
+            # that a machine identity exists. `!=` rather than a check for
+            # `human`: a node written before `kind` existed has none, and in AQL
+            # a missing attribute compares as null, which is not 'service'.
+            kind_filter = "" if include_service_accounts else """
+            FILTER user.kind != 'service'
+            """
+
             # Query to get users with their team memberships
             users_query = f"""
             FOR edge IN belongsTo
@@ -25693,6 +25704,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET user = DOCUMENT(edge._from)
             FILTER user!=null
             FILTER user.isActive == true
+            {kind_filter}
             {search_filter}
             SORT user.fullName ASC
             LIMIT @offset, @limit
@@ -25715,6 +25727,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET user = DOCUMENT(edge._from)
             FILTER user!=null
             FILTER user.isActive == true
+            {kind_filter}
             {search_filter}
             COLLECT WITH COUNT INTO total_count
             RETURN total_count

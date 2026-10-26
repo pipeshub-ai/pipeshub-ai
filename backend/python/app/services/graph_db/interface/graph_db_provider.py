@@ -6743,7 +6743,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -6754,6 +6756,10 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                in the answer. Off by default, because this is the directory of
+                people and a service account's id is what binds an agent to it.
+                Only an organisation administrator may turn it on.
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)

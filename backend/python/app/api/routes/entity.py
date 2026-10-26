@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -661,12 +662,31 @@ async def get_user_teams(
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
 
+async def _may_list_service_accounts(request: Request, *, asked: bool) -> bool:
+    """Whether this listing should include machine identities.
+
+    Each row carries the `userId` an agent stores when it is bound to a service
+    account, so this is the same question the people list answers
+    (`users.controller.ts` `getAllUsers`): only an administrator, and only when
+    the caller asks. The role is the live one Node reports for the caller's own
+    credentials; an unconfirmed role counts as "not an administrator", which is
+    the safe answer here because it only narrows what comes back.
+    """
+    if not asked:
+        return False
+    config_service = request.app.container.config_service()
+    return (await fetch_caller_role(request, config_service)).is_admin
+
+
 @router.get("/user/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_users(
     request: Request,
     search: Optional[str] = Query(None, description="Search users by name or email"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
+    includeServiceAccounts: Optional[str] = Query(
+        None, description="Administrators only: 'true' also lists service accounts",
+    ),
 ) -> JSONResponse:
     """Get all users in the current user's organization with pagination and search"""
     services = await get_services(request)
@@ -679,12 +699,18 @@ async def get_users(
     }
 
     try:
+        # Compared to the exact string, as the gateway's own flag is: a query
+        # value can arrive as a list, and only "true" opts in.
+        include_service_accounts = await _may_list_service_accounts(
+            request, asked=includeServiceAccounts == "true",
+        )
         # Use interface method to get organization users
         result_list, total_count = await graph_provider.get_organization_users(
             org_id=user_info.get("orgId"),
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            include_service_accounts=include_service_accounts,
         )
         if not result_list:
             return JSONResponse(

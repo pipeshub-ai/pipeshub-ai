@@ -90,6 +90,9 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # An agent of the admin's, which nobody else can see, and one a member
     # made and may edit.
     "agents": ("admin_agent", "member_agent"),
+    # A service account, waited for until it reaches the graph the directory
+    # reads. Its address is what a listing is searched for.
+    "service_accounts": ("service_account", "service_account_email"),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
@@ -672,6 +675,23 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("admin_agent", ADMIN, True, 400, _NOT_A_SERVICE_AGENT, absent=(_NOT_YOURS_TO_BIND,)),
         ),
         body={"serviceAccountUserId": ABSENT_SERVICE_ACCOUNT},
+    ),
+    # The directory behind the people screen. Every row carries the `userId`
+    # that binds an agent to a service account, and the gateway attaches the
+    # groups each one belongs to, so a member asking for machine identities is
+    # answered as though they had not asked. Nobody is refused: asking is
+    # allowed, it just does not widen the listing.
+    # Called where it is served. The gateway's `GET /users/graph/list` proxies
+    # here and only forwards the flag; the rule itself lives on this route.
+    ConditionalRoute(
+        "api/routes/entity.py::get_users", "GET", "/api/v1/entity/user/list",
+        cases=(
+            Case("service_account", MEMBER, False, 200, "",
+                 absent=("{service_account_email}",)),
+            Case("service_account", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        params={"includeServiceAccounts": "true", "limit": "100"},
+        service=CONNECTOR_SERVICE,
     ),
 )
 

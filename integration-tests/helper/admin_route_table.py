@@ -362,6 +362,9 @@ PYTHON_CONDITIONAL_ADMIN = {
     # because binding spends the access an administrator granted that account.
     "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
     "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # The directory of people. Everyone gets it; an administrator asking for
+    # service accounts gets those too, and nobody else does.
+    "api/routes/entity.py::get_users": "admin widens the directory",
 }
 
 

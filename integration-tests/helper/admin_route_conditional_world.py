@@ -61,6 +61,8 @@ _CONNECTORS = "/api/v1/connectors"
 _TOOLSETS = "/api/v1/toolsets"
 _MCP = "/api/v1/mcp-servers/instances"
 _AGENTS = "/api/v1/agents"
+_SERVICE_ACCOUNTS = "/api/v1/service-accounts"
+_USERS = "/api/v1/users"
 _SKILLS = "/api/v1/skills"
 _GONE_TIMEOUT_SEC = 120.0
 _GONE_POLL_SEC = 2.0
@@ -71,6 +73,10 @@ SCOPED_SECRET_ENV = "SCOPED_JWT_SECRET"
 # the built-in ones first, which can take longer than that the first time.
 _SKILLS_READY_TIMEOUT_SEC = 300.0
 _SKILLS_READY_POLL_SEC = 5.0
+# Creating a service account publishes an event the connector service
+# consumes before the account is in the graph the directory reads.
+_DIRECTORY_READY_TIMEOUT_SEC = 180.0
+_DIRECTORY_READY_POLL_SEC = 3.0
 
 
 @dataclass(frozen=True)
@@ -588,6 +594,51 @@ class World:
             "own_mcp": self._create_mcp_server(ADMIN, shared=False),
             "personal_mcp": self._create_mcp_server(CREATOR, shared=False, scope="personal"),
         }
+
+    # -------------------------------------------------------- service accounts
+
+    def _build_service_accounts(self) -> dict[str, str]:
+        slug = f"it-admin-{uuid.uuid4().hex[:8]}"
+        account = self._json(
+            ADMIN, "POST", _SERVICE_ACCOUNTS, "Creating a test service account",
+            ok=(200, 201), json={"slug": slug, "fullName": f"{PREFIX} {slug}"},
+        )
+        account_id = str(account.get("id") or "")
+        email = str(account.get("email") or "")
+        if not account_id or not email:
+            raise RuntimeError("Creating a test service account returned no id or address.")
+        self._later(
+            "the test service account",
+            lambda: self._json(ADMIN, "DELETE", f"{_SERVICE_ACCOUNTS}/{account_id}",
+                               "Deleting the test service account", ok=(200, 204, 404)),
+        )
+        self._await_in_the_directory(email)
+        return {"service_account": account_id, "service_account_email": email}
+
+    def _await_in_the_directory(self, email: str) -> None:
+        """Wait until the new account reaches the graph the directory reads.
+
+        Creating one writes to Mongo and publishes an event the connector
+        service consumes, so it is not in `GET /users/graph/list` the moment the
+        request returns. The cases below ask whether a member can see it there,
+        which says nothing until it is there to see.
+        """
+        deadline = time.monotonic() + _DIRECTORY_READY_TIMEOUT_SEC
+        while True:
+            listed = self._json(
+                ADMIN, "GET", f"{_USERS}/graph/list?includeServiceAccounts=true&limit=100",
+                "Looking for the test service account", ok=(200,),
+            )
+            if any(
+                isinstance(row, dict) and row.get("email") == email
+                for row in (listed.get("users") or [])
+            ):
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The test service account never reached the directory: {email}"
+                )
+            time.sleep(_DIRECTORY_READY_POLL_SEC)
 
     # ------------------------------------------------------------------ agents
 

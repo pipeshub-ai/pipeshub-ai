@@ -5206,6 +5206,37 @@ describe('UserController', () => {
       }
     });
 
+    // Each row the connector returns carries the `userId` that binds an agent
+    // to a service account, so the flag is forwarded and the connector decides
+    // it from the caller's live role. The gateway never decides it here.
+    const uriOf = async (query: Record<string, string>): Promise<string> => {
+      req.query = query;
+      let uri = '';
+      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
+      sinon.stub(AISvcCmd.prototype, 'execute').callsFake(function (this: any) {
+        uri = String(this.uri);
+        return Promise.resolve({ statusCode: 200, data: { users: [] } });
+      });
+      await controller.listUsers(req, res, next);
+      return uri;
+    };
+
+    it('does not ask the connector for service accounts by default', async () => {
+      expect(await uriOf({})).to.not.include('includeServiceAccounts');
+    });
+
+    it('forwards the flag when it is asked for', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'true' })).to.include(
+        'includeServiceAccounts=true',
+      );
+    });
+
+    it('forwards nothing for any other value', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'false' })).to.not.include(
+        'includeServiceAccounts',
+      );
+    });
+
     it('should throw when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011', orgId: undefined };
       req.query = {};
