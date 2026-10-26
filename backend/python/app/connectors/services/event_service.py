@@ -777,6 +777,9 @@ class EventService:
             return False, False
 
         synced_by = payload.get("syncedBy", "")
+        trigger = payload.get("trigger")
+        # A schedule carries the id of whoever set it up; only a click is "started by" someone.
+        started_by = synced_by if trigger == "manual" and synced_by else None
         if synced_by:
             await self.graph_provider.update_node(
                 connector_id, CollectionNames.APPS.value,
@@ -896,6 +899,8 @@ class EventService:
                             connector_name=connector_name,
                             org_id=org_id,
                         ),
+                        trigger=trigger,
+                        started_by=started_by,
                     ),
                 )
 
@@ -967,6 +972,8 @@ class EventService:
                         connector_name=connector_name,
                         org_id=org_id,
                     ),
+                    trigger=trigger,
+                    started_by=started_by,
                 ),
             )
             if task is None:
@@ -1488,10 +1495,19 @@ class EventService:
                     record_ids_to_update, ProgressStatus.NOT_STARTED.value
                 )
 
+            # Someone asked for these, so syncs may retry them again if they fail again.
+            spent = [r.id for r in records if r.id and r.auto_retry_count]
+            if spent:
+                await self.graph_provider.batch_update_nodes(
+                    [{"id": rid, "autoRetryCount": 0} for rid in spent],
+                    CollectionNames.RECORDS.value,
+                )
+
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.
             for record in records:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
+                record.auto_retry_count = 0 if record.auto_retry_count else None
 
             await connector.reindex_records(records)
 

@@ -1557,6 +1557,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         repeated by the next sync. An item that failed to save holds it too, for
         at most ``MAX_FAILED_PAGE_ATTEMPTS`` syncs before it is given up on.
         """
+        self.progress.set_units("space", 0, len(spaces))
         for space in spaces:
             for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space.short_name})")
@@ -1576,6 +1577,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     dict(listing.given_up or {}), content_type, space.short_name,
                     synced_any=listing.synced_any, hold=not settled,
                 )
+            self.progress.advance_units("space")
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, only_ids=ids)

@@ -699,6 +699,7 @@ class AzureFilesConnector(BaseConnector):
             # Deleted after the loop: a later share refusing the credentials must leave every record.
             # Only the stale ids wait, so memory holds one share's seen ids at a time.
             stale: list[str] = []
+            self.progress.set_units("share", 0, len(dict.fromkeys(n for n in shares_to_sync if n)))
             for share_name in dict.fromkeys(n for n in shares_to_sync if n):
                 try:
                     self.logger.info(f"Syncing share: {share_name}")
@@ -716,6 +717,7 @@ class AzureFilesConnector(BaseConnector):
                 else:
                     failed_shares.append(share_name)
                 del share_seen
+                self.progress.advance_units("share")
             if stale:
                 await self._delete_records(stale)
 
@@ -1247,6 +1249,8 @@ class AzureFilesConnector(BaseConnector):
                                     else scope.includes_file(item_path)
                                 )
                                 if not in_scope:
+                                    if not is_directory:
+                                        self.progress.note_filtered("folder")
                                     continue
 
                                 # Check extension filter
@@ -1254,6 +1258,7 @@ class AzureFilesConnector(BaseConnector):
                                     self.logger.debug(
                                         f"Skipping {item_path}: does not pass extension filter"
                                     )
+                                    self.progress.note_filtered("extension")
                                     continue
 
                                 if not self._pass_date_filters(
@@ -1263,6 +1268,7 @@ class AzureFilesConnector(BaseConnector):
                                     created_after_ms,
                                     created_before_ms,
                                 ):
+                                    self.progress.note_filtered("date")
                                     continue
 
                                 # Seen before processing: an item that fails to

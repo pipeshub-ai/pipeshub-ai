@@ -443,6 +443,7 @@ class MariaDBConnector(BaseConnector):
                 else:
                     tables = [t for t in tables if t.fqn in selected_tables]
 
+            self.progress.set_units("table", 0, len(tables))
             await self._sync_tables(self.database_name, tables)
             self.sync_stats.tables_new += len(tables)
 
@@ -710,6 +711,8 @@ class MariaDBConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Error processing table {table.name}: {e}", exc_info=True)
                 continue
+            finally:
+                self.progress.advance_units("table")
 
     async def _sync_tables(self, database_name: str, tables: List[MariaDBTable]) -> None:
         if not tables:
@@ -1046,6 +1049,7 @@ class MariaDBConnector(BaseConnector):
         if new_databases:
             await self._ensure_database_record_groups(list(new_databases))
 
+        self.progress.set_units("table", 0, len(table_fqns))
         for fqn in table_fqns:
             database_name, table_name = fqn.split(".", 1)
             

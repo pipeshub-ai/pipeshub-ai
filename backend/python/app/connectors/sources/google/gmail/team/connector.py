@@ -1146,6 +1146,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             for user in active_users
             if user.email and user.source_user_id
         }
+        self.progress.set_units("mailbox", 0, len(active_users))
         for i in range(0, len(active_users), self.max_concurrent_batches):
             batch = active_users[i:i + self.max_concurrent_batches]
             self.logger.info(f"Processing batch {i // self.max_concurrent_batches + 1} with {len(batch)} users")
@@ -1158,6 +1159,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 if isinstance(result, BaseException):
                     failure = self._sync_health.record(user.email, result, "mailbox")
                     self.logger.error(f"❌ Mailbox of {user.email} not synced ({failure.value}): {result}")
+            self.progress.advance_units("mailbox", len(batch))
             await asyncio.sleep(1)  # Sleep between batches to prevent overwhelming the API
 
         self.logger.info("Completed processing all user batches")

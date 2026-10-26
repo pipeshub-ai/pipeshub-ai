@@ -166,6 +166,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a storage move takes every stored file under the group, or a restored record would lose its content",
     ),
+    "count_connector_records_by_status": (Rule.LIVE, "progress counts; a trashed record is not waiting to be indexed"),
+    "count_records_indexed_since": (
+        Rule.ALL,
+        "indexing speed for the progress estimate; a record trashed after it was indexed still was",
+    ),
     "has_records_indexed_since": (
         Rule.ALL,
         "asks whether the source served the connector; a record trashed after it was indexed still shows it did",

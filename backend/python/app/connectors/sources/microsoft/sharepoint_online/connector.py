@@ -96,6 +96,7 @@ from app.connectors.core.registry.types import (
     ValidationRuleType,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -2993,6 +2994,7 @@ class SharePointConnector(BaseConnector):
             retry_after = response.headers.get('Retry-After', '')
             delay = int(retry_after) if retry_after.isdigit() else 2 ** attempt
             if response.status_code != HTTPStatus.UNAUTHORIZED:
+                report_throttled(min(delay, SHAREPOINT_REST_MAX_RETRY_AFTER_S))
                 await asyncio.sleep(min(delay, SHAREPOINT_REST_MAX_RETRY_AFTER_S))
             attempt += 1
 
@@ -3730,11 +3732,13 @@ class SharePointConnector(BaseConnector):
             if site_record_groups_with_permissions:
                 await self.data_entities_processor.on_new_record_groups(site_record_groups_with_permissions)
 
+            self.progress.set_units("site", 0, len(site_record_groups_with_permissions))
             for site_record_group, _permissions in site_record_groups_with_permissions:
                 try:
                     await self._sync_site_content(site_record_group)
                 except Exception as site_error:
                     self._health.skipped(f"site {site_record_group.name}", site_error)
+                self.progress.advance_units("site")
 
             if self._health.complete and self._rewrite_all_items:
                 await self.drive_delta_sync_point.update_sync_point(

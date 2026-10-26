@@ -1392,7 +1392,8 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
+    "sourcesSettingUp": "Wird noch eingerichtet: {{sources}}. Antworten enthalten eventuell noch nicht alles aus diesen Quellen."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -3141,6 +3142,157 @@
         "title": "Handlung erforderlich",
         "openAuthentication": "Authentifizierung aktualisieren",
         "viewSteps": "Einrichtungsschritte ansehen"
+      },
+      "progress": {
+        "label": "Status",
+        "removing": "Dieser Konnektor wird entfernt…",
+        "off": "Aus. Es wird nichts synchronisiert.",
+        "queued": "Wartet auf einen freien Synchronisierungsplatz",
+        "notSyncedYet": "Noch nicht synchronisiert",
+        "upToDate": "Aktuell",
+        "upToDateAgo": "Aktuell · synchronisiert {{time}}",
+        "withFailures": "{{base}} · nicht indiziert: {{n, number}}",
+        "lastFailed": "Letzte Synchronisierung fehlgeschlagen: {{reason}}",
+        "skipped": "Letzte Synchronisierung übersprungen: Die Desktop-App war nicht verbunden",
+        "approximate": "Diese Synchronisierung ist sehr groß, daher werden manche Elemente eventuell mehrfach gezählt.",
+        "viewRecords": "Datensätze anzeigen",
+        "run": {
+          "starting": "Lesen aus {{source}} wird gestartet",
+          "people": "Personen und Gruppen werden aus {{source}} gelesen",
+          "containers": "Zu lesende Bereiche in {{source}} werden ermittelt · gefunden: {{containers, number}}",
+          "content": "Lesen aus {{source}} · gefunden: {{found, number}} · neu oder geändert: {{changed, number}}",
+          "finishing": "Abschluss: Was {{source}} nicht mehr enthält, wird entfernt",
+          "units": "Lesen aus {{source}} · {{unit}}: {{done, number}} von {{total, number}} · gefunden: {{found, number}}",
+          "ofTotal": "Lesen aus {{source}} · {{found, number}} von {{total, number}}",
+          "throttled": "Pausiert: {{source}} hat um langsameres Lesen gebeten · weiter ca. {{time}}",
+          "stalled": "Seit {{n, number}} Min. kein Fortschritt. Die Quelle ist eventuell langsam oder nicht erreichbar."
+        },
+        "indexing": {
+          "left": "Wird durchsuchbar gemacht · verbleibend: {{n, number}}",
+          "leftWithEta": "Wird durchsuchbar gemacht · verbleibend: {{n, number}} · {{eta}}",
+          "inLine": "Warten auf Indizierung: {{n, number}}. Andere Indizierungsaufgaben sind zuerst an der Reihe.",
+          "inLineHelp": "Die Indizierung wird mit anderen Konnektoren geteilt. Die Elemente dieses Konnektors kommen an die Reihe, sobald die Aufgaben davor erledigt sind."
+        },
+        "eta": {
+          "underMinute": "weniger als eine Minute",
+          "minutes": "ca. {{n, number}} Min.",
+          "hours": "ca. {{n, number}} Std.",
+          "longer": "mehrere Stunden",
+          "unknown": "Wird berechnet"
+        },
+        "duration": {
+          "underMinute": "unter einer Minute",
+          "minutes": "{{n, number}} Min."
+        },
+        "stage": {
+          "reading": "Lesen aus {{source}}",
+          "searchable": "Wird durchsuchbar gemacht"
+        },
+        "count": {
+          "found": "Gefunden",
+          "changed": "Neu oder geändert",
+          "unchanged": "Unverändert",
+          "removed": "Entfernt",
+          "filtered": "Durch Filter ausgeschlossen",
+          "containers": "Ordner, Laufwerke und Bereiche",
+          "waiting": "Wartend",
+          "inProgress": "In Bearbeitung",
+          "failed": "Nicht indiziert",
+          "eta": "Verbleibende Zeit"
+        },
+        "units": {
+          "user": "Personen",
+          "mailbox": "Postfächer",
+          "drive": "Laufwerke",
+          "site": "Websites",
+          "bucket": "Buckets",
+          "share": "Freigaben",
+          "channel": "Kanäle",
+          "space": "Bereiche",
+          "project": "Projekte",
+          "repository": "Repositorys",
+          "table": "Tabellen",
+          "feed": "Feeds",
+          "page": "Seiten",
+          "container": "Container",
+          "folder": "Ordner",
+          "item": "Elemente"
+        },
+        "attention": {
+          "title": "Erfordert Aufmerksamkeit"
+        },
+        "notIndexed": {
+          "title": "Nicht indiziert – wegen Einstellungen oder der Art des Inhalts"
+        },
+        "status": {
+          "FAILED": "Konnte nicht indiziert werden",
+          "ENABLE_MULTIMODAL_MODELS": "Benötigt ein KI-Modell, das Bilder lesen kann",
+          "AUTO_INDEX_OFF": "Nur manuelle Indizierung",
+          "FILE_TYPE_NOT_SUPPORTED": "Dateityp nicht unterstützt",
+          "EMPTY": "Leer",
+          "SKIPPED": "Übersprungen",
+          "PAUSED": "Pausiert",
+          "PASSWORD_PROTECTED": "Passwortgeschützt"
+        },
+        "history": {
+          "title": "Letzte Synchronisierungen",
+          "full": "Vollständige Synchronisierung",
+          "quick": "Synchronisierung",
+          "line": "{{kind}} · {{trigger}} · {{time}}",
+          "counts": "gefunden: {{found, number}} · neu oder geändert: {{changed, number}} · entfernt: {{removed, number}}"
+        },
+        "trigger": {
+          "manual": "manuell gestartet",
+          "schedule": "geplant",
+          "enable": "Konnektor eingeschaltet",
+          "startup": "nach einem Neustart",
+          "resume": "nach einem Neustart fortgesetzt",
+          "follow_up": "angefordert, während eine andere Synchronisierung lief",
+          "unknown": "gestartet"
+        },
+        "error": {
+          "detail": "Details: {{detail}}",
+          "auth": {
+            "title": "{{source}} hat die Anmeldung abgelehnt",
+            "action": "Verbinden Sie das Konto in den Einstellungen dieses Konnektors erneut. Wenn es weiterhin fehlschlägt, muss eventuell ein Admin die App oder ihre Berechtigungen genehmigen."
+          },
+          "permission": {
+            "title": "PipesHub hat keinen Zugriff auf einen Teil von {{source}}",
+            "action": "Geben Sie dem verbundenen Konto Zugriff auf alles, was dieser Konnektor lesen soll, und synchronisieren Sie dann erneut."
+          },
+          "rate_limit": {
+            "title": "{{source}} hat die Lesegeschwindigkeit begrenzt",
+            "action": "Im Moment ist nichts zu tun: Die nächste Synchronisierung macht weiter. Wenn das häufiger passiert, synchronisieren Sie seltener."
+          },
+          "network": {
+            "title": "{{source}} war nicht erreichbar",
+            "action": "Prüfen Sie, ob {{source}} von dort erreichbar ist, wo PipesHub läuft, und synchronisieren Sie dann erneut."
+          },
+          "source_unavailable": {
+            "title": "Bei {{source}} ist ein Problem aufgetreten",
+            "action": "Das ist meist nur vorübergehend. Synchronisieren Sie in ein paar Minuten erneut."
+          },
+          "not_found": {
+            "title": "Etwas, das dieser Konnektor liest, gibt es in {{source}} nicht mehr",
+            "action": "Prüfen Sie die Einstellungen des Konnektors: Ein ausgewählter Ordner, eine Website oder ein Projekt wurde eventuell entfernt oder umbenannt."
+          },
+          "config": {
+            "title": "Die Einstellungen des Konnektors müssen geprüft werden",
+            "action": "Öffnen Sie die Einstellungen des Konnektors, prüfen Sie Adresse und Optionen und synchronisieren Sie dann erneut."
+          },
+          "incomplete": {
+            "title": "Ein Teil von {{source}} konnte nicht gelesen werden",
+            "action": "Alles andere wurde synchronisiert. Die nächste Synchronisierung versucht den fehlenden Teil erneut."
+          },
+          "interrupted": {
+            "title": "PipesHub wurde während der Synchronisierung neu gestartet",
+            "action": "Die Synchronisierung läuft von selbst erneut: zum nächsten geplanten Termin oder sofort, wenn es eine vollständige Synchronisierung war."
+          },
+          "unknown": {
+            "title": "Etwas ist schiefgelaufen",
+            "action": "Synchronisieren Sie erneut. Wenn es weiterhin fehlschlägt, prüfen Sie die Einstellungen des Konnektors oder wenden Sie sich an Ihren Admin."
+          }
+        }
       }
     },
     "mcpServers": {

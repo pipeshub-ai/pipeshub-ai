@@ -1392,7 +1392,8 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
+    "sourcesSettingUp": "Still being set up: {{sources}}. Answers may not include everything from these sources yet."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -3132,6 +3133,157 @@
         "title": "Action needed",
         "openAuthentication": "Update authentication",
         "viewSteps": "View setup steps"
+      },
+      "progress": {
+        "label": "Status",
+        "removing": "Removing this connector…",
+        "off": "Off. Nothing syncs.",
+        "queued": "Waiting for a free sync slot",
+        "notSyncedYet": "Not synced yet",
+        "upToDate": "Up to date",
+        "upToDateAgo": "Up to date · synced {{time}}",
+        "withFailures": "{{base}} · {{n, number}} couldn't be indexed",
+        "lastFailed": "Last sync failed: {{reason}}",
+        "skipped": "Last sync was skipped: the desktop app wasn't connected",
+        "approximate": "This sync is very large, so some items may be counted more than once.",
+        "viewRecords": "View records",
+        "run": {
+          "starting": "Starting to read from {{source}}",
+          "people": "Reading people and groups from {{source}}",
+          "containers": "Finding what to read in {{source}} · {{containers, number}} found",
+          "content": "Reading from {{source}} · {{found, number}} found · {{changed, number}} new or changed",
+          "finishing": "Finishing up: removing what {{source}} no longer has",
+          "units": "Reading from {{source}} · {{unit}}: {{done, number}} of {{total, number}} · {{found, number}} found",
+          "ofTotal": "Reading from {{source}} · {{found, number}} of {{total, number}}",
+          "throttled": "Paused: {{source}} asked us to slow down · resumes about {{time}}",
+          "stalled": "No progress for {{n, number}} min. The source may be slow or unreachable."
+        },
+        "indexing": {
+          "left": "Making searchable · {{n, number}} left",
+          "leftWithEta": "Making searchable · {{n, number}} left · {{eta}}",
+          "inLine": "{{n, number}} waiting to be made searchable. Other indexing work is ahead of them.",
+          "inLineHelp": "Indexing is shared with other connectors, so this connector's items start once the work ahead of them is done."
+        },
+        "eta": {
+          "underMinute": "less than a minute",
+          "minutes": "about {{n, number}} min",
+          "hours": "about {{n, number}} h",
+          "longer": "several hours",
+          "unknown": "Working it out"
+        },
+        "duration": {
+          "underMinute": "under a minute",
+          "minutes": "{{n, number}} min"
+        },
+        "stage": {
+          "reading": "Reading from {{source}}",
+          "searchable": "Making searchable"
+        },
+        "count": {
+          "found": "Found",
+          "changed": "New or changed",
+          "unchanged": "Unchanged",
+          "removed": "Removed",
+          "filtered": "Left out by filters",
+          "containers": "Folders, drives and spaces",
+          "waiting": "Waiting",
+          "inProgress": "In progress",
+          "failed": "Couldn't be indexed",
+          "eta": "Time left"
+        },
+        "units": {
+          "user": "People",
+          "mailbox": "Mailboxes",
+          "drive": "Drives",
+          "site": "Sites",
+          "bucket": "Buckets",
+          "share": "Shares",
+          "channel": "Channels",
+          "space": "Spaces",
+          "project": "Projects",
+          "repository": "Repositories",
+          "table": "Tables",
+          "feed": "Feeds",
+          "page": "Pages",
+          "container": "Containers",
+          "folder": "Folders",
+          "item": "Items"
+        },
+        "attention": {
+          "title": "Needs attention"
+        },
+        "notIndexed": {
+          "title": "Not indexed, by setting or by nature"
+        },
+        "status": {
+          "FAILED": "Couldn't be indexed",
+          "ENABLE_MULTIMODAL_MODELS": "Needs an AI model that reads images",
+          "AUTO_INDEX_OFF": "Manual indexing only",
+          "FILE_TYPE_NOT_SUPPORTED": "File type not supported",
+          "EMPTY": "Empty",
+          "SKIPPED": "Skipped",
+          "PAUSED": "Paused",
+          "PASSWORD_PROTECTED": "Password-protected"
+        },
+        "history": {
+          "title": "Recent syncs",
+          "full": "Full sync",
+          "quick": "Sync",
+          "line": "{{kind}} · {{trigger}} · {{time}}",
+          "counts": "{{found, number}} found · {{changed, number}} new or changed · {{removed, number}} removed"
+        },
+        "trigger": {
+          "manual": "started by hand",
+          "schedule": "scheduled",
+          "enable": "connector turned on",
+          "startup": "after a restart",
+          "resume": "resumed after a restart",
+          "follow_up": "requested while another sync ran",
+          "unknown": "started"
+        },
+        "error": {
+          "detail": "Details: {{detail}}",
+          "auth": {
+            "title": "{{source}} rejected the sign-in",
+            "action": "Reconnect the account in this connector's settings. If it keeps failing, an admin may need to approve the app or its permissions."
+          },
+          "permission": {
+            "title": "PipesHub can't access part of {{source}}",
+            "action": "Give the connected account access to what this connector should read, then sync again."
+          },
+          "rate_limit": {
+            "title": "{{source}} limited how fast we can read",
+            "action": "Nothing to do now: the next sync carries on. If this keeps happening, sync less often."
+          },
+          "network": {
+            "title": "Couldn't reach {{source}}",
+            "action": "Check that {{source}} is reachable from where PipesHub runs, then sync again."
+          },
+          "source_unavailable": {
+            "title": "{{source}} had a problem on its side",
+            "action": "This is usually temporary. Sync again in a few minutes."
+          },
+          "not_found": {
+            "title": "Something this connector reads no longer exists in {{source}}",
+            "action": "Check the connector's settings: a selected folder, site or project may have been removed or renamed."
+          },
+          "config": {
+            "title": "The connector's settings need attention",
+            "action": "Open the connector's settings, check the address and options, then sync again."
+          },
+          "incomplete": {
+            "title": "Part of {{source}} couldn't be read",
+            "action": "Everything else was synced. The next sync tries the missing part again."
+          },
+          "interrupted": {
+            "title": "PipesHub restarted during the sync",
+            "action": "The sync runs again on its own: on the next schedule, or right away if it was a full sync."
+          },
+          "unknown": {
+            "title": "Something went wrong",
+            "action": "Sync again. If it keeps failing, check the connector's settings or ask your admin."
+          }
+        }
       }
     },
     "mcpServers": {

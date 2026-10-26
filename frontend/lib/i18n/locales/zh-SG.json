@@ -1477,7 +1477,8 @@
       "download": "下载产物",
       "downloading": "正在下载产物"
     },
-    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
+    "sourcesSettingUp": "仍在设置中：{{sources}}。回答可能尚未包含这些来源中的全部内容。"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -3278,6 +3279,157 @@
         "title": "需要处理",
         "openAuthentication": "更新身份验证",
         "viewSteps": "查看设置步骤"
+      },
+      "progress": {
+        "label": "状态",
+        "removing": "正在移除此连接器…",
+        "off": "已关闭。不会同步任何内容。",
+        "queued": "正在等待空闲的同步名额",
+        "notSyncedYet": "尚未同步",
+        "upToDate": "已是最新",
+        "upToDateAgo": "已是最新 · 同步于 {{time}}",
+        "withFailures": "{{base}} · {{n, number}} 项无法索引",
+        "lastFailed": "上次同步失败：{{reason}}",
+        "skipped": "上次同步已跳过：桌面应用未连接",
+        "approximate": "此次同步规模很大，部分项目可能会被重复计数。",
+        "viewRecords": "查看记录",
+        "run": {
+          "starting": "开始从 {{source}} 读取",
+          "people": "正在从 {{source}} 读取人员和群组",
+          "containers": "正在查找 {{source}} 中要读取的内容 · 已找到 {{containers, number}} 个",
+          "content": "正在从 {{source}} 读取 · 已找到 {{found, number}} 项 · {{changed, number}} 项新增或更改",
+          "finishing": "即将完成：正在移除 {{source}} 中已不存在的内容",
+          "units": "正在从 {{source}} 读取 · {{unit}}：{{done, number}} / {{total, number}} · 已找到 {{found, number}} 项",
+          "ofTotal": "正在从 {{source}} 读取 · {{found, number}} / {{total, number}}",
+          "throttled": "已暂停：{{source}} 要求我们放慢速度 · 预计 {{time}} 恢复",
+          "stalled": "已有 {{n, number}} 分钟没有进展。来源可能速度较慢或无法访问。"
+        },
+        "indexing": {
+          "left": "正在处理以供搜索 · 剩余 {{n, number}} 项",
+          "leftWithEta": "正在处理以供搜索 · 剩余 {{n, number}} 项 · {{eta}}",
+          "inLine": "{{n, number}} 项正在等待处理以供搜索。前面还有其他索引任务。",
+          "inLineHelp": "索引任务由多个连接器共享，因此此连接器的项目会在前面的任务完成后开始处理。"
+        },
+        "eta": {
+          "underMinute": "不到一分钟",
+          "minutes": "约 {{n, number}} 分钟",
+          "hours": "约 {{n, number}} 小时",
+          "longer": "数小时",
+          "unknown": "正在估算"
+        },
+        "duration": {
+          "underMinute": "不到一分钟",
+          "minutes": "{{n, number}} 分钟"
+        },
+        "stage": {
+          "reading": "从 {{source}} 读取",
+          "searchable": "处理以供搜索"
+        },
+        "count": {
+          "found": "已找到",
+          "changed": "新增或更改",
+          "unchanged": "未更改",
+          "removed": "已移除",
+          "filtered": "被筛选器排除",
+          "containers": "文件夹、驱动器和空间",
+          "waiting": "等待中",
+          "inProgress": "进行中",
+          "failed": "无法索引",
+          "eta": "剩余时间"
+        },
+        "units": {
+          "user": "人员",
+          "mailbox": "邮箱",
+          "drive": "驱动器",
+          "site": "站点",
+          "bucket": "存储桶",
+          "share": "共享",
+          "channel": "频道",
+          "space": "空间",
+          "project": "项目",
+          "repository": "仓库",
+          "table": "表",
+          "feed": "订阅源",
+          "page": "页面",
+          "container": "容器",
+          "folder": "文件夹",
+          "item": "条目"
+        },
+        "attention": {
+          "title": "需要处理"
+        },
+        "notIndexed": {
+          "title": "未索引（因设置或内容本身）"
+        },
+        "status": {
+          "FAILED": "无法索引",
+          "ENABLE_MULTIMODAL_MODELS": "需要能读取图片的 AI 模型",
+          "AUTO_INDEX_OFF": "仅手动索引",
+          "FILE_TYPE_NOT_SUPPORTED": "不支持的文件类型",
+          "EMPTY": "空",
+          "SKIPPED": "已跳过",
+          "PAUSED": "已暂停",
+          "PASSWORD_PROTECTED": "受密码保护"
+        },
+        "history": {
+          "title": "最近同步",
+          "full": "完整同步",
+          "quick": "同步",
+          "line": "{{kind}} · {{trigger}} · {{time}}",
+          "counts": "已找到 {{found, number}} 项 · {{changed, number}} 项新增或更改 · 已移除 {{removed, number}} 项"
+        },
+        "trigger": {
+          "manual": "手动启动",
+          "schedule": "按计划",
+          "enable": "连接器已开启",
+          "startup": "重启后",
+          "resume": "重启后恢复",
+          "follow_up": "在另一次同步运行期间请求",
+          "unknown": "已启动"
+        },
+        "error": {
+          "detail": "详情：{{detail}}",
+          "auth": {
+            "title": "{{source}} 拒绝了登录",
+            "action": "请在此连接器的设置中重新连接账户。如果仍然失败，可能需要管理员批准该应用或其权限。"
+          },
+          "permission": {
+            "title": "PipesHub 无法访问 {{source}} 的部分内容",
+            "action": "请为已连接的账户授予访问权限，使其能访问此连接器需要读取的内容，然后重新同步。"
+          },
+          "rate_limit": {
+            "title": "{{source}} 限制了我们的读取速度",
+            "action": "现在无需操作：下次同步会继续进行。如果这种情况经常发生，请降低同步频率。"
+          },
+          "network": {
+            "title": "无法连接到 {{source}}",
+            "action": "请检查运行 PipesHub 的环境能否访问 {{source}}，然后重新同步。"
+          },
+          "source_unavailable": {
+            "title": "{{source}} 自身出现了问题",
+            "action": "这通常是暂时的。请过几分钟后重新同步。"
+          },
+          "not_found": {
+            "title": "此连接器读取的某些内容在 {{source}} 中已不存在",
+            "action": "请检查连接器的设置：所选的文件夹、站点或项目可能已被移除或重命名。"
+          },
+          "config": {
+            "title": "连接器的设置需要处理",
+            "action": "请打开连接器的设置，检查地址和选项，然后重新同步。"
+          },
+          "incomplete": {
+            "title": "{{source}} 的部分内容无法读取",
+            "action": "其余内容均已同步。下次同步会重新尝试缺失的部分。"
+          },
+          "interrupted": {
+            "title": "PipesHub 在同步期间重启了",
+            "action": "同步会自动重新运行：在下一次计划时间运行；如果是完整同步，则会立即运行。"
+          },
+          "unknown": {
+            "title": "出了点问题",
+            "action": "请重新同步。如果仍然失败，请检查连接器的设置或联系管理员。"
+          }
+        }
       }
     },
     "mcpServers": {

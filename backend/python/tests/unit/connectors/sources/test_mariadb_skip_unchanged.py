@@ -241,8 +241,9 @@ class TestFullSyncSkipsUnchangedTables:
 
         h.while_fingerprinting("orders", _reindex_started)
         published = await h.full_sync()
-        assert h.record("orders").indexing_status != ProgressStatus.COMPLETED.value
-        assert published == [("newRecord", h.record("orders").id)]
+        assert h.record("orders").indexing_status == ProgressStatus.IN_PROGRESS.value
+        # The reindex already running finishes the record; a second event would only index it twice.
+        assert published == []
 
     @pytest.mark.asyncio
     async def test_changed_rows_are_queued_again(self):

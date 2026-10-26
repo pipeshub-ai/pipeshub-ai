@@ -1414,7 +1414,8 @@
       "download": "Descargar artefacto",
       "downloading": "Descargando artefacto"
     },
-    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán."
+    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
+    "sourcesSettingUp": "Aún se están configurando: {{sources}}. Puede que las respuestas todavía no incluyan todo lo de estas fuentes."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -3168,6 +3169,157 @@
         "title": "Acción necesaria",
         "openAuthentication": "Actualizar autenticación",
         "viewSteps": "Ver los pasos de configuración"
+      },
+      "progress": {
+        "label": "Estado",
+        "removing": "Eliminando este conector…",
+        "off": "Desactivado. No se sincroniza nada.",
+        "queued": "Esperando un hueco libre para sincronizar",
+        "notSyncedYet": "Aún no sincronizado",
+        "upToDate": "Actualizado",
+        "upToDateAgo": "Actualizado · sincronizado {{time}}",
+        "withFailures": "{{base}} · no se han podido indexar: {{n, number}}",
+        "lastFailed": "La última sincronización falló: {{reason}}",
+        "skipped": "Se omitió la última sincronización: la aplicación de escritorio no estaba conectada",
+        "approximate": "Esta sincronización es muy grande, así que algunos elementos podrían contarse más de una vez.",
+        "viewRecords": "Ver registros",
+        "run": {
+          "starting": "Empezando a leer de {{source}}",
+          "people": "Leyendo personas y grupos de {{source}}",
+          "containers": "Buscando qué leer en {{source}} · encontrados: {{containers, number}}",
+          "content": "Leyendo de {{source}} · encontrados: {{found, number}} · nuevos o modificados: {{changed, number}}",
+          "finishing": "Terminando: eliminando lo que {{source}} ya no tiene",
+          "units": "Leyendo de {{source}} · {{unit}}: {{done, number}} de {{total, number}} · encontrados: {{found, number}}",
+          "ofTotal": "Leyendo de {{source}} · {{found, number}} de {{total, number}}",
+          "throttled": "En pausa: {{source}} nos pidió ir más despacio · se reanuda aproximadamente {{time}}",
+          "stalled": "Sin progreso desde hace {{n, number}} min. Puede que el origen sea lento o no esté accesible."
+        },
+        "indexing": {
+          "left": "Preparando para búsqueda · pendientes: {{n, number}}",
+          "leftWithEta": "Preparando para búsqueda · pendientes: {{n, number}} · {{eta}}",
+          "inLine": "En espera para poder buscarse: {{n, number}}. Hay otro trabajo de indexación por delante.",
+          "inLineHelp": "La indexación se comparte con otros conectores, así que los elementos de este conector empiezan cuando termina el trabajo que tienen por delante."
+        },
+        "eta": {
+          "underMinute": "menos de un minuto",
+          "minutes": "unos {{n, number}} min",
+          "hours": "unas {{n, number}} h",
+          "longer": "varias horas",
+          "unknown": "Calculando"
+        },
+        "duration": {
+          "underMinute": "menos de un minuto",
+          "minutes": "{{n, number}} min"
+        },
+        "stage": {
+          "reading": "Leyendo de {{source}}",
+          "searchable": "Preparando para búsqueda"
+        },
+        "count": {
+          "found": "Encontrados",
+          "changed": "Nuevos o modificados",
+          "unchanged": "Sin cambios",
+          "removed": "Eliminados",
+          "filtered": "Excluidos por filtros",
+          "containers": "Carpetas, unidades y espacios",
+          "waiting": "En espera",
+          "inProgress": "En curso",
+          "failed": "No se pudieron indexar",
+          "eta": "Tiempo restante"
+        },
+        "units": {
+          "user": "Personas",
+          "mailbox": "Buzones",
+          "drive": "Unidades",
+          "site": "Sitios",
+          "bucket": "Buckets",
+          "share": "Recursos compartidos",
+          "channel": "Canales",
+          "space": "Espacios",
+          "project": "Proyectos",
+          "repository": "Repositorios",
+          "table": "Tablas",
+          "feed": "Feeds",
+          "page": "Páginas",
+          "container": "Contenedores",
+          "folder": "Carpetas",
+          "item": "Elementos"
+        },
+        "attention": {
+          "title": "Requiere atención"
+        },
+        "notIndexed": {
+          "title": "Sin indexar, por configuración o por su naturaleza"
+        },
+        "status": {
+          "FAILED": "No se pudo indexar",
+          "ENABLE_MULTIMODAL_MODELS": "Necesita un modelo de IA que lea imágenes",
+          "AUTO_INDEX_OFF": "Solo indexación manual",
+          "FILE_TYPE_NOT_SUPPORTED": "Tipo de archivo no compatible",
+          "EMPTY": "Vacío",
+          "SKIPPED": "Omitido",
+          "PAUSED": "En pausa",
+          "PASSWORD_PROTECTED": "Protegido con contraseña"
+        },
+        "history": {
+          "title": "Sincronizaciones recientes",
+          "full": "Sincronización completa",
+          "quick": "Sincronización",
+          "line": "{{kind}} · {{trigger}} · {{time}}",
+          "counts": "encontrados: {{found, number}} · nuevos o modificados: {{changed, number}} · eliminados: {{removed, number}}"
+        },
+        "trigger": {
+          "manual": "iniciada manualmente",
+          "schedule": "programada",
+          "enable": "conector activado",
+          "startup": "tras un reinicio",
+          "resume": "reanudada tras un reinicio",
+          "follow_up": "solicitada mientras se ejecutaba otra sincronización",
+          "unknown": "iniciada"
+        },
+        "error": {
+          "detail": "Detalles: {{detail}}",
+          "auth": {
+            "title": "{{source}} rechazó el inicio de sesión",
+            "action": "Vuelva a conectar la cuenta en la configuración de este conector. Si sigue fallando, puede que un administrador tenga que aprobar la aplicación o sus permisos."
+          },
+          "permission": {
+            "title": "PipesHub no puede acceder a una parte de {{source}}",
+            "action": "Dé a la cuenta conectada acceso a lo que debe leer este conector y vuelva a sincronizar."
+          },
+          "rate_limit": {
+            "title": "{{source}} limitó la velocidad de lectura",
+            "action": "No hace falta hacer nada ahora: la próxima sincronización continuará. Si esto sigue ocurriendo, sincronice con menos frecuencia."
+          },
+          "network": {
+            "title": "No se pudo conectar con {{source}}",
+            "action": "Compruebe que {{source}} es accesible desde donde se ejecuta PipesHub y vuelva a sincronizar."
+          },
+          "source_unavailable": {
+            "title": "{{source}} tuvo un problema por su parte",
+            "action": "Suele ser temporal. Vuelva a sincronizar dentro de unos minutos."
+          },
+          "not_found": {
+            "title": "Algo que lee este conector ya no existe en {{source}}",
+            "action": "Revise la configuración del conector: puede que se haya eliminado o cambiado de nombre una carpeta, un sitio o un proyecto seleccionado."
+          },
+          "config": {
+            "title": "La configuración del conector requiere atención",
+            "action": "Abra la configuración del conector, revise la dirección y las opciones y vuelva a sincronizar."
+          },
+          "incomplete": {
+            "title": "No se pudo leer una parte de {{source}}",
+            "action": "Todo lo demás se ha sincronizado. La próxima sincronización volverá a intentar la parte que falta."
+          },
+          "interrupted": {
+            "title": "PipesHub se reinició durante la sincronización",
+            "action": "La sincronización se volverá a ejecutar sola: en la próxima programación, o de inmediato si era una sincronización completa."
+          },
+          "unknown": {
+            "title": "Algo ha salido mal",
+            "action": "Vuelva a sincronizar. Si sigue fallando, revise la configuración del conector o consulte a su administrador."
+          }
+        }
       }
     },
     "mcpServers": {

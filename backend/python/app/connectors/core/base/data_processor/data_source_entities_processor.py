@@ -38,6 +38,7 @@ from app.connectors.core.sync.full_sync_coverage import (
     FullSyncSeen,
 )
 from app.connectors.core.sync.run_context import get_run_sync_id
+from app.connectors.core.sync.sync_progress import ChangeKind, SyncPhase, current_sync_progress
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -174,6 +175,26 @@ _DELETE_CONFLICT_ATTEMPTS = 3
 # than per statement, bounded so a slice stays inside the transaction timeout.
 _RECORDS_PER_TRANSACTION = 100
 
+# How many times syncs re-queue a record that failed while its content stayed
+# the same. Past this it waits for a change at the source or a manual retry,
+# instead of paying to fail again on every sync.
+MAX_SYNC_RETRIES = 3
+
+# The statuses a connector leaves on a record it has no opinion about.
+_SYNC_DEFAULT_STATUSES = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.NOT_STARTED.value})
+
+# Stored outcomes an unchanged record keeps on a sync: re-indexing the same
+# bytes cannot change them, or the record is already on its way.
+_KEPT_UNCHANGED_STATUSES = frozenset({
+    ProgressStatus.EMPTY.value,
+    ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+    ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+    ProgressStatus.PAUSED.value,
+    ProgressStatus.SKIPPED.value,
+})
+
 
 class _DeleteFailed(Exception):
     """Leaves a delete's transaction by rolling it back."""
@@ -264,6 +285,23 @@ def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None =
         return True
     doc_connector = doc.get("connectorId")
     return bool(connector_id and doc_connector and doc_connector != connector_id)
+
+
+def _note_people_phase() -> None:
+    """Users, groups and roles come first in most syncs; say so until content starts."""
+    progress = current_sync_progress()
+    if progress is not None and progress.phase is SyncPhase.STARTING:
+        progress.enter_phase(SyncPhase.PEOPLE)
+    elif progress is not None:
+        progress.touch()
+
+
+def _note_removed(connector_id: str | None, count: int) -> None:
+    if not connector_id or count <= 0:
+        return
+    progress = current_sync_progress(connector_id)
+    if progress is not None:
+        progress.note_removed(count)
 
 
 class DataSourceEntitiesProcessor:
@@ -2542,8 +2580,12 @@ class DataSourceEntitiesProcessor:
         narrowed_connectors: set[str] | None = None,
         permissions_fetched: bool = False,
         replace_permissions: bool = False,
+        content_changed: bool = False,
     ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
+
+        ``content_changed``: the caller says the content changed (a content
+        update), whatever the revision says.
 
         ``narrowed_connectors``: see :meth:`_link_record_to_group`.
 
@@ -2761,6 +2803,11 @@ class DataSourceEntitiesProcessor:
                     # on every full sync would only repeat the verdict. A changed
                     # revision takes the normal path and is indexed again.
                     self._preserve_indexing_state(record, existing_record)
+                elif not reindex_restored:
+                    self._settle_unfinished_record(
+                        record, existing_record,
+                        publishes_event=publishes_event, content_changed=content_changed,
+                    )
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
@@ -2916,6 +2963,9 @@ class DataSourceEntitiesProcessor:
             self._note_full_sync_seen(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, record.id)
         self._note_full_sync_seen(record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group_id)
+        self._note_sync_progress(
+            record, existing_record, restored_from_trash=restored_from_trash, content_changed=content_changed
+        )
         #Todo: Check if record is updated, permissions are updated or content is updated
         #if existing_record:
 
@@ -3036,6 +3086,13 @@ class DataSourceEntitiesProcessor:
 
             if record.is_internal:
                 self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                continue
+
+            if record.keeps_indexing_state:
+                self.logger.debug(
+                    f"Skipping indexing event for record {record.id}: its stored state "
+                    f"({record.indexing_status}) is kept"
+                )
                 continue
 
             # Already indexed and unchanged — the COMPLETED status was carried
@@ -3172,6 +3229,7 @@ class DataSourceEntitiesProcessor:
                 moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
                 replace_permissions=replace,
+                content_changed=True,
             )
 
             if processed_record is not None and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
@@ -3283,6 +3341,92 @@ class DataSourceEntitiesProcessor:
             PurePosixPath(new_record.record_name).suffix.lower()
             != PurePosixPath(old_record.record_name).suffix.lower()
         )
+
+    def _note_sync_progress(
+        self,
+        record: Record,
+        existing_record: Record | None,
+        *,
+        restored_from_trash: bool,
+        content_changed: bool,
+    ) -> None:
+        """Count the record into the running sync of its connector, if one is running here."""
+        progress = current_sync_progress(record.connector_id)
+        if progress is None:
+            return
+        # What the stats leave out, the run counts leave out too: placeholders,
+        # internal records and folders hold nothing anyone searches for.
+        if record.is_placeholder or record.is_internal or getattr(record, "is_file", True) is False:
+            progress.touch()
+            return
+        if existing_record is None or restored_from_trash:
+            kind = ChangeKind.NEW
+        elif content_changed or record.external_revision_id != existing_record.external_revision_id:
+            kind = ChangeKind.CHANGED
+        else:
+            kind = ChangeKind.UNCHANGED
+        progress.note_record(record.id, kind)
+
+    def _settle_unfinished_record(
+        self,
+        record: Record,
+        existing_record: Record,
+        *,
+        publishes_event: bool,
+        content_changed: bool,
+    ) -> None:
+        """Decide what happens to a stored connector record that is not COMPLETED.
+
+        Re-sending every such record on every sync, as this used to, paid to
+        re-index files that cannot change outcome (empty, unsupported), flipped
+        records mid-pipeline back to QUEUED, and retried a broken file on every
+        sync for ever. Now:
+
+        - a status the connector chose (AUTO_INDEX_OFF from a filter) stands;
+        - changed content is indexed again, and its retry budget starts over;
+        - a FAILED record with unchanged content is retried at most
+          ``MAX_SYNC_RETRIES`` times by syncs, then waits for a change at the
+          source or for someone to ask for a retry;
+        - EMPTY, unsupported, in-flight and paused records keep their state, and
+          no event is published for them;
+        - anything else (NOT_STARTED whose event may never have gone out,
+          AUTO_INDEX_OFF the filters now allow) is indexed.
+        """
+        incoming = record.indexing_status
+        if incoming not in _SYNC_DEFAULT_STATUSES:
+            return
+        stored = existing_record.indexing_status
+        if content_changed:
+            record.auto_retry_count = 0 if existing_record.auto_retry_count else None
+            return
+        if record.external_revision_id != existing_record.external_revision_id:
+            record.indexing_status = ProgressStatus.NOT_STARTED.value
+            record.auto_retry_count = 0 if existing_record.auto_retry_count else None
+            return
+        if not publishes_event:
+            # Nothing will be published from this write, so nothing may change state.
+            self._keep_indexing_state(record, existing_record)
+            return
+        if stored == ProgressStatus.FAILED.value:
+            used = existing_record.auto_retry_count or 0
+            if used >= MAX_SYNC_RETRIES:
+                self._keep_indexing_state(record, existing_record)
+                return
+            record.indexing_status = ProgressStatus.NOT_STARTED.value
+            record.auto_retry_count = used + 1
+            self._stamp_queued_at(record)
+            return
+        if stored in _KEPT_UNCHANGED_STATUSES:
+            self._keep_indexing_state(record, existing_record)
+            return
+        record.indexing_status = ProgressStatus.NOT_STARTED.value
+        record.auto_retry_count = existing_record.auto_retry_count
+        self._stamp_queued_at(record)
+
+    def _keep_indexing_state(self, record: Record, existing_record: Record) -> None:
+        self._preserve_indexing_state(record, existing_record)
+        record.auto_retry_count = existing_record.auto_retry_count
+        record.keeps_indexing_state = True
 
     def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
         """Carry the stored indexing lifecycle onto a metadata-only write.
@@ -3971,6 +4115,8 @@ class DataSourceEntitiesProcessor:
                         f"Deleting record {record_id} failed: {(result or {}).get('reason')}"
                     )
                 await self._reparent_orphans(tx_store, orphans)
+        if not trashed:
+            _note_removed(existing.get("connectorId"), 1)
         if trashed:
             # The single-record delete leaves a record in the trash where it is,
             # and a connector removes what the source no longer has wherever it
@@ -4232,6 +4378,8 @@ class DataSourceEntitiesProcessor:
                 "Deleting %d record(s) of %s failed: %s",
                 len(record_ids), connector_id, (result or {}).get("reason"),
             )
+        if (result or {}).get("success") and delete_source == DeleteSource.CONNECTOR:
+            _note_removed(connector_id, len((result or {}).get("deleted_records") or []))
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating
@@ -4285,6 +4433,8 @@ class DataSourceEntitiesProcessor:
         result = dict(result)
         result["deleted_records"] = result.get("soft_deleted_records", [])
         result["softDeleted"] = True
+        if DeleteSource(delete_source) == DeleteSource.CONNECTOR:
+            _note_removed(connector_id, len(result["deleted_records"]))
         unpublished = await self._finish_soft_delete(
             connector_id=connector_id,
             org_id=result.get("org_id"),
@@ -4621,6 +4771,10 @@ class DataSourceEntitiesProcessor:
         # relocation -- the graph moved on, storage didn't.
         pending_moves: list[PendingMove] = []
         rewritten: set[str] = set()
+        if record_groups:
+            progress = current_sync_progress(getattr(record_groups[0][0], "connector_id", None))
+            if progress is not None:
+                progress.note_containers(len(record_groups))
         try:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
@@ -5088,6 +5242,7 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:
+        _note_people_phase()
         try:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
@@ -5273,6 +5428,7 @@ class DataSourceEntitiesProcessor:
         for callers that can see just part of a group's membership at a time.
         """
         rewritten: set[str] = set()
+        _note_people_phase()
         try:
             if not user_groups:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
@@ -5361,6 +5517,7 @@ class DataSourceEntitiesProcessor:
         from users to these roles.
         """
         rewritten: set[str] = set()
+        _note_people_phase()
         try:
             if not roles:
                 self.logger.warning("on_new_app_roles received an empty list; skipping processing.")

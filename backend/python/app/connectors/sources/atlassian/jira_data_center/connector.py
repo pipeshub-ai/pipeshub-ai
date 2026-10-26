@@ -3103,6 +3103,7 @@ class JiraDataCenterConnector(BaseConnector):
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
 
+        self.progress.set_units("project", 0, len(projects))
         for project, _ in projects:
             try:
                 project_stats = await self._sync_project_issues(
@@ -3118,6 +3119,8 @@ class JiraDataCenterConnector(BaseConnector):
                 failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
+            finally:
+                self.progress.advance_units("project")
 
         return {
             "total_synced": total_synced,

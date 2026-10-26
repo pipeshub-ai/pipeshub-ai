@@ -17,7 +17,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.config.constants.arangodb import AppStatus, CollectionNames, Connectors
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
     connector_sync_lock,
@@ -26,6 +26,15 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
+from app.connectors.core.sync.sync_errors import classify_sync_error
+from app.connectors.core.sync.sync_progress import (
+    SyncPhase,
+    SyncProgress,
+    SyncTrigger,
+    merged_run_history,
+    reset_current_sync_progress,
+    set_current_sync_progress,
+)
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -195,6 +204,7 @@ async def _finalize(
     outcome: SyncRunOutcome | None = None,
     summary: dict[str, object] | None = None,
     action_items: "list[ActionItem] | None" = None,
+    run_record: dict[str, object] | None = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -226,6 +236,10 @@ async def _finalize(
 
     ``outcome`` goes in the same write too, with the finish time, so "last synced"
     means the last run that ended rather than the last write to the app doc.
+
+    ``run_record`` is the run's progress folded into history (``syncRuns``,
+    ``lastSyncError``, and ``syncProgress`` cleared), also in that write: the
+    connector is never seen IDLE with a live progress snapshot still on it.
     """
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
     still_requested = (
@@ -240,6 +254,7 @@ async def _finalize(
             ConnectorStateKeys.LAST_SYNC_OUTCOME: outcome.value,
             # Text, so every graph store can hold it; None clears an older run's summary.
             ConnectorStateKeys.LAST_SYNC_SUMMARY: json.dumps(summary, default=str) if summary else None,
+            **(run_record or {}),
         }
         if outcome is not None else {}
     )
@@ -692,6 +707,110 @@ async def _unlink_what_full_sync_missed(
     return bool(ok)
 
 
+# How often a running sync's snapshot is written to its app doc. The UI polls at
+# about this pace while a sync runs; writes are skipped when nothing changed.
+_PROGRESS_WRITE_INTERVAL_S = 5.0
+_PROGRESS_WRITER_STOP_TIMEOUT_S = 5.0
+
+
+async def _write_progress_while_running(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    connector_id: str,
+    progress: SyncProgress,
+    lease: SyncLease | None,
+) -> None:
+    """Keep ``syncProgress`` on the app doc current until cancelled.
+
+    An update, never an upsert, so it cannot resurrect a connector deleted
+    mid-run. Failures are logged and retried on the next tick: progress is for
+    people to look at, and must never fail the sync.
+    """
+    written = -1
+    while True:
+        if lease is not None and lease.lost.is_set():
+            # Someone else owns the connector now; its doc is theirs to write.
+            return
+        version = progress.version
+        if version != written:
+            try:
+                await graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {ConnectorStateKeys.SYNC_PROGRESS: json.dumps(progress.snapshot(), default=str)},
+                )
+                written = version
+            except Exception as e:
+                logger.debug(f"Could not write sync progress for {connector_id}: {e}")
+        await asyncio.sleep(_PROGRESS_WRITE_INTERVAL_S)
+
+
+def _run_record(
+    progress: SyncProgress,
+    outcome: SyncRunOutcome,
+    stored_runs: object,
+    *,
+    error: dict[str, object] | None,
+    skip_code: str | None,
+    started_by: str | None,
+) -> dict[str, object]:
+    """The app-doc fields that close a run: history, the failure reason, and no live snapshot."""
+    entry = progress.run_entry(
+        outcome=outcome.value,
+        finished_at=get_epoch_timestamp_in_ms(),
+        error=error if outcome is SyncRunOutcome.FAILED else None,
+        skip_code=skip_code,
+        started_by=started_by,
+    )
+    progress.close()
+    failure = (
+        json.dumps({**(error or {"code": "unknown"}), "runId": progress.run_id, "at": entry["finishedAt"]})
+        if outcome is SyncRunOutcome.FAILED
+        else None
+    )
+    return {
+        ConnectorStateKeys.SYNC_PROGRESS: None,
+        ConnectorStateKeys.SYNC_RUNS: merged_run_history(stored_runs, entry),
+        # A stopped or skipped run says nothing about whether the source works,
+        # so only a success clears the last failure.
+        **(
+            {ConnectorStateKeys.LAST_SYNC_ERROR: failure}
+            if outcome in (SyncRunOutcome.FAILED, SyncRunOutcome.SUCCEEDED)
+            else {}
+        ),
+    }
+
+
+async def _mark_first_sync(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    connector_id: str,
+    doc: dict | None,
+) -> None:
+    """Flag a connector whose content has never been searchable, so people hear when it is.
+
+    Decided at the start of a run, from the doc read just before. A connector
+    that has finished a run before, or already has indexed content, is not
+    new: lastSyncFinishedAtTimestamp only exists since October 2026, so the
+    indexed-content check is what keeps installs upgraded from older versions
+    from announcing every connector they already have.
+    """
+    if not doc or doc.get(ConnectorStateKeys.AWAITING_FIRST_SYNC) or doc.get(ConnectorStateKeys.READY_AT):
+        return
+    if doc.get(ConnectorStateKeys.LAST_SYNC_FINISHED_AT):
+        return
+    if doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+        return
+    try:
+        if await graph_provider.has_records_indexed_since(connector_id, 0):
+            return
+        await graph_provider.update_node(
+            connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.AWAITING_FIRST_SYNC: True}
+        )
+    except Exception as e:
+        logger.debug(f"Could not mark the first sync of {connector_id}: {e}")
+
+
 def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool) -> SyncRunOutcome:
     if stopped:
         return SyncRunOutcome.STOPPED
@@ -714,6 +833,8 @@ async def run_sync_task(
     coordinator: SyncCoordinator | None = None,
     close_connector: bool = False,
     resync_spec: object | None = None,
+    trigger: str | None = None,
+    started_by: str | None = None,
 ) -> None:
     start = time.monotonic()
     stopped = False
@@ -721,13 +842,23 @@ async def run_sync_task(
     finished = False
     unlink_failed = False
     skipped_code: str | None = None
+    error: dict[str, object] | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
     scope_generation: int | None = None
+    stored_runs: object = None
+    progress_writer: asyncio.Task | None = None
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
     run_sync_token = set_run_sync_id(run_sync_id)
+    progress = SyncProgress(
+        connector_id=connector_id,
+        run_id=run_sync_id,
+        full=full_sync,
+        trigger=SyncTrigger.parse(trigger),
+    )
+    progress_token = set_current_sync_progress(progress)
     logger.info(f"▶️ Starting sync run {run_sync_id} for connector {connector_id}")
     try:
         # Inside the try: if it raised before it, the finalizer below would never
@@ -759,8 +890,14 @@ async def run_sync_task(
                     CollectionNames.APPS.value,
                     {ConnectorStateKeys.PENDING_RESYNC: False},
                 )
+            stored_runs = (doc or {}).get(ConnectorStateKeys.SYNC_RUNS)
+            await _mark_first_sync(graph_provider, logger, connector_id, doc)
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
+        progress_writer = asyncio.get_running_loop().create_task(
+            _write_progress_while_running(graph_provider, logger, connector_id, progress, lease),
+            name=f"sync_progress_{connector_id}",
+        )
         if lease is None:
             await _run_sync_alone(connector, connector_id)
         else:
@@ -771,6 +908,7 @@ async def run_sync_task(
         if seen is not None and not (
             lease is not None and (lease.stop_requested.is_set() or lease.lost.is_set())
         ):
+            progress.enter_phase(SyncPhase.FINISHING)
             unlink_failed = not await _unlink_what_full_sync_missed(
                 connector, connector_id, graph_provider, logger, seen
             )
@@ -781,10 +919,19 @@ async def run_sync_task(
         # Not a crash: the connector declined to run (e.g. Local FS with no
         # desktop connected). Logged only; the UI reads live presence.
         skipped_code = exc.code
-    except Exception:
+    except Exception as exc:
         failed = True
+        error = classify_sync_error(exc)
         raise
     finally:
+        if progress_writer is not None:
+            # Waited for, briefly: a snapshot write landing after the IDLE write
+            # below would leave a live-looking run on an idle connector. Readers
+            # ignore a snapshot on an idle connector too, so a write that
+            # outlives this wait is harmless.
+            progress_writer.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait({progress_writer}, timeout=_PROGRESS_WRITER_STOP_TIMEOUT_S)
         if seen is not None:
             try:
                 processor.end_full_sync_run(connector_id, seen)
@@ -792,10 +939,13 @@ async def run_sync_task(
                 # Logged, not raised: the finalizer below must still run.
                 logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
         reset_run_sync_id(run_sync_token)
+        reset_current_sync_progress(progress_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
             stopped = True
+        outcome = _run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished)
+        run_record = _run_record(progress, outcome, stored_runs, error=error, skip_code=skipped_code, started_by=started_by)
         elapsed = time.monotonic() - start
         mins, secs = divmod(elapsed, 60)
         elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
@@ -831,9 +981,10 @@ async def run_sync_task(
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
-                outcome=_run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished),
+                outcome=outcome,
                 summary=getattr(connector, "last_sync_summary", None),
                 action_items=getattr(connector, "last_action_items", None),
+                run_record=run_record,
                 # A stop or a lost lease returns from _run_until_aborted without
                 # raising, so `finished` alone would call that run complete.
                 # A failed unlink owes one too: what the sync did not see is

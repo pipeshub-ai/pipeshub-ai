@@ -560,6 +560,7 @@ class ConnectorFactory:
                             logger,
                             lease=lease,
                             coordinator=coordinator,
+                            trigger="startup",
                             resync_spec=SyncSpec(
                                 connector_id=connector_id,
                                 connector_name=name,

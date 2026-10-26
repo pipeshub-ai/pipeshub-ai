@@ -56,6 +56,7 @@ import {
   getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
+  getConnectorProgress,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -369,6 +370,15 @@ export const reindexConnectorSchema = z.object({
  */
 const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
+});
+
+/**
+ * Schema for getting what a connector is doing now: `summary` for cards,
+ * `full` (adds the stats and why records are not searchable) for the panel.
+ */
+const getConnectorProgressSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1) }),
+  query: z.object({ detail: z.enum(['summary', 'full']).optional() }),
 });
 
 /**
@@ -722,6 +732,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/progress
+   * The running sync, recent runs, the last failure and indexing progress
+   */
+  router.get(
+    '/:connectorId/progress',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    ValidationMiddleware.validate(getConnectorProgressSchema),
+    getConnectorProgress(config),
   );
 
   /**

@@ -291,6 +291,22 @@ def record_status_field(name: str) -> str:
     return name
 
 
+# Statuses whose stored ``reason`` the stats group by, so people see why
+# records are not searchable. Reasons are the fixed sentences of
+# app.utils.user_errors, so the groups stay few.
+STATS_REASONED_STATUSES = (
+    "FAILED",
+    "AUTO_INDEX_OFF",
+    "FILE_TYPE_NOT_SUPPORTED",
+    "EMPTY",
+    "ENABLE_MULTIMODAL_MODELS",
+    "SKIPPED",
+    "PAUSED",
+    "PASSWORD_PROTECTED",
+)
+STATS_REASON_GROUPS = 20
+
+
 def build_connector_stats_response(
     rows: List[Dict[str, Any]],
     statuses: List[str],
@@ -320,12 +336,15 @@ def build_connector_stats_response(
     extraction_status_counts = dict.fromkeys(statuses, 0)
     entities_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
+    by_reason: dict[tuple, int] = {}
     total = 0
 
     for row in rows:
         cnt = row.get("cnt", 0)
         total += cnt
         st = row.get("indexingStatus")
+        if st in STATS_REASONED_STATUSES:
+            by_reason[(st, row.get("reason"))] = by_reason.get((st, row.get("reason")), 0) + cnt
         if st in indexing_status_counts:
             indexing_status_counts[st] += cnt
         ex = row.get("extractionStatus")
@@ -363,6 +382,11 @@ def build_connector_stats_response(
             "entitiesStatus": entities_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
+        # Why records are not searchable, largest groups first.
+        "byReason": [
+            {"indexingStatus": st, "reason": reason, "count": count}
+            for (st, reason), count in sorted(by_reason.items(), key=lambda item: -item[1])[:STATS_REASON_GROUPS]
+        ],
     }
 
 

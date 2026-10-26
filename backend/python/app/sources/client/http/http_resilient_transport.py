@@ -15,6 +15,7 @@ from app.sources.client.resilience import (
     RETRYABLE_NETWORK_ERRORS,
     ResiliencePolicy,
     parse_retry_after,
+    report_source_throttled,
 )
 from app.utils.url_redaction import redact_sensitive_query_params
 
@@ -65,6 +66,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                 note_status(response.status_code)
             try:
                 delay = policy.note_retry(attempt, parse_retry_after(response.headers))
+                report_source_throttled(response.status_code, delay)
             except BaseException:
                 # A policy may refuse to wait (an hourly quota spent); the response still holds a connection.
                 with contextlib.suppress(Exception):

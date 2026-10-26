@@ -817,8 +817,10 @@ class AzureBlobConnector(BaseConnector):
                     await self._sync_container(container_name)
                 except Exception as e:
                     failed[container_name] = self._log_failure(f"Error syncing container {container_name}", e)
+                self.progress.advance_units("container")
 
         self._queued_removals = []
+        self.progress.set_units("container", 0, len([n for n in container_names if n]))
         try:
             await asyncio.gather(*(sync_one(name) for name in container_names if name))
             queued, self._queued_removals = self._queued_removals, None
@@ -1277,6 +1279,7 @@ class AzureBlobConnector(BaseConnector):
                         continue
 
                     if not scope.includes_file(blob_name):
+                        self.progress.note_filtered("folder")
                         continue
 
                     # Check extension filter
@@ -1284,9 +1287,11 @@ class AzureBlobConnector(BaseConnector):
                         self.logger.debug(
                             f"Skipping {blob_name}: does not pass extension filter"
                         )
+                        self.progress.note_filtered("extension")
                         continue
 
                     if not self._pass_date_filters(blob_dict, *user_date_filters):
+                        self.progress.note_filtered("date")
                         continue
 
                     # Kept before processing: a blob that fails to process still exists.

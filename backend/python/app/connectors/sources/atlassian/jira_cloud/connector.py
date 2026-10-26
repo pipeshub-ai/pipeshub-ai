@@ -75,6 +75,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
@@ -3958,6 +3959,7 @@ class JiraConnector(BaseConnector):
         leveled_reread_project_ids: set[str] = set()
         self._unreadable_security = {}
 
+        self.progress.set_units("project", 0, len(projects))
         for project, _ in projects:
             try:
                 project_stats = await self._sync_project_issues(
@@ -3977,6 +3979,8 @@ class JiraConnector(BaseConnector):
                 failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
+            finally:
+                self.progress.advance_units("project")
 
         await self._warn_unreadable_security()
 
@@ -6084,6 +6088,8 @@ class JiraConnector(BaseConnector):
                     "Jira answered %s (%s, attempt %s/%s): waiting %.1fs",
                     response.status, ctx, attempt + 1, max_attempts, delay,
                 )
+                if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+                    report_throttled(delay)
                 await asyncio.sleep(delay)
                 continue
 

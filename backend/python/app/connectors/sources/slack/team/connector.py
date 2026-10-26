@@ -103,6 +103,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -328,6 +329,7 @@ class RateLimiter:
                         self._logger.debug(
                             f"⏱️  Tier {key} rate limit — waiting {wait:.2f}s"
                         )
+                    report_throttled(wait)
                     await asyncio.sleep(wait)
                     now = datetime.now()
                     window[:] = [
@@ -856,7 +858,9 @@ class SlackConnector(BaseConnector):
                             f"{rg.external_group_id}: {exc}",
                             exc_info=True,
                         )
+                    self.progress.advance_units("channel")
 
+            self.progress.set_units("channel", 0, sum(1 for rg in channels if rg.external_group_id))
             # Channels already reading finish before a refused token is raised, so
             # none is left running after the sync has failed.
             results = await asyncio.gather(

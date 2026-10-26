@@ -1703,6 +1703,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
     async def _process_users(self, org_id: str, users: list[AppUser]) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
+        self.progress.set_units("mailbox", 0, len(users))
         for i, user in enumerate(users):
             self.logger.info(f"Processing user {i+1}/{len(users)}: {user.email}")
             try:
@@ -1714,6 +1715,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 self._full_sync_incomplete = True
                 self._skipped["mailboxes"] += 1
                 yield f"User {i+1}/{len(users)}: Failed - {str(e)}"
+            self.progress.advance_units("mailbox")
 
     async def _process_user_emails(self, org_id: str, user: AppUser) -> str:
         """Process emails from all folders sequentially."""

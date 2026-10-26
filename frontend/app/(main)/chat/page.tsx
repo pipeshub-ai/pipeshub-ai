@@ -6,6 +6,7 @@ import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assi
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { SourcesSettingUpNotice } from './components/sources-setting-up-notice';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { ConversationHeaderOverlay } from '@/config';
@@ -1220,6 +1221,7 @@ function ChatContent() {
       }}
     >
       {!isInputCentered && showChatInput && <ChatInputWrapper />}
+      {!isInputCentered && showChatInput && !conversationId && <SourcesSettingUpNotice style={{ marginTop: 'var(--space-2)' }} />}
       {/* On a phone the links only take room from an open conversation. */}
       {!(isMobile && conversationId) && <ChatFooterLinks />}
     </Box>
@@ -1404,6 +1406,7 @@ function ChatContent() {
                   // switch: others may still show it, and its sample accounts can sign in.
                   <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
                 )}
+                {showChatInput && <SourcesSettingUpNotice style={{ marginTop: 'var(--space-3)' }} />}
                 {demoDataActive && showChatInput && !demoHidden && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}

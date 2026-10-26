@@ -37,6 +37,9 @@ import { canGoBackInApp } from '@/lib/electron';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
 
+const STILL_INDEXING = new Set(['NOT_STARTED', 'QUEUED', 'IN_PROGRESS', 'PAUSED']);
+const RECORD_STATUS_POLL_MS = 10_000;
+
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.1;
@@ -370,6 +373,24 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   };
 
   const indexingStatus = recordDetails?.record?.indexingStatus;
+
+  // Until the record is searchable, keep its status current without re-streaming the file.
+  useEffect(() => {
+    if (!recordId || !indexingStatus || !STILL_INDEXING.has(indexingStatus)) return;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const updated = await KnowledgeBaseApi.getRecordDetails(recordId);
+        if (!cancelled) setRecordDetails(updated);
+      } catch {
+        // The next status change or a reload shows it; a failed refresh is not worth an error.
+      }
+    }, RECORD_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [recordId, indexingStatus, recordDetails]);
 
   const getReindexButtonLabel = (status: string | undefined): string => {
     switch (status) {

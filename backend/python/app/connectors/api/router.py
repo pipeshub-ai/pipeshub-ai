@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -134,6 +134,7 @@ from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
+from app.connectors.core.sync.progress_view import build_progress_view
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
@@ -2732,6 +2733,32 @@ async def get_connector_stats_endpoint(
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
+
+@router.get("/api/v1/progress", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
+async def get_connector_progress_endpoint(
+    request: Request,
+    connector_id: str,
+    detail: Literal["summary", "full"] = "summary",
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """What a connector or collection is doing: the running sync, its last runs, and indexing."""
+    logger = request.app.container.logger()
+    try:
+        org_id = request.state.user.get("orgId")
+        await authorize_connector_stats(
+            request, graph_provider, request.app.state.connector_registry, connector_id, org_id
+        )
+        view = await build_progress_view(graph_provider, org_id, connector_id, detail=detail)
+        if view is None:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Connector {connector_id} not found")
+        return {"success": True, "data": view}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connector progress: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector progress")
+        ) from e
 
 @router.post(
     "/api/v1/record-groups/{record_group_id}/reindex",

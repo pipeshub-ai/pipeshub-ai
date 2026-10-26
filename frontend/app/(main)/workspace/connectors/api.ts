@@ -21,6 +21,7 @@ import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-da
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 import { isDesktopOfflineError } from './utils/local-fs-helpers';
 import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import type { ConnectorProgress } from './utils/connector-progress';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -506,6 +507,18 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** What a connector (or collection) is doing now; `full` adds recent runs and stats by reason. */
+  async getConnectorProgress(
+    connectorId: string,
+    detail: 'summary' | 'full' = 'summary'
+  ): Promise<ConnectorProgress> {
+    const { data } = await apiClient.get<{ data: ConnectorProgress }>(
+      `${BASE_URL}/${connectorId}/progress`,
+      { params: { detail } }
+    );
+    return data.data;
   },
 
   /** Code repositories the caller can read, with each one's code-graph status. */

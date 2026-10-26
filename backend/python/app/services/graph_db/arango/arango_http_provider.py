@@ -193,6 +193,7 @@ from app.services.graph_db.common.utils import (
     KB_MAX_FOLDER_DEPTH,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
+    STATS_REASONED_STATUSES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     AncestorChainLimitError,
@@ -22882,14 +22883,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER doc.isDeleted != true
                 FILTER doc.mimeType NOT IN @folder_mime_types
                 COLLECT key = doc._key, recordType = doc.recordType, indexingStatus = doc.indexingStatus,
-                    extractionStatus = doc.extractionStatus, vrid = doc.virtualRecordId, rev = doc.contentRev
+                    extractionStatus = doc.extractionStatus, vrid = doc.virtualRecordId, rev = doc.contentRev,
+                    reason = (doc.indexingStatus IN @reasoned_statuses ? doc.reason : null)
                 // Named entities have no record field: their stage state on the record's revision, by key.
                 LET entitiesStatus = vrid == null || rev == null ? null
                     : DOCUMENT(@@stage_states, CONCAT(vrid, ":", rev, ":entities")).status
                 COLLECT recordType2 = recordType, indexingStatus2 = indexingStatus,
-                    extractionStatus2 = extractionStatus, entitiesStatus2 = entitiesStatus WITH COUNT INTO cnt
+                    extractionStatus2 = extractionStatus, entitiesStatus2 = entitiesStatus,
+                    reason2 = reason WITH COUNT INTO cnt
                 RETURN {{ recordType: recordType2, indexingStatus: indexingStatus2,
-                    extractionStatus: extractionStatus2, entitiesStatus: entitiesStatus2, cnt }}
+                    extractionStatus: extractionStatus2, entitiesStatus: entitiesStatus2,
+                    reason: reason2, cnt }}
             """
 
             rows = await self.http_client.execute_aql(
@@ -22897,6 +22901,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     "app_handle": f"{CollectionNames.APPS.value}/{connector_id}",
                     "folder_mime_types": FOLDER_MIME_TYPES,
+                    "reasoned_statuses": list(STATS_REASONED_STATUSES),
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
                     "@stage_states": CollectionNames.STAGE_STATES.value,
                 },
@@ -25104,6 +25109,59 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, {"virtual_record_ids": wanted}, transaction
         )
         return {vrid for vrid in results or [] if vrid}
+
+    async def count_connector_records_by_status(
+        self,
+        connector_id: str,
+        statuses: list[str],
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, int]:
+        """See :meth:`IGraphDBProvider.count_connector_records_by_status`."""
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value} OPTIONS {{ indexHint: "{_INDEXED_SINCE_INDEX}" }}
+            FILTER record.connectorId == @connector_id
+            AND record.indexingStatus IN @statuses
+            FILTER record.isInternal != true
+            FILTER record.isPlaceholder != true
+            FILTER record.isDeleted != true
+            FILTER record.mimeType NOT IN @folder_mime_types
+            COLLECT status = record.indexingStatus WITH COUNT INTO cnt
+            RETURN {{ status, cnt }}
+        """
+        rows = await self.http_client.execute_aql(
+            query,
+            {"connector_id": connector_id, "statuses": statuses, "folder_mime_types": FOLDER_MIME_TYPES},
+            transaction,
+        )
+        return {row["status"]: int(row["cnt"]) for row in rows or [] if row.get("status")}
+
+    async def count_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.count_records_indexed_since`."""
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value} OPTIONS {{ indexHint: "{_INDEXED_SINCE_INDEX}" }}
+            FILTER record.connectorId == @connector_id
+            AND record.indexingStatus == @completed
+            AND record.lastIndexTimestamp > @since_ms
+            COLLECT WITH COUNT INTO cnt
+            RETURN cnt
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            {
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            transaction,
+        )
+        return int((results or [0])[0] or 0)
 
     async def has_records_indexed_since(
         self,

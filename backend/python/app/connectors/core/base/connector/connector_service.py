@@ -20,6 +20,12 @@ from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync.sync_progress import (
+    NO_PROGRESS,
+    SyncProgress,
+    NoSyncProgress,
+    current_sync_progress,
+)
 from app.connectors.core.thread_pool import (
     SharedConnectorThreadPool,
     ThreadPoolLease,
@@ -197,6 +203,16 @@ class BaseConnector(ABC):
     def connector_metadata(self) -> Dict[str, Any]:
         """Metadata recorded by the ``@Connector`` decorator."""
         return getattr(self.__class__, '_connector_metadata', {})
+
+    @property
+    def progress(self) -> "SyncProgress | NoSyncProgress":
+        """The running sync's progress, for a connector to report what only it knows.
+
+        ``self.progress.set_units("mailbox", done, total)``, ``expect_total(n)``,
+        ``note_filtered("date")``. Outside a sync (a reindex, a webhook) every
+        report is dropped, so callers never need to check.
+        """
+        return current_sync_progress(self.connector_id) or NO_PROGRESS
 
     @property
     def resilience(self) -> Optional[ResiliencePolicy]:
