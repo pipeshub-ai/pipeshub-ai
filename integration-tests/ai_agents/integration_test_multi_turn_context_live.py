@@ -55,8 +55,9 @@ logger = logging.getLogger("ai-agents-it")
 # leaves (ContextBudget.for_model). The prompt here is ~15.4K for the named agent and
 # ~16.8K for the assistant, so at 24K B was ~4.3K and ~3.6K, and each search result
 # (32K characters, ~8K tokens) was cut to a third. At 40K B is ~16.6K and ~15.2K: one
-# result fits whole under the 70% low-water mark (~11.6K, ~10.6K), and two pass every
-# compaction trigger up to auto_compact's 85% (~14.1K, ~12.9K).
+# result fits whole under the 70% low-water mark that budget reduction and the sliding
+# window trim results to (~11.6K, ~10.6K), and two pass every compaction trigger up to
+# auto_compact's 85% (~14.1K, ~12.9K).
 _CONTEXT_LENGTH = 40_000
 _MANUAL_CHARS = 120_000
 _QUESTION_A = "How do I set up automated appointment reminders by SMS and email, and can patients confirm or cancel?"
