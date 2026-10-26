@@ -24,7 +24,6 @@ import pytest
 from app.config.constants.arangodb import (
     AccessRule,
     CollectionNames,
-    EntityRelations,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -8861,6 +8860,13 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
             id="rec-1", connector_id="conn-1", assignee_email="a@x.com", lead_email="a@x.com",
             mentioned_user_ids=[], mentioned_group_ids=[], involved_user_source_ids=[], author_id=None,
         )
+        record_fields = {
+            "id": "rec-1", "org_id": "org-1", "external_record_id": "ext-1", "record_name": "r",
+            "origin": OriginTypes.CONNECTOR.value, "connector_name": ConnectorsEnum.GOOGLE_MAIL,
+            "connector_id": "conn-1", "version": 1, "source_created_at": 1000, "source_updated_at": 2000,
+        }
+        project = ProjectRecord(record_type=RecordType.PROJECT, lead_email="a@x.com", **record_fields)
+        ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", **record_fields)
         handlers = {
             "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
             "delete_edges_from": lambda: proc._handle_project_lead_edge(record, tx_store),
