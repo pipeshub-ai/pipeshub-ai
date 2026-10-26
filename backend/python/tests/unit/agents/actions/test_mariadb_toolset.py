@@ -128,11 +128,12 @@ class _Catalog:
             return [{"Table": "t", "Create Table": f"CREATE TABLE ... /* {query} */"}]
         if "information_schema.VIEWS" in query:
             return [{"name": v, "database": params[0], "definition": "select 1"} for v in self.views]
-        if "CONSTRAINT_TYPE = 'PRIMARY KEY'" in query:
-            return [{"column_name": c} for c in self.tables.get(params[1], {}).get("pk", [])]
-        if "CONSTRAINT_TYPE = 'FOREIGN KEY'" in query:
+        if "information_schema.STATISTICS" in query:
+            return [{"index_name": "PRIMARY", "column_name": c, "sub_part": None}
+                    for c in self.tables.get(params[1], {}).get("pk", [])]
+        if "information_schema.KEY_COLUMN_USAGE" in query:
             return list(self.tables.get(params[1], {}).get("fk", []))
-        if "CONSTRAINT_TYPE = 'UNIQUE'" in query or "CHECK_CONSTRAINTS" in query:
+        if "CHECK_CONSTRAINTS" in query:
             return []
         if "information_schema.COLUMNS" in query:
             return [{"name": c, "data_type": "int", "nullable": 0}
@@ -165,8 +166,10 @@ def make_tool() -> Callable[..., tuple[MariaDB, _FakePool]]:
               ) -> tuple[MariaDB, _FakePool]:
         pool = _FakePool(responder or _Catalog(SHOP))
         create_pool = AsyncMock(side_effect=pool_error) if pool_error else AsyncMock(return_value=pool)
+        # The client dials one connection before the pool; these hosts are made up.
         for p in (patch.object(mariadb_client_module, "mariadb", mariadb_driver),
-                  patch.object(mariadb_driver, "create_async_pool", create_pool)):
+                  patch.object(mariadb_driver, "create_async_pool", create_pool),
+                  patch.object(mariadb_client_module, "_open_and_close", MagicMock())):
             p.start()
             patches.append(p)
         client = MariaDBClient(host="db.internal", user="agent", password=PASSWORD,
