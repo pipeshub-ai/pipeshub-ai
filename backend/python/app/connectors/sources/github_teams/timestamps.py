@@ -289,7 +289,9 @@ class TimestampBackfill:
         if failure is None:
             missing = [path for path in paths if path not in results]
             if missing:
-                results.update(await self._fetch_dates_rest(owner, name, missing))
+                # A rate limit here leaves the rest missing; the stored dates stay.
+                rest_dates, _limited = await self._fetch_dates_rest(owner, name, missing)
+                results.update(rest_dates)
         return results
 
     async def _fetch_commit_dates(
@@ -331,7 +333,14 @@ class TimestampBackfill:
                 "GraphQL commit-date batch failed for %s/%s (%s); falling back to REST for %s path(s).",
                 owner, name, failure.detail, len(chunk),
             )
-            results.update(await self._fetch_dates_rest(owner, name, chunk))
+            rest_dates, rest_failure = await self._fetch_dates_rest(owner, name, chunk)
+            results.update(rest_dates)
+            if rest_failure is not None:
+                self.logger.warning(
+                    "GitHub rate-limited the REST commit-date fallback for %s/%s (%s); stopping.",
+                    owner, name, rest_failure.detail,
+                )
+                return results, rest_failure
             remaining = rest
         return results, None
 
@@ -438,19 +447,35 @@ class TimestampBackfill:
 
     async def _fetch_dates_rest(
         self, owner: str, name: str, paths: list[str]
-    ) -> dict[str, tuple[int | None, int | None]]:
-        """Per-path REST fallback: 2 requests per path against the core quota."""
+    ) -> tuple[dict[str, tuple[int | None, int | None]], _GraphqlFailure | None]:
+        """Per-path REST fallback: 2 requests per path against the core quota.
+
+        A rate-limited answer is not an empty history: that path is left out,
+        the paths not yet asked about are skipped, and the rate limit is
+        returned so the caller stops. (A secondary limit can leave the core
+        quota above the connector's reserve, so nothing else would stop it.)
+        """
         c = self.c
         semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
         results: dict[str, tuple[int | None, int | None]] = {}
+        limited: list[_GraphqlFailure] = []
 
         async def fetch_one(path: str) -> None:
             async with semaphore:
+                if limited:
+                    return
                 try:
                     res = await c.runtime.ds_call(
                         c.data_source.list_commits_first_and_last, owner, name, path,
                     )
-                    if not res.success or not res.data:
+                    if not res.success:
+                        failure = _classify_failure(res)
+                        if failure.rate_limited:
+                            limited.append(failure)
+                            return
+                        results[path] = (None, None)
+                        return
+                    if not res.data:
                         results[path] = (None, None)
                         return
                     newest_commit, oldest_commit = res.data
@@ -463,7 +488,7 @@ class TimestampBackfill:
                     results[path] = (None, None)
 
         await asyncio.gather(*(fetch_one(path) for path in paths))
-        return results
+        return results, (limited[0] if limited else None)
 
 
 def _date_patch(record_id: str, created_ms: int | None, updated_ms: int | None) -> dict[str, Any]:

@@ -456,6 +456,37 @@ class TestCommitDateFailures:
         detail = _classify_failure(res).detail
         assert "hunter2" not in detail and "token=abc" not in detail
 
+    async def test_a_rate_limited_rest_fallback_stops_the_fetch(self) -> None:
+        """A secondary limit can leave the core quota above the reserve, so a
+        rate-limited REST answer has to stop the fetch, not read as no history."""
+        c = make_mock_connector()
+        graphql_batches: list[list[str]] = []
+        rest_paths: list[str] = []
+
+        async def fake_ds_call(method, *args, **kwargs) -> object:
+            if method is c.data_source.graphql_query:
+                paths = _graphql_paths(args[0])
+                graphql_batches.append(paths)
+                if len(paths) > 10 or paths[0] == "src/f0.py":
+                    return failed_response("HTTP 502: <html>", status_code=502)
+                return _one_commit_each(args[0])
+            rest_paths.append(args[2])
+            limited = failed_response("API rate limit exceeded", status_code=429)
+            limited.retry_after_seconds = 60
+            return limited
+
+        c.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
+        paths = [f"src/f{i}.py" for i in range(20)]
+
+        dates, failure = await ReposSync(c).timestamps._fetch_commit_dates("acme", "widgets", paths)
+
+        assert failure is not None and failure.rate_limited
+        assert dates == {}
+        assert all(p in {f"src/f{i}.py" for i in range(10)} for p in rest_paths)
+        # The 20, then the first 10 at the floor; nothing for the second 10 once REST is rate-limited.
+        assert [len(b) for b in graphql_batches] == [20, 10]
+        assert len(rest_paths) <= 10
+
     async def test_a_rate_limited_backfill_pauses_until_the_next_sync(self) -> None:
         from app.connectors.sources.github_teams.timestamps import _GraphqlFailure
 
