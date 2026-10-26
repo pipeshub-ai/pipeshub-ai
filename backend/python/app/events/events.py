@@ -47,7 +47,12 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.docling.client import within_docling_size_limit
+from app.services.docling.client import (
+    MAX_PAGES_ENV,
+    docling_max_pages,
+    docling_takes,
+    within_docling_size_limit,
+)
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
@@ -289,6 +294,11 @@ class EventProcessor:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+        elif not docling_takes(len(pdf_binary), inspected.page_count):
+            self.logger.info(
+                "📄 PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
+                inspected.page_count, MAX_PAGES_ENV, docling_max_pages(),
+            )
         else:
             docling_failed = False
             async for event in self.processor.process_pdf_with_docling(

@@ -116,7 +116,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL, label="a.pdf")
 
-        assert result == InspectedPdf(ORIGINAL, needs_ocr=True, repaired=False)
+        assert result == InspectedPdf(ORIGINAL, needs_ocr=True, repaired=False, page_count=3)
         assert jobs.calls == [("open_pdf", ORIGINAL), ("detect_ocr", ORIGINAL)]
 
     @pytest.mark.parametrize(
@@ -129,7 +129,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL)
 
-        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True)
+        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True, page_count=3)
         assert jobs.calls == [
             ("open_pdf", ORIGINAL),
             ("repair_pdf", ORIGINAL),
@@ -171,7 +171,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL)
 
-        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True)
+        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True, page_count=None)
         assert ("detect_ocr", REWRITTEN) not in jobs.calls
 
     @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ class TestStructure:
     async def test_a_slow_file_that_cannot_be_improved_is_read_as_sent(self, worker, rewrite) -> None:
         worker(open=SLOW, detect=False, **rewrite)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False, page_count=3)
 
     @pytest.mark.parametrize(
         "rewrite",
@@ -202,7 +202,7 @@ class TestStructure:
         """pdfium agrees there is nothing in it, so it is empty rather than damaged."""
         jobs = worker(open=NO_PAGES, reopen=NO_PAGES)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(REWRITTEN, False, repaired=True)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(REWRITTEN, False, repaired=True, page_count=0)
         assert ("detect_ocr", REWRITTEN) not in jobs.calls
 
     @pytest.mark.parametrize(
@@ -245,7 +245,7 @@ class TestOcrDecision:
         """A sound file is never failed for its content: it is parsed without OCR, as before."""
         worker(open=SOUND, detect=failure)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False, page_count=3)
 
     async def test_a_worker_that_dies_deciding_is_raised_as_it_is(self, worker) -> None:
         worker(open=SOUND, detect=_crashed())
@@ -290,7 +290,7 @@ class TestRealFilesInThreads:
     async def test_a_text_pdf_is_passed_on_unchanged(self) -> None:
         content = text_pdf(pages=2)
 
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=2)
 
     async def test_a_scanned_looking_pdf_goes_to_ocr(self) -> None:
         assert (await inspect_untrusted_pdf(blank_pdf())).needs_ocr is True
@@ -298,7 +298,7 @@ class TestRealFilesInThreads:
     async def test_an_owner_password_does_not_stop_indexing(self) -> None:
         content = owner_password_pdf()
 
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
     async def test_a_password_protected_pdf_fails_with_the_password_reason(self) -> None:
         with pytest.raises(UnreadablePdfError) as raised:
@@ -447,7 +447,7 @@ class TestRealFilesInWorkers:
         await inspect_untrusted_pdf(garbage_tail_pdf(32 * MIB))
 
         content = text_pdf()
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
     async def test_a_password_protected_pdf_fails_the_same_way_in_a_worker(self, pool: None) -> None:
         with pytest.raises(UnreadablePdfError) as raised:
