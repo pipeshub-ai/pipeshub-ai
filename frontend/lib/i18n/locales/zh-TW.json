@@ -734,6 +734,7 @@
       "empty": "空白",
       "paused": "已暫停",
       "needsMultimodalModel": "需要多模態模型",
+      "passwordProtected": "受密碼保護",
       "skipped": "已略過",
       "pending": "待處理"
     },
@@ -2900,6 +2901,8 @@
         "statFailedSub": "錯誤（API / 權限問題）",
         "statUnsupported": "不支援",
         "statUnsupportedSub": "無法處理",
+        "statPasswordProtected": "受密碼保護",
+        "statPasswordProtectedSub": "沒有密碼無法讀取",
         "statInProgressSub": "仍在建立索引",
         "statQueued": "已排入佇列",
         "statQueuedSub": "等待建立索引",

@@ -60,6 +60,7 @@ export function deriveRecordsStatus(
       autoIndexOff: 0,
       queued: 0,
       empty: 0,
+      passwordProtected: 0,
     };
   }
 
@@ -74,5 +75,6 @@ export function deriveRecordsStatus(
     autoIndexOff: idx.AUTO_INDEX_OFF ?? 0,
     queued: idx.QUEUED ?? 0,
     empty: idx.EMPTY ?? 0,
+    passwordProtected: idx.PASSWORD_PROTECTED ?? 0,
   };
 }

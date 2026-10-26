@@ -645,6 +645,7 @@
       "empty": "खाली",
       "paused": "रोका गया",
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
+      "passwordProtected": "पासवर्ड से सुरक्षित",
       "skipped": "छोड़ा गया",
       "pending": "लंबित"
     },
@@ -2758,6 +2759,8 @@
         "statFailedSub": "Errors (API / permission issues)",
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
+        "statPasswordProtected": "पासवर्ड से सुरक्षित",
+        "statPasswordProtectedSub": "पासवर्ड के बिना नहीं पढ़ा जा सकता",
         "statInProgressSub": "Still being indexed",
         "statQueued": "Queued",
         "statQueuedSub": "Waiting to be indexed",

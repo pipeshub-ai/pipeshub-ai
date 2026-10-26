@@ -1,3 +1,5 @@
+from html import escape
+
 import pytest
 
 from app.utils.text_fragments.extractors import (
@@ -102,6 +104,38 @@ class TestHtmlBlockExtractor:
         ],
     )
     def test_skips_invisible_content(self, html: str) -> None:
+        assert self.extractor.extract(html) == ["kept"]
+
+    @pytest.mark.parametrize(
+        "style",
+        [
+            "--content-display: none",
+            "--content-visibility: hidden",
+            "--content-display: none; color: red",
+            "--content-visibility: hidden; color: red",
+            "display-mode: none",
+            "visibility-mode: hidden",
+            'content: "; display: none;"',
+            '--var: "; display: none;"',
+        ],
+    )
+    def test_keeps_content_without_hidden_declarations(self, style: str) -> None:
+        html = f'<p style="{escape(style, quote=True)}">kept</p>'
+        assert self.extractor.extract(html) == ["kept"]
+
+    @pytest.mark.parametrize(
+        "style",
+        [
+            "DISPLAY : NONE",
+            "display:none!important",
+            "color: red; visibility : hidden !important",
+            "--custom: value; display: none",
+            "display: none /* comment */",
+            "/* comment */ display: none",
+        ],
+    )
+    def test_skips_actual_hidden_declarations(self, style: str) -> None:
+        html = f'<p style="{escape(style, quote=True)}">gone</p><p>kept</p>'
         assert self.extractor.extract(html) == ["kept"]
 
     def test_entities_are_decoded(self) -> None:
