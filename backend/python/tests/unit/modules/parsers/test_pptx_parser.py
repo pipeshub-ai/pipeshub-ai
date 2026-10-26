@@ -87,14 +87,18 @@ class TestParseBinary:
         assert exc_info.value.details == {"status": "failure"}
 
     def test_converter_exception_propagates(self):
+        converter_error = RuntimeError("Corrupt file")
         mock_converter = MagicMock()
-        mock_converter.convert.side_effect = RuntimeError("Corrupt file")
+        mock_converter.convert.side_effect = converter_error
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
-                with pytest.raises(RuntimeError, match="Corrupt file"):
+                with pytest.raises(RuntimeError) as exc_info:
                     parser.parse_binary(b"data")
+
+        assert exc_info.value is converter_error
+        mock_converter.convert.assert_called_once()
 
     def test_empty_bytes(self):
         mock_converter = MagicMock()
