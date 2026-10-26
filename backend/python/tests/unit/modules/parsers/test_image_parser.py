@@ -590,6 +590,16 @@ class TestResolveCssVarFallbacks:
         svg = 'fill="var(--a, #fff"'
         assert ImageParser._resolve_css_var_fallbacks(svg) == svg
 
+    def test_unbalanced_inner_var_keeps_resolved_prefix(self):
+        svg = 'stroke="var(--a, red)" fill="var(--b, var(--c, #fff)"'
+        result = ImageParser._resolve_css_var_fallbacks(svg)
+        assert result == 'stroke="red" fill="var(--b, var(--c, #fff)"'
+
+    def test_deep_nesting_does_not_recurse(self):
+        depth = 50_000
+        svg = 'fill="' + 'var(--a, ' * depth + '#123456' + ')' * depth + '"'
+        assert ImageParser._resolve_css_var_fallbacks(svg) == 'fill="#123456"'
+
     def test_no_var_unchanged(self):
         svg = '<svg><rect fill="#B4B4B4"/></svg>'
         assert ImageParser._resolve_css_var_fallbacks(svg) == svg
