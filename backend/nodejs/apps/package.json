@@ -29,7 +29,7 @@
     "@types/chai": "^4.3.20",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
-    "@types/jest": "^29.5.14",
+    "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/jwk-to-pem": "^2.0.3",
