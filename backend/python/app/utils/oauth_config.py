@@ -241,7 +241,7 @@ def _apply_salesforce_login_host(url: str, login_url: str) -> str:
     return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
 
 
-_MICROSOFT_TENANT_SEGMENT = re.compile(r"(https://login\.microsoftonline\.com/)[^/]+(/)")
+_MICROSOFT_TENANT_SEGMENT = re.compile(r"^(https://login\.microsoftonline\.com/)[^/]+(/)")
 
 
 def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
@@ -251,7 +251,8 @@ def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
     refresh of its tokens must use its own tenant's. A blank or "common" tenant, or a URL
     that is not Microsoft's, is returned unchanged.
     """
-    if not url or "login.microsoftonline.com" not in url:
+    # Anchored: only a URL on Microsoft's login host is changed, never one that merely mentions it.
+    if not url or not _MICROSOFT_TENANT_SEGMENT.match(url):
         return url
     tenant = str(tenant_id or "").strip()
     if not tenant or tenant.lower() == "common":

@@ -1124,22 +1124,22 @@ class TestFetchToolsetOAuthConfigById:
 class TestApplyTenantToMicrosoftOAuthUrl:
     COMMON_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
-    def test_replaces_the_tenant_segment(self):
+    def test_replaces_the_tenant_segment(self) -> None:
         assert (
             apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "contoso")
             == "https://login.microsoftonline.com/contoso/oauth2/v2.0/token"
         )
 
     @pytest.mark.parametrize("tenant", [None, "", "   ", "common", "COMMON"])
-    def test_no_tenant_keeps_the_url(self, tenant):
+    def test_no_tenant_keeps_the_url(self, tenant) -> None:
         assert apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant) == self.COMMON_TOKEN
 
-    def test_is_idempotent(self):
+    def test_is_idempotent(self) -> None:
         once = apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "contoso")
         assert apply_tenant_to_microsoft_oauth_url(once, "contoso") == once
 
     @pytest.mark.parametrize("tenant", [r"a\1b", r"\g<0>", "a\\"])
-    def test_backslashes_in_the_tenant_stay_text(self, tenant):
+    def test_backslashes_in_the_tenant_stay_text(self, tenant) -> None:
         """Any user can now enter a tenant on a personal action; it must not act as a regex template."""
         assert (
             apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant)
@@ -1150,28 +1150,39 @@ class TestApplyTenantToMicrosoftOAuthUrl:
         "tenant",
         ["contoso.onmicrosoft.com", "72f988bf-86f1-41af-91ab-2d7cd011db47", "organizations"],
     )
-    def test_a_real_tenant_goes_in_as_written(self, tenant):
+    def test_a_real_tenant_goes_in_as_written(self, tenant) -> None:
         assert (
             apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant)
             == f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
         )
 
     @pytest.mark.parametrize("tenant", ["evil/x", "../..", "x?redirect=1", "x#frag", "a b"])
-    def test_a_tenant_cannot_reshape_the_url(self, tenant):
+    def test_a_tenant_cannot_reshape_the_url(self, tenant) -> None:
         """A tenant stays one path segment on Microsoft's host, whatever a user types."""
         parsed = urlparse(apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant))
         assert parsed.netloc == "login.microsoftonline.com"
         assert parsed.path.split("/")[1:] == [quote(tenant, safe=""), "oauth2", "v2.0", "token"]
         assert parsed.query == "" and parsed.fragment == ""
 
-    def test_strips_surrounding_whitespace(self):
+    def test_strips_surrounding_whitespace(self) -> None:
         assert "/contoso/" in apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "  contoso  ")
 
-    @pytest.mark.parametrize("url", ["https://oauth2.googleapis.com/token", "", None])
-    def test_other_urls_untouched(self, url):
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://idp.example.com/token?next=https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "https://login.microsoftonline.com.example.com/common/oauth2/v2.0/token",
+            "http://login.microsoftonline.com/common/oauth2/v2.0/token",
+        ],
+    )
+    def test_only_a_url_on_microsofts_login_host_is_changed(self, url: str) -> None:
         assert apply_tenant_to_microsoft_oauth_url(url, "contoso") == url
 
-    def test_toolset_routes_use_the_same_helper(self):
+    @pytest.mark.parametrize("url", ["https://oauth2.googleapis.com/token", "", None])
+    def test_other_urls_untouched(self, url) -> None:
+        assert apply_tenant_to_microsoft_oauth_url(url, "contoso") == url
+
+    def test_toolset_routes_use_the_same_helper(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
 
         assert _apply_tenant_to_microsoft_oauth_url is apply_tenant_to_microsoft_oauth_url
