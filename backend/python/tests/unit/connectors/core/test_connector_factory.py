@@ -370,6 +370,39 @@ class TestCreateConnector:
         call_kwargs = mock_cls.create_connector.call_args[1]
         assert call_kwargs["custom_param"] == "value123"
 
+    @pytest.mark.asyncio
+    async def test_snowflake_creation_forwards_scope_and_created_by(self) -> None:
+        """Snowflake creation preserves the BaseConnector ownership fields."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = MagicMock()
+
+        processor = MagicMock()
+        processor.initialize = AsyncMock()
+        processor_cls = MagicMock(return_value=processor)
+
+        with (
+            patch(
+                "app.connectors.core.factory.connector_factory.get_shared_connector_thread_pool",
+                return_value=MagicMock(),
+            ),
+            patch("app.connectors.sources.snowflake.connector.SyncPoint"),
+        ):
+            result = await ConnectorFactory.create_connector(
+                name="snowflake",
+                logger=logger,
+                data_store_provider=data_store,
+                config_service=config_service,
+                connector_id="snowflake-1",
+                scope="personal",
+                created_by="user-123",
+                data_entities_processor_cls=processor_cls,
+            )
+
+        assert isinstance(result, SnowflakeConnector)
+        assert result.scope == "personal"
+        assert result.created_by == "user-123"
+
 
 # ===========================================================================
 # initialize_connector

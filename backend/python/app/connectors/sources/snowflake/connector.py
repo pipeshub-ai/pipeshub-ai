@@ -415,6 +415,8 @@ class SnowflakeConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str = ConnectorScope.TEAM.value,
+        created_by: str | None = None,
     ) -> None:
         super().__init__(
             SnowflakeApp(connector_id),
@@ -423,6 +425,8 @@ class SnowflakeConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.SNOWFLAKE
@@ -443,7 +447,6 @@ class SnowflakeConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(25, 1)
         self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
         self._record_id_cache: Dict[str, str] = {}
@@ -498,8 +501,8 @@ class SnowflakeConnector(BaseConnector):
                 self.logger.error("Missing accountIdentifier in configuration")
                 return False
 
-            self.connector_scope = config.get("scope", ConnectorScope.PERSONAL.value)
-            self.created_by = config.get("created_by")
+            self.connector_scope = config.get("scope", self.scope)
+            self.created_by = config.get("created_by", self.created_by)
 
             # Determine authentication method
             pat_token = auth_config.get("patToken")
@@ -2580,4 +2583,6 @@ class SnowflakeConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            kwargs.get("scope", ConnectorScope.TEAM.value),
+            kwargs.get("created_by"),
         )
