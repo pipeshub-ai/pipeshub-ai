@@ -426,9 +426,14 @@ restrict_env_file() { # args: path -> non-zero when access could not be limited
     command -v icacls >/dev/null 2>&1 || return 1
     local win_path="$1"
     command -v cygpath >/dev/null 2>&1 && win_path="$(cygpath -w "$1")"
-    # MSYS would rewrite /inheritance:r and /grant:r as paths.
-    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
-      icacls "$win_path" /inheritance:r /grant:r "${USERNAME:-$(whoami)}:F" >/dev/null 2>&1
+    # MSYS would rewrite /reset, /inheritance:r and /grant:r as paths.
+    # /inheritance:r drops only inherited ACEs and /grant:r replaces only that
+    # user's grant, so /reset first clears explicit ACEs left for other accounts.
+    (
+      export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+      icacls "$win_path" /reset >/dev/null 2>&1 &&
+        icacls "$win_path" /inheritance:r /grant:r "${USERNAME:-$(whoami)}:F" >/dev/null 2>&1
+    )
   else
     chmod 600 "$1" 2>/dev/null
   fi

@@ -631,14 +631,33 @@ restrict_env_file "$_env_dir/.env"
 check "non-Windows .env is chmod 600" "$(ls -l "$_env_dir/.env" | cut -c1-10)" "-rw-------"
 _saved_path="$PATH"
 _shim_dir="$(mktemp -d)"
-printf '#!/usr/bin/env bash\nprintf "%%s|" "$@" > "%s/icacls.args"\nprintf "%%s" "${MSYS_NO_PATHCONV:-}" > "%s/icacls.msys"\nexit "${ICACLS_EXIT:-0}"\n' "$_shim_dir" "$_shim_dir" > "$_shim_dir/icacls"
+# Fake icacls with a small ACL model: $_shim_dir/acl holds "explicit|inherited <acct>:<perm>" lines.
+# /reset drops explicit ACEs, /inheritance:r drops inherited ones, /grant:r replaces that account's explicit ACE.
+cat > "$_shim_dir/icacls" <<'SHIM'
+#!/usr/bin/env bash
+dir="$(dirname "$0")"
+printf '%s|' "$@" >> "$dir/icacls.args"; printf '%s' "${MSYS_NO_PATHCONV:-}" >> "$dir/icacls.msys"
+[[ "${ICACLS_EXIT:-0}" -eq 0 ]] || exit "$ICACLS_EXIT"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    /reset) sed -i '/^explicit /d' "$dir/acl" ;;
+    /inheritance:r) sed -i '/^inherited /d' "$dir/acl" ;;
+    /grant:r) shift; sed -i "/^explicit ${1%%:*}:/d" "$dir/acl"; echo "explicit $1" >> "$dir/acl" ;;
+  esac
+  shift
+done
+SHIM
 chmod +x "$_shim_dir/icacls"
 PATH="$_shim_dir:$PATH"
 IS_WINDOWS=true
 USERNAME=alice
+printf 'explicit bob:R\ninherited Users:R\nexplicit alice:R\n' > "$_shim_dir/acl"
 if restrict_env_file "C:/pipeshub/.env"; then pass "Git Bash .env ACL replaced"; else fail "Git Bash .env ACL replaced"; fi
-check "Git Bash drops inherited ACEs and grants only the user" "$(cat "$_shim_dir/icacls.args")" "C:/pipeshub/.env|/inheritance:r|/grant:r|alice:F|"
-check "icacls switches are not path-converted" "$(cat "$_shim_dir/icacls.msys")" "1"
+check "Git Bash resets, drops inherited ACEs and grants only the user" "$(cat "$_shim_dir/icacls.args")" "C:/pipeshub/.env|/reset|C:/pipeshub/.env|/inheritance:r|/grant:r|alice:F|"
+if [[ "$(cat "$_shim_dir/acl")" == "explicit alice:F" ]]; then pass "Git Bash leaves only the owner on .env, even with an explicit ACE for another account"; else fail "Git Bash leaves only the owner on .env, even with an explicit ACE for another account (got: $(tr '\n' ',' < "$_shim_dir/acl"))"; fi
+check "icacls switches are not path-converted" "$(cat "$_shim_dir/icacls.msys")" "11"
+check "the installer's own environment keeps path conversion" "${MSYS_NO_PATHCONV:-unset}" "unset"
 if ICACLS_EXIT=5 restrict_env_file "C:/pipeshub/.env"; then fail "failed icacls is reported"; else pass "failed icacls is reported"; fi
 _empty_dir="$(mktemp -d)"
 PATH="$_empty_dir"
