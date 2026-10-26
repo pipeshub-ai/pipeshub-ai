@@ -905,8 +905,13 @@ echo "== In-tree installer: --print-env-only bundle command keeps the existing b
   out="$(cd "$work" && PATH="$work/bin:$PATH" bash ./install.sh --upgrade --print-env-only 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g')" || true
   step="$(printf '%s\n' "$out" | grep -m1 '^ *docker run ' | sed 's/^ *//')"
   check "--print-env-only prints the bundle build command" "$step" "docker run --rm -i --network none"
+  cp "$work/certs/ca-bundle.pem" "$work/ca-bundle.before"
   (cd "$work" && PATH="$work/bin:$PATH" bash -c "$step") || true
-  check "a failed printed bundle command keeps the existing bundle" "$(cat "$work/certs/ca-bundle.pem")" "OLD-CA"
+  if cmp -s "$work/ca-bundle.before" "$work/certs/ca-bundle.pem"; then
+    pass "a failed printed bundle command keeps the existing bundle byte for byte"
+  else
+    fail "a failed printed bundle command keeps the existing bundle byte for byte"
+  fi
   [[ -e "$work/certs/ca-bundle.pem.tmp" ]] && fail "a failed printed bundle command leaves no temp file" || pass "a failed printed bundle command leaves no temp file"
 )
 
