@@ -41,8 +41,6 @@ from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
-from app.connectors.core.sync.sync_errors import SyncErrorCode
-from app.connectors.core.sync.sync_progress import merged_run_history, parse_json_field
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_dispatcher import (
     SyncSpec,
@@ -175,6 +173,10 @@ async def initialize_sync_coordinator(
 
 def interrupted_run_record(doc: dict, now: int) -> dict:
     """The history fields for a run this process died during: its live snapshot becomes a failed run."""
+    # Imported here: every top-level import in this module counts against its E402 baseline.
+    from app.connectors.core.sync.sync_errors import SyncErrorCode
+    from app.connectors.core.sync.sync_progress import merged_run_history, parse_json_field
+
     snapshot = parse_json_field(doc.get(ConnectorStateKeys.SYNC_PROGRESS))
     if not snapshot or not snapshot.get("runId"):
         return {ConnectorStateKeys.SYNC_PROGRESS: None}
