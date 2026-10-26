@@ -68,6 +68,12 @@ export interface ConnectorScope {
   prefixes: string[];
 }
 
+/** The clock and the staleness bound of a delete claim, passed in so both stores judge it the same way. */
+export interface ArtifactFence {
+  now: number;
+  staleMs: number;
+}
+
 export interface IdempotencyClaim {
   key: string;
   fingerprint: string;
@@ -187,8 +193,44 @@ export interface DocumentRepository {
   /**
    * The row standing for one content revision of a virtual record, created on first use.
    * Racing callers settle on one row (unique per org, virtual record and revision).
+   *
+   * Every call moves the row's write stamp (`updatedAt`) to `now`, so a delete that listed the
+   * revision earlier sees this write. A revision a delete claimed (`artifactSet.retiringAt`) less
+   * than `staleMs` ago is refused with a `ConflictError`: its files may already be going. An older
+   * claim is from a delete that died and is cleared by this write.
    */
-  createArtifactSetOnce(row: NewDocument): Promise<DocumentRow>;
+  createArtifactSetOnce(
+    row: NewDocument,
+    fence: ArtifactFence,
+  ): Promise<DocumentRow>;
+  /**
+   * Claims a revision for deletion: sets `artifactSet.retiringAt = now` without moving the write
+   * stamp, and returns the row. With `ifUnchangedSince` the claim also requires the write stamp to
+   * be no newer than it. Refused while another delete holds a claim younger than `staleMs`.
+   * `null` when there is no such revision; `'changed'` when it exists but the stamp or another
+   * delete's claim stands in the way (nothing was claimed).
+   */
+  claimArtifactSetForDelete(
+    orgId: string,
+    id: string,
+    claim: { now: number; staleMs: number; ifUnchangedSince?: number },
+  ): Promise<DocumentRow | 'changed' | null>;
+  /**
+   * Moves a delete's claim to `next`, only while the claim is still one of `known` (values this
+   * delete wrote). A writer that took the claim back is not overridden.
+   */
+  renewArtifactSetClaim(
+    orgId: string,
+    id: string,
+    known: number[],
+    next: number,
+  ): Promise<void>;
+  /** Hard delete of a claimed revision, only while its claim is one of `claims` (this delete's own values). */
+  removeClaimedArtifactSet(
+    id: string,
+    orgId: string,
+    claims: number[],
+  ): Promise<void>;
   /** Live revisions of a virtual record, oldest first. */
   listArtifactSets(
     orgId: string,

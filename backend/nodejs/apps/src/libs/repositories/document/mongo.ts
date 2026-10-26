@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
 import { DocumentModel } from '../../../modules/storage/schema/document.schema';
 import type { StorageVendor } from '../../../modules/storage/types/storage.service.types';
+import { ConflictError } from '../errors';
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
   ENVELOPE_PREFIXES,
+  type ArtifactFence,
   type ConnectorScope,
   type DocumentPatch,
   type DocumentRepository,
@@ -65,6 +67,36 @@ function connectorFilters(scope: ConnectorScope): {
     ],
   );
   return { connectorTag, underPrefixes };
+}
+
+/**
+ * Moves the revision's write stamp and returns it, or null when there is no such revision.
+ * A claimed revision is refused; a claim past the stale bound is from a delete that died and is
+ * dropped here: nothing else would clear it once a record is back on the revision.
+ */
+async function touchArtifactSet(
+  filter: Record<string, unknown>,
+  { now, staleMs }: ArtifactFence,
+): Promise<DocumentRow | null> {
+  const writable = {
+    ...filter,
+    $or: [
+      { 'artifactSet.retiringAt': { $exists: false } },
+      { 'artifactSet.retiringAt': { $lt: now - staleMs } },
+    ],
+  };
+  const touched = await DocumentModel.findOneAndUpdate(
+    writable as never,
+    { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
+    { new: true, timestamps: false },
+  );
+  if (touched) return row(touched);
+  if (await DocumentModel.findOne(filter as never)) {
+    throw new ConflictError(
+      'This revision is being deleted; write it again once the delete has finished',
+    );
+  }
+  return null;
 }
 
 export class MongoDocumentRepository implements DocumentRepository {
@@ -452,7 +484,10 @@ export class MongoDocumentRepository implements DocumentRepository {
     );
   }
 
-  async createArtifactSetOnce(input: NewDocument): Promise<DocumentRow> {
+  async createArtifactSetOnce(
+    input: NewDocument,
+    fence: ArtifactFence,
+  ): Promise<DocumentRow> {
     const filter = {
       orgId: input.orgId,
       'artifactSet.virtualRecordId': {
@@ -460,8 +495,8 @@ export class MongoDocumentRepository implements DocumentRepository {
       },
       'artifactSet.rev': { $eq: input.artifactSet?.rev },
     };
-    const existing = await DocumentModel.findOne(filter as never);
-    if (existing) return row(existing);
+    const existing = await touchArtifactSet(filter, fence);
+    if (existing) return existing;
     try {
       return row(await DocumentModel.create(input as never));
     } catch (error) {
@@ -469,10 +504,85 @@ export class MongoDocumentRepository implements DocumentRepository {
       if ((error as { code?: unknown } | null)?.code !== MONGO_DUPLICATE_KEY) {
         throw mapMongoError(error);
       }
-      const winner = await DocumentModel.findOne(filter as never);
+      const winner = await touchArtifactSet(filter, fence);
       if (!winner) throw mapMongoError(error);
-      return row(winner);
+      return winner;
     }
+  }
+
+  async claimArtifactSetForDelete(
+    orgId: string,
+    id: string,
+    {
+      now,
+      staleMs,
+      ifUnchangedSince,
+    }: {
+      now: number;
+      staleMs: number;
+      ifUnchangedSince?: number;
+    },
+  ): Promise<DocumentRow | 'changed' | null> {
+    const filter = {
+      _id: { $eq: id },
+      orgId: orgId,
+      artifactSet: { $exists: true },
+    };
+    // Without a stamp the delete is unfenced: it claims whatever is there.
+    const guarded =
+      ifUnchangedSince === undefined
+        ? filter
+        : {
+            ...filter,
+            updatedAt: { $lte: ifUnchangedSince },
+            $or: [
+              { 'artifactSet.retiringAt': { $exists: false } },
+              { 'artifactSet.retiringAt': { $lt: now - staleMs } },
+            ],
+          };
+    // timestamps off: the claim is not a write of the revision, and a delete retried after a
+    // crash must still match the listed stamp.
+    const claimed = await DocumentModel.findOneAndUpdate(
+      guarded as never,
+      { $set: { 'artifactSet.retiringAt': now } },
+      { new: true, timestamps: false },
+    );
+    if (claimed) return row(claimed);
+    const present =
+      ifUnchangedSince !== undefined &&
+      (await DocumentModel.findOne(filter as never)) !== null;
+    return present ? 'changed' : null;
+  }
+
+  async renewArtifactSetClaim(
+    orgId: string,
+    id: string,
+    known: number[],
+    next: number,
+  ): Promise<void> {
+    const claimed = {
+      _id: id,
+      orgId: orgId,
+      'artifactSet.retiringAt': { $in: known },
+    };
+    await DocumentModel.updateOne(
+      claimed as never,
+      { $set: { 'artifactSet.retiringAt': next } },
+      { timestamps: false },
+    );
+  }
+
+  async removeClaimedArtifactSet(
+    id: string,
+    orgId: string,
+    claims: number[],
+  ): Promise<void> {
+    const claimed = {
+      'artifactSet.retiringAt': { $in: claims },
+      _id: id,
+      orgId: orgId,
+    };
+    await DocumentModel.deleteOne(claimed as never);
   }
 
   async listArtifactSets(

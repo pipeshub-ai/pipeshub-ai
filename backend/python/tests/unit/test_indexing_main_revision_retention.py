@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,6 +33,7 @@ class _Pages:
     def __init__(self, pages: dict[str | None, Any]) -> None:
         self.pages = pages
         self.calls: list[str | None] = []
+        self.deadlines: list[float | None] = []
         self.grace_ms: int | None = None
         self.leases: object = None
 
@@ -39,8 +41,15 @@ class _Pages:
         self.grace_ms, self.leases = grace_ms, leases
         return self
 
-    async def run_page(self, after_key: str | None, *, still_leader: Callable[[], bool] | None = None) -> tuple[str | None, RetentionReport]:
+    async def run_page(
+        self,
+        after_key: str | None,
+        *,
+        still_leader: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> tuple[str | None, RetentionReport]:
         self.calls.append(after_key)
+        self.deadlines.append(deadline)
         outcome = self.pages[after_key]
         if isinstance(outcome, Exception):
             raise outcome
@@ -168,3 +177,54 @@ async def test_a_failed_stage_sweep_does_not_skip_retention() -> None:
         await m.recover_in_progress_records(container, _make_graph_provider())
 
     sweep.assert_awaited_once()
+
+
+async def test_a_page_cut_short_ends_the_tick_and_the_next_tick_resumes_at_its_key() -> None:
+    pages = _Pages({
+        None: ("a3", _report(revisions_deleted=1, cut_short=True)),
+        "a3": ("b", _report(revisions_deleted=2)),
+        "b": (None, _report()),
+    })
+
+    assert await _tick(pages) == 1
+    assert pages.calls == [None] and m._retention_cursor == "a3"
+    await _tick(pages)
+    assert pages.calls[1] == "a3"
+
+
+async def test_every_page_of_a_tick_shares_one_deadline_within_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "7")
+    pages = _Pages({None: ("a", _report()), "a": (None, _report())})
+    started = m.time.monotonic()
+
+    await _tick(pages)
+
+    first, second = pages.deadlines
+    assert first == second and first is not None
+    assert started + 7 <= first <= m.time.monotonic() + 7
+
+
+async def test_the_tick_starts_no_page_once_the_budget_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = _Pages({None: ("a", _report()), "a": (None, _report())})
+    clock = iter([0.0, 0.0, 100.0])
+    monkeypatch.setattr(m, "time", SimpleNamespace(monotonic=lambda: next(clock, 100.0)))
+
+    await _tick(pages)
+
+    assert pages.calls == [None] and m._retention_cursor == "a"
+
+
+async def test_the_pause_between_pages_never_runs_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Less budget left than the longest pause: the tick ends instead of sleeping through its deadline."""
+    monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "3")
+    pages = _Pages({None: ("a", _report()), "a": (None, _report())})
+    container = _make_container()
+
+    with patch.object(m, "RevisionRetentionSweep", pages), patch.object(m, "LoopShare") as share:
+        share.return_value.pause = AsyncMock()
+        await m._sweep_retired_revisions(
+            app_container=container, graph_provider=MagicMock(), logger=MagicMock(), lease_held=lambda: True,
+        )
+
+    assert pages.calls == [None] and m._retention_cursor == "a"
+    share.return_value.pause.assert_not_awaited()

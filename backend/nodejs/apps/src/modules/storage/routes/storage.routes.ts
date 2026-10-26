@@ -26,7 +26,7 @@ import {
   PresignArtifactsSchema,
   ArtifactReadUrlsSchema,
   ArtifactFileParams,
-  ArtifactSetParams,
+  PurgeArtifactSetSchema,
   ListArtifactSetsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -222,7 +222,7 @@ export function createStorageRouter(container: Container): Router {
   router.delete(
     '/internal/artifacts/:documentId',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    ValidationMiddleware.validate(ArtifactSetParams),
+    ValidationMiddleware.validate(PurgeArtifactSetSchema),
     async (
       req: AuthenticatedServiceRequest,
       res: Response,
