@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -92,14 +93,15 @@ async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
 
-    container = IndexingAppContainer.init("duplicate_records_report")
-    logger = container.logger()
     data_store = os.getenv("DATA_STORE", "arangodb").lower()
     try:
         query, bind_vars = duplicate_query(data_store, args.org)
+        container = IndexingAppContainer.init("duplicate_records_report")
+        logger = container.logger()
         graph_provider = await container.graph_provider()
     except Exception as exc:
-        logger.exception("duplicate_records_report: setup failed")
+        # The container's logger may be what failed.
+        logging.getLogger(__name__).exception("duplicate_records_report: setup failed")
         sys.stderr.write(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) + "\n")
         return EXIT_FAILED
     try:

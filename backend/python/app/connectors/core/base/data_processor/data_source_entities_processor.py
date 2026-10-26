@@ -230,8 +230,10 @@ class ParentPlacement(NamedTuple):
 
 
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
-    """Whether a stored record belongs to another org, or to another connector when
-    ``connector_id`` is given. A field the document lacks proves nothing."""
+    """Whether a stored record (document or ``Record``) belongs to another org, or to
+    another connector when ``connector_id`` is given. A field it lacks proves nothing."""
+    if isinstance(doc, Record):
+        doc = {"orgId": doc.org_id, "connectorId": doc.connector_id}
     if not isinstance(doc, dict):
         return False
     doc_org = doc.get("orgId")
@@ -2327,6 +2329,15 @@ class DataSourceEntitiesProcessor:
         unlisted_group_ids: set[str] = set()
         try:
             async with self._sync_transaction() as tx_store:
+                # Every write below goes to record.id, whoever stored it.
+                if _owned_elsewhere(
+                    await tx_store.get_record_by_key(record.id, raise_on_error=True), self.org_id, record.connector_id
+                ):
+                    self.logger.error(
+                        "Not updating permissions of %s (%s): it is a record of another connector or org",
+                        record.record_name, record.id,
+                    )
+                    return
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
                 # edges only; permissions are still applied in this method below.
                 record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
@@ -2516,6 +2527,12 @@ class DataSourceEntitiesProcessor:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+        if _owned_elsewhere(existing_record, self.org_id):
+            self.logger.error(
+                "Skipping %s (%s): its external id resolves to a record of another org",
+                record.record_name, existing_record.id,
+            )
+            return None, []
         stored_under_its_id = False
         same_id: dict | None = None
         if existing_record is None:
@@ -3288,6 +3305,12 @@ class DataSourceEntitiesProcessor:
                         connector_id=new_record.connector_id,
                         external_id=old_external_id,
                     )
+
+                    if _owned_elsewhere(old_record, self.org_id):
+                        self.logger.error(
+                            "Skipping move of %s: record %s belongs to another org", old_external_id, old_record.id
+                        )
+                        continue
 
                     if old_record is not None and not is_live_record(old_record):
                         # A move of a record in the trash leaves it where it is.
