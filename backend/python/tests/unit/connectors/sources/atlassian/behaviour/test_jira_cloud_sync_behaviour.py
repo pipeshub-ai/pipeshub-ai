@@ -2455,10 +2455,23 @@ class TestPlaceholderParents:
         await connector.run_sync()
         assert connector._synced_project_keys is None, "a reindex afterwards goes by what is stored, not a stale project set"
 
+    async def test_a_sub_task_stays_under_its_parent(self, api, db, checkpoints, search) -> None:
+        child = issue(1, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "77", "key": "ENG-77", "fields": {"summary": "Roadmap"}}
+        search.add("ENG", None, {"issues": [child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._synced_project_keys = {"ENG"}
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert db.records["1"].parent_external_record_id == "77"
+
     @pytest.mark.parametrize("parent_key", ["ENG-77", "OPS-77"])
-    async def test_a_parent_in_its_own_or_another_synced_project_stays_its_parent(
+    async def test_a_story_under_an_epic_in_any_synced_project_hangs_off_its_own_project(
         self, api, db, checkpoints, search, parent_key,
     ) -> None:
+        """Jira does not give a story its epic's level, so it is not filed under the epic."""
         child = issue(1, "2024-05-01T10:00:00.000+0000")
         child["fields"]["parent"] = {"id": "77", "key": parent_key, "fields": {"summary": "Roadmap"}}
         search.add("ENG", None, {"issues": [child]})
@@ -2467,4 +2480,4 @@ class TestPlaceholderParents:
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert db.records["1"].parent_external_record_id == "77"
+        assert db.records["1"].parent_external_record_id is None

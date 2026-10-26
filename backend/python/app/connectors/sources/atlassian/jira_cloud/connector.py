@@ -251,6 +251,10 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 # late would otherwise have an `updated` older than a cursor that already moved past it.
 # Unchanged issues read again are skipped without a write.
 INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
+# Stored in a project's checkpoint once its issues are filed the way _extract_issue_data
+# files them. A project without it was synced with stories under their epics, and has
+# every stored issue re-read once so they move.
+ISSUE_PLACEMENT: str = "subtasks-under-parent"
 # When the account's timezone is unknown, a JQL date written in UTC is read by Jira in that
 # unknown zone. Lower bounds are moved this far back (UTC-12 is the furthest west) and upper
 # bounds this far forward (UTC+14 the furthest east), so nothing is cut off.
@@ -1496,6 +1500,7 @@ class JiraConnector(BaseConnector):
         last_sync_time: Optional[int] = None,
         last_issue_updated: Optional[int] = None,
         security_levels: str | None = None,
+        issue_placement: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1514,6 +1519,7 @@ class JiraConnector(BaseConnector):
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated"),
             "security_levels": security_levels if security_levels is not None else existing.get("security_levels"),
+            "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
         }
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
@@ -4177,6 +4183,16 @@ class JiraConnector(BaseConnector):
             await self._record_security_levels(
                 project_key, levels_to_save, force=security.defer_checkpoint
             )
+        placement_reread = False
+        if (project_sync_data or {}).get("issue_placement") != ISSUE_PLACEMENT:
+            if not is_new_project and reread != "project":
+                self.logger.info(
+                    f"Re-reading every stored issue of {project_key} once, to file stories "
+                    "under the project rather than under their epic"
+                )
+                await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
+                placement_reread = True
+            await self._update_project_sync_checkpoint(project_key, issue_placement=ISSUE_PLACEMENT)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -4189,7 +4205,7 @@ class JiraConnector(BaseConnector):
             "updated_count": stats["updated_count"],
             "is_new_project": is_new_project,
             # Any second pass rewrote leveled issues, so their stubs are re-secured too.
-            "leveled_reread": reread is not None,
+            "leveled_reread": reread is not None or placement_reread,
         }
 
     def _issue_scope_conditions(
@@ -4654,6 +4670,14 @@ class JiraConnector(BaseConnector):
 
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
+        is_subtask = bool(issue_type_obj.get("subtask")) or issue_type_obj.get("hierarchyLevel") == -1
+        if parent_external_id and not is_subtask:
+            # Jira judges an issue by its own security level. It copies a parent's level
+            # onto the parent's sub-tasks, but not an epic's level onto the epic's children,
+            # so a story the epic's audience cannot see is still open to its project. Filed
+            # under the epic, the story would need the epic's audience too; it hangs off
+            # its project instead.
+            parent_external_id = None
         if parent_external_id and self._parent_outside_synced_projects(fields):
             # A parent that never syncs stays a placeholder, which hides the issue under it;
             # Jira shows the issue to its own project's audience, so it hangs off its project.

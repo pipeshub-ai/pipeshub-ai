@@ -1,8 +1,11 @@
 """Jira issue security levels for the team connectors.
 
 Issue security is not the project permission scheme. A project browse grant
-does not show an issue that has a security level. Sub-tasks inherit their
-parent issue's level. A story under an epic inherits the epic and also has its own level.
+does not show an issue that has a security level. Jira judges every issue by its
+own level: it copies a parent's level onto its sub-tasks, so a sub-task's own
+``security`` field carries it, but an epic's level does not reach the epic's
+children, which keep their own. So a sub-task inherits its parent issue and any
+other issue inherits its project (the connector files only sub-tasks under a parent).
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -564,12 +567,10 @@ def apply_issue_access_settled(
     absence) was read in full; a closed issue whose level could not be read is not,
     though both write no grants.
 
-    A child issue (a sub-task, or a story under an epic) in the same project
-    inherits its hierarchy parent. It is visible to a user who can open both the
-    parent and the child, so a story under a leveled epic needs the epic's level
-    too (an accepted under-share, never an over-share). A parent in another
-    project is handled by the processor, which keeps the child on its own
-    project. Attachments are handled separately and stay empty.
+    A sub-task inherits its parent issue, whose level Jira copies onto it; any other
+    issue inherits its project (the connector does not file a story under its epic).
+    A parent in another project is handled by the processor, which keeps the child on
+    its own project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its

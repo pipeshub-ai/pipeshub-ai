@@ -1391,7 +1391,8 @@ def _bulk_issue(issue_id, key, parent_id=None):
             "summary": f"Summary {key}",
             "status": {"name": "Open"},
             "priority": {"name": "High"},
-            "issuetype": {"name": "Epic"},
+            # Only a sub-task is filed under its parent issue.
+            "issuetype": {"name": "Sub-task", "subtask": True} if parent_id else {"name": "Story"},
             "project": {"id": "p-1", "key": "PROJ"},
             "created": "2024-01-01T00:00:00.000+0000",
             "updated": "2024-06-15T10:00:00.000+0000",
@@ -1419,8 +1420,8 @@ class TestPlaceholderSweep:
 
     @pytest.mark.asyncio
     async def test_walks_ancestors_and_keeps_them_stubs(self):
-        # Epic 2001 is an unreconciled stub; its parent (Initiative 3001) is only
-        # discovered once the epic is fetched, so the sweep must run a second level.
+        # Sub-task 2001 is an unreconciled stub; its parent (story 3001) is only
+        # discovered once the sub-task is fetched, so the sweep must run a second level.
         connector, ds = _sweep_connector([
             {"issues": [_bulk_issue("2001", "PROJ-2", parent_id="3001")]},
             {"issues": [_bulk_issue("3001", "PROJ-3")]},
@@ -1524,7 +1525,7 @@ class TestPlaceholderSweep:
 
     @pytest.mark.asyncio
     async def test_dedupes_a_parent_shared_by_two_stubs(self):
-        # Two stubs under the same epic must not enqueue it twice.
+        # Two stubs under the same parent must not enqueue it twice.
         connector, ds = _sweep_connector([
             {"issues": [
                 _bulk_issue("2001", "PROJ-2", parent_id="3001"),

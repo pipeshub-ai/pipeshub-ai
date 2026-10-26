@@ -21,6 +21,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
+    ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
 )
@@ -284,10 +285,11 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
         ctx: IssueSecurityContext | None = None,
         fetch_fn: Callable[[JiraConnector, list], Awaitable[None]] | None = None,
         connector: JiraConnector | None = None,
+        placement: str | None = ISSUE_PLACEMENT,
     ) -> tuple:
         c = connector or _connector()
         c.issues_sync_point = MagicMock()
-        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000}
+        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": placement}
         if stored_levels is not None:
             point["security_levels"] = json.dumps(stored_levels)
         c.issues_sync_point.read_sync_point = AsyncMock(return_value=point)
@@ -613,6 +615,40 @@ class TestReindexAppliesTheLevel:
         _, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
         assert {p.external_id for p in perms} == {"group-1"}
         assert c._scheme_members["10002"][1]["10102"][0]["value"] == "removed-group"  # sync cache untouched
+
+
+class TestIssuePlacementPass:
+    """A project synced while stories hung off their epics has every stored issue read
+    once, so they move to the project; the marker then stops the pass."""
+
+    _sync = TestMemberChangeRereadsOnlyTheAffectedLevels._sync
+
+    @pytest.mark.asyncio
+    async def test_a_project_without_the_marker_rereads_every_stored_issue_once(self) -> None:
+        c, ctx, calls, result = await self._sync(stored_levels=_present().level_fingerprints(), placement=None)
+        assert calls[1:] == [
+            {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": False, "stored_only": True}]
+        assert c.issues_sync_point.update_sync_point.await_args.args[1]["issue_placement"] == ISSUE_PLACEMENT
+        assert result["leveled_reread"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_the_marker_is_not_reread(self) -> None:
+        _, _, calls, result = await self._sync(stored_levels=_present().level_fingerprints())
+        assert len(calls) == 1
+        assert result["leveled_reread"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pass_leaves_the_marker_unsaved_so_the_next_sync_retries(self) -> None:
+        async def fail_second(c: JiraConnector, calls: list) -> None:
+            if len(calls) == 2:
+                raise JiraReadError(503, "unavailable")
+
+        c = _connector()
+        with pytest.raises(JiraReadError):
+            await self._sync(
+                stored_levels=_present().level_fingerprints(), placement=None, fetch_fn=fail_second, connector=c)
+        assert not any("issue_placement" in call.args[1] and call.args[1]["issue_placement"] == ISSUE_PLACEMENT
+                       for call in c.issues_sync_point.update_sync_point.await_args_list)
 
 
 class TestLevelPassAfterFailuresAndRemovals:

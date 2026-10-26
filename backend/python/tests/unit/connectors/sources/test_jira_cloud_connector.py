@@ -2058,7 +2058,7 @@ class TestBuildIssueRecordsCoverage:
 
     @pytest.mark.asyncio
     async def test_task_with_epic_parent(self):
-        """Story/Task with Epic parent - not a subtask."""
+        """A story under an epic hangs off its project: Jira does not give it the epic's level."""
         connector = _make_connector()
         connector.site_url = "https://company.atlassian.net"
         connector.indexing_filters = None
@@ -2075,8 +2075,8 @@ class TestBuildIssueRecordsCoverage:
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
         result, _soft = await connector._build_issue_records([issue], "proj-1", [])
-        assert result[0][0].parent_external_record_id == "epic-100"
-        assert result[0][0].parent_record_type == RecordType.TICKET
+        assert result[0][0].parent_external_record_id is None
+        assert result[0][0].parent_record_type is None
 
 
 # ===========================================================================
