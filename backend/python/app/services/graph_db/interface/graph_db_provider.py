@@ -2198,6 +2198,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """Create the node under ``key`` only when no node holds that key, in one
+        statement, and leave an existing node untouched.
+
+        Returns:
+            True iff this call created the node; False when one already existed
+            (including one a racing writer created first).
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_index_candidate(
         self,
         collection: str,
@@ -2494,6 +2514,13 @@ class IGraphDBProvider(ABC):
 
         For stages with no status field on the record. Raises on infrastructure errors.
         """
+
+    @abstractmethod
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows by key, with what the retirement sweep and the
+        stray pass need of the stored-write protocol: ``{"virtualRecordId", "orgId", "documentId",
+        "switchSeq", "lastSwitchAt", "retired"}``, ``retired`` always a list (decoded on Neo4j, where
+        it is stored as a JSON string). Raises on infrastructure errors."""
 
     @abstractmethod
     async def stage_states_unheld_revisions(

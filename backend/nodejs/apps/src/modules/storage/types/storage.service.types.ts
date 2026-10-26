@@ -73,6 +73,10 @@ export interface Document {
    */
   idempotencyFingerprint?: string;
   /**
+   * Set once a newer stored write replaced this document; in-place buffer writes are refused.
+   */
+  retiredAt?: number | null;
+  /**
    * The keyed upload attempt that owns this unfinished document, and until when.
    */
   uploadLeaseToken?: string;

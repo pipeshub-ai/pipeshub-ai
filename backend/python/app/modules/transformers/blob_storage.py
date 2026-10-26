@@ -28,6 +28,24 @@ from app.exceptions.storage_exceptions import (
     StorageRequestRejectedError,
     StoredRecordTooLargeError,
 )
+from app.modules.transformers.stored_write import (
+    COW,
+    IN_PLACE,
+    IN_PLACE_PUT_ATTEMPTS,
+    IN_PLACE_PUT_BACKOFF_SECONDS,
+    RUN_SUPERSEDED,
+    STORED_WRITE,
+    WRITER_DEADLINE_SECONDS,
+    RunSuperseded,
+    SidecarWrite,
+    StoredWrite,
+    StoredWriteBusy,
+    boottime,
+    classification_sidecar_token_path,
+    in_place_write,
+    is_none_run,
+    with_retired,
+)
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -39,7 +57,11 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
-from app.telemetry.modules.record_storage_metrics import record_reader_relookup
+from app.telemetry.modules.record_storage_metrics import (
+    record_reader_relookup,
+    record_retire_mark,
+    record_store_switch,
+)
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
@@ -315,6 +337,10 @@ STORED_REV = "stored_rev"
 _KEEP_STORED_REV: Any = object()
 
 
+class StoredRecordNotFound(LookupError):
+    """The virtual record has no stored record to rewrite."""
+
+
 class StorageLookupUnavailableError(Exception):
     """Whether stored content exists could not be determined (not: it is absent)."""
 
@@ -325,6 +351,11 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     Deleted or never created, so repeating the request cannot help. A write
     can replace the document; a read has nothing to return.
     """
+
+
+class DocumentRetiredError(StorageDocumentNotFoundError):
+    """404 ``DOCUMENT_RETIRED``: a newer stored write replaced this document and it takes no
+    in-place writes. Reads of it still work. A writer stores its content in a new document."""
 
 
 class SignedUrlReadError(Exception):
@@ -351,6 +382,9 @@ class SignedUrlReadError(Exception):
 # Statuses meaning the storage service refused the request's content (too large,
 # unsupported, malformed): every retry gets the same answer.
 _REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+#: How long a process stops calling a storage service's retire route after it answered "no such route".
+_RETIRE_ROUTE_RETRY_SECONDS = 600.0
+_RETIRE_ROUTE: dict[str, float] = {"down_until": 0.0}
 
 
 def _storage_status_error(
@@ -367,6 +401,17 @@ def _storage_status_error(
             f"{reason}: {detail}" if detail else reason, status, too_large=too_large, detail=detail
         )
     return aiohttp.ClientError(message)
+
+
+def _error_code(body_text: str) -> str | None:
+    """The ``error.code`` of a storage error response body, when it has one."""
+    try:
+        body = json.loads(body_text)
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _storage_error_detail(body: object) -> str | None:
@@ -1303,6 +1348,8 @@ class BlobStorage(Transformer):
             async with session.put(buffer_url, data=form_data, headers=headers) as resp:
                 if resp.status != HttpStatusCode.SUCCESS.value:
                     error_text = await resp.text()
+                    if resp.status == HttpStatusCode.NOT_FOUND.value and _error_code(error_text) == "DOCUMENT_RETIRED":
+                        raise DocumentRetiredError(f"Failed to update buffer: document {document_id} is retired")
                     raise _storage_status_error(
                         resp.status, f"Failed to update buffer: {resp.status} {error_text[:200]}"
                     )
@@ -1423,14 +1470,30 @@ class BlobStorage(Transformer):
         )
 
         written: dict[str, Any] = {}
-        actual_storage_path = await self._store_record_dict(
-            org_id, record_id, virtual_record_id, record_dict,
-            storage_path=storage_path,
-            connector_id=getattr(record, "connector_id", None),
-            record_group_id=getattr(record, "record_group_id", None),
-            written=written,
-            stored_rev=ctx.settings.get(STORED_REV) if STORED_REV in ctx.settings else _KEEP_STORED_REV,
-        )
+        stored_write = ctx.settings.get(STORED_WRITE)
+        if not isinstance(stored_write, StoredWrite):
+            # No settings read in front of this write: the layout that can never be served.
+            stored_write = in_place_write()
+        ctx.settings.pop(RUN_SUPERSEDED, None)
+        try:
+            actual_storage_path = await self._store_record_dict(
+                org_id, record_id, virtual_record_id, record_dict,
+                storage_path=storage_path,
+                connector_id=getattr(record, "connector_id", None),
+                record_group_id=getattr(record, "record_group_id", None),
+                written=written,
+                stored_rev=ctx.settings.get(STORED_REV) if STORED_REV in ctx.settings else _KEEP_STORED_REV,
+                stored_write=stored_write,
+            )
+        except RunSuperseded as superseded:
+            # Another write owns the mapping now (or the record is gone). Indexing goes
+            # on, but this run stored nothing a reader may be handed a set for.
+            self.logger.warning(
+                "Stored write of record %s (vrid %s) superseded: %s", record_id, virtual_record_id, superseded,
+            )
+            ctx.settings[RUN_SUPERSEDED] = True
+            actual_storage_path = storage_path
+            written.clear()
 
         ctx.settings["storage_path"] = actual_storage_path
         if written:
@@ -1454,8 +1517,9 @@ class BlobStorage(Transformer):
         record_group_id: str | None = None,
         written: dict[str, Any] | None = None,
         stored_rev: str | None = _KEEP_STORED_REV,
+        stored_write: StoredWrite | None = None,
     ) -> str:
-        """Upload a record as the next version of its stored document, or as a new one.
+        """Store a record as the virtual record's stored document and name it on the mapping.
 
         Returns the path the content is stored at. *written*, when given, is filled
         with the record dict actually stored: shared content keeps its owner's
@@ -1464,7 +1528,14 @@ class BlobStorage(Transformer):
         upload goes where the current document is, else to ``records/<vrid>``; the
         connector and record group default to the ones in *record_dict*.
         *stored_rev* is written on the mapping as ``storedRev`` unless left out.
+
+        *stored_write* carries the layout, generation and run chosen by one read of the
+        settings. ``cow`` writes a new document and switches the mapping to it; ``in_place``
+        invalidates, then overwrites the mapped document. Either way the mapping is changed
+        only by compare-and-set on ``{documentId, switchSeq}``, never by a blind upsert.
+        Raises ``RunSuperseded`` when the write lost that compare-and-set.
         """
+        stored_write = stored_write or in_place_write()
         if storage_path is None:
             storage_path = (
                 await self.get_actual_content_path(org_id, virtual_record_id)
@@ -1474,116 +1545,453 @@ class BlobStorage(Transformer):
             connector_id = record_dict.get("connector_id")
         if record_group_id is None:
             record_group_id = record_dict.get("record_group_id")
-        existing_lookup = None
-        if self.graph_provider:
-            # A failed lookup must not read as "no document": creating one then
-            # leaves the existing copy unreferenced but still on disk.
-            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
 
-        actual_storage_path = storage_path
-
-        replaced_doc_id: str | None = None
-        holders: list[str] | None = None
-        if existing_lookup and existing_lookup.get("record_doc_id"):
-            holders = await self._live_holders(virtual_record_id)
-            record_dict = await self._keep_owner_identity(
-                org_id, record_id, virtual_record_id, record_dict, existing_lookup, holders,
+        if not self.graph_provider:
+            document_id, _ = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                connector_id=connector_id, record_group_id=record_group_id,
             )
-            existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.info(
-                "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
-                virtual_record_id, existing_doc_id
-            )
-            try:
-                document_id, file_size_bytes = await self.update_record_buffer(
-                    org_id, existing_doc_id, record_dict, virtual_record_id
-                )
-                raw_path = await self._get_current_document_path(org_id, existing_doc_id)
-                if raw_path:
-                    actual_storage_path = self._strip_org_prefix(org_id, raw_path)
-            except StorageDocumentNotFoundError:
-                # A concurrent move fails the write with 503, never 404; a 404
-                # means the document was deleted (e.g. with the connector that
-                # stored this shared VRID first), so a retry cannot succeed.
-                self.logger.warning(
-                    "Stored document %s for vrid %s no longer exists; uploading a replacement",
-                    existing_doc_id, virtual_record_id,
-                )
-                document_id, file_size_bytes = await self.save_record_to_storage(
-                    org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
-                    connector_id=connector_id, record_group_id=record_group_id,
-                )
-            except Exception as e:
-                # A concurrent move_record_tree may have renamed the
-                # directory between the document's MongoDB read and the
-                # disk write (TOCTOU in moveTreeLocal). Retry once after
-                # a brief pause so the move's MongoDB update can land.
-                self.logger.info(
-                    "⚠️ update_record_buffer failed for doc %s, retrying: %s",
-                    existing_doc_id, str(e),
-                )
-                await asyncio.sleep(0.5)
-                try:
-                    document_id, file_size_bytes = await self.update_record_buffer(
-                        org_id, existing_doc_id, record_dict, virtual_record_id
-                    )
-                    raw_path = await self._get_current_document_path(org_id, existing_doc_id)
-                    if raw_path:
-                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
-                except Exception as retry_e:
-                    self.logger.warning(
-                        "⚠️ Retry also failed for doc %s, falling back to new upload: %s",
-                        existing_doc_id, str(retry_e),
-                    )
-                    # Shared content stays on its owner's path, not this writer's.
-                    replacement_path = storage_path
-                    if holders is None or set(holders) - {record_id}:
-                        raw_path = await self._get_current_document_path(org_id, existing_doc_id)
-                        if raw_path:
-                            replacement_path = self._strip_org_prefix(org_id, raw_path)
-                    document_id, file_size_bytes = await self.save_record_to_storage(
-                        org_id, record_id, virtual_record_id, record_dict, document_path=replacement_path,
-                        connector_id=connector_id, record_group_id=record_group_id,
-                    )
-                    actual_storage_path = replacement_path
-                    replaced_doc_id = existing_doc_id
+            stored_dict, actual_storage_path = record_dict, storage_path
         else:
-            unmapped_doc_id = (
-                await self._find_unmapped_record_document(org_id, virtual_record_id)
-                if self.graph_provider else None
+            store = self._store_copy_on_write if stored_write.layout == COW else self._store_in_place
+            document_id, stored_dict, actual_storage_path = await store(
+                org_id, record_id, virtual_record_id, record_dict,
+                storage_path=storage_path, connector_id=connector_id, record_group_id=record_group_id,
+                stored_rev=stored_rev, stored_write=stored_write,
             )
-            document_id = None
-            if unmapped_doc_id:
-                # An earlier attempt stored this record but died before mapping it.
-                self.logger.info(
-                    "📄 Reusing unmapped storage doc %s for vrid %s",
-                    unmapped_doc_id, virtual_record_id,
-                )
-                try:
-                    document_id, file_size_bytes = await self.update_record_buffer(
-                        org_id, unmapped_doc_id, record_dict, virtual_record_id
+
+        if written is not None and document_id:
+            written.clear()
+            written.update(stored_dict)
+        return actual_storage_path
+
+    # ------------------------------------------------------------------
+    # Stored-write helpers
+    # ------------------------------------------------------------------
+
+    async def _mapping_node(self, virtual_record_id: str) -> dict[str, Any] | None:
+        """The vrid's own (keyed) mapping node. A failed read raises: it must not read as "none"."""
+        return await self.graph_provider.get_document(
+            virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+        )
+
+    @staticmethod
+    def _node_document(node: dict[str, Any] | None) -> str | None:
+        return BlobStorage._mapped_document_id(node) if node else None
+
+    async def _get_document_row(
+        self, org_id: str, document_id: str,
+    ) -> dict[str, Any] | None:
+        """The storage row of a document, or None when it is gone (404).
+
+        Raises ``StorageLookupUnavailableError`` for any other failure: a write must not
+        take "could not ask" for "gone" and file its copy under the wrong tags.
+        """
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+        try:
+            async with get_shared_session().get(url, headers=headers) as response:
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    return None
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    raise StorageLookupUnavailableError(
+                        f"Storage answered {response.status} for document {document_id}"
                     )
-                    if document_id:
-                        # The earlier attempt may have filed it where the record no longer is.
-                        holders = await self._live_holders(virtual_record_id)
-                    raw_path = await self._get_current_document_path(org_id, unmapped_doc_id)
-                    if raw_path:
-                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
-                except StorageDocumentNotFoundError:
-                    document_id = None
-            if not document_id:
-                self.logger.debug(
-                    "📄 No existing storage doc for vrid %s, creating new document at path: %s",
-                    virtual_record_id, storage_path
+                row = await response.json()
+        except StorageLookupUnavailableError:
+            raise
+        except Exception as exc:
+            raise StorageLookupUnavailableError(f"Could not read stored document {document_id}: {exc}") from exc
+        return row if isinstance(row, dict) else None
+
+    def _lineage_of(self, org_id: str, row: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        """``(path, connector_id, record_group_id)`` a replacement of the row's document takes."""
+        raw_path = row.get("documentPath")
+        tags = {
+            entry.get("key"): entry.get("value")
+            for entry in row.get("customMetadata") or []
+            if isinstance(entry, dict)
+        }
+        return (
+            self._strip_org_prefix(org_id, raw_path) if raw_path else None,
+            tags.get("connectorId"),
+            tags.get("recordGroupId"),
+        )
+
+    async def _retire_document(self, org_id: str, document_id: str) -> str:
+        """Mark a replaced document so no in-place write lands in it any more.
+
+        Best effort and before the switch: a failed mark is counted and the switch goes on
+        (the sweep marks it before any purge). A storage service without the route is
+        remembered for ten minutes. Returns the outcome: ``marked``, ``gone`` (no such document),
+        ``failed`` or ``unavailable`` (no retire route: there is no write fence).
+        """
+        outcome = await self._retire_document_outcome(org_id, document_id)
+        record_retire_mark(outcome)
+        return outcome
+
+    async def _retire_document_outcome(self, org_id: str, document_id: str) -> str:
+        if time.monotonic() < _RETIRE_ROUTE["down_until"]:
+            return "unavailable"
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            url = f"{nodejs_endpoint}{Routes.STORAGE_RETIRE_DOCUMENT.value.format(documentId=document_id)}"
+            async with get_shared_session().post(url, headers=headers) as response:
+                if response.status == HttpStatusCode.SUCCESS.value:
+                    return "marked"
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    if await self._is_missing_document(response):
+                        return "gone"
+                    # The route itself is not there: an older storage service.
+                    _RETIRE_ROUTE["down_until"] = time.monotonic() + _RETIRE_ROUTE_RETRY_SECONDS
+                    self.logger.warning("The storage service has no retire route; replaced documents are not fenced")
+                    return "unavailable"
+                return "failed"
+        except Exception as exc:
+            self.logger.warning("Could not mark document %s retired: %s", document_id, type(exc).__name__)
+            return "failed"
+
+    async def list_record_documents(
+        self, org_id: str, virtual_record_id: str, *, older_than_seconds: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """The live ``record_<vrid>``/``metadata_<vrid>`` documents of a virtual record, newest first;
+        with *older_than_seconds*, only those created longer ago than that by the database's clock."""
+        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_VIRTUAL_RECORD_DOCUMENTS.value.format(virtualRecordId=virtual_record_id)}"
+        )
+        params = {"olderThanSeconds": str(int(older_than_seconds))} if older_than_seconds is not None else None
+        async with get_shared_session().get(url, headers=headers, params=params) as resp:
+            if resp.status != HttpStatusCode.SUCCESS.value:
+                raise _storage_status_error(resp.status, "Could not list stored documents")
+            body = await resp.json()
+        return [d for d in body.get("documents") or [] if isinstance(d, dict) and d.get("_id")]
+
+    @staticmethod
+    async def _is_missing_document(response: aiohttp.ClientResponse) -> bool:
+        """True for the route's own 404 (no such document), false for "no such route"."""
+        try:
+            body = await response.json()
+        except Exception:
+            return False
+        error = body.get("error") if isinstance(body, dict) else None
+        return isinstance(error, dict) and error.get("code") == "HTTP_NOT_FOUND"
+
+    async def _record_still_exists(self, record_id: str) -> bool:
+        return await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) is not None
+
+    def _switch_fields(
+        self,
+        node: dict[str, Any] | None,
+        *,
+        document_id: str,
+        file_size_bytes: int | None,
+        stored_rev: str | None,
+        run: str,
+        replaced: str | None,
+        now: int,
+    ) -> dict[str, Any]:
+        """What a switch of the mapping to *document_id* writes, as a compare-and-set's updates."""
+        retired, overflow = with_retired(node, replaced, document_id, now)
+        if overflow:
+            record_store_switch("switch", "retired_overflow", overflow)
+        fields: dict[str, Any] = {
+            "documentId": document_id,
+            "record_doc_id": document_id,
+            "storedRun": run,
+            "storedMeta": None,
+            "switchSeq": ((node or {}).get("switchSeq") or 0) + 1,
+            "switchDoc": document_id,
+            "updatedAt": now,
+            "switchUpdatedAt": now,
+            "lastSwitchAt": now,
+            "retired": retired,
+        }
+        if file_size_bytes is not None:
+            fields["fileSizeBytes"] = file_size_bytes
+        if stored_rev is not _KEEP_STORED_REV:
+            fields["storedRev"] = stored_rev
+        return fields
+
+    async def _switch_mapping(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        node: dict[str, Any] | None,
+        fields: dict[str, Any],
+        *,
+        expect_seq: Any = _KEEP_STORED_REV,  # noqa: ANN401
+        expect_also: dict[str, Any] | None = None,
+    ) -> bool:
+        """Apply *fields* to the mapping if it is still the node that was read. True iff applied.
+
+        A first write creates the node only if none exists. A node without a ``documentId``
+        (reconciliation wrote it first) is matched on that absence. *expect_seq* overrides the
+        ``switchSeq`` the node was read with, for a write that bumped it since; *expect_also* adds
+        fields that must still hold (a metadata writer's ``storedRun`` and ``storedMeta``).
+        """
+        collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        if node is None:
+            created = await self.graph_provider.create_node_if_absent(
+                virtual_record_id, collection,
+                {"id": virtual_record_id, "orgId": org_id, "virtualRecordId": virtual_record_id, **fields},
+            )
+            return bool(created)
+        seq = node.get("switchSeq") if expect_seq is _KEEP_STORED_REV else expect_seq
+        return bool(await self.graph_provider.update_node_fields_if_match(
+            virtual_record_id, collection, fields,
+            {"documentId": node.get("documentId"), "switchSeq": seq, **(expect_also or {})},
+        ))
+
+    async def _shared_content_inputs(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        node: dict[str, Any],
+    ) -> tuple[list[str] | None, dict[str, Any]]:
+        """``(holders, record to store)`` for a write over an existing document: shared content
+        keeps its owner's identity."""
+        holders = await self._live_holders(virtual_record_id)
+        record_dict = await self._keep_owner_identity(
+            org_id, record_id, virtual_record_id, record_dict, self._shape_document_lookup(node), holders,
+        )
+        return holders, record_dict
+
+    async def _store_copy_on_write(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str,
+        connector_id: str | None,
+        record_group_id: str | None,
+        stored_rev: str | None,
+        stored_write: StoredWrite,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Create a new document and switch the mapping to it; returns ``(document, stored dict, path)``.
+
+        Steps: look; read the mapped document's row for its path and tags (lineage); create
+        the new document (the deadline clock starts just before); mark the replaced document
+        retired; re-check the record still exists; switch by compare-and-set on
+        ``{documentId, switchSeq}``. A lost compare-and-set re-reads and tries once more with
+        a fresh document, then the write is superseded and its document is a stray.
+        """
+        for attempt in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            holders: list[str] | None = None
+            stored_dict = record_dict
+            path, tag_connector, tag_group = storage_path, connector_id, record_group_id
+            actual_storage_path = storage_path
+            if d:
+                holders, stored_dict = await self._shared_content_inputs(
+                    org_id, record_id, virtual_record_id, record_dict, node,
                 )
+                row = await self._get_document_row(org_id, d)
+                if row is not None:
+                    path, tag_connector, tag_group = self._lineage_of(org_id, row)
+                    path = path or storage_path
+                    actual_storage_path = path
+                else:
+                    fresh = await self._mapping_node(virtual_record_id)
+                    if self._node_document(fresh) != d:
+                        # A switch landed and its sweep purged this row; look again with the new document.
+                        if attempt == 2:
+                            record_store_switch(COW, "superseded")
+                            raise RunSuperseded("the mapped document changed under the write")
+                        continue
+                    # The mapped document is gone: no row to take tags from, so the writer's own, as on a first write.
+                    self.logger.warning(
+                        "Mapped document %s of vrid %s no longer exists; storing a replacement", d, virtual_record_id,
+                    )
+
+            started = boottime()
+            document_id, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, stored_dict, document_path=path,
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not document_id:
+                raise RuntimeError("the storage service returned no document id")
+            if (
+                holders is not None
+                and actual_storage_path
+                and storage_path != f"records/{virtual_record_id}"
+                and actual_storage_path != storage_path
+            ):
+                actual_storage_path = await self._relocate_stored_copy(
+                    org_id, record_id, virtual_record_id, actual_storage_path, storage_path,
+                    holders=holders, document_id=document_id,
+                )
+            if d:
+                await self._retire_document(org_id, d)
+            if boottime() - started > WRITER_DEADLINE_SECONDS:
+                record_store_switch(COW, "deadline")
+                raise RunSuperseded("the write took longer than its deadline")
+            if not await self._record_still_exists(record_id):
+                record_store_switch(COW, "record_gone")
+                raise RunSuperseded("the record was deleted before the switch")
+
+            fields = self._switch_fields(
+                node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+                run=stored_write.run, replaced=d, now=get_epoch_timestamp_in_ms(),
+            )
+            if await self._switch_mapping(org_id, virtual_record_id, node, fields):
+                record_store_switch(COW, "switched")
+                return document_id, stored_dict, actual_storage_path
+            record_store_switch(COW, "conflict")
+        record_store_switch(COW, "superseded")
+        raise RunSuperseded("the mapping moved under the write twice")
+
+    async def _put_buffer_with_retry(
+        self, org_id: str, document_id: str, record_dict: dict[str, Any], virtual_record_id: str,
+    ) -> int | None:
+        """PUT into the mapped document, retrying a transient failure (a move running at the
+        same time answers 503; a connection can drop). Re-sending the same bytes is safe: the
+        mapping was invalidated first and the final compare-and-set still decides. A document
+        that is gone or retired, or a refused body, is not retried."""
+        for number in range(IN_PLACE_PUT_ATTEMPTS):
+            try:
+                _, size = await self.update_record_buffer(org_id, document_id, record_dict, virtual_record_id)
+                return size
+            except (StorageDocumentNotFoundError, StorageRequestRejectedError):
+                raise
+            except Exception as exc:
+                if number + 1 >= IN_PLACE_PUT_ATTEMPTS:
+                    raise
+                pause = IN_PLACE_PUT_BACKOFF_SECONDS[min(number, len(IN_PLACE_PUT_BACKOFF_SECONDS) - 1)]
+                self.logger.info(
+                    "⚠️ update_record_buffer failed for doc %s (attempt %d), retrying: %s",
+                    document_id, number + 1, type(exc).__name__,
+                )
+                await asyncio.sleep(random.uniform(pause / 2, pause))
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _check_creation_deadline(created_at: float) -> None:
+        """A document this write created is named by the switch only within the writer deadline: past
+        it the stray pass may already have purged it (``stored_retention``)."""
+        if boottime() - created_at > WRITER_DEADLINE_SECONDS:
+            record_store_switch(IN_PLACE, "deadline")
+            raise RunSuperseded("the write took longer than its deadline")
+
+    async def _store_in_place(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str,
+        connector_id: str | None,
+        record_group_id: str | None,
+        stored_rev: str | None,
+        stored_write: StoredWrite,
+        keep_identity: bool = True,
+        recheck_record: bool = False,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Overwrite the mapped document; the mapping changes only by compare-and-set.
+
+        Steps: look; invalidate (``storedRun`` becomes this write's ``none`` run, so no artifact
+        set is served over the content that is about to change), skipped when the stored run is
+        already unservable; PUT the document; on 404 create a replacement; switch by
+        compare-and-set on ``{documentId, switchSeq}``. No artifact set is written for it.
+
+        A metadata writer passes ``keep_identity=False`` (the record it re-reads is written back
+        whole, so no owner identity is merged into it) and ``recheck_record=True`` (a record deleted
+        meanwhile is not switched).
+        """
+        run = stored_write.run
+        for _ in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            if d is None:
+                created_at = boottime()
                 document_id, file_size_bytes = await self.save_record_to_storage(
                     org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
                     connector_id=connector_id, record_group_id=record_group_id,
                 )
+                if not document_id:
+                    raise RuntimeError("the storage service returned no document id")
+                self._check_creation_deadline(created_at)
+                fields = self._switch_fields(
+                    node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+                    run=run, replaced=None, now=get_epoch_timestamp_in_ms(),
+                )
+                if await self._switch_mapping(org_id, virtual_record_id, node, fields):
+                    record_store_switch(IN_PLACE, "switched")
+                    return document_id, record_dict, storage_path
+                record_store_switch(IN_PLACE, "conflict")
+                continue
+
+            seq = node.get("switchSeq")
+            if is_none_run(node.get("storedRun")) and not node.get("storedMeta"):
+                record_store_switch(IN_PLACE, "invalidation_skipped")
+            else:
+                now = get_epoch_timestamp_in_ms()
+                invalidation: dict[str, Any] = {
+                    "storedRun": run, "storedMeta": None, "switchSeq": (seq or 0) + 1,
+                    "switchDoc": d, "updatedAt": now, "switchUpdatedAt": now, "lastSwitchAt": now,
+                }
+                if stored_rev is not _KEEP_STORED_REV:
+                    invalidation["storedRev"] = stored_rev
+                if not await self._switch_mapping(org_id, virtual_record_id, node, invalidation):
+                    record_store_switch(IN_PLACE, "conflict")
+                    continue
+                record_store_switch(IN_PLACE, "invalidated")
+                seq = (seq or 0) + 1
+            break
+        else:
+            record_store_switch(IN_PLACE, "busy")
+            raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} kept moving")
+
+        if d is None:
+            # Only reachable through the first-write branch above, which returned.
+            raise AssertionError("unreachable")
+        if keep_identity:
+            holders, stored_dict = await self._shared_content_inputs(
+                org_id, record_id, virtual_record_id, record_dict, node,
+            )
+        else:
+            holders, stored_dict = None, record_dict
+        self.logger.info("📄 Overriding buffer in place for vrid %s (doc_id=%s)", virtual_record_id, d)
+        target = d
+        actual_storage_path = storage_path
+        replacement_started: float | None = None
+        try:
+            file_size_bytes = await self._put_buffer_with_retry(org_id, d, stored_dict, virtual_record_id)
+            raw_path = await self._get_current_document_path(org_id, d)
+            if raw_path:
+                actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+        except StorageDocumentNotFoundError as gone:
+            path, tag_connector, tag_group = storage_path, connector_id, record_group_id
+            if isinstance(gone, DocumentRetiredError):
+                # Replaced by a copy-on-write switch after a flag went on; the row still exists.
+                row = await self._get_document_row(org_id, d)
+                if row is not None:
+                    row_path, tag_connector, tag_group = self._lineage_of(org_id, row)
+                    path = row_path or storage_path
+                    actual_storage_path = path
+            self.logger.warning(
+                "Stored document %s for vrid %s %s; uploading a replacement",
+                d, virtual_record_id, "is retired" if isinstance(gone, DocumentRetiredError) else "no longer exists",
+            )
+            replacement_started = boottime()
+            target, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, stored_dict, document_path=path,
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not target:
+                raise RuntimeError("the storage service returned no document id") from gone
+            if not actual_storage_path or actual_storage_path == storage_path:
+                actual_storage_path = path
 
         if (
-            document_id
-            and self.graph_provider
+            target
             and holders is not None
             and actual_storage_path
             and storage_path != f"records/{virtual_record_id}"
@@ -1591,31 +1999,163 @@ class BlobStorage(Transformer):
         ):
             actual_storage_path = await self._relocate_stored_copy(
                 org_id, record_id, virtual_record_id, actual_storage_path, storage_path,
-                holders=holders, document_id=document_id,
+                holders=holders, document_id=target,
             )
 
-        if document_id and self.graph_provider:
-            revision = {} if stored_rev is _KEEP_STORED_REV else {"stored_rev": stored_rev}
-            mapped = await self.store_virtual_record_mapping(
-                org_id, virtual_record_id, document_id, file_size_bytes, **revision,
+        if replacement_started is not None:
+            self._check_creation_deadline(replacement_started)
+        if recheck_record and not await self._record_still_exists(record_id):
+            record_store_switch(IN_PLACE, "record_gone")
+            raise RunSuperseded("the record was deleted before the switch")
+        latest = dict(node)
+        latest["switchSeq"] = seq
+        fields = self._switch_fields(
+            latest, document_id=target, file_size_bytes=file_size_bytes, stored_rev=stored_rev,
+            run=run, replaced=d, now=get_epoch_timestamp_in_ms(),
+        )
+        if await self._switch_mapping(org_id, virtual_record_id, node, fields, expect_seq=seq):
+            record_store_switch(IN_PLACE, "switched")
+            return target, stored_dict, actual_storage_path
+        # A copy-on-write switch landed meanwhile (a flag went on during this write). When the
+        # content went into d it was d's content before d was marked; a replacement is a stray.
+        record_store_switch(IN_PLACE, "superseded")
+        raise RunSuperseded("the mapping moved during the in-place write")
+
+    async def rewrite_semantic_metadata(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        *,
+        stored_write: StoredWrite,
+        sidecar: SidecarWrite | None = None,
+    ) -> dict[str, Any] | None:
+        """Replace the mapped stored record's ``semantic_metadata`` with what *transform* makes of it.
+
+        The mapped document is read **once**; *transform* gets the stored record and returns the new
+        ``semantic_metadata``, or None to write nothing (then None is returned). Every other field is
+        written back as read: the owner's identity is not merged in (``_keep_owner_identity`` does not
+        run). Returns the stored record as written.
+
+        ``cow`` (a shadow or read flag is on) copies the document with only the metadata changed,
+        files the classification as a sidecar at a path named by this write, and switches the mapping
+        by compare-and-set on ``{documentId, storedRun, storedMeta, switchSeq}``: ``storedRun`` is
+        kept (the blocks are unchanged) and ``storedMeta`` names the sidecar, so a reader serves
+        exactly this metadata with the blocks it belongs to. ``in_place`` invalidates (unless nothing is
+        servable), overwrites the document and runs the final compare-and-set; no sidecar.
+
+        Raises ``StoredRecordNotFound`` when there is no stored record, ``StoredWriteBusy`` when the
+        mapping moved under a copy-on-write write (the caller's retry runs the job again) and
+        ``RunSuperseded`` when an in-place write lost its final compare-and-set or the record is gone.
+        """
+        if stored_write.layout == COW:
+            return await self._rewrite_copy_on_write(
+                org_id, record_id, virtual_record_id, transform, sidecar=sidecar,
             )
-            if mapped and replaced_doc_id and replaced_doc_id != document_id:
-                await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
+        return await self._rewrite_in_place(org_id, record_id, virtual_record_id, transform, stored_write)
 
-        if written is not None and document_id:
-            written.clear()
-            written.update(record_dict)
-        return actual_storage_path
-
-    async def save_semantic_metadata(
-        self, org_id: str, record_id: str, virtual_record_id: str, semantic_metadata: dict[str, Any]
-    ) -> None:
-        """Write classification into the stored record as its next version."""
-        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+    async def _read_mapped_record(
+        self, org_id: str, virtual_record_id: str, node: dict[str, Any],
+    ) -> dict[str, Any]:
+        stored = await self.get_record_from_storage(
+            virtual_record_id, org_id, lookup_result=self._shape_document_lookup(node),
+        )
         if stored is None:
-            raise LookupError(f"no stored record for virtual record {virtual_record_id}")
-        stored["semantic_metadata"] = semantic_metadata
-        await self._store_record_dict(org_id, record_id, virtual_record_id, stored)
+            raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+        return stored
+
+    async def _rewrite_in_place(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        stored_write: StoredWrite,
+    ) -> dict[str, Any] | None:
+        node = await self._mapping_node(virtual_record_id)
+        if not self._node_document(node):
+            raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+        stored = await self._read_mapped_record(org_id, virtual_record_id, node)  # type: ignore[arg-type]
+        new = await transform(stored)
+        if new is None:
+            return None
+        written = {**stored, "semantic_metadata": new}
+        _, written, _ = await self._store_in_place(
+            org_id, record_id, virtual_record_id, written,
+            storage_path=f"records/{virtual_record_id}",
+            connector_id=written.get("connector_id"), record_group_id=written.get("record_group_id"),
+            stored_rev=_KEEP_STORED_REV, stored_write=stored_write,
+            keep_identity=False, recheck_record=True,
+        )
+        return written
+
+    async def _rewrite_copy_on_write(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        transform: "Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]",
+        *,
+        sidecar: SidecarWrite | None,
+    ) -> dict[str, Any] | None:
+        for attempt in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            d = self._node_document(node)
+            if not d or node is None:
+                raise StoredRecordNotFound(f"no stored record for virtual record {virtual_record_id}")
+            run, stored_meta = node.get("storedRun"), node.get("storedMeta")
+            row = await self._get_document_row(org_id, d)
+            if row is None:
+                fresh = await self._mapping_node(virtual_record_id)
+                if self._node_document(fresh) != d:
+                    # A switch landed and its sweep purged this row: read the new document instead.
+                    if attempt == 2:
+                        raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} kept moving")
+                    continue
+                raise StoredRecordNotFound(f"the stored document {d} of virtual record {virtual_record_id} is gone")
+            stored = await self._read_mapped_record(org_id, virtual_record_id, node)
+            new = await transform(stored)
+            if new is None:
+                return None
+            written = {**stored, "semantic_metadata": new}
+            path, tag_connector, tag_group = self._lineage_of(org_id, row)
+
+            started = boottime()
+            document_id, file_size_bytes = await self.save_record_to_storage(
+                org_id, record_id, virtual_record_id, written, document_path=path or f"records/{virtual_record_id}",
+                connector_id=tag_connector, record_group_id=tag_group,
+            )
+            if not document_id:
+                raise RuntimeError("the storage service returned no document id")
+            # The classification a reader serves, at a path only this write knows. Written before the
+            # switch: the switch is what makes it visible, and a failure only makes the read stale_sidecar.
+            token_path = classification_sidecar_token_path(sidecar.stage_version if sidecar else 0)
+            if sidecar is not None:
+                _ = await sidecar.write(token_path, run, new)
+            await self._retire_document(org_id, d)
+            if boottime() - started > WRITER_DEADLINE_SECONDS:
+                record_store_switch(COW, "deadline")
+                raise StoredWriteBusy("the metadata write took longer than its deadline")
+            if not await self._record_still_exists(record_id):
+                record_store_switch(COW, "record_gone")
+                raise StoredWriteBusy("the record was deleted before the switch")
+
+            fields = self._switch_fields(
+                node, document_id=document_id, file_size_bytes=file_size_bytes, stored_rev=_KEEP_STORED_REV,
+                run=run, replaced=d, now=get_epoch_timestamp_in_ms(),
+            )
+            fields["storedMeta"] = token_path
+            if await self._switch_mapping(
+                org_id, virtual_record_id, node, fields, expect_also={"storedRun": run, "storedMeta": stored_meta},
+            ):
+                record_store_switch(COW, "switched")
+                return written
+            # A sink or another metadata writer switched first. Its document and this sidecar are
+            # strays; the caller's retry runs the job again against the new mapping.
+            record_store_switch(COW, "conflict")
+            raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} moved during the metadata write")
+        raise AssertionError("unreachable")
 
     async def _with_storage_retry(
         self,
@@ -2277,7 +2817,11 @@ class BlobStorage(Transformer):
         if record_metadata_doc_id:
             result["record_metadata_doc_id"] = record_metadata_doc_id
         # The artifact set of the current content revision, for the artifact reader.
-        for key in ("currentRev", "manifestDocId", "storedRev"):
+        # The stored write each field belongs to: a set is served only when they agree.
+        for key in (
+            "currentRev", "manifestDocId", "storedRev", "storedRun", "storedMeta", "currentRun",
+            "switchSeq", "switchDoc", "switchUpdatedAt", "lastSwitchAt", "retired",
+        ):
             if doc.get(key):
                 result[key] = doc[key]
         return result
@@ -2684,67 +3228,6 @@ class BlobStorage(Transformer):
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
-    async def store_virtual_record_mapping(
-        self,
-        org_id: str,
-        virtual_record_id: str,
-        document_id: str,
-        file_size_bytes: int | None = None,
-        *,
-        stored_rev: str | None = _KEEP_STORED_REV,
-    ) -> bool:
-        """
-        Stores the mapping between virtual_record_id and document_id in graph database.
-        Args:
-            org_id: The organization ID
-            virtual_record_id: The virtual record ID
-            document_id: The document ID
-            file_size_bytes: Optional file size in bytes
-            stored_rev: The content revision the stored document now holds, as
-                ``storedRev``; None clears it, leaving it out keeps it
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-
-        try:
-            collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-
-            mapping_key = virtual_record_id
-
-            mapping_document = {
-                "id": mapping_key,
-                "orgId": org_id,
-                "virtualRecordId": virtual_record_id,
-                "documentId": document_id,
-                "record_doc_id": document_id,
-                "updatedAt": get_epoch_timestamp_in_ms()
-            }
-
-            if file_size_bytes is not None:
-                mapping_document["fileSizeBytes"] = file_size_bytes
-            if stored_rev is not _KEEP_STORED_REV:
-                mapping_document["storedRev"] = stored_rev
-
-            success = await self.graph_provider.batch_upsert_nodes(
-                [mapping_document],
-                collection_name
-            )
-
-            if success:
-                size_info = f", file_size={file_size_bytes} bytes" if file_size_bytes is not None else ""
-                self.logger.debug("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s%s", virtual_record_id, document_id, size_info)
-                return True
-            else:
-                self.logger.error("❌ Failed to store virtual record mapping")
-                raise Exception("Failed to store virtual record mapping")
-
-        except Exception as e:
-            self.logger.exception(
-                "❌ Failed to store virtual record mapping: %s",
-                virtual_record_id,
-            )
-            raise e
-
     async def upload_next_version(
         self,
         org_id: str,
@@ -2924,15 +3407,7 @@ class BlobStorage(Transformer):
                 )
 
             if metadata_document_id and self.graph_provider:
-                mapping_document = {
-                    "_key": virtual_record_id,
-                    "record_metadata_doc_id": metadata_document_id,
-                    "updatedAt": get_epoch_timestamp_in_ms()
-                }
-                await self.graph_provider.batch_upsert_nodes(
-                    [mapping_document],
-                    CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                )
+                await self._map_reconciliation_document(virtual_record_id, metadata_document_id)
                 self.logger.debug(
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
@@ -2947,6 +3422,43 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
+
+    async def _map_reconciliation_document(self, virtual_record_id: str, metadata_document_id: str) -> None:
+        """Name the metadata document on the mapping.
+
+        When the mapping already names a stored document, this is a compare-and-set on
+        ``{documentId, switchSeq}`` that also records ``switchDoc = documentId`` and
+        ``switchUpdatedAt = updatedAt``, with no ``switchSeq`` bump: the mapping stays
+        consistent with its last switch, so it is not mistaken for an older writer's
+        fingerprint. After a conflict it re-reads once; then it falls back to writing just
+        the metadata id, which leaves a false fingerprint at worst (safe).
+        """
+        collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        for _ in (1, 2):
+            node = await self._mapping_node(virtual_record_id)
+            document_id = (node or {}).get("documentId")
+            if not document_id:
+                break
+            now = get_epoch_timestamp_in_ms()
+            if await self.graph_provider.update_node_fields_if_match(
+                virtual_record_id, collection,
+                {
+                    "record_metadata_doc_id": metadata_document_id,
+                    "updatedAt": now,
+                    "switchDoc": document_id,
+                    "switchUpdatedAt": now,
+                },
+                {"documentId": document_id, "switchSeq": node.get("switchSeq")},
+            ):
+                return
+        await self.graph_provider.batch_upsert_nodes(
+            [{
+                "_key": virtual_record_id,
+                "record_metadata_doc_id": metadata_document_id,
+                "updatedAt": get_epoch_timestamp_in_ms(),
+            }],
+            collection,
+        )
 
     async def _update_metadata_buffer(
         self,

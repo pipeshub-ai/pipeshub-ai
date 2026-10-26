@@ -29,6 +29,7 @@ import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
   ConflictError,
+  DocumentRetiredError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -698,15 +699,35 @@ export class StorageController {
     try {
       const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
       const virtualRecordId = String(req.params.virtualRecordId);
+      // Only documents older than this many seconds, judged by the database's own clock
+      // against the numeric createdAt (a Number of ms, not a Date: in BSON order every Number
+      // sorts before every Date, so a plain $$NOW comparison would match every document).
+      // Rows without a numeric createdAt are never returned by this filter.
+      const olderThanSeconds = Number(req.query.olderThanSeconds);
+      const ageFilter =
+        Number.isFinite(olderThanSeconds) && olderThanSeconds >= 0
+          ? {
+              createdAt: { $type: 'number' },
+              $expr: {
+                $lt: [
+                  '$createdAt',
+                  {
+                    $subtract: [{ $toLong: '$$NOW' }, olderThanSeconds * 1000],
+                  },
+                ],
+              },
+            }
+          : {};
       const documents = await DocumentModel.find({
         orgId,
         documentName: {
           $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
         },
         isDeleted: { $ne: true },
+        ...ageFilter,
       })
-        .select('_id documentName documentPath createdAt')
-        .sort({ createdAt: -1 })
+        .select('_id documentName documentPath createdAt retiredAt')
+        .sort({ createdAt: -1, _id: -1 })
         .lean();
       res.status(HTTP_STATUS.OK).json({
         documents: documents.map((d) => ({
@@ -714,6 +735,7 @@ export class StorageController {
           documentName: d.documentName,
           documentPath: d.documentPath,
           createdAt: d.createdAt,
+          retiredAt: d.retiredAt ?? null,
         })),
       });
     } catch (error) {
@@ -2364,6 +2386,11 @@ export class StorageController {
       }
 
       const document = docResult.document;
+      // A retired document may still be mapped by a lookup an older writer holds;
+      // refusing here sends that writer to a replacement document of its own.
+      if (document.retiredAt) {
+        throw new DocumentRetiredError();
+      }
 
       const adapter = await this.initializeStorageAdapter(req);
       let uploadResult: StorageServiceResponse<string>;
@@ -2390,6 +2417,47 @@ export class StorageController {
         });
         throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Marks a document retired: later in-place buffer writes get 404
+   * DOCUMENT_RETIRED. Idempotent; the first mark's time is kept. Reads are
+   * unaffected.
+   */
+  async retireDocumentById(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const now = Date.now();
+      const document = await DocumentModel.findOneAndUpdate(
+        {
+          _id: req.params.documentId,
+          orgId,
+          isDeleted: false,
+          retiredAt: null,
+        },
+        { $set: { retiredAt: now } },
+        { new: true, timestamps: false },
+      ).lean();
+      if (document) {
+        res.status(HTTP_STATUS.OK).json({ retiredAt: document.retiredAt });
+        return;
+      }
+      const existing = await DocumentModel.findOne({
+        _id: req.params.documentId,
+        orgId,
+        isDeleted: false,
+      }).lean();
+      if (!existing) {
+        throw new NotFoundError('Document not found', { logLevel: 'warn' });
+      }
+      res.status(HTTP_STATUS.OK).json({ retiredAt: existing.retiredAt });
     } catch (error) {
       next(error);
     }

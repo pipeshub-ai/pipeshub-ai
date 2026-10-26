@@ -82,6 +82,9 @@ class Manifest(BaseModel):
     rev: str
     orgId: str
     producedAt: int
+    #: The stored write (run token) this set was built from; a reader serves the set only
+    #: while the mapping's ``currentRun`` and ``storedRun`` are this run.
+    storedRun: str
     writerVersion: int = WRITER_VERSION
     producerVersions: dict[str, str] = Field(default_factory=dict)
     artifacts: dict[str, ArtifactEntry]

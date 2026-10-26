@@ -51,6 +51,7 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import read_lane_map, write_lane_count
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.membership import register_group
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.retention import (
     DEFAULT_INTERVAL_SECONDS,
@@ -73,6 +74,7 @@ from app.services.messaging.scheduling.key_extractors import (
     TieredKeyExtractor,
 )
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
+from app.services.messaging.storage_protocol import tagged
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
@@ -167,13 +169,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     ) -> None:
         self.logger = logger
         self.config = config
+        if config:
+            register_group(config.group_id, list(config.topics))
         self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
             RedisConnectionConfig.from_redis_config(config)
         )
         self._planner = StreamReadPlanner(self._provider)
         # PEL ownership is keyed by consumer name; sharing one across replicas
         # lets one process re-read another process's still-active messages.
-        self.consumer_name = f"{config.client_id}-{uuid.uuid4().hex}"
+        self.consumer_name = f"{tagged(config.client_id)}-{uuid.uuid4().hex}"
         self.retry_manager = retry_manager
         # Told about every message this consumer gives up on, before the XACK
         # that makes it unrecoverable — see disposition.AbandonedMessageSink.
