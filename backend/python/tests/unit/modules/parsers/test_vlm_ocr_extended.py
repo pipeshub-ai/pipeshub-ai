@@ -120,9 +120,21 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(return_value={"llm": []})
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No LLM configurations found") as exc_info:
+        # Settings read and holding no model at all: the same fact as no multimodal one.
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No LLM configurations found"):
             await strategy._get_multimodal_llm()
-        # get_config answers an unreadable store with nothing: may be an outage, so retryable.
+        # Read strictly, so an empty list cannot be a store that failed to answer.
+        assert any(c.kwargs.get("raise_on_error") is True for c in config.get_config.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_settings_store_that_cannot_be_read_stays_retryable(self) -> None:
+        logger = logging.getLogger("test")
+        config = AsyncMock()
+        config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
+
+        strategy = VLMOCRStrategy(logger, config)
+        with pytest.raises(DocumentProcessingError) as exc_info:
+            await strategy._get_multimodal_llm()
         assert not isinstance(exc_info.value, MultimodalModelNotConfiguredError)
 
 

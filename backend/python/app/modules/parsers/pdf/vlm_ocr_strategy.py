@@ -173,8 +173,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 pass
 
             # 2. Scan all LLM configs for the best multimodal candidate
-            # `{}` until an admin saves AI settings, so a fresh org gets a readable error below.
-            raw_configs = (await load_ai_models(self.config)).get("llm")
+            # `{}` until an admin saves AI settings. A store that cannot be read
+            # raises instead, and the handler below keeps that retryable.
+            raw_configs = (await load_ai_models(self.config, raise_on_error=True)).get("llm")
             llm_configs: list[dict[str, Any]] = (
                 [cast("dict[str, Any]", c) for c in cast("list[object]", raw_configs) if isinstance(c, dict)]
                 if isinstance(raw_configs, list)
@@ -182,10 +183,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             )
 
             if not llm_configs:
-                # Not MultimodalModelNotConfiguredError: get_config answers a
-                # store it could not read with nothing, so an empty list may be
-                # an outage, which must stay retryable.
-                raise DocumentProcessingError(
+                # The settings were read and hold no model at all (a new org):
+                # the same fact as holding no multimodal one.
+                raise MultimodalModelNotConfiguredError(
                     "No LLM configurations found",
                     details={"required": "multimodal LLM"},
                 )

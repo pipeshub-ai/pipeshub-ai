@@ -11,6 +11,7 @@ from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
 )
 from app.models.blocks import Block, BlocksContainer, BlockType
+from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.parsing.interface import (
     ParseError,
@@ -26,6 +27,7 @@ from app.services.parsing.providers.smart_pdf_parser import (
     SmartPDFParser,
     _detect_needs_ocr,
 )
+from app.utils.user_errors import PROCESSING_TIMED_OUT
 
 
 def _make_block_container() -> BlocksContainer:
@@ -782,15 +784,81 @@ class TestSmartPDFParserWithoutAnImageModel:
                 pytest.raises(MultimodalModelNotConfiguredError):
             await parser.parse(b"%PDF", "scan.pdf")
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ParseError(ParseErrorCode.PARSE_FAILED, "no"),
+            ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out"),
+            ParseWorkerError("The file used too much memory.", "crashed"),
+        ],
+        ids=["parse failed", "worker timed out", "worker crashed"],
+    )
     @pytest.mark.asyncio
-    async def test_a_text_parser_failure_still_says_to_add_a_model(self) -> None:
-        parser, _, ocr = self._parser(docling_error=ParseError(ParseErrorCode.PARSE_FAILED, "no"))
+    async def test_a_text_parser_failure_keeps_its_own_error(self, error: ParseError) -> None:
+        """A timeout or a crash is not a missing model: it keeps its message, and OCR is not tried again."""
+        parser, _, ocr = self._parser(docling_error=error)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(ParseError) as raised:
+            await parser.parse(b"%PDF", "report.pdf")
+
+        assert raised.value is error
+        ocr.parse.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [
+            ParseResult(
+                raw_document=json.dumps({"texts": [], "tables": [{"data": {"table_cells": [{"text": "Sponsors 62"}]}}]}),
+                provider_used=ParserProvider.DOCLING,
+            ),
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.TABLE_ROW, data={"row_natural_language_text": "Sponsors: 62"})],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+        ],
+        ids=["docling table cell", "table row block"],
+    )
+    @pytest.mark.asyncio
+    async def test_text_only_in_tables_counts_as_text(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)):
+            result = await parser.parse(b"%PDF", "report.pdf")
+
+        assert result.metadata["ocr_skipped"] == "no multimodal model"
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.IMAGE, data={"uri": "data:image/png;base64,iVBORw0KGgo="})],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.IMAGE, data="data:image/png;base64,iVBORw0KGgo=")],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+            ParseResult(
+                raw_document=json.dumps({"texts": [], "tables": [{"data": {"table_cells": [{"text": " "}]}}]}),
+                provider_used=ParserProvider.DOCLING,
+            ),
+        ],
+        ids=["image block", "image block with string data", "blank table cell"],
+    )
+    @pytest.mark.asyncio
+    async def test_pictures_and_blank_cells_are_not_text(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
         with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
                 pytest.raises(MultimodalModelNotConfiguredError):
             await parser.parse(b"%PDF", "scan.pdf")
-
-        # The text path's own OCR fallback hits the same missing model; it is not tried a third time.
-        assert ocr.parse.await_count == 2
 
     @pytest.mark.asyncio
     async def test_other_ocr_failures_are_not_read_as_text(self) -> None:
