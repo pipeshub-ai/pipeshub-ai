@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    PushClaimRefused,
+    PushOutcome,
+)
 from app.connectors.sources.localKB.push import contract as C
 from app.connectors.sources.localKB.push.service import KbPushService
 from app.connectors.sources.localKB.push.worker import Validated
 from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.push_claim import PushClaim
 
 
 def validated() -> Validated:
@@ -94,3 +99,25 @@ async def test_a_retag_that_applied_answers_unchanged_at_once() -> None:
     result = await svc._write(kb_id="kb", user_id="u", org_id="o", v=validated(), folder_id=None)
 
     assert graph.get_document.await_count == 1 and result.status == "unchanged"
+
+
+async def test_a_document_stored_for_a_lost_attempt_is_cleaned_up_when_the_retry_keeps_the_stored_one() -> None:
+    """Attempt 1 stores a document and loses the claim; attempt 2 sees the same content at a lower version
+    (a metadata change), which names no new document, so the stored one is the push's to remove."""
+    changed = {**_stored("pb1"), "version": 1, "externalRevisionId": f"pb1:{'e' * 64}:{'f' * 16}"}
+    same_content = {**_stored("pb1"), "version": 1}
+    graph = MagicMock()
+    graph.get_document = AsyncMock(side_effect=[changed, same_content])
+    svc = _service(graph)
+    svc._placement = AsyncMock(return_value=None)
+    svc._check_name = AsyncMock()
+    svc._processor = AsyncMock()
+    svc._store = AsyncMock(return_value="doc-new")
+    svc._cleanup_unless_referenced = AsyncMock()
+    svc._claim_and_write = AsyncMock(side_effect=[PushClaimRefused(PushClaim.LOST), (PushOutcome(None, False), None, None, None)])
+
+    result = await svc._write(kb_id="kb", user_id="u", org_id="o", v=validated(), folder_id=None)
+
+    assert result.status == "updated"
+    svc._cleanup_unless_referenced.assert_awaited_once()
+    assert svc._cleanup_unless_referenced.await_args.args[1:] == ("o", "kb", "doc-new")

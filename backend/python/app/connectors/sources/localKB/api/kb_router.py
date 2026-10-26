@@ -1841,6 +1841,13 @@ def _bound_org_id() -> str | None:
         return None
 
 
+def _require_bound_org() -> str:
+    org_id = _bound_org_id()
+    if not org_id:
+        raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
+    return org_id
+
+
 def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_service: KafkaService) -> KbPushService:
     container: ConnectorAppContainer = request.app.container
     runtime = push_api.runtime_for(request.app)
@@ -1920,6 +1927,7 @@ async def put_kb_schema(
 ) -> JSONResponse:
     user = request.state.user
     try:
+        org_id = _require_bound_org()
         service = _push_service(request, kb_service, kafka_service)
         await service.authorize(kb_id, user.get("userId"), ["OWNER"])
         try:
@@ -1927,7 +1935,7 @@ async def put_kb_schema(
         except ValidationError as e:
             first = e.errors()[0]
             raise PushRefusal(400, "ENVELOPE_INVALID", "The schema body is invalid.", ".".join(str(x) for x in first["loc"])) from None
-        out = await push_api.put_schema(service.schemas, _bound_org_id(), kb_id, body)
+        out = await push_api.put_schema(service.schemas, org_id, kb_id, body)
         return JSONResponse(status_code=200, content=out)
     except PushRefusal as r:
         return _refusal_response(r)
@@ -1946,9 +1954,10 @@ async def get_kb_schema(
 ) -> JSONResponse:
     user = request.state.user
     try:
+        org_id = _require_bound_org()
         service = _push_service(request, kb_service, kafka_service)
         await service.authorize(kb_id, user.get("userId"), None)
-        out = await push_api.get_schema(service.schemas, _bound_org_id(), kb_id, version)
+        out = await push_api.get_schema(service.schemas, org_id, kb_id, version)
         return JSONResponse(status_code=200, content=out)
     except PushRefusal as r:
         return _refusal_response(r)

@@ -541,6 +541,15 @@ async def test_claim_results_on_both_stores(env) -> None:
     assert await provider.claim_push_record(expected=PushExpect("wrong", rec["externalRevisionId"], 1), new=PushSet("d", 2), **kw) is PushClaim.LOST
     assert await provider.claim_push_record(expected=None, new=PushSet("d", 1), kb_id="nope", org_id=env.org_id, key="k") is PushClaim.KB_MISSING
     assert await provider.claim_push_record(expected=None, new=PushSet("d", 1), kb_id=env.kb_id, org_id="other", key="k") is PushClaim.KB_MISSING
+    # An app of the same org that is not a knowledge base (a connector) is no place to push to.
+    connector_app = f"{env.kb_id}-connector"
+    env.seeded[CollectionNames.APPS.value].append(connector_app)
+    await provider.batch_upsert_nodes(
+        [{"_key": connector_app, "name": "connector", "type": "JIRA", "appGroup": "Atlassian", "scope": "team",
+          "isActive": True, "createdAtTimestamp": 1, "orgId": env.org_id}], CollectionNames.APPS.value,
+    )
+    for expected in (None, PushExpect("d", rec["externalRevisionId"], 1)):
+        assert await provider.claim_push_record(expected=expected, new=PushSet("d", 2), kb_id=connector_app, org_id=env.org_id, key=env.key()) is PushClaim.KB_MISSING
     kb = await provider.get_document(env.kb_id, CollectionNames.APPS.value)
     await provider.batch_upsert_nodes([{**kb, "_key": kb.get("_key") or kb["id"], "status": "DELETING"}], CollectionNames.APPS.value)
     try:

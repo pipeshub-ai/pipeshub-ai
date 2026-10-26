@@ -3235,11 +3235,12 @@ class DataSourceEntitiesProcessor:
             return PushOutcome(event=None, published=False)
         event = "newRecord" if expected is None else "updateRecord"
         try:
-            await self.messaging_producer.send_message(
+            if await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": event, "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed)},
                 key=record.id,
-            )
+            ) is False:
+                raise RuntimeError("the message broker did not accept the event")
         except Exception as e:
             self.logger.error("Push of record %s committed but %s was not published: %s", record.id, event, e)
             return PushOutcome(event=event, published=False)

@@ -247,7 +247,9 @@ class KbPushService:
                     first_loss = first_loss if first_loss is not None else time.monotonic()
                     await self._backoff(attempt)
                     continue
-                new_doc_is_ours = False
+                # Only a create or a content change names the new document; after a lost attempt the
+                # decision may have become a metadata change, which keeps the stored one.
+                new_doc_is_ours = new_doc_is_ours and action not in ("create", "content")
                 if action == "content" and existing.get("externalRecordId"):
                     await self._cleanup(org_id, kb_id, [existing["externalRecordId"]])
                 status = "created" if action == "create" else "updated"

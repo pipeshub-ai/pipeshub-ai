@@ -79,3 +79,17 @@ async def test_an_identical_repush_that_stores_a_new_document_is_queued_again() 
     written = store.batch_upsert_records.await_args_list[-1].args[0][0]
     assert written.indexing_status == ProgressStatus.NOT_STARTED.value and written.queued_at
     assert (outcome.event, outcome.published) == ("updateRecord", True)
+
+
+@pytest.mark.parametrize("sent", [False, RuntimeError("down")], ids=["rejected", "raised"])
+async def test_an_event_the_broker_did_not_take_leaves_the_record_for_the_sweep(sent: object) -> None:
+    """A producer may report a rejection by returning False; the record must not be marked QUEUED for it."""
+    store = _store(explicit=True)
+    proc = _processor(store)
+    proc.messaging_producer.send_message = AsyncMock(**({"side_effect": sent} if isinstance(sent, Exception) else {"return_value": sent}))
+    proc._mark_queued_after_publish = AsyncMock()
+
+    outcome = await proc.on_pushed_record(_record(), expected=None, new=PushSet("doc-new", 1), content_changed=True)
+
+    assert (outcome.event, outcome.published) == ("newRecord", False)
+    proc._mark_queued_after_publish.assert_not_awaited()

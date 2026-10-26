@@ -15649,7 +15649,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # serialised on the KB node: the second sees the first's record once it gets the lock.
             rows = await self.client.execute_query(
                 f"""
-                MATCH (kb:{apps} {{id: $kb_id}})
+                MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}})
                 SET kb.{_MATCH_LOCK} = true
                 REMOVE kb.{_MATCH_LOCK}
                 WITH kb
@@ -15664,7 +15664,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return refusal
             return PushClaim.CLAIMED if rows[0]["free"] else PushClaim.KEY_TAKEN
         kb_rows = await self.client.execute_query(
-            f"MATCH (kb:{apps} {{id: $kb_id}}) RETURN kb.status AS status, kb.orgId AS org",
+            f"MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}}) RETURN kb.status AS status, kb.orgId AS org",
             parameters={"kb_id": kb_id},
             txn_id=transaction,
         )

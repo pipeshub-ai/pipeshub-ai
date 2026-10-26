@@ -538,3 +538,19 @@ async def test_the_slots_and_the_claim_come_back_after_every_outcome(h, mode) ->
     await asyncio.sleep(0.02)
     assert h.admission._in_flight == set()
     assert h.admission._slots._value == A.READ_SLOTS
+
+
+@pytest.mark.parametrize("route", ["put", "get"])
+async def test_schema_routes_refuse_a_request_with_no_bound_org(h, route: str) -> None:
+    """A schema saved under no org could never match a push; the routes refuse as the push route does."""
+    token = org_context.push(None)
+    try:
+        request = MagicMock()
+        request.state.user = {"userId": "owner", "orgId": "org1"}
+        call = R.put_kb_schema("kb1", request, MagicMock(), MagicMock()) if route == "put" else R.get_kb_schema("kb1", request, None, MagicMock(), MagicMock())
+        response = await call
+    finally:
+        org_context.pop(token)
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["reason"] == "ENVELOPE_INVALID"

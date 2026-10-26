@@ -2718,7 +2718,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         apps, records = CollectionNames.APPS.value, CollectionNames.RECORDS.value
         # A read: it does not conflict with a KB rename. The record write below is the arbiter.
         kb_rows = await self.http_client.execute_aql(
-            f"LET kb = DOCUMENT('{apps}', @kb_id) RETURN kb == null ? null : {{status: kb.status, org: kb.orgId}}",
+            f"LET kb = DOCUMENT('{apps}', @kb_id) RETURN kb == null || kb.type != 'KB' ? null : {{status: kb.status, org: kb.orgId}}",
             {"kb_id": kb_id},
             transaction,
         )
