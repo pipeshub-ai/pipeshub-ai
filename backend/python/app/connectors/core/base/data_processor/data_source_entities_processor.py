@@ -231,7 +231,10 @@ class ParentPlacement(NamedTuple):
 
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
     """Whether a stored record (document or ``Record``) belongs to another org, or to
-    another connector when ``connector_id`` is given. A field it lacks proves nothing."""
+    another connector when ``connector_id`` is given. A field it lacks proves nothing.
+
+    ``orgId`` here is the owner stamped on the stored row, compared with ``org_id`` (the org the processor is bound to). It is data
+    being checked, not the source of the acting org, so it is recorded in the org-context baseline rather than read from the context."""
     if isinstance(doc, Record):
         doc = {"orgId": doc.org_id, "connectorId": doc.connector_id}
     if not isinstance(doc, dict):
