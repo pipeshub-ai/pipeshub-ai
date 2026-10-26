@@ -460,7 +460,7 @@ describe('libs/db unit of work', () => {
           const afterAwait = currentOrgContext().orgId as string
           const afterTimer = await new Promise<string>((res) => setTimeout(() => res(currentOrgContext().orgId as string), Math.random() * 5))
           let inStream = ''
-          await pipeline(Readable.from(['x', 'y']), async function (src) { for await (const _ of src) { inStream = currentOrgContext().orgId as string } })
+          await pipeline(Readable.from(['x', 'y']), async function (src) { for await (const chunk of src) { if (chunk !== undefined) inStream = currentOrgContext().orgId as string } })
           seen.push([org, afterAwait, afterTimer, inStream])
           await tx.query('/* pipeshub:a.b */ SELECT 2')
           expect(tx.orgId).to.equal(org)
@@ -475,7 +475,7 @@ describe('libs/db unit of work', () => {
     it('work started inside spawnDetached has no org: a unit there is refused', async () => {
       const rt = rtFor(new FakePool())
       const detached = await inOrg('org-a', () => rt.withUow({}, async () =>
-        new Promise<unknown>((res) => spawnDetached(() => setTimeout(() => rt.withUow({}, async () => 1).catch(res), 1)))))
+        new Promise<unknown>((res) => spawnDetached(() => setTimeout(() => { void rt.withUow({}, async () => 1).catch(res) }, 1)))))
       expect(detached).to.be.instanceOf(MissingOrgContext)
     })
 

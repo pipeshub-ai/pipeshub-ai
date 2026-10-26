@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { Client, Pool } from 'pg'
 import { Bouncer, Cluster, PG_BINS, createKernelDb, haveStack, startBouncer, startCluster } from './pg-harness'
 import {
-  ConnectionLost, FailedTransaction, PgRuntime, PoolTimeout, PrologueFailed, SerializationFailure, DeadlockDetected,
+  ConnectionLost, FailedTransaction, PgRuntime, PrologueFailed, SerializationFailure, DeadlockDetected,
   SessionRoleLeak, UowUsageError, WriteIsolationRefused, createPgPool, DbTimeout, LockNotAvailable,
 } from '../../../src/libs/db'
 import { UniqueConstraintError } from '../../../src/libs/errors/database.errors'
