@@ -3,6 +3,7 @@
 import { useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter, usePathname } from 'next/navigation';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ChatInput } from '@/chat/components/chat-input';
 import { useKnowledgeBaseStore } from '../store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
@@ -15,8 +16,14 @@ import { toast } from '@/lib/store/toast-store';
 import { filterBarChatScope } from '../utils/filter-bar-chat-scope';
 import { allCollectionsChatScope } from '../utils/root-app-list';
 
-// The widget is a single fixed-width line, so a long title pushes the placeholder under the send button.
-const MAX_WIDGET_TITLE_LENGTH = 30;
+// A long collection or record name in the placeholder would push the input past its dock.
+const MAX_PLACEHOLDER_TITLE_CHARS = 32;
+const MAX_PLACEHOLDER_TITLE_CHARS_MOBILE = 12;
+// Array.from counts code points, so slicing never splits a surrogate pair.
+export const ellipsize = (title: string, max: number) => {
+  const chars = Array.from(title);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : title;
+};
 
 interface ChatWidgetWrapperProps {
   /** Currently displayed title (collection name, folder name, etc.) */
@@ -46,6 +53,7 @@ export function ChatWidgetWrapper({
   const router = useRouter();
   const pathname = usePathname();
   const { t } = useTranslation();
+  const maxTitleChars = useIsMobile() ? MAX_PLACEHOLDER_TITLE_CHARS_MOBILE : MAX_PLACEHOLDER_TITLE_CHARS;
 
   // Read selected items from KB store
   const selectedItems = useKnowledgeBaseStore((s) => s.selectedItems);
@@ -59,18 +67,14 @@ export function ChatWidgetWrapper({
 
   // Dynamic placeholder — comes from the parent page
   const widgetPlaceholder = useMemo(() => {
-    const fullTitle = currentTitle || (isAllRecordsMode ? t('nav.allRecords') : t('nav.collections'));
-    const title =
-      fullTitle.length > MAX_WIDGET_TITLE_LENGTH
-        ? `${fullTitle.slice(0, MAX_WIDGET_TITLE_LENGTH).trimEnd()}…`
-        : fullTitle;
-    return t('chat.askInContext', { title });
-  }, [currentTitle, isAllRecordsMode, t]);
+    const title = currentTitle || (isAllRecordsMode ? t('nav.allRecords') : t('nav.collections'));
+    return t('chat.askInContext', { title: ellipsize(title, maxTitleChars) });
+  }, [currentTitle, isAllRecordsMode, maxTitleChars, t]);
 
   const expandedPlaceholder = useMemo(() => {
     const title = currentTitle || (isAllRecordsMode ? t('nav.allRecords') : t('nav.collections'));
-    return t('chat.askAnythingInContext', { title });
-  }, [currentTitle, isAllRecordsMode, t]);
+    return t('chat.askAnythingInContext', { title: ellipsize(title, maxTitleChars) });
+  }, [currentTitle, isAllRecordsMode, maxTitleChars, t]);
 
   /**
    * Per-file upload, fired the moment the user adds an attachment to the

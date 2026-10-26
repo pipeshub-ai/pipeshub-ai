@@ -3,10 +3,9 @@
 import React, { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, Flex, Text } from '@radix-ui/themes';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
-import { McpAuthDialog, isMcpInstanceDisabled } from '@/app/(main)/workspace/mcp-servers/components';
+import { McpAuthDialog, McpServerIcon, isMcpInstanceDisabled } from '@/app/(main)/workspace/mcp-servers/components';
 import {
   mcpConnectionState,
   mcpStatusLook,
@@ -124,7 +123,7 @@ export function McpConnectRows({ servers, rowStyle, onConnected }: McpConnectRow
             key={entry._id}
             testId="mcp-connect-row"
             rowStyle={rowStyle}
-            icon={<MaterialIcon name="hub" size={18} color="var(--gray-9)" />}
+            icon={<McpServerIcon typeId={entry.typeId} name={entry.name} size={18} color="var(--gray-9)" />}
             name={entry.name}
             action={
               canConnect ? (

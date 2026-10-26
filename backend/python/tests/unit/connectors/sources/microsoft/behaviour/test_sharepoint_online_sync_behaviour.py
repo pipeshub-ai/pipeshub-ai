@@ -49,6 +49,7 @@ from sharepoint_behaviour_fakes import (
     link_grant,
     m365_grant,
     ready_connector,
+    rest_body,
     rest_results,
     role_assignment,
     root_item,
@@ -71,6 +72,9 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
     SharePointRecordType,
 )
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
+)
 from app.models.entities import (
     FileRecord,
     RecordGroup,
@@ -87,6 +91,7 @@ PAGES = f"/v1.0/sites/{SITE_ID}/pages"
 def api(cloud: MicrosoftCloudStub, monkeypatch: pytest.MonkeyPatch) -> MicrosoftCloudStub:
     route_sharepoint_http(monkeypatch, cloud)
     cloud.on("GET", drive_path(), page([drive_payload()]))
+    cloud.on("GET", f"/v1.0/drives/{DRIVE_ID}/root", root_item())
     cloud.on("GET", PAGES, page([]))
     # A library and a Site Pages list whose permissions can be read and where nothing is unique.
     serve_library_permissions(cloud)
@@ -123,6 +128,8 @@ def seed_file(db, connector, item_id: str, name: str, *, etag: str = "e1", xor: 
         external_record_id=item_id, external_revision_id=etag, version=0, origin="CONNECTOR",
         connector_name=connector.connector_name, connector_id=connector.connector_id,
         is_file=True, extension=name.rsplit(".", 1)[-1], quick_xor_hash=xor, size_in_bytes=1,
+        # Where a stored file at the top of the library hangs: under the library's root folder record.
+        parent_external_record_id=f"{DRIVE_ID}:root:{ROOT_ITEM_ID}",
     )
     db.seed_record(record, permissions)
     return record
@@ -167,6 +174,18 @@ class TestSiteDiscovery:
         assert sorted(s.id for s in sites) == sorted([SITE_ID, other])
         assert connector.site_cache[other].site_url == f"https://{SP_HOST}/sites/ops"
 
+    async def test_sharepoint_embedded_containers_are_left_out(self, connector, api) -> None:
+        """Graph's site search lists them, and the app can't read them (403 on a live tenant)."""
+        container = f"{SP_HOST},{'7' * 32},{'8' * 32}"
+        api.on("GET", "/v1.0/sites", page([site_payload(container, f"https://{SP_HOST}/contentstorage/x8FNO-xtsk", "loop")]))
+        api.on("GET", f"/v1.0/sites/{container}/sites", graph_error(403, "accessDenied"))
+        api.on("GET", f"/v1.0/sites/{SITE_ID}/sites", page([]))
+
+        sites = await connector._get_all_sites()
+
+        assert [s.id for s in sites] == [SITE_ID]
+        assert connector._health.complete, "a container is not a part of SharePoint the run failed to read"
+
 
 class TestDriveDelta:
     async def test_first_sync_reads_every_delta_page_and_saves_the_delta_link(self, connector, api, db, checkpoints) -> None:
@@ -182,7 +201,7 @@ class TestDriveDelta:
         assert {r.record_name for r in db.records.values()} == {"root", "plan.pdf", "budget.pdf"}
         assert stored_link(checkpoints) == {**stored_link(checkpoints), "deltaLink": delta_url("d1"), "nextLink": None}
         plan = db.by_name("plan.pdf")
-        assert plan.signed_url == "https://download.example/i1"
+        assert plan.signed_url is None, "a download URL is a credential for an hour; it is read when the file is opened"
         assert plan.parent_external_record_id == f"{DRIVE_ID}:root:{ROOT_ITEM_ID}"
         assert db.records[f"{DRIVE_ID}:root:{ROOT_ITEM_ID}"].is_file is False
 
@@ -212,7 +231,7 @@ class TestDriveDelta:
         assert "gone" not in db.records
 
     async def test_an_edited_file_is_updated_in_place_with_fresh_permissions(self, connector, api, db) -> None:
-        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
+        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1", permissions=["copied-from-folder"])
         delta_pages(api, {None: page([file_item("i1", "plan-v2.pdf", etag="e2", xor="h2")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [user_grant("u1", "ana@contoso.com", "write")])
 
@@ -222,7 +241,9 @@ class TestDriveDelta:
         assert [r.external_record_id for r in db.content_updates] == ["i1"]
         assert db.records["i1"].id == "rec-i1", "the stored record keeps its id"
         (record, perms), = db.permission_updates
-        assert [(p.email, p.type) for p in perms] == [("ana@contoso.com", PermissionType.WRITE)]
+        # The file inherits: it reaches its folder's grants through inheritance and stores none of its own,
+        # so a grant later removed from the folder is gone for the file too.
+        assert record.inherit_permissions is True and perms == []
 
     async def test_a_file_seen_again_unchanged_is_not_reindexed(self, connector, api, db) -> None:
         seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
@@ -301,7 +322,6 @@ class TestPermissions:
     async def test_item_sharing_is_mapped_to_users_and_groups_and_an_org_or_anonymous_link_alone_names_no_one(
         self, connector, api, db
     ) -> None:
-        delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [
             user_grant("u1", "ana@contoso.com", "owner"),
             group_grant("g-eng", "write"),
@@ -309,8 +329,10 @@ class TestPermissions:
             link_grant("anonymous"),
         ])
 
-        await sync_site(connector)
+        # Graph's permissions are read for an item with its own permissions (sync adds the link grants).
+        permissions = await connector._get_item_permissions(SITE_ID, DRIVE_ID, "i1")
 
+        db.record_permissions["i1"] = permissions
         mapped = {(p.entity_type, p.external_id, p.type) for p in db.record_permissions["i1"]}
         assert mapped == {
             (EntityType.USER, "u1", PermissionType.OWNER),
@@ -318,13 +340,12 @@ class TestPermissions:
         }
         assert next(p.email for p in db.record_permissions["i1"] if p.external_id == "u1") == "ana@contoso.com"
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "A failed permission read on an edited file is saved as 'nobody has access': the read failure becomes an "
-        "empty list and replaces the file's stored access (sharepoint_online/connector.py:2896-2915, 1416)"))
     async def test_a_failed_permission_read_keeps_the_stored_access(self, connector, api, db) -> None:
+        serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID),))
         seed_file(db, connector, "i1", "plan.pdf", etag="e1")
         db.record_permissions["i1"] = ["kept-grant"]
-        delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag="e2")], delta_link=delta_url("d1"))})
+        delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag=guid_etag(ADMIN_FOLDER_ID, 2))],
+                                     delta_link=delta_url("d1"))})
         serve_item(api, "i1", graph_error(403, "accessDenied"))
 
         await sync_site(connector)
@@ -333,9 +354,6 @@ class TestPermissions:
 
 
 class TestDeltaCheckpoints:
-    @pytest.mark.xfail(strict=True, reason=(
-        "A delta page that comes back empty but says more pages follow ends the sync of that library: the rest is "
-        "skipped and the delta link is never saved (sharepoint_online/connector.py:1274-1276)"))
     async def test_an_empty_page_with_a_next_link_does_not_end_the_sync(self, connector, api, db, checkpoints) -> None:
         delta_pages(api, {
             None: page([], next_link=delta_url("p2")),
@@ -348,9 +366,6 @@ class TestDeltaCheckpoints:
         assert "i2" in db.records
         assert stored_link(checkpoints).get("deltaLink") == delta_url("d1")
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "Any failed delta page wipes the library's checkpoint, so the next run starts from scratch; a fresh delta "
-        "only lists what exists now, so files deleted meanwhile are never removed (sharepoint_online/connector.py:1318-1323)"))
     async def test_a_failed_page_keeps_the_last_checkpoint(self, connector, api, db, checkpoints) -> None:
         delta_pages(api, {
             None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1")),
@@ -418,6 +433,12 @@ def group_link(checkpoints) -> dict:
     return checkpoints.values_for("organization/org-1") or {}
 
 
+def serve_group(api, group_id: str, members: list, *, containers: list | None = None) -> None:
+    """A group's flattened members (transitiveMembers) and the groups it is in (transitiveMemberOf)."""
+    api.on("GET", f"/v1.0/groups/{group_id}/transitiveMembers", page(members))
+    api.on("GET", f"/v1.0/groups/{group_id}/transitiveMemberOf", page(containers or []))
+
+
 class TestAzureAdGroups:
     async def test_first_sync_saves_every_group_with_all_member_pages_and_nested_members(
         self, connector, api, db, checkpoints
@@ -427,12 +448,12 @@ class TestAzureAdGroups:
 
         def members(request: httpx.Request) -> httpx.Response:
             if api.query(request).get("$skiptoken") == "2":
-                return json_response(page([group_member("g-nested")]))
+                # transitiveMembers lists a nested group and, flattened, the people in it.
+                return json_response(page([group_member("g-nested"), user_member("u2", "bo@contoso.com")]))
             return json_response(page([user_member("u1", "ana@contoso.com")],
-                                      next_link=f"{GRAPH}/groups/g1/members?$skiptoken=2"))
+                                      next_link=f"{GRAPH}/groups/g1/transitiveMembers?$skiptoken=2"))
 
-        api.on("GET", "/v1.0/groups/g1/members", members)
-        api.on("GET", "/v1.0/groups/g-nested/members", page([user_member("u2", "bo@contoso.com")]))
+        api.on("GET", "/v1.0/groups/g1/transitiveMembers", members)
 
         await connector._sync_azure_ad_groups()
 
@@ -451,8 +472,7 @@ class TestAzureAdGroups:
         api.on("GET", "/v1.0/groups", page([]))
         await connector._sync_azure_ad_groups()
         db.user_groups.update({"g-old": ["x@contoso.com"], "g1": ["ana@contoso.com", "bo@contoso.com"]})
-        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com")]))
-        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
+        serve_group(api, "g1", [user_member("u1", "ana@contoso.com")])
 
         await connector._sync_azure_ad_groups()
 
@@ -460,64 +480,27 @@ class TestAzureAdGroups:
         assert db.user_groups == {"g1": ["ana@contoso.com"]}
         assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
 
-    async def test_a_member_removal_the_database_refuses_is_read_again_on_the_next_run(self, connector, api, db, checkpoints) -> None:
+    async def test_a_change_in_a_nested_group_is_read_again_on_the_groups_that_contain_it(
+        self, connector, api, db, checkpoints
+    ) -> None:
         serve_groups_delta(api, {
             None: page([], delta_link=groups_delta_url("D1")),
-            "D1": page([
-                {"id": "g1", "displayName": "Eng", "members@delta": [
-                    {"@odata.type": "#microsoft.graph.user", "id": "u2", "@removed": {"reason": "deleted"}}]},
-            ], delta_link=groups_delta_url("D2")),
+            # Graph reports Bo leaving g-leads only; Eng holds g-leads, so Eng's flattened members change too.
+            "D1": page([{"id": "g-leads", "displayName": "Leads"}], delta_link=groups_delta_url("D2")),
         })
         api.on("GET", "/v1.0/groups", page([]))
         await connector._sync_azure_ad_groups()
-        # The member list still names Bo, so only the removal takes him out of the group.
-        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com"), user_member("u2", "bo@contoso.com")]))
-        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
-        db.fail_member_removal.add(("g1", "bo@contoso.com"))
+        db.user_groups.update({"g-eng": ["ana@contoso.com", "bo@contoso.com"], "g-leads": ["bo@contoso.com"]})
+        serve_group(api, "g-leads", [], containers=[{"@odata.type": "#microsoft.graph.group", "id": "g-eng",
+                                                     "displayName": "Eng"}])
+        serve_group(api, "g-eng", [user_member("u1", "ana@contoso.com")])
 
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector._sync_azure_ad_groups()
-
-        assert db.user_groups == {"g1": ["ana@contoso.com", "bo@contoso.com"]}
-        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1")
-
-        db.fail_member_removal.clear()
         await connector._sync_azure_ad_groups()
 
-        assert db.user_groups == {"g1": ["ana@contoso.com"]}
-        assert db.removed_members == [("g1", "bo@contoso.com")]
+        assert db.user_groups == {"g-eng": ["ana@contoso.com"], "g-leads": []}
         assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
 
-    async def test_a_member_removal_is_applied_when_the_groups_members_cannot_be_saved(self, connector, api, db, checkpoints) -> None:
-        await self._bo_removed_from_g1(connector, api, db)
-        db.fail_group_write.add("g1")
-
-        await connector._sync_azure_ad_groups()
-
-        assert db.user_groups == {"g1": ["ana@contoso.com"]}, "the removal needs no member list, so Bo is out"
-        assert db.removed_members == [("g1", "bo@contoso.com")]
-
-    async def test_a_database_that_refuses_the_group_and_the_removal_keeps_the_delta_link(self, connector, api, db, checkpoints) -> None:
-        await self._bo_removed_from_g1(connector, api, db)
-        db.fail_group_write.add("g1")
-        db.fail_member_removal.add(("g1", "bo@contoso.com"))
-
-        with pytest.raises(RuntimeError, match="database unavailable removing"):
-            await connector._sync_azure_ad_groups()
-
-        assert db.user_groups == {"g1": ["ana@contoso.com", "bo@contoso.com"]}
-        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1")
-
-        db.fail_group_write.clear()
-        db.fail_member_removal.clear()
-        await connector._sync_azure_ad_groups()
-
-        assert db.user_groups == {"g1": ["ana@contoso.com"]}
-        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
-
-    @staticmethod
-    async def _bo_removed_from_g1(connector, api, db) -> None:
-        """A first sync, then a delta page on which Bo leaves group g1; Graph no longer lists him."""
+    async def test_a_group_write_the_database_refuses_is_read_again_on_the_next_run(self, connector, api, db, checkpoints) -> None:
         serve_groups_delta(api, {
             None: page([], delta_link=groups_delta_url("D1")),
             "D1": page([
@@ -528,10 +511,22 @@ class TestAzureAdGroups:
         api.on("GET", "/v1.0/groups", page([]))
         await connector._sync_azure_ad_groups()
         db.user_groups["g1"] = ["ana@contoso.com", "bo@contoso.com"]
-        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com")]))
-        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
+        serve_group(api, "g1", [user_member("u1", "ana@contoso.com")])
+        db.fail_group_write.add("g1")
 
-    async def test_a_refused_member_removal_on_a_later_page_is_read_again_without_losing_a_deletion_after_it(
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com", "bo@contoso.com"]}
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1")
+
+        db.fail_group_write.clear()
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com"]}
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
+
+    async def test_a_refused_group_write_on_a_later_page_is_read_again_without_losing_a_deletion_after_it(
         self, connector, api, db, checkpoints
     ) -> None:
         serve_groups_delta(api, {
@@ -546,26 +541,21 @@ class TestAzureAdGroups:
         api.on("GET", "/v1.0/groups", page([]))
         await connector._sync_azure_ad_groups()
         db.user_groups["g-old"] = ["x@contoso.com"]
-        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com"), user_member("u2", "bo@contoso.com")]))
-        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
-        db.fail_member_removal.add(("g1", "bo@contoso.com"))
+        serve_group(api, "g1", [user_member("u1", "ana@contoso.com")])
+        db.fail_group_write.add("g1")
 
         with pytest.raises(RuntimeError, match="database unavailable"):
             await connector._sync_azure_ad_groups()
 
-        assert group_link(checkpoints)["nextLink"] == groups_delta_url("P2"), "stopped on the page with the removal"
+        assert group_link(checkpoints)["nextLink"] == groups_delta_url("P2"), "stopped on the page with the change"
 
-        db.fail_member_removal.clear()
+        db.fail_group_write.clear()
         await connector._sync_azure_ad_groups()
 
         assert db.user_groups == {"g1": ["ana@contoso.com"]}, "Bo is out, and the group deleted on the next page is gone"
         assert db.deleted_groups == ["g-old"]
         assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a changed group's member list can't be read, the group is saved with no members, so everyone in it "
-        "loses the access the group gives (msgraph_client.get_group_members returns [] on error; "
-        "sharepoint_online/connector.py:3513)"))
     async def test_a_failed_member_read_keeps_the_stored_members(self, connector, api, db, checkpoints) -> None:
         serve_groups_delta(api, {
             None: page([], delta_link=groups_delta_url("D1")),
@@ -574,11 +564,13 @@ class TestAzureAdGroups:
         api.on("GET", "/v1.0/groups", page([]))
         await connector._sync_azure_ad_groups()
         db.user_groups["g1"] = ["ana@contoso.com"]
-        api.on("GET", "/v1.0/groups/g1/members", graph_error(500, "generalException"))
+        api.on("GET", "/v1.0/groups/g1/transitiveMemberOf", page([]))
+        api.on("GET", "/v1.0/groups/g1/transitiveMembers", graph_error(500, "generalException"))
 
         await connector._sync_azure_ad_groups()
 
         assert db.user_groups["g1"] == ["ana@contoso.com"]
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1"), "the change is read again next run"
 
     async def test_an_interrupted_group_delta_resumes_from_the_saved_page(self, connector, api, db, checkpoints) -> None:
         serve_groups_delta(api, {
@@ -600,6 +592,39 @@ class TestAzureAdGroups:
 
         assert db.deleted_groups == ["g-old"]
 
+    async def test_a_full_refresh_still_applies_the_deletions_the_stored_link_reports(
+        self, connector, api, db, checkpoints
+    ) -> None:
+        """The full read lists only groups that exist, and its new link starts after the deletion."""
+        serve_groups_delta(api, {None: page([], delta_link=groups_delta_url("D1"))})
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        db.user_groups["g-old"] = ["x@contoso.com"]
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D3")),
+            "D1": page([{"id": "g-old", "@removed": {"reason": "deleted"}}], delta_link=groups_delta_url("D2")),
+        })
+        connector._refresh_all_groups = True  # An account was disabled since the last run.
+
+        await connector._sync_azure_ad_groups()
+
+        assert db.deleted_groups == ["g-old"]
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D3")
+
+    async def test_a_full_refresh_keeps_the_stored_link_when_it_cannot_be_read(self, connector, api, db, checkpoints) -> None:
+        serve_groups_delta(api, {None: page([], delta_link=groups_delta_url("D1"))})
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D3")),
+            "D1": graph_error(500, "generalException"),
+        })
+        connector._refresh_all_groups = True
+
+        await connector._sync_azure_ad_groups()
+
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1"), "its deletions are read next run"
+
 
 def rest_users(*entries: dict) -> dict:
     return {"d": {"results": list(entries)}}
@@ -615,59 +640,49 @@ def serve_site(api) -> None:
 
 
 class TestSiteAccess:
-    async def test_site_owners_visitors_and_custom_groups_become_site_access(self, connector, api) -> None:
+    async def test_every_role_assignment_of_the_site_becomes_site_access(self, connector, api) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_site(api)
         await connector._get_all_sites()
         m365_id = "0a1b2c3d-0000-4000-8000-000000000001"
         owners_claim = f"c:0o.c|federateddirectoryclaimprovider|{m365_id}_o"
-        members_claim = f"c:0o.c|federateddirectoryclaimprovider|{m365_id}"
-        api.on("GET", f"{SITE_REST}/associatedownergroup/users", rest_users(
-            {"LoginName": owners_claim, "Title": "Eng Owners", "PrincipalType": 4},
-            {"LoginName": "i:0#.f|membership|ana@contoso.com", "PrincipalType": 1, "Email": "ana@contoso.com", "Id": 11},
-        ))
         api.on("GET", f"/v1.0/groups/{m365_id}/owners", page([user_member("u-owner", "olu@contoso.com")]))
-        api.on("GET", f"{SITE_REST}/associatedmembergroup/users", rest_users(
-            {"LoginName": members_claim, "Title": "Eng Members", "PrincipalType": 4},
-        ))
-        api.on("GET", f"{SITE_REST}/associatedvisitorgroup/users", rest_users(
-            {"LoginName": "c:0-.f|rolemanager|spo-grid-all-users/tenant", "PrincipalType": 4, "Title": "Everyone"},
-            {"LoginName": "i:0#.f|membership|bo@contoso.com", "PrincipalType": 1, "Email": "bo@contoso.com", "Id": 12},
-        ))
         api.on("GET", f"{SITE_REST}/roleassignments", rest_users(
-            {"Member": {"PrincipalType": 8, "Id": 7, "Title": "Designers", "LoginName": "Designers"},
-             "RoleDefinitionBindings": {"results": [{"Name": "Edit"}]}},
+            role_assignment(sp_group(3, "Eng Owners"), "Full Control"),
+            role_assignment(sp_group(4, "Eng Members"), "Edit"),
+            role_assignment(sp_group(5, "Eng Visitors"), "Read"),
+            role_assignment({"LoginName": owners_claim, "Title": "Eng Owners", "PrincipalType": 4}, "Full Control"),
+            # People and claims granted on the site directly, not through a SharePoint group.
+            role_assignment(sp_user(11, "ana@contoso.com"), "Edit"),
+            role_assignment({"LoginName": EEEU_CLAIM, "Title": "Everyone except external users", "PrincipalType": 4}, "Read"),
+            role_assignment(sp_group(20, "Limited Access System Group"), "Limited Access"),
         ))
 
         permissions = await connector._get_site_permissions(SITE_ID)
 
-        mapped = {(p.entity_type, p.external_id, p.type) for p in permissions}
-        # The owners claim reaches the group's owners; only the members claim names the whole group.
-        assert mapped == {
-            (EntityType.USER, "u-owner", PermissionType.WRITE),
-            (EntityType.GROUP, m365_id, PermissionType.WRITE),
+        # The owners claim reaches the group's owners; the tenant-wide claim is held by its own group.
+        assert mapped(permissions) == {
+            (EntityType.GROUP, f"{SITE_ID}-3", PermissionType.OWNER),
+            (EntityType.GROUP, f"{SITE_ID}-4", PermissionType.WRITE),
+            (EntityType.GROUP, f"{SITE_ID}-5", PermissionType.READ),
+            (EntityType.USER, "u-owner", PermissionType.OWNER),
             (EntityType.USER, "11", PermissionType.WRITE),
-            (EntityType.ORG, "org-1", PermissionType.READ),
-            (EntityType.USER, "12", PermissionType.READ),
-            (EntityType.GROUP, f"{SITE_ID}-7", PermissionType.WRITE),
+            (EntityType.GROUP, "sharepoint-everyone-except-external", PermissionType.READ),
         }
         rest_calls = [r for r in api.requests if r.url.host == SP_HOST]
         assert rest_calls and all(bearer(r).startswith("Bearer fake-graph-token-") for r in rest_calls)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When the site's access lists can't be read from SharePoint, the site is saved as open to nobody, replacing "
-        "its stored access, so every member loses access to the site until a later sync succeeds "
-        "(sharepoint_online/connector.py:2713-2745, 2486-2711)"))
     async def test_a_failed_site_access_read_keeps_the_stored_access(self, connector, api, db) -> None:
         serve_site(api)
         api.on("GET", "/v1.0/users", page([]))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
         db.record_group_permissions[SITE_ID] = ["stored-grant"]
-        for group in ("associatedownergroup", "associatedmembergroup", "associatedvisitorgroup"):
-            api.on("GET", f"{SITE_REST}/{group}/users", graph_error(503, "serviceNotAvailable"))
         api.on("GET", f"{SITE_REST}/roleassignments", graph_error(503, "serviceNotAvailable"))
 
-        await connector.run_sync()
+        with pytest.raises(SharePointSyncIncomplete, match="permissions of site"):
+            await connector.run_sync()
 
         assert db.record_group_permissions[SITE_ID] == ["stored-grant"]
 
@@ -698,9 +713,25 @@ class TestSiteGroups:
 
         assert db.user_groups[f"{SITE_ID}-31"] == ["raj@contoso.com"]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a SharePoint site group's members can't be read, the group is saved with no members, removing its "
-        "members' access (sharepoint_online/connector.py:3145-3194)"))
+    async def test_a_deleted_m365_group_left_in_a_site_group_grants_nobody(self, connector, api, db) -> None:
+        """SharePoint keeps the claim of a Microsoft 365 group after the group is deleted; Graph answers 404 for it."""
+        gone = "c227ac08-bd29-4e04-a43d-b406d8cc916d"
+        serve_site(api)
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users({"Id": 14, "Title": "IT editors"}))
+        api.on("GET", f"{SITE_REST}/sitegroups/GetById(14)/users", rest_users(
+            {"Id": 9, "Title": "Devs Members", "PrincipalType": 4,
+             "LoginName": f"c:0o.c|federateddirectoryclaimprovider|{gone}"},
+            {"Id": 11, "Title": "Ana", "Email": "ana@contoso.com", "PrincipalType": 1, "LoginName": "i:0#.f|membership|ana"}))
+        api.on("GET", f"/v1.0/groups/{gone}/transitiveMembers", graph_error(404, "Request_ResourceNotFound"))
+
+        await connector._sync_user_groups()
+
+        assert db.user_groups[f"{SITE_ID}-14"] == ["ana@contoso.com"]
+        assert connector._health.complete
+        assert connector._site_group_permissions(SITE_ID, "14", PermissionType.WRITE)
+
     async def test_a_failed_site_group_member_read_keeps_the_stored_members(self, connector, api, db) -> None:
         serve_site(api)
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
@@ -712,6 +743,25 @@ class TestSiteGroups:
         await connector._sync_user_groups()
 
         assert db.user_groups[f"{SITE_ID}-7"] == ["ana@contoso.com"]
+
+    async def test_a_site_whose_groups_cannot_be_listed_keeps_its_stored_group_grants(self, connector, api) -> None:
+        """Which of its groups hold "Everyone" is unknown, so what they grant is unknown, not nothing."""
+        serve_site(api)
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", graph_error(403, "accessDenied"))
+        await connector._sync_user_groups()
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(role_assignment(sp_group(5, "Eng Visitors"), "Read")))
+
+        assert await connector._get_site_permissions(SITE_ID) is None
+
+    async def test_a_group_grant_read_before_the_sites_groups_is_unknown(self, connector, api) -> None:
+        """A reindex reads grants without listing site groups first."""
+        serve_site(api)
+        await connector._get_all_sites()
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(role_assignment(sp_group(5, "Eng Visitors"), "Read")))
+
+        assert await connector._get_site_permissions(SITE_ID) is None
 
 
 CREATED_TS = "2024-02-01T00:00:00Z"
@@ -728,22 +778,25 @@ def page_checkpoint(checkpoints) -> dict:
 
 
 class TestSitePages:
-    async def test_pages_are_saved_and_the_next_run_asks_only_for_changed_pages(self, connector, api, db, checkpoints) -> None:
+    async def test_pages_are_saved_and_every_run_lists_every_page(self, connector, api, db) -> None:
+        serve_site(api)
+        await connector._get_all_sites()
         api.on("GET", PAGES, page([site_page("pg1", "Home")]))
         delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
 
         await sync_site(connector)
-        first_mark = page_checkpoint(checkpoints)["lastSyncTime"]
         await sync_site(connector)
 
         assert db.by_name("Home - Eng").external_record_id == "pg1"
+        # No filter on lastModifiedDateTime: that compared the source's clock with this server's, and
+        # could not tell a deleted page from an unchanged one.
         filters = [api.query(r).get("$filter") for r in api.calls("GET", PAGES)]
-        assert filters == [None, f"lastModifiedDateTime ge {first_mark}"]
+        assert filters == [None, None]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "Only the first page of a site's pages is read: the next-page link is never followed, yet the 'synced up "
-        "to' time still moves forward, so pages beyond the first are never synced (sharepoint_online/connector.py:1978-2080)"))
     async def test_every_page_of_site_pages_is_read(self, connector, api, db) -> None:
+        serve_site(api)
+        await connector._get_all_sites()
+
         def pages(request: httpx.Request) -> httpx.Response:
             if api.query(request).get("$skiptoken") == "2":
                 return json_response(page([site_page("pg2", "News")]))
@@ -756,19 +809,22 @@ class TestSitePages:
 
         assert {"pg1", "pg2"} <= set(db.records)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When the page list can't be read, it is treated as 'no pages' and the 'synced up to' time still moves "
-        "forward, so pages changed in that window are never synced (sharepoint_online/connector.py:1997-2004)"))
-    async def test_a_failed_page_read_does_not_move_the_checkpoint(self, connector, api, checkpoints) -> None:
-        api.on("GET", PAGES, page([]))
+    async def test_a_deleted_page_is_removed_and_a_failed_listing_removes_nothing(self, connector, api, db) -> None:
+        serve_site(api)
+        await connector._get_all_sites()
+        api.on("GET", PAGES, page([site_page("pg1", "Home"), site_page("pg2", "News")]))
         delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
         await sync_site(connector)
-        mark = page_checkpoint(checkpoints)["lastSyncTime"]
         api.on("GET", PAGES, graph_error(503, "serviceNotAvailable"))
 
         await sync_site(connector)
 
-        assert page_checkpoint(checkpoints)["lastSyncTime"] == mark
+        assert {"pg1", "pg2"} <= set(db.records), "a listing that failed says nothing about what is gone"
+        api.on("GET", PAGES, page([site_page("pg1", "Home")]))
+
+        await sync_site(connector)
+
+        assert "pg1" in db.records and "pg2" not in db.records
 
 
 class TestFullRun:
@@ -777,11 +833,8 @@ class TestFullRun:
         api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}]))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
-        for group in ("associatedownergroup", "associatedmembergroup", "associatedvisitorgroup"):
-            api.on("GET", f"{SITE_REST}/{group}/users", rest_users())
-        api.on("GET", f"{SITE_REST}/associatedmembergroup/users", rest_users(
-            {"LoginName": "i:0#.f|membership|ana@contoso.com", "PrincipalType": 1, "Email": "ana@contoso.com", "Id": 11}))
-        api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(role_assignment(sp_user(11, "ana@contoso.com"), "Edit")))
         delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [user_grant("u1", "ana@contoso.com")])
 
@@ -792,11 +845,13 @@ class TestFullRun:
         assert db.record_groups[DRIVE_ID].group_type == RecordGroupType.DRIVE
         assert db.by_name("plan.pdf").external_record_group_id == DRIVE_ID
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "The incremental sync entry point syncs nothing: it hands Graph site objects to a step that expects our own "
-        "site records, which fails for every site and is only logged (sharepoint_online/connector.py:3884-3903)"))
     async def test_incremental_sync_picks_up_new_files(self, connector, api, db) -> None:
         serve_site(api)
+        api.on("GET", "/v1.0/users", page([]))
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
         delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [])
 
@@ -851,7 +906,14 @@ class TestUniquePermissions:
     """Graph marks no driveItem permission as inherited; SharePoint REST says which items are unique."""
 
     async def test_a_unique_item_stops_inheriting_and_keeps_its_full_acl_with_site_groups(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID), (9, SHARED_PDF_ID)))
+        api.on("GET", f"{LIBRARY_REST}/items(7)/roleassignments", rest_results(
+            role_assignment(sp_group(3, "IT Team Site Owners"), "Full Control"),
+            role_assignment({"LoginName": f"c:0o.c|federateddirectoryclaimprovider|{M365_GROUP_ID}",
+                             "Title": "Hello World Members", "PrincipalType": 4}, "Edit"),
+        ))
+        api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results())
         delta_pages(api, {None: page([
             root_item(),
             file_item("i-admin", "privatekey.key", etag=guid_etag(ADMIN_FOLDER_ID)),
@@ -869,7 +931,7 @@ class TestUniquePermissions:
         assert admin.inherit_permissions is False
         assert mapped(db.record_permissions["i-admin"]) == {
             (EntityType.GROUP, f"{SITE_ID}-3", PermissionType.OWNER),
-            (EntityType.GROUP, "hello-world", PermissionType.WRITE),
+            (EntityType.GROUP, M365_GROUP_ID, PermissionType.WRITE),
         }
         assert db.records["i-shared"].inherit_permissions is False, "sharepointIds.listItemUniqueId is read too"
         assert db.records[f"{DRIVE_ID}:root:{ROOT_ITEM_ID}"].inherit_permissions is True
@@ -878,6 +940,7 @@ class TestUniquePermissions:
         self, connector, api, db
     ) -> None:
         """Graph lists no grantee on an organization link; SharePoint holds its redeemers in the link's group."""
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         link_group = "SharingLinks.0f6e.OrganizationEdit.9a1b"
         serve_library_permissions(api, unique_items=((9, SHARED_PDF_ID),))
         api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results(
@@ -896,7 +959,7 @@ class TestUniquePermissions:
             (EntityType.GROUP, f"{SITE_ID}-31", PermissionType.WRITE),
         }, "the link's group carries its role; the link adds no organization-wide grant"
 
-    async def test_an_item_that_inherits_is_saved_as_before(self, connector, api, db) -> None:
+    async def test_an_item_that_inherits_stores_no_grants_of_its_own(self, connector, api, db) -> None:
         serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID),))
         delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag=guid_etag(INHERITING_ID))], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [site_group_grant("4", "IT Team Site Visitors", "read")])
@@ -904,9 +967,13 @@ class TestUniquePermissions:
         await sync_site(connector)
 
         assert db.records["i1"].inherit_permissions is True
-        assert mapped(db.record_permissions["i1"]) == {(EntityType.GROUP, f"{SITE_ID}-4", PermissionType.READ)}
+        # Graph lists the inherited Visitors grant on the file; a copy of it would outlive its removal
+        # from the folder or site, which Graph does not report on the file.
+        assert db.record_permissions["i1"] == []
+        assert api.calls("GET", f"/v1.0/drives/{DRIVE_ID}/items/i1/permissions") == []
 
     async def test_a_unique_library_gets_its_own_role_assignments_and_no_limited_access(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_library_permissions(api, unique=True, role_assignments=(
             role_assignment(sp_group(3, "IT Team Site Owners"), "Full Control"),
             role_assignment(sp_group(14, "IT editors"), "Edit", "Limited Access"),
@@ -936,6 +1003,7 @@ class TestUniquePermissions:
         assert api.calls("GET", f"{LIBRARY_REST}/roleassignments") == []
 
     async def test_a_unique_page_gets_its_own_role_assignments(self, connector, api, db) -> None:
+        connector._site_groups_read.add(SITE_ID)  # A run lists the site's groups before it builds any grant.
         serve_site(api)
         await connector._get_all_sites()
         api.on("GET", PAGES, page([site_page(SECRET_PAGE_ID, "Secret"), site_page(HOME_PAGE_ID, "Home")]))
@@ -955,7 +1023,7 @@ class TestUniquePermissions:
         assert db.records[HOME_PAGE_ID].inherit_permissions is True
         assert db.record_permissions[HOME_PAGE_ID] == []
 
-    async def test_a_new_item_does_not_inherit_when_the_library_permissions_cannot_be_read(
+    async def test_a_new_item_waits_when_the_library_permissions_cannot_be_read(
         self, connector, api, db, checkpoints
     ) -> None:
         unreadable_library(api)
@@ -965,9 +1033,9 @@ class TestUniquePermissions:
 
         await sync_site(connector)
 
-        assert db.records["i-new"].inherit_permissions is False, "an item that may be unique gets nothing from its parent"
-        assert [(p.email, p.type) for p in db.record_permissions["i-new"]] == [("ana@contoso.com", PermissionType.READ)]
-        assert stored_link(checkpoints)["deltaLink"] == delta_url("d1"), "the sync still finishes"
+        assert "i-new" not in db.records, "an item whose access is unknown is not stored with a guess"
+        assert stored_link(checkpoints).get("deltaLink") is None, "the next run reads it again"
+        assert not connector._health.complete
 
     async def test_a_stored_item_keeps_its_access_when_the_library_permissions_cannot_be_read(
         self, connector, api, db
@@ -1000,6 +1068,7 @@ class TestUniquePermissions:
         assert db.records["i1"].inherit_permissions is stored_inherits
         assert db.permission_updates == []
         assert db.record_permissions["i1"] == ["hr-only"]
+        assert stored_link(checkpoints).get("deltaLink") is None, "its permissions are read again next run"
 
     @pytest.mark.parametrize("stored_inherits", [False, True])
     async def test_a_stored_library_keeps_its_access_when_its_permissions_cannot_be_read(
@@ -1062,17 +1131,17 @@ class TestUniquePermissions:
         assert len(warnings) == 1, [r.getMessage() for r in warnings]
         assert len(api.calls("GET", LIBRARY_REST)) == 1
 
-    async def test_a_new_page_does_not_inherit_when_the_page_permissions_cannot_be_read(self, connector, api, db) -> None:
+    async def test_a_new_page_waits_when_the_page_permissions_cannot_be_read(self, connector, api, db) -> None:
         await unreadable_site_pages(connector, api)
         api.on("GET", PAGES, page([site_page(SECRET_PAGE_ID, "Secret")]))
         serve_empty_delta(api)
 
         await sync_site(connector)
 
-        assert db.records[SECRET_PAGE_ID].inherit_permissions is False
-        assert db.record_permissions[SECRET_PAGE_ID] == []
+        assert SECRET_PAGE_ID not in db.records
+        assert not connector._health.complete
 
-    async def test_a_unique_page_whose_role_assignments_cannot_be_read_does_not_inherit(self, connector, api, db) -> None:
+    async def test_a_unique_page_whose_role_assignments_cannot_be_read_waits(self, connector, api, db) -> None:
         serve_site(api)
         await connector._get_all_sites()
         api.on("GET", PAGES, page([site_page(SECRET_PAGE_ID, "Secret")]))
@@ -1082,7 +1151,7 @@ class TestUniquePermissions:
 
         await sync_site(connector)
 
-        assert db.records[SECRET_PAGE_ID].inherit_permissions is False
+        assert SECRET_PAGE_ID not in db.records
 
     async def test_a_stored_page_keeps_its_access_when_the_page_permissions_cannot_be_read(
         self, connector, api, db
@@ -1114,6 +1183,7 @@ class TestUniquePermissions:
         assert [r.external_record_id for r in db.content_updates] == [SECRET_PAGE_ID]
         assert db.records[SECRET_PAGE_ID].inherit_permissions is stored_inherits
         assert db.permission_updates == [] and db.record_batches == []
+        assert db.record_permissions[SECRET_PAGE_ID] == ["hr-only"]
         assert db.record_permissions[SECRET_PAGE_ID] == ["hr-only"]
 
     @pytest.mark.parametrize("stored_inherits", [False, True])
@@ -1167,6 +1237,8 @@ class TestUniquePermissions:
             ))
 
         api.on("GET", f"{LIBRARY_REST}/items", items)
+        api.on("GET", f"{LIBRARY_REST}/items(7)/roleassignments", rest_results())
+        api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results())
         delta_pages(api, {None: page([
             file_item("i1", "a.pdf", etag=guid_etag(ADMIN_FOLDER_ID)),
             file_item("i2", "b.pdf", etag=guid_etag(SHARED_PDF_ID)),
@@ -1195,7 +1267,8 @@ class TestSharingChanges:
         assert db.record_batches == [], "an unchanged stored item must not go through on_new_records"
         (record, permissions), = db.permission_updates
         assert record.external_record_id == "i1"
-        assert [(p.email, p.type) for p in permissions] == [("bo@contoso.com", PermissionType.READ)]
+        # The file inherits, so the grant revoked above it goes with the copy it used to hold.
+        assert permissions == [] and record.inherit_permissions is True
         assert db.content_updates == [] and db.metadata_updates == []
 
     async def test_the_delta_asks_graph_for_sharing_only_changes(self, connector, api, db) -> None:
@@ -1210,13 +1283,18 @@ class TestSharingChanges:
 class TestPrincipalMapping:
     async def test_an_m365_owners_grant_reaches_only_the_group_owners(self, connector, api, db) -> None:
         api.on("GET", f"/v1.0/groups/{M365_GROUP_ID}/owners", page([user_member("u-owner", "olu@contoso.com")]))
-        api.on("GET", f"/v1.0/groups/{M365_GROUP_ID}", {"id": M365_GROUP_ID, "groupTypes": ["Unified"]})
-        delta_pages(api, {None: page([file_item("i1", "a.pdf"), file_item("i2", "b.pdf")], delta_link=delta_url("d1"))})
-        serve_item(api, "i1", [
-            m365_grant(M365_GROUP_ID, "IT Team Site Owners", "owner", owners_claim=True),
-            m365_grant(M365_GROUP_ID, "IT Team Site Members", "write", owners_claim=False),
-        ])
-        serve_item(api, "i2", [m365_grant(M365_GROUP_ID, "IT Team Site Owners", "owner")])
+        serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID), (9, SHARED_PDF_ID)))
+        owners = {"LoginName": f"c:0o.c|federateddirectoryclaimprovider|{M365_GROUP_ID}_o", "Title": "IT Team Site Owners",
+                  "PrincipalType": 4}
+        members = {"LoginName": f"c:0o.c|federateddirectoryclaimprovider|{M365_GROUP_ID}", "Title": "IT Team Site Members",
+                   "PrincipalType": 4}
+        api.on("GET", f"{LIBRARY_REST}/items(7)/roleassignments", rest_results(
+            role_assignment(owners, "Full Control"), role_assignment(members, "Edit")))
+        api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results(role_assignment(owners, "Full Control")))
+        delta_pages(api, {None: page([file_item("i1", "a.pdf", etag=guid_etag(ADMIN_FOLDER_ID)),
+                                      file_item("i2", "b.pdf", etag=guid_etag(SHARED_PDF_ID))], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+        serve_item(api, "i2", [])
 
         await sync_site(connector)
 
@@ -1227,17 +1305,18 @@ class TestPrincipalMapping:
         assert mapped(db.record_permissions["i2"]) == {(EntityType.USER, "u-owner", PermissionType.OWNER)}
         assert len(api.calls("GET", f"/v1.0/groups/{M365_GROUP_ID}/owners")) == 1, "owners are read once per run"
 
-    async def test_a_security_group_named_owners_keeps_all_its_members(self, connector, api, db) -> None:
+    async def test_an_owners_named_group_link_identity_keeps_all_its_members(self, connector, api, db) -> None:
+        """A security group named "... Owners" in a link's grantees is the group, not an M365 group's owners."""
         api.on("GET", "/v1.0/groups/sec-1", {"id": "sec-1", "groupTypes": []})
-        delta_pages(api, {None: page([file_item("i1", "a.pdf")], delta_link=delta_url("d1"))})
-        serve_item(api, "i1", [m365_grant("sec-1", "Data Owners", "read")])
+        serve_item(api, "i1", [{"id": "p-link", "roles": ["read"], "link": {"scope": "users", "type": "view"},
+                                "grantedToIdentitiesV2": [{"group": {"id": "sec-1", "displayName": "Data Owners"}}]}])
 
-        await sync_site(connector)
+        permissions = await connector._get_item_permissions(SITE_ID, DRIVE_ID, "i1")
 
-        assert mapped(db.record_permissions["i1"]) == {(EntityType.GROUP, "sec-1", PermissionType.READ)}
+        assert mapped(permissions) == {(EntityType.GROUP, "sec-1", PermissionType.READ)}
         assert not api.calls("GET", "/v1.0/groups/sec-1/owners")
 
-    async def test_a_site_group_holding_everyone_also_grants_the_org(self, connector, api, db) -> None:
+    async def test_a_site_group_holding_everyone_also_grants_the_claims_group(self, connector, api, db) -> None:
         serve_site(api)
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
@@ -1247,15 +1326,17 @@ class TestPrincipalMapping:
         api.on("GET", f"{SITE_REST}/sitegroups/GetById(7)/users", rest_users(
             {"Id": 11, "Title": "Ana", "Email": "ana@contoso.com", "PrincipalType": 1, "LoginName": "i:0#.f|membership|ana"}))
         await connector._sync_user_groups()
-        delta_pages(api, {None: page([file_item("i1", "a.pdf")], delta_link=delta_url("d1"))})
-        serve_item(api, "i1", [site_group_grant("4", "Visitors", "read"), site_group_grant("7", "Designers", "write")])
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(
+            role_assignment(sp_group(4, "Visitors"), "Read"), role_assignment(sp_group(7, "Designers"), "Edit")))
 
-        await sync_site(connector)
+        permissions = await connector._get_site_permissions(SITE_ID)
 
         assert db.user_groups[f"{SITE_ID}-4"] == []
-        assert mapped(db.record_permissions["i1"]) == {
+        # The claim's group, not the PipesHub organization: a guest or an outsider in the org is not "everyone
+        # except external users" of the Microsoft tenant.
+        assert mapped(permissions) == {
             (EntityType.GROUP, f"{SITE_ID}-4", PermissionType.READ),
-            (EntityType.ORG, "org-1", PermissionType.READ),
+            (EntityType.GROUP, "sharepoint-everyone-except-external", PermissionType.READ),
             (EntityType.GROUP, f"{SITE_ID}-7", PermissionType.WRITE),
         }
 
@@ -1267,12 +1348,12 @@ class TestPrincipalMapping:
         api.on("GET", f"/v1.0/directoryRoles/{ADMIN_ROLE_ID}/members", page([user_member("u-admin", "root@contoso.com")]))
         api.on("GET", f"/v1.0/directoryObjects/{SECURITY_GROUP_ID}",
                {"@odata.type": "#microsoft.graph.group", "id": SECURITY_GROUP_ID, "displayName": "Finance"})
-        api.on("GET", f"{SITE_REST}/associatedownergroup/users", rest_users(
-            {"LoginName": f"c:0t.c|tenant|{ADMIN_ROLE_ID}", "Title": "Global Administrator", "PrincipalType": 4}))
-        api.on("GET", f"{SITE_REST}/associatedmembergroup/users", rest_users(
-            {"LoginName": f"c:0t.c|tenant|{SECURITY_GROUP_ID}", "Title": "Finance", "PrincipalType": 4}))
-        api.on("GET", f"{SITE_REST}/associatedvisitorgroup/users", rest_users())
-        api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users(
+            role_assignment({"LoginName": f"c:0t.c|tenant|{ADMIN_ROLE_ID}", "Title": "Global Administrator",
+                             "PrincipalType": 4}, "Edit"),
+            role_assignment({"LoginName": f"c:0t.c|tenant|{SECURITY_GROUP_ID}", "Title": "Finance", "PrincipalType": 4},
+                            "Edit"),
+        ))
 
         permissions = await connector._get_site_permissions(SITE_ID)
 
@@ -1309,3 +1390,114 @@ class TestGuests:
         assert {u.email: u.is_guest for u in db.app_users} == {"ana@contoso.com": False, "bob@partner.com": True}
         (request,) = api.calls("GET", "/v1.0/users")
         assert "userType" in api.query(request)["$select"].split(",")
+
+
+class TestRunSafety:
+    async def test_a_batch_the_database_refuses_keeps_the_delta_token(self, connector, api, db, checkpoints, monkeypatch) -> None:
+        delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
+
+        async def refuse(_records: list, **_: object) -> None:
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(db, "on_new_records", refuse)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await sync_site(connector)
+
+        assert stored_link(checkpoints).get("deltaLink") is None, "the token never moves past what was not stored"
+
+    async def test_a_library_missing_from_the_listing_is_removed_only_after_graph_says_it_is_gone(
+        self, connector, api, db, checkpoints
+    ) -> None:
+        other = "b!drive-2"
+        api.on("GET", drive_path(), page([drive_payload(), drive_payload(other, "Archive")]))
+        serve_library_permissions(api, drive_id=other)
+        delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
+        api.on("GET", f"{delta_path(other)}", page([], delta_link=delta_url("d2", other)))
+        await sync_site(connector)
+        api.on("GET", drive_path(), page([drive_payload()]))
+        api.on("GET", f"/v1.0/drives/{other}", {"id": other})
+
+        await sync_site(connector)
+
+        assert db.deleted_groups == [] and other in db.record_groups, "still there at the source: kept"
+        api.on("GET", f"/v1.0/drives/{other}", graph_error(404, "itemNotFound"))
+
+        await sync_site(connector)
+
+        assert other not in db.record_groups
+
+    async def test_a_deleted_folder_takes_what_is_under_it(self, connector, api, db) -> None:
+        folder = seed_file(db, connector, "f1", "Reports", etag="e1")
+        folder.is_file = False
+        child = seed_file(db, connector, "c1", "q1.pdf")
+        child.parent_external_record_id = "f1"
+        delta_pages(api, {None: page([deleted_item("f1")], delta_link=delta_url("d1"))})
+
+        await sync_site(connector)
+
+        assert "f1" not in db.records and "c1" not in db.records
+
+    async def test_a_run_that_could_not_read_a_site_fails_and_tells_the_admin(self, connector, api, db) -> None:
+        serve_site(api)
+        api.on("GET", "/v1.0/users", page([]))
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
+        api.on("GET", drive_path(), graph_error(403, "accessDenied"))
+
+        with pytest.raises(SharePointSyncIncomplete, match="libraries of site"):
+            await connector.run_sync()
+        await asyncio.gather(*connector._background_tasks)
+
+        assert [n["title"] for n in connector._notification_service.sent] == ["SharePoint sync could not read everything"]
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_disabled_account_is_left_out_of_group_members_and_grants(self, connector, api, db) -> None:
+        api.on("GET", "/v1.0/users", page([
+            {"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True, "userType": "Member"},
+            {"id": "u2", "displayName": "Bo", "mail": "bo@contoso.com", "accountEnabled": False, "userType": "Member"},
+        ]))
+        await connector._sync_users()
+        serve_groups_delta(api, {None: page([{"id": "g1"}], delta_link=groups_delta_url("D1"))})
+        api.on("GET", "/v1.0/groups", page([{"id": "g1", "displayName": "Eng"}]))
+        api.on("GET", "/v1.0/groups/g1/transitiveMembers", page([user_member("u1", "ana@contoso.com"),
+                                                                 user_member("u2", "bo@contoso.com")]))
+
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups["g1"] == ["ana@contoso.com"]
+        assert db.user_groups["sharepoint-everyone-except-external"] == ["ana@contoso.com"]
+        grant = await connector._sharepoint_principal_permissions(sp_user(9, "bo@contoso.com"), PermissionType.READ, SITE_ID)
+        assert grant == []
+
+
+class TestPageContent:
+    async def test_images_and_list_web_parts_are_labelled_not_fetched(self, connector, api) -> None:
+        serve_site(api)
+        webpart = '{"properties": {"selectedListId": "list-9"}, "serverProcessedContent": {"searchablePlainTexts": {"listTitle": "Salaries <b>2026</b>"}}}'
+        canvas = (f"<div><p>Hello</p><img src=\"/sites/eng/Shared Documents/secret.png\"/>"
+                  f"<div data-sp-webpartdata='{webpart}'></div></div>")
+        api.on("GET", f"{SITE_REST}/GetFileById('pg1')/ListItemAllFields", rest_body({"CanvasContent1": canvas, "Title": "Home"}))
+
+        html = await connector._get_page_content(SITE_ID, "pg1")
+
+        assert "Hello" in html and "[image: secret.png]" in html
+        assert "[embedded list: Salaries &lt;b&gt;2026&lt;/b&gt;]" in html
+        fetched = [r.url.path for r in api.requests if r.url.host == SP_HOST]
+        assert not any("GetFileByServerRelativeUrl" in p or "lists(guid" in p for p in fetched)
+
+
+class TestConnectionCheck:
+    async def test_the_check_fails_when_the_app_cannot_read_sites(self, connector, api) -> None:
+        api.on("GET", "/v1.0/sites", graph_error(403, "accessDenied"))
+
+        assert await connector.test_connection_and_access() is False
+
+    async def test_the_check_passes_when_graph_and_sharepoint_answer(self, connector, api) -> None:
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", "/_api/web/roleassignments", rest_users())
+        api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
+
+        assert await connector.test_connection_and_access() is True

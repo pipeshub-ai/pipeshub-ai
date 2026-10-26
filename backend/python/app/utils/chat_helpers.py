@@ -46,6 +46,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, epoch_ms
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -129,8 +130,7 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:  # noqa: ANN401
     """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
     into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
     every tool (`retrieval.py`, `citations.py`) and hook
-    (`attachment_resolver.py`'s `shape_image_injection`/
-    `shape_retrieved_image_injection`) that needs to hand collected images to
+    (`attachment_resolver.py`'s `shape_image_injection`) that needs to hand collected images to
     the agent loop, so the dict-to-Part conversion lives in exactly one
     place. Local import avoids a module-level dependency from this
     low-level formatting module onto `agent_loop_lib`.
@@ -917,6 +917,46 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "sourceLastModifiedTimestamp": "source_updated_at",
 }
 
+# The graph holds a record's dates and what set them; a blob keeps the dates
+# the record had when it was indexed.
+_GRAPH_DATE_FIELDS: dict[str, str] = {
+    "createdAtTimestamp": "created_at",
+    "sourceCreatedAtTimestamp": "source_created_at",
+    "sourceLastModifiedTimestamp": "source_updated_at",
+    SOURCE_TIMESTAMP_ORIGIN_FIELD: "source_timestamp_origin",
+}
+
+
+def graph_record_dates(base_doc: dict[str, Any]) -> dict[str, Any]:
+    """The record-dict date fields a graph record document sets."""
+    return {
+        name: base_doc[graph_key]
+        for graph_key, name in _GRAPH_DATE_FIELDS.items()
+        if base_doc.get(graph_key) is not None
+    }
+
+
+def _put_graph_dates(record: dict[str, Any], base_doc: dict[str, Any], *, copy_of_another: bool) -> None:
+    """Sets ``record``'s dates from its graph document. A stored copy that belongs
+    to another record keeps none of its own, even where the graph has none."""
+    if copy_of_another:
+        for name in _GRAPH_DATE_FIELDS.values():
+            record.pop(name, None)
+    record.update(graph_record_dates(base_doc))
+
+
+def _record_date_args(record_dict: dict[str, Any]) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "source_created_at": record_dict.get("source_created_at") or None,
+        "source_updated_at": record_dict.get("source_updated_at") or None,
+        "source_timestamp_origin": record_dict.get("source_timestamp_origin") or None,
+    }
+    # Left unset when unknown: the model's default is the time it is built.
+    created_at = epoch_ms(record_dict.get("created_at"))
+    if created_at is not None:
+        args["created_at"] = created_at
+    return args
+
 # Matches BlobStorage.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE: the graph accepts an IN
 # list, but an unbounded one turns one slow query into a timeout.
 GRAPH_BATCH_CHUNK_SIZE = 500
@@ -974,8 +1014,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 version=version,
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
                 connector_id=connector_id,
-                source_created_at=record_dict.get("source_created_at") or None,
-                source_updated_at=record_dict.get("source_updated_at") or None,
+                **_record_date_args(record_dict),
                 semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
                 parent_external_record_id=record_dict.get("parent_external_record_id"),
             )
@@ -997,8 +1036,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
             "connector_id": connector_id,
             "mime_type": record_dict.get("mime_type", ""),
-            "source_created_at": record_dict.get("source_created_at") or None,
-            "source_updated_at": record_dict.get("source_updated_at") or None,
+            **_record_date_args(record_dict),
             "location": record_dict.get("location"),
             "weburl": record_dict.get("weburl", ""),
             "hide_weburl": bool(record_dict.get("hide_weburl")),
@@ -1238,6 +1276,7 @@ def _merge_graph_into_blob_record(
             merged[record_key_name] = val
         elif copy_of_another:
             merged.pop(record_key_name, None)
+    _put_graph_dates(merged, base_doc, copy_of_another=copy_of_another)
     # A link the graph hides stays hidden, whatever the blob copy says; another
     # record's copy does not hide this one's.
     stored_hides = not copy_of_another and merged.get("hide_weburl")
@@ -1283,6 +1322,7 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    record_dict.update(graph_record_dates(base_doc))
     record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
     record_dict["location"] = base_doc.get("location") or ""
     record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
@@ -2787,6 +2827,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         record_id, CollectionNames.RECORDS.value
                     )
                     if graph_rec and isinstance(graph_rec, dict):
+                        copy_of_another = rec.get("id") not in (None, record_id)
                         rec["id"] = record_id
                         rec["org_id"] = graph_rec.get("orgId")
                         rec["record_name"] = graph_rec.get("recordName")
@@ -2801,6 +2842,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
                         rec["source_created_at"] = graph_rec.get("sourceCreatedAtTimestamp")
                         rec["source_updated_at"] = graph_rec.get("sourceLastModifiedTimestamp")
+                        _put_graph_dates(rec, graph_rec, copy_of_another=copy_of_another)
 
                 except Exception as graph_e:
                     logger.debug("FK enrichment: could not fetch graph metadata for record_id=%s: %s", record_id, graph_e)
@@ -3889,6 +3931,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
             if graphDb_record:
                 record_type = graphDb_record.get("recordType")
                 record_key = graphDb_record.get("id") or graphDb_record.get("_key")
+                copy_of_another = bool(record_key) and record.get("id") not in (None, record_key)
 
                 record["id"] = record_key
                 record["org_id"] = org_id
@@ -3905,6 +3948,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                _put_graph_dates(record, graphDb_record, copy_of_another=copy_of_another)
                 if graphDb_record.get("location"):
                     record["location"] = graphDb_record["location"]
                 graph_external_id = graphDb_record.get("externalRecordId")

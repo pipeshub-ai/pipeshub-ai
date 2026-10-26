@@ -4,6 +4,7 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, TextField } from '@radix-ui/themes';
 import { SidebarBase, SidebarBackHeader, SecondaryPanel } from '@/app/components/sidebar';
+import { SidebarHeaderActions } from '@/app/(main)/chat/sidebar/header';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -111,7 +112,7 @@ function KBSidebarFromStore() {
 
   return (
     <SidebarBase
-      header={<SidebarBackHeader title={title} onBack={handleBack} />}
+      header={<SidebarBackHeader title={title} onBack={handleBack} actions={<SidebarHeaderActions />} />}
       isMobile={isMobile}
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobileSidebar}
@@ -492,7 +493,7 @@ function KBSidebarContent({
 
   return (
     <SidebarBase
-      header={<SidebarBackHeader title={headerTitle} onBack={onBack} />}
+      header={<SidebarBackHeader title={headerTitle} onBack={onBack} actions={<SidebarHeaderActions />} />}
       footer={
         !isCollectionsMode && !isMobile && moreConnectors.length > 0 ? (
           <ConnectMoreApps

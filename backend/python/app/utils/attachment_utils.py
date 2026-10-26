@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.utils.chat_helpers import CitationRefMapper
+    from app.utils.render_budget import RecordRenderOutcome, RenderBudget
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -134,6 +136,8 @@ async def resolve_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -157,12 +161,21 @@ async def resolve_attachments(
         is_multimodal_llm: Whether the configured LLM supports image inputs.
         logger: Logger instance.
 
+        render_budget: Characters the documents may render into, split
+            across them (see `render_attachment_record`). None renders each
+            document in full.
+        outcomes: Receives each budgeted document's `RecordRenderOutcome`.
+
     Returns:
         List of LangChain content-dict blocks ready to be inserted into a
         ``HumanMessage(content=[...])`` list.
     """
     if not attachments:
         return []
+    docs_left = sum(
+        1 for att in attachments
+        if (att.get("mimeType") or "").lower() in DOC_ATTACHMENT_MIME_TYPES and att.get("virtualRecordId")
+    )
 
     if image_budget is None:
         image_budget = ImageBudget()
@@ -241,7 +254,11 @@ async def resolve_attachments(
                 user_id=user_id,
                 graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                render_budget=render_budget,
+                docs_left=docs_left,
+                outcomes=outcomes,
             )
+            docs_left -= 1
             if doc_content:
                 blocks.extend(doc_content)
             else:
@@ -268,6 +285,9 @@ async def _resolve_attachment_content(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    docs_left: int = 1,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -293,8 +313,6 @@ async def _resolve_attachment_content(
         return [], ref_mapper
 
     try:
-        from app.utils.chat_helpers import record_to_message_content
-
         record = await record_artifact_reader(blob_store).read_record(
             virtual_record_id, org_id,
         )
@@ -309,11 +327,15 @@ async def _resolve_attachment_content(
         if out_records is not None:
             out_records[virtual_record_id] = record
 
-        content, ref_mapper = record_to_message_content(
+        content, ref_mapper = render_attachment_record(
             record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
             image_budget=image_budget,
             image_admission=image_admission,
             image_origin=ImageOrigin.ATTACHMENT,
+            render_budget=render_budget,
+            docs_left=docs_left,
+            outcomes=outcomes,
+            logger=logger,
         )
         if not content and empty_content_fallback is not None:
             content = empty_content_fallback(record)
@@ -327,6 +349,56 @@ async def _resolve_attachment_content(
             exc_info=True,
         )
         return [], ref_mapper
+
+
+def render_attachment_record(
+    record: dict[str, Any],
+    *,
+    ref_mapper: "CitationRefMapper | None",
+    is_multimodal_llm: bool,
+    image_budget: ImageBudget | None,
+    image_admission: "ImageAdmission | None",
+    image_origin: ImageOrigin,
+    render_budget: "RenderBudget | None",
+    docs_left: int,
+    outcomes: "list[RecordRenderOutcome] | None",
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], "CitationRefMapper"]:
+    """`record_to_message_content` for an attachment, within `render_budget`.
+
+    The record gets an equal share of what is left among the `docs_left`
+    documents still to render; one that needs less leaves the rest to the
+    ones after it. A record cut short ends with the renderer's note saying
+    where it stopped and how to read on with `knowledgegraph__fetch_record`.
+    """
+    from app.utils.chat_helpers import record_to_message_content
+
+    if render_budget is not None:
+        render_budget.allot(
+            attachment_record_key(record), render_budget.call_chars_remaining // max(docs_left, 1),
+        )
+    content, ref_mapper = record_to_message_content(
+        record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
+        image_budget=image_budget,
+        image_admission=image_admission,
+        image_origin=image_origin,
+        budget=render_budget,
+    )
+    if render_budget is not None:
+        outcome = render_budget.outcome(attachment_record_key(record))
+        if outcomes is not None:
+            outcomes.append(outcome)
+        if not outcome.complete:
+            logger.warning(
+                "attachment_truncated record_id=%s chars_shown=%d blocks_shown=%d stopped_at_block=%s",
+                outcome.record_id, outcome.chars_rendered, outcome.blocks_rendered, outcome.stopped_at_block,
+            )
+    return content, ref_mapper
+
+
+def attachment_record_key(record: dict[str, Any]) -> str:
+    """The key `record_to_message_content` accounts a record under in its budget."""
+    return str(record.get("id") or record.get("virtual_record_id") or "")
 
 
 def _extract_image_blocks(

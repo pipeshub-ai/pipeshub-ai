@@ -1109,6 +1109,17 @@ describe('Enterprise Search Controller', () => {
       }
     })
 
+    it('should pass the missing-query error to next when Express gives one', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      const next = sinon.stub()
+
+      await handler(createMockRequest({ body: {} }), createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
+    })
+
     it('should set SSE headers and process stream on happy path', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
@@ -4141,6 +4152,20 @@ describe('Enterprise Search Controller', () => {
       } catch (error: any) {
         expect(error.message).to.equal('Query is required')
       }
+    })
+
+    it('should pass the missing-query and missing-user errors to next when Express gives one', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const params = { conversationId: VALID_OID, agentKey: 'agent-1' }
+      const next = sinon.stub()
+
+      await handler(createMockRequest({ params, body: {} }), createMockResponse(), next)
+      await handler(createMockRequest({ params, body: { query: 'hi' }, user: { orgId: VALID_OID } }), createMockResponse(), next)
+
+      expect(next.callCount).to.equal(2)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
+      expect(next.secondCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.secondCall.args[0].message).to.equal('User ID is required')
     })
 
     it('should set SSE headers and stream on happy path', async () => {

@@ -1399,6 +1399,10 @@ class RetrievalService:
                         }
                         for child in child_results:
                             child_index = child.get("block_index")
+                            # RRF scores tie, so two sections of one record can share
+                            # a score; this is what tells their passages apart.
+                            if result.get("block_group_index") is not None:
+                                child["block_group_index"] = result["block_group_index"]
                             if matched and isinstance(child_index, int):
                                 # 0 is a passage the search matched; the per-record
                                 # cap below keeps those first, then their neighbours.

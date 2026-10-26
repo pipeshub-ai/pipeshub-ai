@@ -110,6 +110,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ])
     ])\
     .with_info(CONNECTOR_MINIO_INFO)\
+    .with_resilience_config(rate_limit=50, max_retries=3)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.MINIO.value))
         .add_documentation_link(DocumentationLink(
@@ -230,11 +231,11 @@ class MinIOConnector(S3CompatibleBaseConnector):
         self.data_entities_processor.base_console_url = self.base_console_url
 
         try:
-            client = await MinIOClient.build_from_services(
+            client = self._with_retry_budget(await MinIOClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
-            )
+            ))
             self.data_source = MinIODataSource(client)
 
             # Load connector filters
@@ -250,11 +251,11 @@ class MinIOConnector(S3CompatibleBaseConnector):
 
     async def _build_data_source(self) -> MinIODataSource:
         """Build the MinIODataSource."""
-        client = await MinIOClient.build_from_services(
+        client = self._with_retry_budget(await MinIOClient.build_from_services(
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
-        )
+        ))
         return MinIODataSource(client)
 
     def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:

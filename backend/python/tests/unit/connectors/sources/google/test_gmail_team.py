@@ -8,15 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
 from app.models.permission import EntityType, Permission, PermissionType
-import asyncio
-import uuid
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 from app.config.constants.arangodb import (
-    CollectionNames,
-    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -25,7 +21,6 @@ from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
     FilterType,
-    IndexingFilterKey,
     SyncFilterKey,
 )
 from app.connectors.sources.google.common.gmail_received_date_query import (
@@ -34,12 +29,7 @@ from app.connectors.sources.google.common.gmail_received_date_query import (
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
-    AppUserGroup,
-    FileRecord,
-    MailRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
 )
 
@@ -795,446 +785,35 @@ class TestGetExistingRecord:
 # _merge_history_changes
 # ---------------------------------------------------------------------------
 
-class TestMergeHistoryChanges:
-    def test_merges_and_deduplicates(self, connector):
-        inbox = {"history": [{"id": "1"}, {"id": "2"}]}
-        sent = {"history": [{"id": "2"}, {"id": "3"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 3
-        ids = [h["id"] for h in result["history"]]
-        assert ids == ["1", "2", "3"]
-
-    def test_empty_changes(self, connector):
-        result = connector._merge_history_changes({"history": []}, {"history": []})
-        assert result["history"] == []
-
-
 # ---------------------------------------------------------------------------
 # _run_full_sync
 # ---------------------------------------------------------------------------
-
-class TestTeamFullSync:
-    async def test_full_sync_processes_threads(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": "thread-1"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [_make_gmail_message()],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_called()
-        connector.gmail_delta_sync_point.update_sync_point.assert_called()
-
-    async def test_full_sync_handles_empty_threads(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={"threads": []})
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_not_called()
-
-    async def test_full_sync_paginates_threads(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(side_effect=[
-            {"threads": [{"id": "thread-1"}], "nextPageToken": "page2"},
-            {"threads": [{"id": "thread-2"}]},
-        ])
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [_make_gmail_message()],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        assert user_gmail_client.users_threads_list.call_count == 2
-
-    async def test_full_sync_handles_profile_error(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(side_effect=Exception("Profile error"))
-        user_gmail_client.users_threads_list = AsyncMock(return_value={"threads": []})
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-
-    async def test_full_sync_passes_q_when_received_date_configured(self, connector):
-        date_filter = Filter.model_validate({
-            "key": SyncFilterKey.RECEIVED_DATE.value,
-            "value": {"start": 1704067200000, "end": None},
-            "type": "datetime",
-            "operator": "is_after",
-        })
-        connector.sync_filters = FilterCollection(filters=[date_filter])
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={"threads": []})
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        call_kw = user_gmail_client.users_threads_list.call_args.kwargs
-        assert call_kw.get("q") == "after:1704067200"
-
 
 # ---------------------------------------------------------------------------
 # _run_sync_with_yield
 # ---------------------------------------------------------------------------
 
-class TestTeamRunSyncWithYield:
-    async def test_routes_to_full_sync_when_no_history_id(self, connector):
-        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
-        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
-             patch.object(connector, "_run_full_sync", new_callable=AsyncMock) as mock_full:
-            mock_create.return_value = AsyncMock()
-            await connector._run_sync_with_yield("user@example.com")
-            mock_full.assert_called_once()
-
-    async def test_routes_to_incremental_sync_when_history_id_exists(self, connector):
-        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
-            return_value={"historyId": "hist-123"}
-        )
-        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
-             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock) as mock_inc:
-            mock_create.return_value = AsyncMock()
-            await connector._run_sync_with_yield("user@example.com")
-            mock_inc.assert_called_once()
-
-    async def test_falls_back_to_full_sync_on_404(self, connector):
-        from googleapiclient.errors import HttpError
-        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
-            return_value={"historyId": "expired-hist"}
-        )
-        mock_resp = MagicMock()
-        mock_resp.status = 404
-        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
-             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock,
-                          side_effect=HttpError(mock_resp, b"not found")) as mock_inc, \
-             patch.object(connector, "_run_full_sync", new_callable=AsyncMock) as mock_full:
-            mock_create.return_value = AsyncMock()
-            await connector._run_sync_with_yield("user@example.com")
-            mock_full.assert_called_once()
-
-
 # ---------------------------------------------------------------------------
 # Deep sync: _run_sync_with_history_id (incremental)
 # ---------------------------------------------------------------------------
-
-class TestTeamRunSyncWithHistoryId:
-    async def test_incremental_sync_processes_changes(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
-        user_gmail_client.users_history_list = AsyncMock(return_value={
-            "history": [
-                {"id": "100", "messagesAdded": [{"message": {"id": "new-msg-1"}}]},
-            ],
-        })
-        user_gmail_client.users_messages_get = AsyncMock(return_value=_make_gmail_message(message_id="new-msg-1"))
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=None), \
-             patch.object(connector, "_find_previous_message_in_thread", new_callable=AsyncMock, return_value=None):
-            await connector._run_sync_with_history_id(
-                "user@example.com", user_gmail_client, "hist-100", "test-key"
-            )
-        connector.data_entities_processor.on_new_records.assert_called()
-        connector.gmail_delta_sync_point.update_sync_point.assert_called()
-
-    async def test_incremental_sync_handles_empty_history(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
-        user_gmail_client.users_history_list = AsyncMock(return_value={"history": []})
-        await connector._run_sync_with_history_id(
-            "user@example.com", user_gmail_client, "hist-100", "test-key"
-        )
-        connector.data_entities_processor.on_new_records.assert_not_called()
-
-    async def test_incremental_sync_handles_deleted_messages(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
-        user_gmail_client.users_history_list = AsyncMock(return_value={
-            "history": [
-                {"id": "100", "messagesDeleted": [{"message": {"id": "del-msg-1"}}]},
-            ],
-        })
-        existing = MagicMock()
-        existing.id = "rec-del-1"
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=existing), \
-             patch.object(connector, "_delete_message_and_attachments", new_callable=AsyncMock):
-            await connector._run_sync_with_history_id(
-                "user@example.com", user_gmail_client, "hist-100", "test-key"
-            )
-            connector._delete_message_and_attachments.assert_called_once()
-
-    async def test_incremental_sync_processes_label_changes(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
-        user_gmail_client.users_history_list = AsyncMock(return_value={
-            "history": [
-                {"id": "100", "labelsAdded": [
-                    {"message": {"id": "label-msg-1"}, "labelIds": ["INBOX"]}
-                ]},
-            ],
-        })
-        user_gmail_client.users_messages_get = AsyncMock(
-            return_value=_make_gmail_message(message_id="label-msg-1")
-        )
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=None), \
-             patch.object(connector, "_find_previous_message_in_thread", new_callable=AsyncMock, return_value=None):
-            await connector._run_sync_with_history_id(
-                "user@example.com", user_gmail_client, "hist-100", "test-key"
-            )
-        connector.data_entities_processor.on_new_records.assert_called()
-
-    async def test_incremental_trash_label_triggers_delete(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
-        user_gmail_client.users_history_list = AsyncMock(return_value={
-            "history": [
-                {"id": "100", "labelsAdded": [
-                    {"message": {"id": "trash-msg-1"}, "labelIds": ["TRASH"]}
-                ]},
-            ],
-        })
-        existing = MagicMock()
-        existing.id = "rec-trash-1"
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=existing), \
-             patch.object(connector, "_delete_message_and_attachments", new_callable=AsyncMock):
-            await connector._run_sync_with_history_id(
-                "user@example.com", user_gmail_client, "hist-100", "test-key"
-            )
-            connector._delete_message_and_attachments.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # Deep sync: _fetch_history_changes
 # ---------------------------------------------------------------------------
 
-class TestTeamFetchHistoryChanges:
-    async def test_single_page(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_history_list = AsyncMock(return_value={
-            "history": [{"id": "1"}, {"id": "2"}],
-        })
-        result = await connector._fetch_history_changes(
-            user_gmail_client, "user@example.com", "hist-1", "INBOX"
-        )
-        assert len(result["history"]) == 2
-
-    async def test_paginates(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_history_list = AsyncMock(side_effect=[
-            {"history": [{"id": "1"}], "nextPageToken": "page2"},
-            {"history": [{"id": "2"}]},
-        ])
-        result = await connector._fetch_history_changes(
-            user_gmail_client, "user@example.com", "hist-1", "INBOX"
-        )
-        assert len(result["history"]) == 2
-        assert user_gmail_client.users_history_list.call_count == 2
-
-    async def test_reraises_http_error(self, connector):
-        from googleapiclient.errors import HttpError
-        user_gmail_client = AsyncMock()
-        mock_resp = MagicMock()
-        mock_resp.status = 404
-        user_gmail_client.users_history_list = AsyncMock(
-            side_effect=HttpError(mock_resp, b"not found")
-        )
-        with pytest.raises(HttpError):
-            await connector._fetch_history_changes(
-                user_gmail_client, "user@example.com", "hist-1", "INBOX"
-            )
-
-
 # ---------------------------------------------------------------------------
 # Deep sync: _process_history_changes
 # ---------------------------------------------------------------------------
 
-class TestTeamProcessHistoryChanges:
-    async def test_processes_message_additions(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_messages_get = AsyncMock(
-            return_value=_make_gmail_message(message_id="hist-add-1")
-        )
-        history_entry = {
-            "id": "100",
-            "messagesAdded": [{"message": {"id": "hist-add-1"}}],
-        }
-        batch = []
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=None), \
-             patch.object(connector, "_find_previous_message_in_thread", new_callable=AsyncMock, return_value=None):
-            count = await connector._process_history_changes(
-                "user@example.com", user_gmail_client, history_entry, batch
-            )
-        assert count >= 1
-        assert len(batch) >= 1
-
-    async def test_skips_existing_messages(self, connector):
-        user_gmail_client = AsyncMock()
-        existing = MagicMock()
-        existing.id = "existing-rec"
-        history_entry = {
-            "id": "100",
-            "messagesAdded": [{"message": {"id": "existing-msg"}}],
-        }
-        batch = []
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=existing):
-            count = await connector._process_history_changes(
-                "user@example.com", user_gmail_client, history_entry, batch
-            )
-        assert count == 0
-        assert len(batch) == 0
-
-    async def test_handles_message_deletions(self, connector):
-        user_gmail_client = AsyncMock()
-        existing = MagicMock()
-        existing.id = "del-rec"
-        history_entry = {
-            "id": "100",
-            "messagesDeleted": [{"message": {"id": "del-msg"}}],
-        }
-        batch = []
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=existing), \
-             patch.object(connector, "_delete_message_and_attachments", new_callable=AsyncMock):
-            count = await connector._process_history_changes(
-                "user@example.com", user_gmail_client, history_entry, batch
-            )
-        assert count >= 1
-
-    async def test_deduplicates_messages(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_messages_get = AsyncMock(
-            return_value=_make_gmail_message(message_id="dup-msg")
-        )
-        history_entry = {
-            "id": "100",
-            "messagesAdded": [
-                {"message": {"id": "dup-msg"}},
-                {"message": {"id": "dup-msg"}},
-            ],
-        }
-        batch = []
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=None), \
-             patch.object(connector, "_find_previous_message_in_thread", new_callable=AsyncMock, return_value=None):
-            count = await connector._process_history_changes(
-                "user@example.com", user_gmail_client, history_entry, batch
-            )
-        assert count == 1
-
-    async def test_processes_attachments_in_history(self, connector):
-        user_gmail_client = AsyncMock()
-        msg = _make_gmail_message(message_id="att-msg", has_attachments=True)
-        user_gmail_client.users_messages_get = AsyncMock(return_value=msg)
-        history_entry = {
-            "id": "100",
-            "messagesAdded": [{"message": {"id": "att-msg"}}],
-        }
-        batch = []
-        with patch.object(connector, "_get_existing_record", new_callable=AsyncMock, return_value=None), \
-             patch.object(connector, "_find_previous_message_in_thread", new_callable=AsyncMock, return_value=None):
-            count = await connector._process_history_changes(
-                "user@example.com", user_gmail_client, history_entry, batch
-            )
-        # Should have the message + the attachment
-        assert count >= 2
-
-
 # ---------------------------------------------------------------------------
 # Deep sync: full sync thread pagination
 # ---------------------------------------------------------------------------
-
-class TestTeamFullSyncDeep:
-    async def test_full_sync_processes_attachments(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        msg_with_att = _make_gmail_message(has_attachments=True)
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": "thread-1"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [msg_with_att],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_called()
-
-    async def test_full_sync_handles_thread_error(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": "bad-thread"}, {"id": "good-thread"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(side_effect=[
-            Exception("thread error"),
-            {"messages": [_make_gmail_message()]},
-        ])
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_called()
-
-    async def test_full_sync_multiple_messages_in_thread(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": "thread-multi"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [
-                _make_gmail_message(message_id="msg-1", thread_id="thread-multi"),
-                _make_gmail_message(message_id="msg-2", thread_id="thread-multi"),
-                _make_gmail_message(message_id="msg-3", thread_id="thread-multi"),
-            ],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_called()
-
-    async def test_full_sync_saves_page_token(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(side_effect=[
-            {"threads": [{"id": "t1"}], "nextPageToken": "page2"},
-            {"threads": [{"id": "t2"}]},
-        ])
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [_make_gmail_message()],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        assert user_gmail_client.users_threads_list.call_count == 2
-        # Verify sync point was updated with pageToken
-        calls = connector.gmail_delta_sync_point.update_sync_point.call_args_list
-        assert len(calls) >= 2  # intermediate + final
-
-    async def test_full_sync_skips_threadless_entries(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": None}, {"id": "thread-valid"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(return_value={
-            "messages": [_make_gmail_message()],
-        })
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        # Only the valid thread should be fetched
-        assert user_gmail_client.users_threads_get.call_count == 1
-
-    async def test_full_sync_skips_empty_message_threads(self, connector):
-        user_gmail_client = AsyncMock()
-        user_gmail_client.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
-        user_gmail_client.users_threads_list = AsyncMock(return_value={
-            "threads": [{"id": "empty-thread"}],
-        })
-        user_gmail_client.users_threads_get = AsyncMock(return_value={"messages": []})
-        await connector._run_full_sync("user@example.com", user_gmail_client, "test-key")
-        connector.data_entities_processor.on_new_records.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # Deep sync: _run_sync_with_yield error handling
 # ---------------------------------------------------------------------------
 
 class TestTeamRunSyncWithYieldErrors:
-    async def test_reraises_non_404_http_error(self, connector):
-        from googleapiclient.errors import HttpError
-        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
-            return_value={"historyId": "hist-123"}
-        )
-        mock_resp = MagicMock()
-        mock_resp.status = 403
-        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock), \
-             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock,
-                          side_effect=HttpError(mock_resp, b"forbidden")):
-            with pytest.raises(HttpError):
-                await connector._run_sync_with_yield("user@example.com")
-
     async def test_propagates_general_exception(self, connector):
         connector.gmail_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock,
@@ -1605,7 +1184,9 @@ class TestProcessGroup:
             {"type": "GROUP", "email": "sub@t.com"},
         ])
         await connector_fullcov._process_group({"email": "grp@t.com", "name": "Grp"})
-        connector_fullcov.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # A group with no user members is written empty, so people who left lose it.
+        written = connector_fullcov.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert len(written) == 1 and written[0][1] == []
 
     @pytest.mark.asyncio
     async def test_member_lookup_in_synced_users(self, connector_fullcov):
@@ -2134,32 +1715,6 @@ class TestGetFilterOptions:
             await connector_fullcov.get_filter_options("key")
 
 
-class TestMergeHistoryChangesFullCoverage:
-    def test_merges_and_deduplicates(self, connector_fullcov):
-        inbox = {"history": [{"id": "1"}, {"id": "2"}]}
-        sent = {"history": [{"id": "2"}, {"id": "3"}]}
-        result = connector_fullcov._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 3
-        ids = [h["id"] for h in result["history"]]
-        assert ids == ["1", "2", "3"]
-
-    def test_empty_inputs(self, connector_fullcov):
-        result = connector_fullcov._merge_history_changes({"history": []}, {"history": []})
-        assert result["history"] == []
-
-
-class TestDeleteMessageAndAttachments:
-    @pytest.mark.asyncio
-    async def test_deletes_attachments_and_message(self, connector_fullcov):
-        attachment = MagicMock()
-        attachment.id = "att-rec-1"
-        provider = _make_mock_data_store_provider_fullcov(attachment_records=[attachment])
-        connector_fullcov.data_store_provider = provider
-        connector_fullcov.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
-        await connector_fullcov._delete_message_and_attachments("rec-1", "msg-1")
-        assert connector_fullcov.data_entities_processor.on_record_deleted.await_count == 2
-
-
 class TestFindPreviousMessageInThread:
     @pytest.mark.asyncio
     async def test_finds_previous(self, connector_fullcov):
@@ -2216,12 +1771,22 @@ class TestFindPreviousMessageInThread:
 class TestProcessUsersInBatches:
     @pytest.mark.asyncio
     async def test_filters_active_users(self, connector_fullcov):
+        # As _sync_users builds them: is_active comes from the directory's suspended / archived flags.
         active = AppUser(app_name=Connectors.GOOGLE_MAIL, connector_id="c", source_user_id="u1",
-                         email="u1@t.com", full_name="U1")
+                         email="u1@t.com", full_name="U1", is_active=True)
         connector_fullcov.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active])
         connector_fullcov._run_sync_with_yield = AsyncMock()
         await connector_fullcov._process_users_in_batches([active])
         connector_fullcov._run_sync_with_yield.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_suspended_google_account_is_not_read(self, connector_fullcov):
+        suspended = AppUser(app_name=Connectors.GOOGLE_MAIL, connector_id="c", source_user_id="u2",
+                            email="u2@t.com", full_name="U2", is_active=False)
+        connector_fullcov.data_entities_processor.get_all_active_users = AsyncMock(return_value=[suspended])
+        connector_fullcov._run_sync_with_yield = AsyncMock()
+        await connector_fullcov._process_users_in_batches([suspended])
+        connector_fullcov._run_sync_with_yield.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_active_users(self, connector_fullcov):
@@ -2402,74 +1967,6 @@ class TestCheckAndFetchUpdatedMailRecord:
             assert result[0].id == record.id
 
 
-class TestFetchHistoryChanges:
-    @pytest.mark.asyncio
-    async def test_basic(self, connector_fullcov):
-        client = AsyncMock()
-        client.users_history_list = AsyncMock(return_value={
-            "history": [{"id": "1"}]
-        })
-        result = await connector_fullcov._fetch_history_changes(client, "u@t.com", "100", "INBOX")
-        assert len(result["history"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_pagination(self, connector_fullcov):
-        client = AsyncMock()
-        client.users_history_list = AsyncMock(side_effect=[
-            {"history": [{"id": "1"}], "nextPageToken": "tok"},
-            {"history": [{"id": "2"}]},
-        ])
-        result = await connector_fullcov._fetch_history_changes(client, "u@t.com", "100", "INBOX")
-        assert len(result["history"]) == 2
-
-    @pytest.mark.asyncio
-    async def test_http_error_re_raises(self, connector_fullcov):
-        client = AsyncMock()
-        resp = MagicMock()
-        resp.status = 404
-        client.users_history_list = AsyncMock(side_effect=HttpError(resp, b"Not Found"))
-        with pytest.raises(HttpError):
-            await connector_fullcov._fetch_history_changes(client, "u@t.com", "100", "INBOX")
-
-
-class TestRunSyncWithYield:
-    @pytest.mark.asyncio
-    async def test_full_sync_no_history(self, connector_fullcov):
-        connector_fullcov._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector_fullcov._run_full_sync = AsyncMock()
-        await connector_fullcov._run_sync_with_yield("u@t.com")
-        connector_fullcov._run_full_sync.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_incremental_sync_with_history(self, connector_fullcov):
-        connector_fullcov._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.read_sync_point = AsyncMock(
-            return_value={"historyId": "12345"}
-        )
-        connector_fullcov._run_sync_with_history_id = AsyncMock()
-        await connector_fullcov._run_sync_with_yield("u@t.com")
-        connector_fullcov._run_sync_with_history_id.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_incremental_fallback_on_404(self, connector_fullcov):
-        connector_fullcov._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.read_sync_point = AsyncMock(
-            return_value={"historyId": "12345"}
-        )
-        resp = MagicMock()
-        resp.status = HttpStatusCode.NOT_FOUND.value
-        connector_fullcov._run_sync_with_history_id = AsyncMock(
-            side_effect=HttpError(resp, b"Not Found")
-        )
-        connector_fullcov._run_full_sync = AsyncMock()
-        await connector_fullcov._run_sync_with_yield("u@t.com")
-        connector_fullcov._run_full_sync.assert_awaited_once()
-
-
 class TestCleanup:
     @pytest.mark.asyncio
     async def test_clears_resources(self, connector_fullcov):
@@ -2548,51 +2045,6 @@ class TestStreamRecord:
         connector_fullcov._stream_mail_record = AsyncMock(return_value=MagicMock())
         await connector_fullcov.stream_record(record, user_id="user-1")
         connector_fullcov._stream_mail_record.assert_awaited_once()
-
-
-class TestRunFullSync:
-    @pytest.mark.asyncio
-    async def test_basic_flow(self, connector_fullcov):
-        client = AsyncMock()
-        client.users_get_profile = AsyncMock(return_value={"historyId": "100"})
-        client.users_threads_list = AsyncMock(return_value={"threads": []})
-
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.update_sync_point = AsyncMock()
-
-        await connector_fullcov._run_full_sync("u@t.com", client, "sync-key")
-        connector_fullcov.gmail_delta_sync_point.update_sync_point.assert_awaited()
-
-
-class TestRunSyncWithHistoryId:
-    @pytest.mark.asyncio
-    async def test_basic_flow(self, connector_fullcov):
-        client = AsyncMock()
-        client.users_get_profile = AsyncMock(return_value={"historyId": "200"})
-
-        connector_fullcov._fetch_history_changes = AsyncMock(return_value={"history": []})
-        connector_fullcov._merge_history_changes = MagicMock(return_value={"history": []})
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.update_sync_point = AsyncMock()
-
-        await connector_fullcov._run_sync_with_history_id("u@t.com", client, "100", "sync-key")
-        connector_fullcov.gmail_delta_sync_point.update_sync_point.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_handles_http_error_gracefully(self, connector_fullcov):
-        """HttpError from _fetch_history_changes is re-raised by _run_sync_with_history_id."""
-        client = AsyncMock()
-        client.users_get_profile = AsyncMock(return_value={"historyId": "200"})
-        resp = MagicMock()
-        resp.status = 404
-        connector_fullcov._fetch_history_changes = AsyncMock(
-            side_effect=HttpError(resp, b"Not Found")
-        )
-        connector_fullcov._merge_history_changes = MagicMock(return_value={"history": []})
-        connector_fullcov.gmail_delta_sync_point = AsyncMock()
-        connector_fullcov.gmail_delta_sync_point.update_sync_point = AsyncMock()
-        with pytest.raises(HttpError):
-            await connector_fullcov._run_sync_with_history_id("u@t.com", client, "100", "sync-key")
 
 
 class TestGetExistingRecordFullCoverage:

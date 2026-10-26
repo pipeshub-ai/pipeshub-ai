@@ -140,24 +140,15 @@ async def _image_parts(image_uris: list[str], context: "AgentContext | None") ->
     ])
 
     parts: dict[int, "Part"] = {}
-    admitted_uris: list[str] = []
     for candidate in verdict.admitted:
         part = image_dict_to_part({"image_url": {"url": candidate.data_uri}})
         if part is None:
             parts[int(candidate.ref)] = TextPart(text="[image returned by the tool not shown: unreadable image data]")
             continue
         parts[int(candidate.ref)] = part
-        admitted_uris.append(candidate.data_uri)
     for degraded in verdict.degraded:
         parts[int(degraded.candidate.ref)] = TextPart(
             text=f"[image returned by the tool not shown: {degraded.reason.value.replace('_', ' ')}]",
-        )
-
-    # Providers that reject images inside a tool result get them re-delivered through
-    # `shape_retrieved_image_injection`, same as the knowledge fetch tool.
-    if admitted_uris and not context.tool_state.get("supports_multipart_tool_result", True):
-        context.tool_state.setdefault("pending_tool_images", []).extend(
-            {"image_url": {"url": uri}} for uri in admitted_uris
         )
     return [parts[index] for index in sorted(parts)]
 

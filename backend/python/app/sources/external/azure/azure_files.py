@@ -13,7 +13,12 @@ if TYPE_CHECKING:
     from azure.storage.fileshare.aio._download_async import StorageStreamDownloader
 
 try:
-    from azure.core.exceptions import AzureError, ResourceNotFoundError  # type: ignore
+    from azure.core.exceptions import (  # type: ignore
+        AzureError,
+        ClientAuthenticationError,
+        HttpResponseError,
+        ResourceNotFoundError,
+    )
     from azure.storage.fileshare import (  # type: ignore
         FileSasPermissions,
         ShareSasPermissions,
@@ -30,6 +35,43 @@ except ImportError:
     )
 
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
+from app.utils.url_redaction import redact_urls_in_text
+
+# Not a storage x-ms-error-code: an Entra ID token request that failed carries none of its own.
+CREDENTIALS_REJECTED = "ClientAuthenticationError"
+_STORAGE_AUTH_CODES = frozenset({"AuthenticationFailed", "InvalidAuthenticationInfo"})
+
+
+# Enough for Azure's own message; the rest of a body is not kept.
+_MAX_REASON_CHARS = 300
+
+
+def describe_error(exc: Exception) -> str:
+    """Error code, HTTP status and the first line of Azure's message.
+
+    Never ``str(exc)``: azure-core appends the whole response body to it, which an
+    endpoint can fill with anything and which must not reach logs or the user.
+    """
+    message = getattr(exc, "message", None) if isinstance(exc, HttpResponseError) else None
+    first_line = (str(message or exc) or type(exc).__name__).strip().splitlines()[0]
+    reason = redact_urls_in_text(first_line[:_MAX_REASON_CHARS])
+    details = [d for d in (error_code_of(exc), getattr(exc, "status_code", None)) if d]
+    if len(details) == 2:
+        return f"{details[0]} (HTTP {details[1]}): {reason}"
+    return f"{details[0]}: {reason}" if details else reason
+
+
+def error_code_of(exc: Optional[Exception]) -> Optional[str]:
+    """Azure's error code for a failed call, so callers decide on it and not on the message text."""
+    if exc is None:
+        return None
+    code = getattr(exc, "error_code", None)
+    code = getattr(code, "value", code)
+    if isinstance(exc, ClientAuthenticationError) and code not in _STORAGE_AUTH_CODES:
+        return CREDENTIALS_REJECTED
+    if code is None and isinstance(exc, ResourceNotFoundError):
+        return "ResourceNotFound"
+    return str(code) if code else None
 
 
 class AzureFilesDataSource:
@@ -61,10 +103,11 @@ class AzureFilesDataSource:
         data: object = None,
         error: Optional[str] = None,
         message: Optional[str] = None,
+        exc: Optional[Exception] = None,
     ) -> AzureFilesResponse:
         """Create a standardized response."""
         if error:
-            return AzureFilesResponse(success=False, error=error, message=message)
+            return AzureFilesResponse(success=False, error=error, message=message, error_code=error_code_of(exc))
         return AzureFilesResponse(success=True, data=data, message=message)
 
     async def list_shares(
@@ -110,9 +153,9 @@ class AzureFilesDataSource:
             return self._handle_response(data=shares)
 
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def list_shares_page(
         self,
@@ -141,15 +184,17 @@ class AzureFilesDataSource:
                 data={"shares": shares, "next": pages.continuation_token or None}
             )
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def list_directories_and_files(
         self,
         share_name: str,
         directory_path: str = "",
         name_starts_with: Optional[str] = None,
+        results_per_page: Optional[int] = None,
+        continuation_token: Optional[str] = None,
     ) -> AzureFilesResponse:
         """List directories and files in a share directory.
 
@@ -157,9 +202,12 @@ class AzureFilesDataSource:
             share_name: Name of the file share
             directory_path: Path to the directory (empty string for root)
             name_starts_with: Filter items by prefix
+            results_per_page: If set, list one page only, starting at ``continuation_token``
+            continuation_token: Marker from the previous page's response
 
         Returns:
-            AzureFilesResponse with list of directory/file information
+            AzureFilesResponse with list of directory/file information. With
+            ``results_per_page``, ``continuation_token`` holds the next page's marker.
         """
         try:
             client = await self._get_async_share_service_client()
@@ -169,46 +217,56 @@ class AzureFilesDataSource:
             items: List[Dict[str, Any]] = []
             # Without "timestamps" and "Etag" the service returns only name,
             # size and FileId, so every item's last_modified and etag are None.
-            async for item in directory_client.list_directories_and_files(
+            pages = directory_client.list_directories_and_files(
                 name_starts_with=name_starts_with,
                 include=["timestamps", "Etag"],
-            ):
-                content_settings = getattr(item, "content_settings", None)
-                item_info = {
-                    "name": item.name,
-                    "is_directory": item.is_directory,
-                    "size": getattr(item, "size", None),
-                    "last_modified": getattr(item, "last_modified", None),
-                    "last_write_time": getattr(item, "last_write_time", None),
-                    "creation_time": getattr(item, "creation_time", None),
-                    "etag": getattr(item, "etag", None),
-                    "content_length": getattr(item, "content_length", None),
-                    "file_id": getattr(item, "file_id", None),
-                    # Build full path
-                    "path": f"{directory_path}/{item.name}".lstrip("/")
-                    if directory_path
-                    else item.name,
-                    "parent_path": directory_path or None,
-                }
-                if content_settings is not None:
-                    item_info["content_md5"] = getattr(
-                        content_settings, "content_md5", None
-                    )
-                    item_info["content_type"] = getattr(
-                        content_settings, "content_type", None
-                    )
-                items.append(item_info)
+                results_per_page=results_per_page,
+            ).by_page(continuation_token=continuation_token)
+            async for page in pages:
+                async for item in page:
+                    content_settings = getattr(item, "content_settings", None)
+                    item_info = {
+                        "name": item.name,
+                        "is_directory": item.is_directory,
+                        "size": getattr(item, "size", None),
+                        "last_modified": getattr(item, "last_modified", None),
+                        "last_write_time": getattr(item, "last_write_time", None),
+                        "creation_time": getattr(item, "creation_time", None),
+                        "etag": getattr(item, "etag", None),
+                        "content_length": getattr(item, "content_length", None),
+                        "file_id": getattr(item, "file_id", None),
+                        # Build full path
+                        "path": f"{directory_path}/{item.name}".lstrip("/")
+                        if directory_path
+                        else item.name,
+                        "parent_path": directory_path or None,
+                    }
+                    if content_settings is not None:
+                        item_info["content_md5"] = getattr(
+                            content_settings, "content_md5", None
+                        )
+                        item_info["content_type"] = getattr(
+                            content_settings, "content_type", None
+                        )
+                    items.append(item_info)
 
-            return self._handle_response(data=items)
+                if results_per_page:
+                    break
 
-        except ResourceNotFoundError:
+            response = self._handle_response(data=items)
+            if results_per_page:
+                response.continuation_token = pages.continuation_token or None
+            return response
+
+        except ResourceNotFoundError as e:
             return self._handle_response(
-                error=f"Directory not found: {share_name}/{directory_path}"
+                error=f"Directory not found: {share_name}/{directory_path}",
+                exc=e,
             )
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def get_file_properties(
         self, share_name: str, file_path: str
@@ -251,14 +309,15 @@ class AzureFilesDataSource:
 
             return self._handle_response(data=file_props)
 
-        except ResourceNotFoundError:
+        except ResourceNotFoundError as e:
             return self._handle_response(
-                error=f"File not found: {share_name}/{file_path}"
+                error=f"File not found: {share_name}/{file_path}",
+                exc=e,
             )
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def get_directory_properties(
         self, share_name: str, directory_path: str
@@ -293,14 +352,15 @@ class AzureFilesDataSource:
 
             return self._handle_response(data=dir_props)
 
-        except ResourceNotFoundError:
+        except ResourceNotFoundError as e:
             return self._handle_response(
-                error=f"Directory not found: {share_name}/{directory_path}"
+                error=f"Directory not found: {share_name}/{directory_path}",
+                exc=e,
             )
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def get_share_properties(self, share_name: str) -> AzureFilesResponse:
         """Get properties of a file share.
@@ -329,12 +389,12 @@ class AzureFilesDataSource:
 
             return self._handle_response(data=share_props)
 
-        except ResourceNotFoundError:
-            return self._handle_response(error=f"Share not found: {share_name}")
+        except ResourceNotFoundError as e:
+            return self._handle_response(error=f"Share not found: {share_name}", exc=e)
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def generate_file_sas_url(
         self,
@@ -392,11 +452,13 @@ class AzureFilesDataSource:
 
         except AzureError as e:
             return self._handle_response(
-                error=f"Azure Files API error generating SAS: {str(e)}"
+                error=f"Azure Files API error generating SAS: {describe_error(e)}",
+                exc=e,
             )
         except Exception as e:
             return self._handle_response(
-                error=f"Unexpected error generating SAS: {str(e)}"
+                error=f"Unexpected error generating SAS: {describe_error(e)}",
+                exc=e,
             )
 
     async def generate_share_sas_url(
@@ -453,11 +515,13 @@ class AzureFilesDataSource:
 
         except AzureError as e:
             return self._handle_response(
-                error=f"Azure Files API error generating SAS: {str(e)}"
+                error=f"Azure Files API error generating SAS: {describe_error(e)}",
+                exc=e,
             )
         except Exception as e:
             return self._handle_response(
-                error=f"Unexpected error generating SAS: {str(e)}"
+                error=f"Unexpected error generating SAS: {describe_error(e)}",
+                exc=e,
             )
 
     async def download_file(
@@ -536,9 +600,9 @@ class AzureFilesDataSource:
             return self._handle_response(data={"exists": exists, "path": directory_path})
 
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def check_file_exists(
         self, share_name: str, file_path: str
@@ -562,9 +626,9 @@ class AzureFilesDataSource:
             return self._handle_response(data={"exists": exists, "path": file_path})
 
         except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+            return self._handle_response(error=f"Azure Files API error: {describe_error(e)}", exc=e)
         except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+            return self._handle_response(error=f"Unexpected error: {describe_error(e)}", exc=e)
 
     async def close_async_client(self) -> None:
         """Close the async share service client."""

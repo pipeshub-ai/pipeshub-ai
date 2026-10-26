@@ -7,8 +7,8 @@ input.  Zero LLM calls, zero non-determinism.
 Rules:
 - ``SystemMessage``: always kept verbatim (pinned).
 - ``UserMessage`` (human-typed): kept verbatim (typically small).
-- ``UserMessage`` (loop-compaction summary): kept verbatim — these
-  are produced by L4 ``shape_loop_compaction`` and must survive intact.
+- ``UserMessage`` written by another compaction layer (``compacted_by``,
+  e.g. L4's loop summary): kept verbatim — it already is a summary.
 - ``UserMessage`` (other injected): compacted to first 200 chars.
   Prevents recovery nudges from piling up in the middle zone.
 - ``AssistantMessage`` (recent N): kept verbatim.
@@ -16,6 +16,12 @@ Rules:
 - ``ToolMessage`` with ``artifact_meta``: compact reference only.
 - ``ToolMessage`` without ``artifact_meta``: tool_call_id + first
   ``preview_chars`` characters.
+
+A message compacted on an earlier call of the run is compacted again on
+every later call (``context/compaction_memo.py``). Newly aged messages are
+compacted, oldest first, only while the context is over the trigger, and then
+down to the low-water mark in one pass (``context/watermark.py``), so the
+sent prefix does not change on every call as the recent tail moves.
 """
 
 from __future__ import annotations
@@ -23,26 +29,36 @@ from __future__ import annotations
 import json
 import logging
 
+from app.agent_loop_lib.context.compaction_memo import (
+    compacted_before,
+    held_elsewhere,
+    reapply_replacements,
+)
+from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     TextPart,
     ToolMessage,
     UserMessage,
 )
-from app.agent_loop_lib.core.tokens import count_tokens, extract_text
-from app.agent_loop_lib.core.types import Message, MessageRole
+from app.agent_loop_lib.core.tokens import (
+    count_message_tokens,
+    count_tokens,
+    extract_text,
+)
+from app.agent_loop_lib.core.types import Message
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     safe_tail_boundary,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
     _compact_reference,
 )
-from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
-    _is_compaction_summary,
-)
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 logger = logging.getLogger(__name__)
+
+LAYER = "deterministic_compact"
 
 
 def _first_sentence(text: str, max_chars: int = 300) -> str:
@@ -64,12 +80,7 @@ def _compact_assistant(msg: AssistantMessage) -> AssistantMessage:
         tool_call_info = f"\n[tool_calls: {names}]"
 
     compacted_text = f"[compacted] {summary}{tool_call_info}"
-    return msg.model_copy(
-        update={
-            "content": [TextPart(text=compacted_text)],
-            "tool_calls": msg.tool_calls,
-        }
-    )
+    return msg.model_copy(update={"content": [TextPart(text=compacted_text)], "compacted_by": LAYER})
 
 
 def _compact_tool(
@@ -79,7 +90,7 @@ def _compact_tool(
     call_id_to_args: dict[str, dict] | None = None,
 ) -> ToolMessage:
     if msg.artifact_meta is not None:
-        return msg.model_copy(update={"content": _compact_reference(msg)})
+        return msg.model_copy(update={"content": _compact_reference(msg), "compacted_by": LAYER})
 
     tc_id = msg.tool_call_id or "unknown"
     tool_name = (call_id_to_name or {}).get(tc_id, "")
@@ -100,88 +111,110 @@ def _compact_tool(
     if len(text_content) > preview_chars:
         preview += "..."
     lines.append(f"summary: {preview}")
-    return msg.model_copy(update={"content": "\n".join(lines)})
+    return msg.model_copy(update={"content": "\n".join(lines), "compacted_by": LAYER})
 
 
 def _compact_user(msg: UserMessage, max_chars: int = 200) -> UserMessage:
-    """Shorten an injected UserMessage (compaction summary, recovery nudge).
+    """Shorten an injected UserMessage (recovery nudge, phase note).
 
     Human-typed messages are always kept verbatim — only programmatic
-    injections (``injected=True``) are truncated, because they can grow
-    large (e.g. a loop-compaction summary accumulated over 50 turns).
+    injections (``injected=True``) are truncated, so nudges cannot pile up
+    in the middle of the context.
     """
     text = msg.content if isinstance(msg.content, str) else extract_text(msg)
     if len(text) <= max_chars:
         return msg
-    return msg.model_copy(update={"content": text[:max_chars] + "..."})
+    return msg.model_copy(update={"content": text[:max_chars] + "...", "compacted_by": LAYER})
 
 
 def shape_deterministic_compact(
     trigger_ratio: float = 0.85,
     keep_last_n_messages: int = 6,
-    pin_first_n: int = 1,
     preview_chars: int = 100,
+    protected_tools: frozenset[str] = frozenset(),
 ):
     """Deterministic replacement for ``shape_auto_compact``.
 
-    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``
-    and there are enough messages to compact.
+    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
+    Messages ``context/protection.py`` protects (the current request, pinned
+    messages, tool groups that called one of ``protected_tools``) and the
+    last ``keep_last_n_messages`` stay verbatim.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        messages = ctx.messages
-        total = count_tokens(messages)
-        if total <= ctx.budget.trigger_tokens(trigger_ratio):
-            await next_fn()
-            return
-        if len(messages) <= pin_first_n + keep_last_n_messages:
+        total = count_tokens(ctx.messages)
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
-        head = messages[:pin_first_n]
-        raw_tail_start = len(messages) - keep_last_n_messages if keep_last_n_messages > 0 else len(messages)
-        tail_start = safe_tail_boundary(messages, raw_tail_start, pin_first_n)
-        tail = messages[tail_start:]
-        middle = messages[pin_first_n:tail_start]
-        if not middle:
+        protected = protected_indices(ctx.messages, protected_tools=protected_tools)
+        memo = ctx.compaction_memo
+        marks = watermarks(ctx.budget, trigger)
+        messages, reused = reapply_replacements(memo, LAYER, ctx.messages, keep=protected)
+        replaced_total = count_tokens(messages)
+        compacted = 0
+        if replaced_total > trigger:
+            held = protected | held_elsewhere(memo, LAYER, messages)
+            candidates = _older_replacements(messages, held, keep_last_n_messages, preview_chars)
+            saving = sum(count_message_tokens(messages[i]) - count_message_tokens(new) for i, new in candidates)
+            if marks.worth_compacting(replaced_total, saving):
+                for i, replacement in candidates:
+                    if memo is not None:
+                        memo.remember(LAYER, [messages[i]], [replacement])
+                    messages[i] = replacement
+                    compacted += 1
+
+        if memo is not None:
+            memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
+        if not compacted and not reused:
             await next_fn()
             return
-
-        call_id_to_name: dict[str, str] = {}
-        call_id_to_args: dict[str, dict] = {}
-        for msg in messages:
-            if isinstance(msg, AssistantMessage) and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    call_id_to_name[tc.id] = tc.name
-                    call_id_to_args[tc.id] = getattr(tc, "arguments", {}) or {}
-
-        compacted_middle: list[Message] = []
-        for msg in middle:
-            if msg.role == MessageRole.SYSTEM:
-                compacted_middle.append(msg)
-            elif isinstance(msg, UserMessage):
-                if _is_compaction_summary(msg):
-                    compacted_middle.append(msg)
-                elif getattr(msg, "injected", False):
-                    compacted_middle.append(_compact_user(msg))
-                else:
-                    compacted_middle.append(msg)
-            elif isinstance(msg, AssistantMessage):
-                compacted_middle.append(_compact_assistant(msg))
-            elif isinstance(msg, ToolMessage):
-                compacted_middle.append(
-                    _compact_tool(msg, preview_chars, call_id_to_name, call_id_to_args)
-                )
-            else:
-                compacted_middle.append(msg)
-
-        ctx.messages = [*head, *compacted_middle, *tail]
+        ctx.messages = messages
         logger.info(
-            "deterministic_compact: compacted %d middle messages (head=%d, tail=%d), "
-            "%d→%d tokens (turn=%d, budget=%d)",
-            len(middle), len(head), len(tail), total, count_tokens(ctx.messages),
-            ctx.turn_index, ctx.budget.effective_max_tokens,
+            "deterministic_compact: compacted %d messages (%d again from earlier calls, %d protected), "
+            "%d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
+            compacted, reused, len(protected), total, count_tokens(messages),
+            marks.low_water, ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 
     return _middleware
+
+
+def _older_replacements(
+    messages: list[Message],
+    protected: frozenset[int],
+    keep_last_n_messages: int,
+    preview_chars: int,
+) -> list[tuple[int, Message]]:
+    """Oldest first, the extractive form of every unprotected message before
+    the recent tail that no layer has compacted yet."""
+    raw_tail_start = len(messages) - keep_last_n_messages if keep_last_n_messages > 0 else len(messages)
+    tail_start = safe_tail_boundary(messages, raw_tail_start, 0)
+
+    call_id_to_name: dict[str, str] = {}
+    call_id_to_args: dict[str, dict] = {}
+    for msg in messages:
+        if isinstance(msg, AssistantMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                call_id_to_name[tc.id] = tc.name
+                call_id_to_args[tc.id] = getattr(tc, "arguments", {}) or {}
+
+    replacements: list[tuple[int, Message]] = []
+    for i in range(tail_start):
+        msg = messages[i]
+        if i in protected or getattr(msg, "compacted_by", None) == LAYER:
+            continue
+        if isinstance(msg, UserMessage):
+            # A summary another layer wrote (compacted_by) is already short.
+            replacement = _compact_user(msg) if msg.injected and msg.compacted_by is None else msg
+        elif isinstance(msg, AssistantMessage):
+            replacement = _compact_assistant(msg)
+        elif isinstance(msg, ToolMessage):
+            replacement = _compact_tool(msg, preview_chars, call_id_to_name, call_id_to_args)
+        else:
+            replacement = msg
+        if replacement is not msg:
+            replacements.append((i, replacement))
+    return replacements

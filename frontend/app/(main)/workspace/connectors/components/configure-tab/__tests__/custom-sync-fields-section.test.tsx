@@ -101,7 +101,7 @@ describe('CustomSyncFieldsSection: Web', () => {
     renderWeb(DEFAULTS);
     const groups = screen.getAllByRole('group').map((g) => g.querySelector('legend')?.textContent);
     expect(groups).toEqual(['Website', 'What to crawl', 'Advanced']);
-    expect(screen.queryByText('Additional Settings')).toBeNull();
+    expect(screen.queryByText('Additional settings')).toBeNull();
     expect(screen.getByText('Stay in this section')).toBeTruthy();
     expect(screen.getByText('pages')).toBeTruthy();
   });
@@ -161,7 +161,7 @@ describe('CustomSyncFieldsSection: Web', () => {
 });
 
 describe('CustomSyncFieldsSection: other connectors', () => {
-  it('keeps ungrouped fields in the Additional Settings block with schema text', () => {
+  it('keeps ungrouped fields in the Additional settings block with schema text', () => {
     renderInTheme(
       <CustomSyncFieldsSection
         fields={[{ name: 'feed', displayName: 'Feed URL', fieldType: 'URL', required: true }]}
@@ -172,7 +172,7 @@ describe('CustomSyncFieldsSection: other connectors', () => {
         connectorType="RSS"
       />
     );
-    expect(screen.getByText('Additional Settings')).toBeTruthy();
+    expect(screen.getByText('Additional settings')).toBeTruthy();
     expect(screen.getByText('Feed URL')).toBeTruthy();
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });

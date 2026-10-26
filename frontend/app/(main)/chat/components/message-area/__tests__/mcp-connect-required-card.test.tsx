@@ -145,7 +145,7 @@ describe('McpConnectRequiredCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
-    expect((await screen.findByRole('alert')).textContent).toMatch(/Workspace → MCP Servers/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Workspace → MCP servers/);
   });
 
   it('offers nothing a member cannot do, and no retry that would fail again', () => {

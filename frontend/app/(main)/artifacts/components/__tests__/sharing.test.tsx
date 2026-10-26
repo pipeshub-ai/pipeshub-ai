@@ -20,7 +20,7 @@ vi.mock('@/app/components/ui', () => ({
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('../artifact-thumbnail', () => ({ ArtifactThumbnail: () => null }));
 const viewport = vi.hoisted(() => ({ isMobile: false }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile, useIsBelowDesktop: () => viewport.isMobile }));
 
 const PAGINATION = { page: 1, limit: 50, totalCount: 2, totalPages: 1 };
 

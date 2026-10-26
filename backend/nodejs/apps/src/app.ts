@@ -1,3 +1,6 @@
+// The edition seam loads first: an edition's schemas register their model names
+// (org, users) before any shared module imports a schema with the same name.
+import './config';
 import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
@@ -54,6 +57,7 @@ import {
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -502,6 +506,8 @@ export class Application {
               imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
               fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
               mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+              // Answers render model output; a form in one must not post off-origin.
+              formAction: ["'self'"],
             },
           },
         }),
@@ -554,7 +560,9 @@ export class Application {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
-        skip: (req) => !isApiPath(req.path),
+        // Evaluated after the response: a mounted router has rewritten req.path
+        // to its own mount-relative path by then, originalUrl keeps the full one.
+        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
       }),
     );
 
@@ -662,6 +670,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
     );
 
     // code-graph status for the dashboard (repos and their graph status)

@@ -72,9 +72,12 @@ func TestHandwritten_ConnectorSync(t *testing.T) {
 		}
 	}()
 
-	// RSS has no auth, so it has no filter options, and it cannot resync before it is enabled.
-	_, err = s.ConnectorFilters.GetConnectorFilters(ctx, connectorID)
-	requireStatus(t, 400, err)
+	// RSS has no auth, so its saved settings are enough for filter options, but none of them
+	// come from the service. It cannot resync before it is enabled.
+	filters, err := s.ConnectorFilters.GetConnectorFilters(ctx, connectorID)
+	require.NoError(t, err)
+	assert.True(t, filters.Object.Success)
+	assert.Empty(t, filters.Object.FilterOptions)
 	_, err = s.ConnectorFilters.GetFilterFieldOptions(ctx, operations.GetFilterFieldOptionsRequest{
 		ConnectorID: connectorID,
 		FilterKey:   "sdk_test_no_such_filter",

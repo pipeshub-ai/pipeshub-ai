@@ -2700,9 +2700,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(processing_timeout) as budget:
-                        event_gen = self.message_handler(parsed_message)
-                        try:
+                    event_gen = self.message_handler(parsed_message)
+                    try:
+                        async with asyncio.timeout(processing_timeout) as budget:
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_PARSING
@@ -2787,15 +2787,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         f"Released indexing gate for {message_id}"
                                     )
                                     success = True
-                        finally:
-                            # If this coroutine is cancelled (timeout, or the
-                            # renewal-loss path cancelling handler_task below)
-                            # while suspended on the semaphore acquire, the
-                            # CancelledError lands here — not inside the
-                            # handler generator. Explicitly closing it
-                            # delivers GeneratorExit so the handler's own
-                            # cleanup (reverting IN_PROGRESS) still runs.
-                            await event_gen.aclose()
+                                    break
+                        # The record is done once INDEXING_COMPLETE is out; the
+                        # handler's bookkeeping after it (releasing queued copies)
+                        # must not fail a finished record on the processing deadline.
+                        await concurrency.finish_after_indexing_complete(event_gen)
+                    finally:
+                        # Closing delivers GeneratorExit so the handler's own
+                        # cleanup (reverting IN_PROGRESS) runs on every exit,
+                        # including cancellation while parked on a slot. It sits
+                        # outside the timeout so a deadline passing mid-cleanup
+                        # cannot cut that cleanup short, orphan inner generators
+                        # (their GC finalizer then runs in another Context and
+                        # ContextVar.reset fails), or turn the real error into a
+                        # TimeoutError.
+                        await event_gen.aclose()
 
                 handler_task: asyncio.Task[None] | None = None
                 try:

@@ -113,6 +113,34 @@ describe('MailSenderService', () => {
     expect((await sender.send(body, smtp)).status).to.equal('transient');
   });
 
+  it('names a rejected SMTP sign-in so the admin can fix the credentials', async () => {
+    sendMailStub.rejects(Object.assign(new Error('Invalid login: 535 Authentication Credentials Invalid'), {
+      code: 'EAUTH',
+      responseCode: 535,
+    }));
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    expect(await sender.send(body, smtp)).to.include({ status: 'permanent', problem: 'auth' });
+  });
+
+  it('names an unreachable SMTP server only when the message cannot have left', async () => {
+    // A fresh sender each time, so earlier connection failures cannot open the circuit.
+    const problemFor = async (error: Error) => {
+      const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+      sendMailStub.rejects(error);
+      return ((await sender.send(body, smtp)) as { problem?: string }).problem;
+    };
+
+    expect(await problemFor(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ESOCKET', originalCode: 'ECONNREFUSED' }))).to.equal('unreachable');
+    expect(await problemFor(Object.assign(new Error('Connection timeout'), { code: 'ETIMEDOUT', timeoutType: 'CONNECT_TIMEOUT' }))).to.equal('unreachable');
+    expect(await problemFor(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'EDNS' }))).to.equal('unreachable');
+    // These can follow a server that already accepted the message.
+    expect(await problemFor(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT', timeoutType: 'SOCKET_TIMEOUT' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('Connection closed unexpectedly'), { code: 'ECONNECTION' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('read ECONNRESET'), { code: 'ESOCKET', originalCode: 'ECONNRESET' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('550 mailbox unavailable'), { responseCode: 550 }))).to.equal(undefined);
+  });
+
   it('treats an unknown template as permanent rather than retrying it', async () => {
     const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
     const result = await sender.send(

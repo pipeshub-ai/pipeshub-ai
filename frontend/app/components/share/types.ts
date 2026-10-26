@@ -86,6 +86,11 @@ export interface ShareAdapter {
 
   supportsRoles: boolean;
   supportsTeams: boolean;
+  /** Narrow the role picker to some roles and/or reword them (default: all three, house labels). */
+  roleOptions?: {
+    roles: ShareRole[];
+    labels?: Record<ShareRole, { label: string; description: string }>;
+  };
 
   getSharedMembers: () => Promise<SharedMember[]>;
   share: (submission: ShareSubmission) => Promise<void>;

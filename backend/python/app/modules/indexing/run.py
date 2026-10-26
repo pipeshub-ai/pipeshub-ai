@@ -157,9 +157,14 @@ class IndexingPipeline:
         """
         if not virtual_record_id:
             return
+        if not ctx.org_id:
+            # Without the org the filter would match another org's points for the same VRID.
+            raise EmbeddingDeletionError(
+                "Refusing to delete vector points without an organisation", record_id=virtual_record_id
+            )
         collection_name = self.collection_registry.resolve_write_collection(ctx)
         filter_dict = await self.vector_db_service.filter_collection(
-            must={"virtualRecordId": virtual_record_id}
+            must={"orgId": ctx.org_id, "virtualRecordId": virtual_record_id}
         )
         await self.vector_db_service.delete_points(
             collection_name=collection_name,
@@ -1295,9 +1300,13 @@ class IndexingPipeline:
                 batch_num = i // QDRANT_BULK_DELETE_BATCH_SIZE + 1
 
                 try:
-                    filter_dict = await self.vector_db_service.filter_collection(
-                        should={"virtualRecordId": batch}
+                    # Scoped to the caller's org when it is known, so one org's delete cannot reach another's points.
+                    scope = (
+                        {"must": {"orgId": org_id, "virtualRecordId": batch}}
+                        if org_id
+                        else {"should": {"virtualRecordId": batch}}
                     )
+                    filter_dict = await self.vector_db_service.filter_collection(**scope)
 
                     for collection_name in collection_names:
                         await self.vector_db_service.delete_points(

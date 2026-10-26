@@ -1,4 +1,5 @@
-import fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { createHash, randomUUID } from 'crypto';
@@ -497,6 +498,84 @@ class LocalStorageAdapter implements StorageServiceInterface {
         },
       );
     }
+  }
+
+  async writeObject(storageKey: string, data: Buffer): Promise<void> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      // A symlinked folder on the way must not carry the write out of the mount.
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) {
+        throw new StorageNotFoundError('Local folder not found');
+      }
+      await this.writeFileAtomically(located.target, data);
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Opens a storage key for reading, or null when it does not exist. The file
+   * is served from this handle, never reopened by path: a final symlink is not
+   * followed (O_NOFOLLOW), and the open file must be the one at the key's real
+   * place inside the mount once open, so a path swapped between the check and
+   * the read cannot reach a file outside it.
+   */
+  async openObject(
+    storageKey: string,
+  ): Promise<{ handle: FileHandle; size: number } | null> {
+    const located = await this.locateInsideRealMount(
+      this.objectPathInMount(storageKey),
+    );
+    if (located === null) {
+      return null;
+    }
+    let handle: FileHandle;
+    try {
+      handle = await fs.open(
+        located.target,
+        // Undefined on Windows, where it reads as 0 in the bitwise or.
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') {
+        return null;
+      }
+      if (code === 'ELOOP') {
+        throw new StorageValidationError('Invalid document path');
+      }
+      throw error;
+    }
+    try {
+      const [opened, atPath, relocated] = await Promise.all([
+        handle.stat(),
+        fs.lstat(located.target),
+        this.locateInsideRealMount(located.target),
+      ]);
+      if (
+        !opened.isFile() ||
+        relocated?.target !== located.target ||
+        opened.ino !== atPath.ino ||
+        opened.dev !== atPath.dev
+      ) {
+        throw new StorageValidationError('Invalid document path');
+      }
+      return { handle, size: opened.size };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
+  private objectPathInMount(storageKey: string): string {
+    return this.assertInsideMount(
+      path.join(this.mountPath, this.sanitizePath(storageKey)),
+    );
   }
 
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {

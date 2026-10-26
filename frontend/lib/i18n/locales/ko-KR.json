@@ -11,7 +11,9 @@
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
       "manualIndexError": "수동 인덱싱 시작에 실패했습니다",
       "retryClassificationStart": "분류 재시도가 대기열에 추가되었습니다",
-      "retryClassificationError": "분류 재시도에 실패했습니다"
+      "retryClassificationError": "분류 재시도에 실패했습니다",
+      "retryEntitiesStart": "개체 추출 재시도가 대기열에 추가되었습니다",
+      "retryEntitiesError": "개체 추출 재시도에 실패했습니다"
     },
     "trash": {
       "menuLabel": "최근 삭제한 항목",
@@ -121,7 +123,8 @@
     "tabYourProjects": "내 프로젝트",
     "tabArchived": "보관됨",
     "archivedEmptyState": "보관된 프로젝트가 없습니다",
-    "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다."
+    "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다.",
+    "actionsLabel": "프로젝트 작업"
   },
   "timeGroup": {
     "today": "오늘",
@@ -198,6 +201,7 @@
   },
   "onboarding": {
     "skipEmbeddingDefault": "건너뛰기",
+    "stepOf": "{{total}}단계 중 {{current}}단계: {{title}}",
     "skipEmbeddingTitle": "기본값(시스템 제공) 설정을 열고 모델 추가를 눌러 저장하세요",
     "nextDisabledEmbeddingHint": "아래에서 임베딩 제공자를 추가하거나, 건너뛰기를 사용하여 기본 모델 설정을 여세요",
     "embeddingStepHint": "아래에서 임베딩 제공자를 추가하여 시맨틱 검색을 활성화하거나, 건너뛰기를 클릭하여 기본값(시스템 제공)을 열고 모델 추가를 누르세요. 나중에 워크스페이스 설정에서 변경할 수 있습니다.",
@@ -227,7 +231,7 @@
       }
     },
     "systemConfig": "시스템 구성",
-    "stepHeading": "{{current}}/{{total}} 단계: {{name}} 구성",
+    "stepHeading": "{{name}} 구성",
     "stepAiModel": {
       "stepName": "AI 모델*",
       "addLlmHint": "계속하려면 텍스트(LLM) 제공자를 하나 이상 추가하세요.",
@@ -334,7 +338,6 @@
     "untitledChat": "—",
     "name": "이름",
     "size": "크기",
-    "showing": "{{total}}개 중 {{start}}-{{end}}",
     "types": {
       "IMAGE": "이미지",
       "CHART": "차트",
@@ -367,7 +370,6 @@
     "deleteSuccess": "\"{{name}}\" 삭제됨",
     "preview": "미리보기",
     "moreActionsFor": "{{name}} 추가 옵션",
-    "pageOf": "{{page}} / {{total}}",
     "loadFailedHint": "연결을 확인한 후 다시 시도하세요.",
     "noMatches": "필터와 일치하는 아티팩트가 없습니다",
     "noMatchesHint": "다른 검색어를 사용하거나 필터를 지워 모든 아티팩트를 확인하세요.",
@@ -378,6 +380,7 @@
   },
   "notifications": {
     "title": "알림",
+    "close": "알림 닫기",
     "loading": "로드 중…",
     "empty": "아직 알림이 없습니다",
     "emptyUnread": "읽지 않은 알림이 없습니다",
@@ -495,7 +498,10 @@
     "willBeDeleted": "이(가) 삭제됩니다",
     "willBeReindexed": "이(가) 다시 인덱싱됩니다",
     "reindexConfirm": "이 {{type}}을(를) 다시 인덱싱하시겠습니까?",
-    "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다."
+    "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
+    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다.",
+    "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
+    "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
   },
   "table": {
     "fileName": "파일 이름",
@@ -552,6 +558,12 @@
     }
   },
   "common": {
+    "shiftKey": "Shift",
+    "pagination": {
+      "showing": "{{total}}개 중 {{start}}-{{end}}",
+      "pageOf": "{{page}} / {{total}}",
+      "perPage": "페이지당 {{value}}개"
+    },
     "yes": "예",
     "no": "아니요",
     "ok": "확인",
@@ -591,6 +603,14 @@
     "enterprise": {
       "label": "EE에서 제공",
       "tooltip": "PipesHub Enterprise Edition의 기능입니다"
+    },
+    "errorBoundary": {
+      "title": "문제가 발생했습니다",
+      "body": "페이지의 이 부분을 표시할 수 없습니다. 다시 시도하거나 채팅으로 돌아가세요.",
+      "retry": "다시 시도",
+      "goToChat": "채팅으로 이동",
+      "notFoundTitle": "페이지를 찾을 수 없습니다",
+      "notFoundBody": "이 페이지는 존재하지 않거나 이동되었습니다."
     }
   },
   "units": {
@@ -636,7 +656,8 @@
     "open": "사이드바 열기",
     "expand": "사이드바 펼치기",
     "close": "사이드바 닫기",
-    "collapse": "사이드바 접기"
+    "collapse": "사이드바 접기",
+    "navigation": "탐색"
   },
   "menu": {
     "reindex": "다시 인덱싱",
@@ -648,7 +669,8 @@
     "forceReindexing": "강제 다시 인덱싱",
     "retryIndexing": "인덱싱 재시도",
     "rename": "이름 변경",
-    "delete": "삭제"
+    "delete": "삭제",
+    "indexAll": "모두 색인"
   },
   "reindexScope": {
     "description": "\"{{name}}\"에 대해 인덱싱할 범위를 선택하세요.",
@@ -709,7 +731,43 @@
       "pending": "보류 중"
     },
     "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
-    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다"
+    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다",
+    "searchResults": "검색 결과",
+    "clearSearch": "검색 지우기",
+    "rowActions": {
+      "open": "열기",
+      "preview": "미리 보기",
+      "goToParent": "상위 폴더로 이동",
+      "goToNamed": "{{name}}(으)로 이동",
+      "moreFor": "{{name}} 추가 옵션",
+      "select": "{{name}} 선택"
+    },
+    "upload": {
+      "title": "데이터 업로드",
+      "documentation": "문서",
+      "filesTitle": "파일 업로드",
+      "filesHint": "파일당 최대 {{maxMb}}MB. 업로드할 때 형식과 크기를 확인합니다.",
+      "foldersTitle": "폴더 업로드",
+      "foldersHint": "업로드할 때 각 파일을 확인합니다(파일당 최대 {{maxMb}}MB).",
+      "or": "또는",
+      "fileCount_one": "파일 {{count}}개",
+      "fileCount_other": "파일 {{count}}개",
+      "folderCount_one": "폴더 {{count}}개",
+      "folderCount_other": "폴더 {{count}}개",
+      "depthWarning_one": "여기에는 폴더 수준을 {{count}}개만 더 넣을 수 있습니다(폴더는 최대 {{max}}단계까지 중첩할 수 있습니다). 계속하려면 일부 폴더를 제거하세요.",
+      "depthWarning_other": "여기에는 폴더 수준을 {{count}}개만 더 넣을 수 있습니다(폴더는 최대 {{max}}단계까지 중첩할 수 있습니다). 계속하려면 일부 폴더를 제거하세요.",
+      "folderLimitReached": "폴더는 최대 {{max}}단계까지 중첩할 수 있으며 이 폴더는 이미 한도에 도달했으므로 여기에 폴더를 업로드할 수 없습니다. 파일은 계속 업로드할 수 있습니다.",
+      "addFiles": "파일 추가",
+      "addFolder": "폴더 추가",
+      "moreBelow": "아래에 더 있음",
+      "removeNamed": "{{name}} 제거",
+      "expandFolder": "폴더 펼치기",
+      "collapseFolder": "폴더 접기"
+    },
+    "createDialog": {
+      "titlePlaceholder": "예: 엔지니어링",
+      "descriptionPlaceholder": "예: 개발팀 문서"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -758,7 +816,7 @@
     "noModelsAvailable": "아직 구성된 AI 모델이 없습니다",
     "failedToLoadModels": "AI 모델을 불러오지 못했습니다",
     "failedToLoadAgentConfig": "이 에이전트의 모델 구성을 불러오지 못했습니다",
-    "openModels": "모델 열기",
+    "openModels": "모델 관리",
     "connectorsCollectionsTitle": "커넥터 및 컬렉션",
     "connectorsTooltip": "커넥터 및 컬렉션",
     "connectorsDefaultScopeHint": "기본적으로 모든 커넥터와 컬렉션이 검색됩니다. 범위를 좁히려면 아래에서 특정 항목을 선택하세요.",
@@ -826,7 +884,6 @@
     "treeExpand": "{{name}}의 내용 표시",
     "treeCollapse": "{{name}}의 내용 숨기기",
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
-    "comingSoon": "출시 예정",
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
@@ -941,6 +998,8 @@
     "stoppedMarker": "중지됨",
     "toolCard": {
       "arguments": "인수",
+      "query": "쿼리",
+      "queryCutOff": "이 쿼리는 앞부분만 저장되어 복사할 수 없습니다.",
       "result": "결과",
       "error": "오류",
       "blocked": "차단됨",
@@ -1352,12 +1411,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "이 에이전트에 구성되지 않음",
       "internalSearch": "내부 검색",
-      "webSearch": "웹 검색",
-      "deepResearch": "심층 리서치",
-      "deepResearchNeedsWebSearch": "심층 리서치를 사용하려면 웹 검색을 켜세요"
+      "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
-    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다.",
     "toolApproval": {
       "noArguments": "세부 정보 없음",
       "deny": "거부",
@@ -1506,7 +1562,8 @@
       },
       "roles": {
         "admin": "관리자",
-        "member": "멤버"
+        "member": "멤버",
+        "guest": "게스트"
       },
       "statuses": {
         "active": "활성",
@@ -1740,11 +1797,10 @@
       "searchPlaceholder": "검색...",
       "newApplication": "새 OAuth 애플리케이션",
       "emptyTitle": "OAuth 2.0 애플리케이션 없음",
-      "emptyDescription": "OAuth 2.0 앱을 생성하여 서드파티 통합이 Pipeshub를 통해 조직에 접근할 수 있도록 합니다.",
+      "emptyDescription": "OAuth 2.0 앱을 생성하여 서드파티 통합이 PipesHub를 통해 조직에 접근할 수 있도록 합니다.",
       "loading": "애플리케이션을 불러오는 중...",
       "errorGeneric": "OAuth 애플리케이션을 불러오지 못했습니다",
       "retry": "다시 시도",
-      "docsOpenLabel": "OAuth 문서 열기(준비 중)",
       "scopesBadgeOne": "범위 {{count}}개",
       "scopesBadgeMany": "범위 {{count}}개",
       "manage": "관리",
@@ -1844,9 +1900,9 @@
         "descriptionLabel": "설명",
         "descriptionPlaceholder": "이 애플리케이션에 대한 간단한 설명",
         "grantTypesHeading": "권한 부여 유형",
-        "grantAuthorizationCode": "Authorization Code",
-        "grantRefreshToken": "Refresh Token",
-        "grantClientCredentials": "Client Credentials",
+        "grantAuthorizationCode": "Authorization code",
+        "grantRefreshToken": "Refresh token",
+        "grantClientCredentials": "Client credentials",
         "redirectHeading": "리디렉션 URI",
         "redirectHelper": "하나 이상의 콜백 URL이 필요합니다. 프로덕션에서는 HTTPS가 필수입니다.",
         "redirectPlaceholder": "https://yourapp.com/callback",
@@ -1869,7 +1925,7 @@
         "successScreenTitle": "OAuth 애플리케이션이 생성됨",
         "successScreenSubtitle": "클라이언트 시크릿을 안전하게 보관하세요. 다시 표시되지 않습니다.",
         "clientIdLabel": "Client ID",
-        "clientSecretLabel": "Client Secret",
+        "clientSecretLabel": "Client secret",
         "returnToAppsButton": "OAuth 2.0 앱으로 돌아가기",
         "showSecretAria": "클라이언트 시크릿 표시",
         "hideSecretAria": "클라이언트 시크릿 숨기기",
@@ -1920,7 +1976,7 @@
         "errorTitle": "토큰을 해지하지 못했습니다"
       },
       "create": {
-        "panelTitle": "개인 액세스 토큰 생성",
+        "panelTitle": "새 개인 액세스 토큰",
         "successPanelTitle": "토큰 생성 완료",
         "createButton": "토큰 생성",
         "doneButton": "완료",
@@ -2200,8 +2256,11 @@
       "createdBy": "생성자",
       "createdOn": "생성일"
     },
+    "bulk": {
+      "selected": "{{label}} {{count}}개 선택됨"
+    },
     "pagination": {
-      "showing": "전체 {{total}}개 중 {{from}}-{{to}} 표시",
+      "showing_other": "전체 {{count}}개 중 {{from}}-{{to}} 표시",
       "previous": "이전",
       "next": "다음"
     },
@@ -2241,7 +2300,7 @@
         "webSearch": "웹 검색",
         "tenants": "테넌트",
         "superOrgs": "조직",
-        "oauthApps": "OAuth 앱",
+        "oauthApps": "커넥터 OAuth 앱",
         "serviceAccounts": "서비스 계정"
       }
     },
@@ -2551,7 +2610,7 @@
     "authentication": {
       "loading": "인증 설정을 불러오는 중…",
       "configure": "구성",
-      "title": "인증 설정",
+      "title": "인증",
       "subtitle": "사용자가 애플리케이션에 로그인하는 방식을 구성합니다",
       "methodsHeading": "인증 방식",
       "methodsSubtitle": "하나 이상의 인증 방식을 활성화하세요. 사용자는 활성화된 모든 방식으로 로그인할 수 있습니다.",
@@ -2665,7 +2724,7 @@
       },
       "successDialog": {
         "title": "인스턴스 구성이 완료되어 동기화할 준비가 되었습니다!",
-        "description": "지금 바로 {{name}} 데이터를 Pipeshub와 동기화하거나,",
+        "description": "지금 바로 {{name}} 데이터를 PipesHub와 동기화하거나,",
         "descriptionSuffix": "나중에 설정에서 진행할 수 있습니다.",
         "later": "나중에 하기",
         "startSync": "지금 동기화 시작"
@@ -2849,10 +2908,28 @@
         "localWatcherLabel": "로컬 워처",
         "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
         "classification": "분류",
-        "classificationSkipped": "건너뜀",
+        "enrichment": {
+          "title": "AI 데이터 추출",
+          "description": "레코드를 검색할 수 있게 된 후 백그라운드에서 실행됩니다. 검색은 이 작업을 기다리지 않습니다.",
+          "classificationHint": "요약, 주제, 카테고리를 추가합니다",
+          "entities": "엔터티 추출",
+          "entitiesHint": "사람, 조직, 장소를 찾습니다",
+          "progress": "{{total}}개 중 {{completed}}개",
+          "waiting": "대기 중",
+          "skipped": "건너뜀",
+          "notStarted": "레코드를 검색할 수 있게 되면 시작됩니다",
+          "inProgress": "진행 중",
+          "done": "완료",
+          "failedCount_one": "{{count}}개 실패",
+          "failedCount_other": "{{count}}개 실패",
+          "retry": "재시도"
+        },
         "retryFailedClassification": "실패한 분류 재시도",
         "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
         "retryClassificationError": "분류 재시도에 실패했습니다",
+        "retryFailedEntities": "실패한 개체 추출 재시도",
+        "retryEntitiesSuccess": "개체 추출 재시도가 대기열에 추가되었습니다",
+        "retryEntitiesError": "개체 추출 재시도에 실패했습니다",
         "codeGraph": {
           "title": "코드 그래프",
           "status": {
@@ -3189,7 +3266,7 @@
       "loading": "MCP 서버를 불러오는 중…",
       "noResults": "검색과 일치하는 MCP 서버가 없습니다",
       "replacedNotice": "더 이상 유지 관리되지 않습니다. 대신 {{name}}을(를) 추가하세요.",
-      "addServer": "서버 추가",
+      "addServer": "새 서버",
       "custom": "사용자 지정",
       "inherited": "상속됨",
       "inheritedDeleteTooltip": "상위 조직에서 관리됩니다",
@@ -3330,7 +3407,7 @@
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
-        "createTitle": "MCP 서버 추가",
+        "createTitle": "새 MCP 서버",
         "tabs": {
           "configuration": "구성",
           "tools": "도구 및 승인",
@@ -3369,7 +3446,7 @@
           "copyFailed": "서버 URL을 복사하지 못했습니다",
           "addedBy": "{{name}} 님이 추가함",
           "disconnectHint": "로그아웃합니다. 설정과 규칙은 유지됩니다.",
-          "remove": "서버 제거",
+          "remove": "서버 삭제",
           "removeHint": "모든 사용자에게서 삭제합니다.",
           "removeHintPersonal": "서버와 로그인 정보를 삭제합니다."
         }
@@ -3411,7 +3488,7 @@
       "stdioPolicy": {
         "disabledTitle": "이 배포에서 비활성화됨",
         "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
-        "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
+        "unavailableHint": "로컬 명령(STDIO) 서버가 꺼져 있습니다. 관리자에게 활성화를 요청하세요.",
         "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
       },
       "addDialog": {
@@ -3481,10 +3558,9 @@
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",
       "loading": "봇을 불러오는 중…",
       "defaultAssistant": "기본 어시스턴트",
-      "createBot": "봇 만들기",
-      "emptyTitle": "봇 없음",
+      "createBot": "새 봇",
+      "emptyTitle": "아직 봇이 없습니다",
       "emptyDescription": "지금 첫 번째 봇을 설정해 보세요",
-      "addBot": "봇 추가",
       "types": {
         "slack": "Slack 봇",
         "discord": "Discord 봇",
@@ -3527,8 +3603,8 @@
         "deleteBot": "봇 삭제"
       },
       "title": "봇",
-      "noBots": "봇 없음",
-      "setupFirstBot": "지금 첫 번째 봇을 설정해 보세요",
+      "noBots": "아직 봇이 없습니다",
+      "setupFirstBot": "봇을 사용하면 Slack에서 바로 에이전트에게 질문할 수 있습니다. 시작하려면 봇을 추가하세요.",
       "documentation": "문서",
       "configPanelTitle": "봇 구성",
       "selectBotSetup": "봇 설정 선택",
@@ -3568,7 +3644,7 @@
       "subtitle": "에이전트가 사용할 수 있는 커스텀 스킬을 만들어 보세요 — 마크다운 지침, 선택적 스크립트와 참조 파일로 구성되며, Agent Builder의 다른 모든 항목처럼 버전 관리 및 거버넌스가 적용됩니다.",
       "loading": "스킬을 불러오는 중…",
       "refreshed": "새로고침됨",
-      "createSkill": "스킬 만들기",
+      "createSkill": "새 스킬",
       "importSkill": "가져오기",
       "reviewCandidates": "후보 검토",
       "searchPlaceholder": "스킬 검색…",
@@ -3709,7 +3785,8 @@
       "availability": {
         "label": "에이전트에서 사용 가능",
         "description": "끄면 이 스킬은 라이브러리에 남아 있지만 에이전트가 찾거나 불러올 수 없습니다.",
-        "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다."
+        "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다.",
+        "short": "사용 가능"
       }
     },
     "mail": {
@@ -3801,7 +3878,7 @@
       "configCalloutTitle": "프롬프트 구성",
       "configCalloutDescription": "사용자 지정 시스템 프롬프트는 AI의 동작, 어조, 질문에 대한 답변 방식을 정의하는 데 도움이 됩니다. 프롬프트가 명확하고 조직의 요구에 부합하는지 확인하세요.",
       "resetToDefault": "기본값으로 재설정",
-      "customInstructionsTitle": "사용자 지정 지침",
+      "customInstructionsTitle": "프롬프트",
       "customInstructionsDescription": "채팅 어시스턴트를 위한 사용자 지정 지침을 추가하세요. 예를 들어 특정 언어로 답변하기, 서식 스타일 따르기, 원하는 동작 적용하기 등입니다. 아래 각 모드는 답변 방식이 다르므로 자체 지침을 갖습니다.",
       "scopeHint": "이 지침은 <bold>채팅 어시스턴트</bold>(아래 에이전트 모드)에만 적용됩니다. <bold>Agent Builder</bold>에서 만든 사용자 지정 에이전트에는 영향을 주지 않으며, 각 에이전트는 자체 시스템 프롬프트와 해당 에이전트에 구성된 지침을 사용합니다.",
       "agentTitle": "에이전트",
@@ -3811,7 +3888,7 @@
     },
     "webSearch": {
       "loading": "웹 검색 설정을 불러오는 중…",
-      "title": "웹 검색 구성",
+      "title": "웹 검색",
       "subtitle": "챗봇이 웹을 검색할 때 사용할 웹 검색 공급자를 구성합니다",
       "methodsHeading": "다양한 웹 검색 방식",
       "methodsSubtitle": "사용자가 웹 검색에 사용할 방식을 선택하세요",
@@ -3843,16 +3920,23 @@
         "default": "기본값",
         "configured": "구성됨",
         "notConfigured": "구성되지 않음",
-        "active": "구성됨"
+        "active": "구성됨",
+        "builtIn": "기본 제공"
       },
-      "heading": "웹 검색 구성",
+      "heading": "웹 검색",
       "methodsSection": "다양한 웹 검색 방식",
       "methodsSectionDescription": "사용자가 웹 검색에 사용할 방식을 선택하세요",
       "policyTitle": "웹 검색 공급자 정책",
       "verifying": "연결을 확인하는 중...",
       "disabledReasonConfigure": "활성화하기 전에 먼저 이 공급자를 구성하세요.",
       "disabledReasonActive": "이 공급자를 활성화하기 전에 현재 활성화된 공급자를 비활성화하세요.",
-      "configureTip": "구성"
+      "configureTip": "구성",
+      "actions": {
+        "setDefault": "기본값으로 설정",
+        "settingDefault": "설정 중…",
+        "editConfiguration": "구성 편집",
+        "deleteConfiguration": "구성 삭제"
+      }
     },
     "profile": {
       "subtitle": "개인 프로필 정보를 여기에서 관리합니다",
@@ -3886,7 +3970,7 @@
         "title": "역할 및 권한",
         "role": "역할",
         "groups": "그룹",
-        "roleDescription": "Pipeshub 앱에서의 역할",
+        "roleDescription": "PipesHub 앱에서의 역할",
         "groupsDescription": "소속된 사용자 그룹",
         "noGroups": "사용자 그룹이 없습니다"
       },
@@ -4159,7 +4243,7 @@
       }
     },
     "oauthApps": {
-      "title": "OAuth 앱",
+      "title": "커넥터 OAuth 앱",
       "subtitle": "커넥터와 액션에 사용할 OAuth 자격 증명을 관리합니다. \"기본\"으로 표시된 앱은 재정의하지 않는 한 새 연결에 자동으로 사용됩니다.",
       "addButton": "OAuth 앱 추가",
       "tabs": {
@@ -4533,6 +4617,8 @@
     "resizeCitations": "인용 패널 크기 조정",
     "resizePreview": "파일 미리보기 패널 크기 조정",
     "viewCitations": "인용 보기",
+    "preview": "미리보기",
+    "fileDetails": "파일 세부 정보",
     "openNamedInSource": "{{name}}을(를) 원본에서 열기"
   },
   "agentBuilder": {
@@ -4540,20 +4626,17 @@
     "agentName": "이름",
     "createdBy": "작성자",
     "agentNamePlaceholder": "예: 지원 봇",
-    "serviceAccountBadge": "서비스 에이전트",
-    "serviceAccountBadgeTooltip": "이 서비스 에이전트는 자체 툴셋 자격 증명을 사용합니다. 지식 검색은 만든 사람의 접근 권한으로 이루어지므로, 사용하는 모든 사람이 만든 사람이 읽을 수 있는 범위의 결과를 보게 됩니다.",
-    "convertToServiceAccount": "서비스 에이전트로 전환",
-    "convertToServiceAccountTooltip": "영구적: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 만든 사람의 접근 권한으로 수행됩니다. 되돌릴 수 없습니다.",
-    "convertToServiceAccountTooltipNewAgent": "이 에이전트를 서비스 에이전트로 만듭니다: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 본인의 접근 권한으로 수행됩니다.",
-    "createAsServiceAccount": "서비스 에이전트",
-    "createAsServiceAccountTooltip": "에이전트 수준 툴셋으로 생성하고 조직 전체에 공유합니다. 지식 검색은 본인의 접근 권한으로 수행됩니다.",
+    "serviceAgentBadge": "서비스 에이전트",
+    "serviceAgentBadgeTooltip": "이 서비스 에이전트는 자체 툴셋 자격 증명을 사용합니다. 지식 검색은 만든 사람의 접근 권한으로 이루어지므로, 사용하는 모든 사람이 만든 사람이 읽을 수 있는 범위의 결과를 보게 됩니다.",
+    "convertToServiceAgentTooltip": "영구적: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 만든 사람의 접근 권한으로 수행됩니다. 되돌릴 수 없습니다.",
+    "convertToServiceAgentTooltipNewAgent": "이 에이전트를 서비스 에이전트로 만듭니다: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 본인의 접근 권한으로 수행됩니다.",
     "agentActionsMenuAria": "에이전트 메뉴",
     "agentMenuCreateAsServiceAgent": "서비스 에이전트로 생성",
     "agentMenuConvertToServiceAgent": "서비스 에이전트로 전환",
     "share": "공유",
     "shareWithOrg": "모두와 공유",
     "shareWithOrgTooltip": "조직의 모든 구성원과 이 에이전트를 공유합니다.",
-    "serviceAccountShareTooltip": "서비스 에이전트는 항상 조직 전체와 공유됩니다.",
+    "serviceAgentShareTooltip": "서비스 에이전트는 항상 조직 전체와 공유됩니다.",
     "saving": "저장 중…",
     "saveChanges": "변경 사항 저장",
     "createAgent": "에이전트 생성",
@@ -4563,8 +4646,19 @@
     "userAgentDesc": "사용자별 툴셋 인증을 사용하는 개인 에이전트입니다.",
     "serviceAgent": "서비스 에이전트",
     "serviceAgentDesc": "에이전트 수준 툴셋 자격 증명을 사용하는 조직 전체 에이전트입니다. 지식 검색은 만든 사람의 접근 권한으로 수행됩니다.",
+    "identitySearchesAs": "{{identity}}(으)로 검색",
+    "identityCreator": "작성자",
+    "identityBoundUnknown": "서비스 계정",
+    "identityTooltip": "이 에이전트가 지식을 검색할 때 사용할 ID를 선택하세요. 이 에이전트를 쓰는 모든 사람은 해당 ID가 읽을 수 있는 범위의 결과를 보게 됩니다.",
+    "identityDialogTitle": "다음 ID로 지식 검색",
+    "identityDialogBody": "이 에이전트는 조직 전체와 공유되므로, 이 설정이 모두의 질문이 닿을 수 있는 범위를 결정합니다. 기본값은 작성자입니다. 서비스 계정은 관리자가 의도적으로 권한을 부여한 ID입니다.",
+    "identityChoose": "선택",
+    "identityLoading": "서비스 계정을 불러오는 중…",
+    "identityLoadError": "서비스 계정을 불러오지 못했습니다.",
+    "identityRetry": "다시 시도",
+    "identityNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만드세요.",
     "nameRequired": "계속하려면 이름을 입력하세요.",
-    "saveAsServiceAccountFirst": "먼저 에이전트를 서비스 에이전트로 저장한 후 툴셋 자격 증명을 구성하세요.",
+    "saveAsServiceAgentFirst": "먼저 에이전트를 서비스 에이전트로 저장한 후 툴셋 자격 증명을 구성하세요.",
     "hidePalette": "팔레트 숨기기",
     "showPalette": "팔레트 표시",
     "openInChat": "채팅에서 열기",
@@ -4575,8 +4669,14 @@
     "removeConnectionDesc": "두 노드 간의 링크가 제거됩니다. 핸들에서 다시 연결할 수 있습니다.",
     "remove": "제거",
     "palette": "팔레트",
+    "addToCanvas": "캔버스에 추가",
     "paletteDragHint": "블록을 캔버스로 드래그하세요",
-    "paletteViewOnlyServiceAccount": "보기 전용입니다. 이 조직 서비스 에이전트에서는 팔레트와 툴셋 설정이 잠겨 있습니다.",
+    "paletteTapHint": "+를 탭하여 캔버스에 블록을 추가하세요",
+    "loadingAgent": "에이전트 불러오는 중…",
+    "agentLoadFailedTitle": "이 에이전트를 불러올 수 없습니다",
+    "agentLoadFailedDescription": "연결을 확인하고 다시 시도하세요. 에이전트를 불러올 때까지 아무것도 저장되지 않습니다.",
+    "agentLoadRetry": "다시 시도",
+    "paletteViewOnlyServiceAgent": "보기 전용입니다. 이 조직 서비스 에이전트에서는 팔레트와 툴셋 설정이 잠겨 있습니다.",
     "paletteActionBlockedViewOnly": "보기 전용입니다. 이 조직 서비스 에이전트는 여기에서 변경할 수 없습니다.",
     "viewerPaletteDragBlocked": "보기 전용입니다. 플로우가 잠겨 있습니다. 도구 아래에서 툴셋을 인증하세요.",
     "paletteViewerAuthenticateInTools": "보기 전용입니다. 캔버스 드래그가 비활성화되어 있습니다. 도구 아래에서 툴셋에 로그인하세요.",
@@ -4593,8 +4693,8 @@
     "skillDisabled": "이 스킬은 비활성 상태이며 다시 활성화할 때까지 에이전트에서 사용할 수 없습니다",
     "collapse": "접기",
     "expand": "펼치기",
-    "serviceAccountCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
-    "serviceAccountConverted": "에이전트가 서비스 에이전트로 전환되었습니다. 팔레트의 열쇠 아이콘으로 툴셋 자격 증명을 구성하세요.",
+    "serviceAgentCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
+    "serviceAgentConverted": "에이전트가 서비스 에이전트로 전환되었습니다. 팔레트의 열쇠 아이콘으로 툴셋 자격 증명을 구성하세요.",
     "unsavedChangesConfirm": "저장하지 않은 변경 사항이 있습니다. 정말 나가시겠습니까?",
     "agentUpdated": "에이전트가 업데이트되었습니다",
     "agentUpdatedDesc": "변경 사항이 저장되었습니다.",
@@ -5177,7 +5277,12 @@
     "back": "뒤로",
     "skip": "건너뛰기",
     "next": "다음",
-    "submit": "제출"
+    "submit": "제출",
+    "selectOne": "하나 선택",
+    "selectMany": "해당하는 항목 모두 선택",
+    "skipAll": "모두 건너뛰기",
+    "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
+    "repliedInChat": "채팅에서 답장했습니다."
   },
   "oauthDevice": {
     "title": "기기 연결",
@@ -5211,6 +5316,18 @@
       "everythingHint": "나중에 추가되는 소스도 포함됩니다."
     },
     "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
+  },
+  "errorToast": {
+    "accessDenied": "액세스 거부됨",
+    "invalidRequest": "잘못된 요청",
+    "notFound": "찾을 수 없음",
+    "actionRequired": "조치 필요",
+    "connectionError": "연결 오류",
+    "serverError": "서버 오류",
+    "timedOut": "요청 시간 초과",
+    "somethingWentWrong": "문제가 발생했습니다",
+    "tryAgainShortly": "잠시 후 다시 시도해 주세요",
+    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다"
   },
   "validation": {
     "password": {

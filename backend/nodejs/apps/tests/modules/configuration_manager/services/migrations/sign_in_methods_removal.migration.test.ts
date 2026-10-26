@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { SignInMethodsRemovalMigration } from '../../../../../src/modules/configuration_manager/services/migrations/sign_in_methods_removal.migration';
 import { configPaths } from '../../../../../src/modules/configuration_manager/paths/paths';
 import { OrgAuthConfig } from '../../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import { useCommunitySignInLists } from '../../../../helpers/sign-in-lists';
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -36,6 +37,8 @@ const run = (kv: ReturnType<typeof makeKvStore>, logger = makeLogger()) =>
   new SignInMethodsRemovalMigration(logger as any, kv as any).run();
 
 describe('SignInMethodsRemovalMigration', () => {
+  useCommunitySignInLists();
+
   afterEach(() => {
     sinon.restore();
   });

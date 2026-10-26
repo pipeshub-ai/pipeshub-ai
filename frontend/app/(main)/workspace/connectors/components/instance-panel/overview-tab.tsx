@@ -70,6 +70,7 @@ export function OverviewTab({
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
   const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
+  const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
 
   // The panel outlives the run, so a stop the backend could not complete
@@ -228,21 +229,56 @@ export function OverviewTab({
     }
   }, [instance._key, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
+  // The retry is already queued here: a stats refresh that fails must not read
+  // as a failed retry, or the user repeats a request that went through.
+  const refreshStatsAfterQueuedRetry = useCallback(
+    async (connectorId: string) => {
+      try {
+        await fetchInstanceStats(connectorId, { force: true });
+      } catch (error) {
+        console.warn('Retry queued; refreshing the connector stats failed', { connectorId, error });
+      }
+    },
+    [fetchInstanceStats],
+  );
+
   const handleRetryFailedClassification = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isRetryClassificationBusy) return;
+    setIsRetryClassificationBusy(true);
     try {
-      setIsRetryClassificationBusy(true);
-      await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['classify']);
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['classify']);
+      } catch (error) {
+        console.error('Failed to retry classification', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryClassificationError') });
+        return;
+      }
       addToast({ variant: 'success', title: t('workspace.connectors.overview.retryClassificationSuccess') });
-      await fetchInstanceStats(connectorId, { force: true });
-    } catch (error) {
-      console.error('Failed to retry classification', { connectorId, error });
-      addToast({ variant: 'error', title: t('workspace.connectors.overview.retryClassificationError') });
+      await refreshStatsAfterQueuedRetry(connectorId);
     } finally {
       setIsRetryClassificationBusy(false);
     }
-  }, [instance._key, instance.isActive, isRetryClassificationBusy, addToast, fetchInstanceStats, t]);
+  }, [instance._key, instance.isActive, isRetryClassificationBusy, addToast, refreshStatsAfterQueuedRetry, t]);
+
+  const handleRetryFailedEntities = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryEntitiesBusy) return;
+    setIsRetryEntitiesBusy(true);
+    try {
+      try {
+        await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['entities']);
+      } catch (error) {
+        console.error('Failed to retry entity extraction', { connectorId, error });
+        addToast({ variant: 'error', title: t('workspace.connectors.overview.retryEntitiesError') });
+        return;
+      }
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryEntitiesSuccess') });
+      await refreshStatsAfterQueuedRetry(connectorId);
+    } finally {
+      setIsRetryEntitiesBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryEntitiesBusy, addToast, refreshStatsAfterQueuedRetry, t]);
 
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
@@ -308,6 +344,7 @@ export function OverviewTab({
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
         onRetryFailedClassification={handleRetryFailedClassification}
+        onRetryFailedEntities={handleRetryFailedEntities}
         onNavigateToRecords={navigateToRecords}
         onSync={
           instance.isActive && !isSyncRunning(instance.status)
@@ -333,6 +370,7 @@ export function OverviewTab({
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
         isRetryClassificationBusy={isRetryClassificationBusy}
+        isRetryEntitiesBusy={isRetryEntitiesBusy}
       />
 
       <ConfirmationDialog

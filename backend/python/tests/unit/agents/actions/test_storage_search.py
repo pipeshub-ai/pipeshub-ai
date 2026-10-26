@@ -1919,26 +1919,103 @@ class TestFindRecordsSaysWhenOutputWasCut:
         _seed_two_records(tmp_path)
         tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
 
-        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
-        _, uncapped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=3)
+        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2, readable_only=True)
+        _, uncapped = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_output_lines=3, readable_only=True,
+        )
 
         assert _json.loads(capped)["output_truncated"] is True
         assert "may still match" in _json.loads(capped)["hint"]
         assert _json.loads(uncapped)["output_truncated"] is False
 
     @pytest.mark.asyncio
-    async def test_output_cut_at_the_byte_cap_is_reported_even_with_nothing_accessible(self, tmp_path) -> None:
+    async def test_a_cut_is_never_reported_where_it_would_depend_on_unreadable_records(self, tmp_path) -> None:
+        """Not readable whole and no view: the output limit says how many records match, readable or not,
+        so the answer is a constant hint instead."""
         import json as _json
         _seed_two_records(tmp_path)
-        tool = _make_perm_tool(str(tmp_path), {})
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})  # the other record is unreadable
+
+        _, cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=2)
+        _, not_cut = await tool.find_records("c", 'grep -rl "secretword" .', max_results=1, max_output_lines=3)
+
+        assert _json.loads(cut)["output_truncated"] is False
+        assert _json.loads(cut) == _json.loads(not_cut)
+        assert "may be incomplete" in _json.loads(cut)["hint"]
+
+    @pytest.mark.asyncio
+    async def test_the_empty_answer_over_unreadable_records_carries_the_same_hint(self, tmp_path) -> None:
+        """Unreadable matches that fill the output limit push a readable one out of view; the
+        answer must say so, and say the same whether or not anything unreadable matched."""
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})  # neither record is readable
+
+        _, with_matches = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
+        _, without = await tool.find_records("c", 'grep -rl "nomatchword" .', max_output_lines=2)
+
+        assert with_matches == without and "may be incomplete" in with_matches
+
+    @pytest.mark.asyncio
+    async def test_no_view_means_no_grep_and_one_answer(self, tmp_path) -> None:
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        tool._build_accessible_view = AsyncMock(return_value=(None, "too many files"))
+
+        with patch("app.agents.actions.storage_search.storage_search._run_subprocess", new_callable=AsyncMock) as run:
+            answers = [
+                (await tool.find_records("c", f'grep -rl "{word}" .', readable_only=True))[1]
+                for word in ("secretword", "absentword")
+            ]
+
+        run.assert_not_called()
+        assert answers[0] == answers[1] and '"output_truncated": true' in answers[0]
+
+    @pytest.mark.asyncio
+    async def test_readable_only_search_cannot_hit_its_output_limit_through_unreadable_records(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)  # one readable record and one the caller cannot read, both matching
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        _, out = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_results=10, max_output_lines=2, readable_only=True,
+        )
+
+        body = _json.loads(out)
+        assert [r["virtual_record_id"] for r in body["records"]] == [_VRID_ACCESSIBLE]
+        assert body["output_truncated"] is False  # the cap of 2 lines is not reached by the one readable file
+
+    @pytest.mark.asyncio
+    async def test_readable_only_search_that_cannot_make_a_view_always_reports_a_cut(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+
+        with patch(
+            "app.agents.actions.storage_search.storage_search._list_stored_files", return_value=None,
+        ):
+            _, out = await tool.find_records(
+                "c", 'grep -rl "secretword" .', max_results=10, max_output_lines=50, readable_only=True,
+            )
+
+        assert _json.loads(out)["output_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_output_cut_at_the_byte_cap_is_reported_over_readable_records(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
 
         # A first-stage cap below one line's length cuts the grep output.
-        success, output = await tool.find_records("c", 'grep -rl "secretword" .', max_stdout_bytes=10)
+        success, output = await tool.find_records(
+            "c", 'grep -rl "secretword" .', max_stdout_bytes=10, readable_only=True,
+        )
 
         assert success is True
         body = _json.loads(output)
         assert body["records"] == []
         assert body["output_truncated"] is True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Audit fixes: raw output only from readable records, listing-only find_records,
 # view hygiene, re-validated rewrites.
@@ -2403,3 +2480,26 @@ class TestHardening:
                 break
             await asyncio.sleep(0.05)
         assert not os.path.exists(seen["view"])
+
+
+def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
+    from app.agents.actions.storage_search.storage_search import (
+        _VIEWS_DIR_NAME,
+        sweep_orphan_views,
+    )
+
+    (tmp_path / "a-file").write_text("x")  # not an org directory
+    for org in ("org-1", "org-2"):
+        (tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old").mkdir(parents=True)
+        os.utime(tmp_path / org / "PipesHub" / _VIEWS_DIR_NAME / "old", (1, 1))
+    real = os.scandir
+
+    def flaky(path: str) -> object:
+        if "org-1" in str(path):
+            raise PermissionError(path)
+        return real(path)
+
+    with patch("os.scandir", flaky):
+        sweep_orphan_views(str(tmp_path))
+
+    assert not (tmp_path / "org-2" / "PipesHub" / _VIEWS_DIR_NAME / "old").exists()

@@ -60,8 +60,11 @@ class EntitiesIO(StageIO, Protocol):
         """Never raises for a model failure: it returns a FAILED extraction."""
         ...
 
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
-        """Each record's entities and the entity points; the persist outcome.
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
+        """Each record's entities and the entity points; the persist outcome. ``blocks`` is
+        the content ``extraction`` came from, which the persist also dates an upload by.
 
         Raises ``RevisionSuperseded`` when the record moved to a newer revision before its
         entities could be written, and ``RecordBusy`` when its lease stayed held."""
@@ -111,7 +114,7 @@ class EntitiesStage:
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
             )
         try:
-            outcome = await io.save(job, record_ids, extraction)
+            outcome = await io.save(job, record_ids, extraction, blocks)
         except RevisionSuperseded:
             return StageResult(outcome=StageOutcome.STALE)
         except RecordBusy as exc:

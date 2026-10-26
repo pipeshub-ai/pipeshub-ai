@@ -542,6 +542,12 @@ class AgentContext(BaseModel):
         self._run_usage_claimed = True
         return True
 
+    def citation_ref_to_url(self) -> dict[str, str] | None:
+        """This request's citation refs and the URLs they stand for, read at
+        call time: the mapper in `tool_state` can be replaced mid-request."""
+        mapper = self.tool_state.get("citation_ref_mapper")
+        return mapper.ref_to_url if mapper is not None else None
+
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
         if self._source_catalog is None:

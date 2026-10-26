@@ -43,12 +43,13 @@ export function AvatarCell({
   const displayName = isSelf ? `${name} (${t('common.you')})` : name;
 
   return (
-    <Flex align="center" gap="3">
+    <Flex align="center" gap="3" style={{ minWidth: 0, overflow: 'hidden' }}>
       <UserAvatar fullName={name} email={email} src={profilePicture} size={avatarSize} radius='small'/>
       <Flex direction="column" style={{ overflow: 'hidden', minWidth: 0 }}>
         <Text
           size="2"
           weight="medium"
+          title={displayName}
           style={{
             color: 'var(--slate-12)',
             whiteSpace: 'nowrap',
@@ -61,6 +62,7 @@ export function AvatarCell({
         {email && (
           <Text
             size="1"
+            title={email}
             style={{
               color: 'var(--slate-11)',
               whiteSpace: 'nowrap',

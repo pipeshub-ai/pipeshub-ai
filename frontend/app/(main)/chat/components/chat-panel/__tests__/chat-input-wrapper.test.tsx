@@ -8,7 +8,7 @@ const captured = vi.hoisted(() => ({
 }));
 
 vi.mock('@assistant-ui/react', () => ({
-  useThreadRuntime: () => ({ append: vi.fn() }),
+  useAui: () => ({ thread: () => ({ append: vi.fn() }) }),
 }));
 
 vi.mock('../../chat-input', () => ({

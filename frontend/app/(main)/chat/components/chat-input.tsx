@@ -420,7 +420,6 @@ export function ChatInput({
   const agentHasInternalSearch = hasAnyFilter(agentKnowledgeDefaults);
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
-  const scopedDeepResearch = scopedAgentCapabilities?.deepSearch ?? false;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
   // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
   // `useProjectScopeHydration`; null everywhere else.
@@ -449,14 +448,6 @@ export function ChatInput({
     return {
       internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
       webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
-      deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
-      // Capabilities reach the backend only in agent mode, so the toggle is offered only there.
-      onToggleDeepResearch: isAgentChat || settings.queryMode === 'agent'
-        ? (enabled: boolean) => {
-            if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
-            else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
-          }
-        : undefined,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
@@ -477,9 +468,7 @@ export function ChatInput({
     agentId,
     scopedInternalSearch,
     scopedWebSearch,
-    scopedDeepResearch,
     settings.agentCapabilities,
-    settings.queryMode,
     setScopedAgentCapabilities,
     setAgentCapabilities,
     agentHasInternalSearch,
@@ -488,7 +477,6 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
-    plusMenuCapabilities.onToggleDeepResearch ? plusMenuCapabilities.deepResearch : false,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All
@@ -882,6 +870,7 @@ export function ChatInput({
     dismissExpansionPanels();
     setRegenModelOverride(null);
     leaveEditFiles(false);
+    useChatStore.getState().setRegenAnswers(null);
     setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
@@ -903,6 +892,7 @@ export function ChatInput({
     };
     dismissExpansionPanels();
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
     setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
     // Populate the textarea with the original question so the user can edit it
@@ -915,8 +905,16 @@ export function ChatInput({
     leaveEditFiles(false);
     setActiveMessageAction(null);
     setRegenModelOverride(null);
+    useChatStore.getState().setRegenAnswers(null);
     setMessage('');
   }, [leaveEditFiles]);
+
+  // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
+  const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
+  useEffect(() => {
+    useChatStore.getState().setRegenTargetMessageId(regenTargetMessageId);
+    return () => useChatStore.getState().setRegenTargetMessageId(null);
+  }, [regenTargetMessageId]);
 
   // Register showRegenBar / showEditQuery commands
   useEffect(() => {
@@ -972,10 +970,22 @@ export function ChatInput({
     setMessage('');
     if (activeSlotId) {
       const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+      // Kept until the re-run ends, so the card shows the answers it is running with.
+      const regenAnswers = useChatStore.getState().regenAnswers;
+      const answers =
+        !isEdit && regenAnswers?.messageId === activeMessageAction.messageId ? regenAnswers.message : undefined;
       if (edit) streamRegenerateForSlot(...target, edit);
+      else if (answers) streamRegenerateForSlot(...target, undefined, answers);
       else streamRegenerateForSlot(...target);
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions, uploadedFiles, leaveEditFiles]);
+
+  // Submitting the reopened question card regenerates as the bar's button does, with the bar's model.
+  useEffect(() => {
+    const { register, unregister } = useCommandStore.getState();
+    register('runRegenerate', () => executeMessageAction());
+    return () => unregister('runRegenerate');
+  }, [executeMessageAction]);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -2287,6 +2297,8 @@ export function ChatInput({
         <ChatInputExpansionPanel
           open={isModelPanelOpen}
           onClose={() => setIsModelPanelOpen(false)}
+          height="auto"
+          maxHeight="380px"
         >
           <ModelSelectorPanel
             selectedModel={contextSelectedModel ?? contextDefaultModel}
@@ -2480,6 +2492,7 @@ export function ChatInput({
                 variant="ghost"
                 color="gray"
                 size="2"
+                aria-label={t('common.moreOptions')}
                 onClick={() => setIsMobileOptionsOpen(true)}
                 style={{ margin: 0, cursor: 'pointer' }}
               >
@@ -2771,8 +2784,14 @@ export function ChatInput({
                 {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
                   <Flex
+                    asChild
                     align="center"
                     gap="1"
+                  >
+                  <button
+                    type="button"
+                    className="touch-hit"
+                    aria-label={t('chat.aiModelsTooltip')}
                     data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
@@ -2790,6 +2809,8 @@ export function ChatInput({
                           ? 'var(--olive-3)'
                           : 'transparent',
                       transition: 'background-color 0.12s ease',
+                      border: 'none',
+                      font: 'inherit',
                       maxWidth: isMobile ? '32px' : (reasoningEffortLabel ? '220px' : '180px'),
                       flexShrink: 0,
                     }}
@@ -2828,6 +2849,7 @@ export function ChatInput({
                         )}
                       </Flex>
                     )}
+                  </button>
                   </Flex>
                 </Tooltip>
                 <SpeechInputButton

@@ -6,20 +6,16 @@ edge cases (empty lists, None values, missing keys, permission errors), and all
 branches (if/else, try/except, for loops with empty and non-empty iterables).
 """
 
-import asyncio
 import base64
-import json
 import logging
 import os
-import uuid
-from datetime import datetime, timedelta, timezone
-from http import HTTPStatus
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -29,29 +25,17 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
+    DRIVE_CHECKPOINT,
     CountryToRegionMapper,
     MicrosoftRegion,
     SharePointConnector,
     SharePointCredentials,
     SharePointRecordType,
-    SharePointSubscriptionManager,
     SiteMetadata,
 )
-from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 
 # =============================================================================
 # Helpers
@@ -631,7 +615,7 @@ class TestGetAllSites:
         search_result = MagicMock()
         search_result.value = [search_site]
         search_result.odata_next_link = None
-        c._safe_api_call = AsyncMock(side_effect=[root_site, search_result])
+        c._graph_read = AsyncMock(side_effect=[root_site, search_result])
 
         sites = await c._get_all_sites()
         assert len(sites) >= 1
@@ -645,10 +629,16 @@ class TestGetAllSites:
         c.rate_limiter.__aexit__ = AsyncMock()
         c.enable_subsite_discovery = False
 
-        c._safe_api_call = AsyncMock(side_effect=[None, MagicMock(value=None)])
+        listed_site = _make_site(site_id="host.com," + "c" * 36 + "," + "d" * 36, display_name="Listed")
+        listing = MagicMock()
+        listing.value = [listed_site]
+        listing.odata_next_link = None
+        c._graph_read = AsyncMock(side_effect=[Exception("root site read failed"), listing])
 
         sites = await c._get_all_sites()
-        assert isinstance(sites, list)
+        # The listing still runs; the failed root read marks the discovery incomplete
+        assert [s.id for s in sites] == [listed_site.id]
+        assert c._health.complete is False
 
     @pytest.mark.asyncio
     async def test_onedrive_site_filtered(self):
@@ -665,13 +655,16 @@ class TestGetAllSites:
             display_name="OneDrive"
         )
 
+        team_site = _make_site(site_id="host.com," + "c" * 36 + "," + "d" * 36, display_name="Team")
+
         search_result = MagicMock()
-        search_result.value = [onedrive_site]
+        search_result.value = [onedrive_site, team_site]
         search_result.odata_next_link = None
 
-        c._safe_api_call = AsyncMock(side_effect=[None, search_result])
+        c._graph_read = AsyncMock(side_effect=[None, search_result])
 
         sites = await c._get_all_sites()
+        assert [s.id for s in sites] == [team_site.id]
         assert all(
             "my.sharepoint.com" not in (s.web_url or "")
             for s in sites
@@ -695,7 +688,7 @@ class TestGetAllSites:
         page2.value = None
         page2.odata_next_link = None
 
-        c._safe_api_call = AsyncMock(side_effect=[None, page1, page2])
+        c._graph_read = AsyncMock(side_effect=[None, page1, page2])
 
         sites = await c._get_all_sites()
         assert len(sites) >= 1
@@ -716,7 +709,7 @@ class TestGetAllSites:
         search_result.value = None
         search_result.odata_next_link = None
 
-        c._safe_api_call = AsyncMock(side_effect=[root, search_result])
+        c._graph_read = AsyncMock(side_effect=[root, search_result])
         c._get_subsites = AsyncMock(return_value=[sub])
 
         sites = await c._get_all_sites()
@@ -747,12 +740,12 @@ class TestGetAllSites:
         search_result.value = [invalid_site]
         search_result.odata_next_link = None
 
-        c._safe_api_call = AsyncMock(side_effect=[None, search_result])
+        c._graph_read = AsyncMock(side_effect=[None, search_result])
 
         sites = await c._get_all_sites()
-        # Invalid site should be filtered out
-        valid = [s for s in sites if c._validate_site_id(s.id)]
-        assert len(valid) == 0
+        # The site is discovered, but its invalid id keeps it out of the sync's scope
+        assert c._discovered_site_ids == {"x"}
+        assert sites == []
 
 
 # =============================================================================
@@ -890,12 +883,12 @@ class TestProcessDriveItem:
 
         item = _make_drive_item()
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
+        # The library's permissions can't be read (no client): a new item is not stored this run.
         assert result is not None
         assert result.is_new is True
-        assert result.record.inherit_permissions is False
-        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
-            CollectionNames.RECORDS.value, None
-        )
+        assert result.record is None
+        assert result.permissions_known is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deleted_item(self):
@@ -1007,13 +1000,13 @@ class TestProcessDriveItem:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_raises(self):
         c = _make_connector()
         c._pass_drive_date_filters = MagicMock(side_effect=Exception("boom"))
 
         item = _make_drive_item()
-        result = await c._process_drive_item(item, "site-1", "drive-1", [])
-        assert result is None
+        with pytest.raises(Exception, match="boom"):
+            await c._process_drive_item(item, "site-1", "drive-1", [])
 
 
 # =============================================================================
@@ -1118,10 +1111,18 @@ class TestCreateFileRecord:
 # =============================================================================
 
 
+def _mock_drive_listing(c, root_id="root-id") -> None:
+    """Mocks the library root read and the stored-records read that a delta listing makes."""
+    c.client = MagicMock()
+    c.client.drives.by_drive_id.return_value.root.get = AsyncMock(return_value=MagicMock(id=root_id))
+    c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+
 class TestProcessDriveDelta:
     @pytest.mark.asyncio
     async def test_fresh_start(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
@@ -1143,11 +1144,13 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        assert len(items) == 1
+        assert len(items) == 2
+        assert items[1] is DRIVE_CHECKPOINT
 
     @pytest.mark.asyncio
     async def test_existing_delta_link(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={
             "deltaLink": "https://graph.microsoft.com/v1.0/delta?token=old"
@@ -1163,11 +1166,12 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        assert len(items) == 0
+        assert items == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_invalid_delta_url_clears_sync_point(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={
             "deltaLink": "http://evil.com/hack"
@@ -1183,11 +1187,15 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        # Should have cleared sync point due to invalid URL
+        # The invalid URL is never requested; the library is listed in full from its root delta URL
+        requested_url = c.msgraph_client.get_delta_response_sharepoint.call_args[0][0]
+        assert requested_url.startswith("https://graph.microsoft.com/")
+        assert requested_url.endswith("/drives/drive-1/root/delta")
 
     @pytest.mark.asyncio
     async def test_deleted_item_in_delta(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
@@ -1206,12 +1214,14 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        assert len(items) == 1
+        assert len(items) == 2
         assert items[0][2].is_deleted
+        assert items[1] is DRIVE_CHECKPOINT
 
     @pytest.mark.asyncio
     async def test_pagination(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
@@ -1239,11 +1249,14 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        assert len(items) == 1
+        records = [item for item in items if item is not DRIVE_CHECKPOINT]
+        assert len(records) == 1
+        assert items.count(DRIVE_CHECKPOINT) == 2
 
     @pytest.mark.asyncio
     async def test_indexing_disabled(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
@@ -1269,20 +1282,23 @@ class TestProcessDriveDelta:
         assert record_mock.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
-    async def test_exception_clears_sync_point(self):
+    async def test_sync_point_read_error_raises(self):
         c = _make_connector()
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(side_effect=Exception("db fail"))
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
 
         items = []
-        async for item in c._process_drive_delta("site-1", "drive-1"):
-            items.append(item)
+        with pytest.raises(Exception, match="db fail"):
+            async for item in c._process_drive_delta("site-1", "drive-1"):
+                items.append(item)
         assert len(items) == 0
+        c.drive_delta_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_item_processing_error_continues(self):
         c = _make_connector()
+        _mock_drive_listing(c)
         c.drive_delta_sync_point = MagicMock()
         c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.drive_delta_sync_point.update_sync_point = AsyncMock()
@@ -1304,12 +1320,24 @@ class TestProcessDriveDelta:
         items = []
         async for item in c._process_drive_delta("site-1", "drive-1"):
             items.append(item)
-        assert len(items) == 1
+        records = [item for item in items if item is not DRIVE_CHECKPOINT]
+        assert len(records) == 1
+        # The failed item is reported and keeps the token where it was
+        assert c._health.complete is False
+        c.drive_delta_sync_point.update_sync_point.assert_not_awaited()
 
 
 # =============================================================================
 # _process_site_drives Tests
 # =============================================================================
+
+
+def _mock_library_tracker(c) -> None:
+    """Mocks the sync point that remembers a site's libraries between runs."""
+    c.drive_delta_sync_point = MagicMock()
+    c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+    c.drive_delta_sync_point.update_sync_point = AsyncMock()
+    c.drive_delta_sync_point.delete_sync_point = AsyncMock()
 
 
 class TestProcessSiteDrives:
@@ -1320,12 +1348,18 @@ class TestProcessSiteDrives:
         c.rate_limiter = AsyncMock()
         c.rate_limiter.__aenter__ = AsyncMock()
         c.rate_limiter.__aexit__ = AsyncMock()
-        c._safe_api_call = AsyncMock(return_value=None)
+        _mock_library_tracker(c)
+
+        drives_resp = MagicMock()
+        drives_resp.value = []
+        drives_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=drives_resp)
 
         items = []
         async for item in c._process_site_drives("site-1", "rg-1"):
             items.append(item)
         assert len(items) == 0
+        c.data_entities_processor.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_drive_no_id_skipped(self):
@@ -1334,6 +1368,7 @@ class TestProcessSiteDrives:
         c.rate_limiter = AsyncMock()
         c.rate_limiter.__aenter__ = AsyncMock()
         c.rate_limiter.__aexit__ = AsyncMock()
+        _mock_library_tracker(c)
 
         drive = MagicMock()
         drive.id = None
@@ -1341,7 +1376,8 @@ class TestProcessSiteDrives:
 
         drives_resp = MagicMock()
         drives_resp.value = [drive]
-        c._safe_api_call = AsyncMock(return_value=drives_resp)
+        drives_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=drives_resp)
 
         items = []
         async for item in c._process_site_drives("site-1", "rg-1"):
@@ -1356,6 +1392,7 @@ class TestProcessSiteDrives:
         c.rate_limiter.__aenter__ = AsyncMock()
         c.rate_limiter.__aexit__ = AsyncMock()
         c._pass_drive_key_filters = MagicMock(return_value=False)
+        _mock_library_tracker(c)
 
         drive = MagicMock()
         drive.id = "drive-1"
@@ -1364,12 +1401,16 @@ class TestProcessSiteDrives:
 
         drives_resp = MagicMock()
         drives_resp.value = [drive]
-        c._safe_api_call = AsyncMock(return_value=drives_resp)
+        drives_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=drives_resp)
+        c.data_entities_processor.on_record_group_deleted = AsyncMock()
 
         items = []
         async for item in c._process_site_drives("site-1", "rg-1"):
             items.append(item)
         assert len(items) == 0
+        # A library the filter excludes is deleted from PipesHub, not only skipped.
+        c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("drive-1", c.connector_id)
 
     @pytest.mark.asyncio
     async def test_exception_caught(self):
@@ -1401,12 +1442,17 @@ class TestProcessSitePages:
         c.page_sync_point = MagicMock()
         c.page_sync_point.read_sync_point = AsyncMock(return_value=None)
         c.page_sync_point.update_sync_point = AsyncMock()
-        c._safe_api_call = AsyncMock(return_value=None)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+        pages_resp = MagicMock()
+        pages_resp.value = []
+        pages_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=pages_resp)
 
         items = []
         async for item in c._process_site_pages("site-1", "Site Name"):
             items.append(item)
-        assert len(items) == 0
+        assert items == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_page_with_system_account_skipped(self):
@@ -1430,12 +1476,14 @@ class TestProcessSitePages:
 
         pages_resp = MagicMock()
         pages_resp.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_resp)
+        pages_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=pages_resp)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
 
         items = []
         async for item in c._process_site_pages("site-1", "Site Name"):
             items.append(item)
-        assert len(items) == 0
+        assert items == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_page_date_filter_rejects(self):
@@ -1457,12 +1505,14 @@ class TestProcessSitePages:
 
         pages_resp = MagicMock()
         pages_resp.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_resp)
+        pages_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=pages_resp)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
 
         items = []
         async for item in c._process_site_pages("site-1", "Site"):
             items.append(item)
-        assert len(items) == 0
+        assert items == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_existing_page_updated(self):
@@ -1502,12 +1552,15 @@ class TestProcessSitePages:
 
         pages_resp = MagicMock()
         pages_resp.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_resp)
+        pages_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=pages_resp)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
 
         items = []
         async for item in c._process_site_pages("site-1", "Site"):
             items.append(item)
-        assert len(items) == 1
+        assert len(items) == 2
+        assert items[1] is DRIVE_CHECKPOINT
         assert items[0][2].is_updated is True
         assert items[0][2].content_changed is True
         assert page_record.inherit_permissions is True
@@ -1524,12 +1577,16 @@ class TestProcessSitePages:
         c.rate_limiter.__aexit__ = AsyncMock()
         c.page_sync_point = MagicMock()
         c.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c._safe_api_call = AsyncMock(side_effect=Exception("403 accessdenied"))
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        c._graph_read = AsyncMock(side_effect=Exception("403 accessdenied"))
 
         items = []
         async for item in c._process_site_pages("site-1", "Site"):
             items.append(item)
+        # A listing failure is reported and removes nothing
         assert len(items) == 0
+        assert c._health.complete is False
+        c.data_entities_processor.get_records_in_record_group.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_indexing_disabled(self):
@@ -1557,11 +1614,13 @@ class TestProcessSitePages:
 
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
-        c._get_page_permissions = AsyncMock(return_value=[])
+        c._get_page_access = AsyncMock(return_value=(True, []))
 
         pages_resp = MagicMock()
         pages_resp.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_resp)
+        pages_resp.odata_next_link = None
+        c._graph_read = AsyncMock(return_value=pages_resp)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
 
         items = []
         async for item in c._process_site_pages("site-1", "Site"):
@@ -1883,18 +1942,17 @@ class TestGetSharePointAccessToken:
         c.client_id = "c"
         c.client_secret = None
         c.sharepoint_domain = "https://contoso.sharepoint.com"
+        mock_token = MagicMock()
+        mock_token.token = "cert-token"
+        c.credential = MagicMock()
+        c.credential.get_token = AsyncMock(return_value=mock_token)
 
         with patch("azure.identity.aio.CertificateCredential") as mock_cert:
-            mock_cred = AsyncMock()
-            mock_token = MagicMock()
-            mock_token.token = "cert-token"
-            mock_cred.get_token = AsyncMock(return_value=mock_token)
-            mock_cred.__aenter__ = AsyncMock(return_value=mock_cred)
-            mock_cred.__aexit__ = AsyncMock(return_value=False)
-            mock_cert.return_value = mock_cred
-
             token = await c._get_sharepoint_access_token()
             assert token == "cert-token"
+            # The connector's own (token-caching) credential is used; none is built per call
+            mock_cert.assert_not_called()
+        c.credential.get_token.assert_awaited_once_with("https://contoso.sharepoint.com/.default")
 
     @pytest.mark.asyncio
     async def test_client_secret(self):
@@ -1904,30 +1962,17 @@ class TestGetSharePointAccessToken:
         c.tenant_id = "t"
         c.client_id = "c"
         c.sharepoint_domain = "https://contoso.sharepoint.com"
+        mock_token = MagicMock()
+        mock_token.token = "secret-token"
+        c.credential = MagicMock()
+        c.credential.get_token = AsyncMock(return_value=mock_token)
 
         with patch("azure.identity.aio.ClientSecretCredential") as mock_cs:
-            mock_cred = AsyncMock()
-            mock_token = MagicMock()
-            mock_token.token = "secret-token"
-            mock_cred.get_token = AsyncMock(return_value=mock_token)
-            mock_cred.__aenter__ = AsyncMock(return_value=mock_cred)
-            mock_cred.__aexit__ = AsyncMock(return_value=False)
-            mock_cs.return_value = mock_cred
-
             token = await c._get_sharepoint_access_token()
             assert token == "secret-token"
-
-    @pytest.mark.asyncio
-    async def test_no_auth_method(self):
-        c = _make_connector()
-        c.certificate_path = None
-        c.client_secret = None
-        c.tenant_id = "t"
-        c.client_id = "c"
-        c.sharepoint_domain = "https://contoso.sharepoint.com"
-
-        token = await c._get_sharepoint_access_token()
-        assert token is None
+            # The connector's own (token-caching) credential is used; none is built per call
+            mock_cs.assert_not_called()
+        c.credential.get_token.assert_awaited_once_with("https://contoso.sharepoint.com/.default")
 
     @pytest.mark.asyncio
     async def test_token_error(self):
@@ -1937,16 +1982,14 @@ class TestGetSharePointAccessToken:
         c.tenant_id = "t"
         c.client_id = "c"
         c.sharepoint_domain = "https://contoso.sharepoint.com"
+        c.credential = MagicMock()
+        c.credential.get_token = AsyncMock(side_effect=Exception("token fail"))
+        c.notify = AsyncMock()
 
-        with patch("azure.identity.aio.ClientSecretCredential") as mock_cs:
-            mock_cred = AsyncMock()
-            mock_cred.get_token = AsyncMock(side_effect=Exception("token fail"))
-            mock_cred.__aenter__ = AsyncMock(return_value=mock_cred)
-            mock_cred.__aexit__ = AsyncMock(return_value=False)
-            mock_cs.return_value = mock_cred
-
-            token = await c._get_sharepoint_access_token()
-            assert token is None
+        token = await c._get_sharepoint_access_token()
+        assert token is None
+        c.credential.get_token.assert_awaited_once_with("https://contoso.sharepoint.com/.default")
+        c.notify.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_domain_without_hostname(self):
@@ -1956,18 +1999,14 @@ class TestGetSharePointAccessToken:
         c.tenant_id = "t"
         c.client_id = "c"
         c.sharepoint_domain = "contoso.sharepoint.com"
+        mock_token = MagicMock()
+        mock_token.token = "tok"
+        c.credential = MagicMock()
+        c.credential.get_token = AsyncMock(return_value=mock_token)
 
-        with patch("azure.identity.aio.ClientSecretCredential") as mock_cs:
-            mock_cred = AsyncMock()
-            mock_token = MagicMock()
-            mock_token.token = "tok"
-            mock_cred.get_token = AsyncMock(return_value=mock_token)
-            mock_cred.__aenter__ = AsyncMock(return_value=mock_cred)
-            mock_cred.__aexit__ = AsyncMock(return_value=False)
-            mock_cs.return_value = mock_cred
-
-            token = await c._get_sharepoint_access_token()
-            assert token == "tok"
+        token = await c._get_sharepoint_access_token()
+        assert token == "tok"
+        c.credential.get_token.assert_awaited_once_with("https://contoso.sharepoint.com/.default")
 
 
 # =============================================================================
@@ -1981,7 +2020,7 @@ class TestGetSitePermissions:
         c = _make_connector()
         c.site_cache = {}
         result = await c._get_site_permissions("nonexistent")
-        assert result == []
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_no_access_token(self):
@@ -1989,190 +2028,15 @@ class TestGetSitePermissions:
         c.site_cache = {"site-1": SiteMetadata("site-1", "https://site.com", "Site", False)}
         c._get_sharepoint_access_token = AsyncMock(return_value=None)
         result = await c._get_site_permissions("site-1")
-        assert result == []
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _make_connector()
         c.site_cache = {"site-1": SiteMetadata("site-1", "https://site.com", "Site", False)}
         c._get_sharepoint_access_token = AsyncMock(side_effect=Exception("fail"))
         result = await c._get_site_permissions("site-1")
-        assert result == []
-
-
-# =============================================================================
-# _get_sharepoint_group_users Tests
-# =============================================================================
-
-
-class TestGetSharePointGroupUsers:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.OK
-        mock_response.json = AsyncMock(return_value={
-            "d": {"results": [{"LoginName": "user1", "Email": "user@test.com"}]}
-        })
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_sharepoint_group_users("https://site.com", "associatedownergroup", "token")
-            assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_not_found(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.NOT_FOUND
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_sharepoint_group_users("https://site.com", "associatedvisitorgroup", "token")
-            assert result == []
-
-    @pytest.mark.asyncio
-    async def test_other_error(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.FORBIDDEN
-        mock_response.text = AsyncMock(return_value="forbidden")
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_sharepoint_group_users("https://site.com", "associatedownergroup", "token")
-            assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        c = _make_connector()
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session_cls.side_effect = Exception("connection error")
-            result = await c._get_sharepoint_group_users("https://site.com", "associatedownergroup", "token")
-            assert result == []
-
-
-# =============================================================================
-# _get_custom_sharepoint_groups Tests
-# =============================================================================
-
-
-class TestGetCustomSharePointGroups:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.OK
-        mock_response.json = AsyncMock(return_value={
-            "d": {"results": [
-                {
-                    "Member": {
-                        "PrincipalType": 8,
-                        "LoginName": "MyGroup",
-                        "Title": "Custom Group",
-                        "Id": 42,
-                    },
-                    "RoleDefinitionBindings": {
-                        "results": [{"Name": "Edit"}]
-                    }
-                },
-                {
-                    "Member": {
-                        "PrincipalType": 1,
-                        "LoginName": "User",
-                        "Title": "Direct User",
-                        "Id": 10,
-                    },
-                    "RoleDefinitionBindings": {
-                        "results": [{"Name": "Read"}]
-                    }
-                }
-            ]}
-        })
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_custom_sharepoint_groups("https://site.com", "token")
-            assert len(result) == 1
-            assert result[0]["title"] == "Custom Group"
-            assert result[0]["permission_level"] == PermissionType.WRITE
-
-    @pytest.mark.asyncio
-    async def test_full_control(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.OK
-        mock_response.json = AsyncMock(return_value={
-            "d": {"results": [{
-                "Member": {"PrincipalType": 8, "LoginName": "Admins", "Title": "Admins", "Id": 1},
-                "RoleDefinitionBindings": {"results": [{"Name": "Full Control"}]}
-            }]}
-        })
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_custom_sharepoint_groups("https://site.com", "token")
-            assert result[0]["permission_level"] == PermissionType.OWNER
-
-    @pytest.mark.asyncio
-    async def test_error_response(self):
-        c = _make_connector()
-        mock_response = MagicMock()
-        mock_response.status = HTTPStatus.INTERNAL_SERVER_ERROR
-        mock_response.text = AsyncMock(return_value="error")
-
-        with patch("aiohttp.ClientSession") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_ctx)
-            mock_session_cls.return_value = mock_session
-
-            result = await c._get_custom_sharepoint_groups("https://site.com", "token")
-            assert result == []
+        assert result is None
 
 
 # =============================================================================
@@ -2297,27 +2161,69 @@ class TestPerformInitialFullSync:
         group.description = "desc"
         group.created_date_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
         c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[group])
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[])
+        c._fetch_graph_group_members = AsyncMock(return_value=[])
 
-        await c._perform_initial_full_sync()
+        complete = await c._perform_initial_full_sync()
+        assert complete is True
         c.data_entities_processor.on_new_user_groups.assert_called_once()
+        c._fetch_graph_group_members.assert_awaited_once_with("g1")
 
     @pytest.mark.asyncio
     async def test_group_processing_exception(self):
         c = _make_connector()
         c.msgraph_client = MagicMock()
-        group = MagicMock()
-        group.id = "g1"
-        group.display_name = "Fail Group"
-        c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[group])
-        c._process_single_group = AsyncMock(side_effect=Exception("processing fail"))
+        failing = MagicMock()
+        failing.id = "g1"
+        failing.display_name = "Fail Group"
+        failing.description = None
+        failing.created_date_time = None
+        readable = MagicMock()
+        readable.id = "g2"
+        readable.display_name = "Readable Group"
+        readable.description = None
+        readable.created_date_time = None
+        c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[failing, readable])
 
-        await c._perform_initial_full_sync()
+        async def members(group_id, is_owner=False) -> list:
+            if group_id == "g1":
+                raise Exception("processing fail")
+            return []
+
+        c._fetch_graph_group_members = AsyncMock(side_effect=members)
+
+        complete = await c._perform_initial_full_sync()
+        # The unreadable group is skipped (its stored members stay); the other one is written
+        assert complete is False
+        assert c._health.complete is False
+        written = c.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert [g.source_user_group_id for g, _ in written] == ["g2"]
 
 
 # =============================================================================
 # _process_single_group Tests
 # =============================================================================
+
+
+def _mock_transitive_members(c, members) -> MagicMock:
+    """Mocks the Graph transitiveMembers listing of every Entra group with one page of members."""
+    page = MagicMock()
+    page.value = members
+    page.odata_next_link = None
+    c.client = MagicMock()
+    c.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(return_value=page)
+    return c.client.groups.by_group_id.return_value
+
+
+class _GraphGroupMock:
+    """A directory object without user attributes (MagicMock would auto-create user_principal_name)."""
+    odata_type = "#microsoft.graph.group"
+    mail = None
+    additional_data = {}
+
+    def __init__(self, object_id, odata_type=None) -> None:
+        self.id = object_id
+        if odata_type:
+            self.odata_type = odata_type
 
 
 class TestProcessSingleGroup:
@@ -2334,7 +2240,7 @@ class TestProcessSingleGroup:
         member.user_principal_name = "user@test.com"
         member.display_name = "User"
         member.created_date_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[member])
+        _mock_transitive_members(c, [member])
 
         group = MagicMock()
         group.id = "g1"
@@ -2349,16 +2255,18 @@ class TestProcessSingleGroup:
 
     @pytest.mark.asyncio
     async def test_with_nested_group(self):
+        """transitiveMembers already lists the nested group's users; the nested group itself is not a member."""
         c = _make_connector()
         c.msgraph_client = MagicMock()
 
-        nested = MagicMock()
-        nested.id = "nested-g1"
-        nested.odata_type = "#microsoft.graph.group"
-        nested.additional_data = {}
-        nested.display_name = "Nested"
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[nested])
-        c._get_users_from_nested_group = AsyncMock(return_value=[])
+        nested = _GraphGroupMock("nested-g1")
+        nested_user = MagicMock()
+        nested_user.id = "user-in-nested"
+        nested_user.odata_type = "#microsoft.graph.user"
+        nested_user.mail = "nested@test.com"
+        nested_user.user_principal_name = "nested@test.com"
+        nested_user.display_name = "Nested User"
+        graph_group = _mock_transitive_members(c, [nested, nested_user])
 
         group = MagicMock()
         group.id = "g1"
@@ -2368,18 +2276,17 @@ class TestProcessSingleGroup:
 
         result = await c._process_single_group(group)
         assert result is not None
-        c._get_users_from_nested_group.assert_called_once()
+        _, app_users = result
+        assert [u.source_user_id for u in app_users] == ["user-in-nested"]
+        graph_group.transitive_members.get.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_unknown_member_type(self):
         c = _make_connector()
         c.msgraph_client = MagicMock()
 
-        device = MagicMock()
-        device.id = "device-1"
-        device.odata_type = "#microsoft.graph.device"
-        device.additional_data = {}
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[device])
+        device = _GraphGroupMock("device-1", odata_type="#microsoft.graph.device")
+        _mock_transitive_members(c, [device])
 
         group = MagicMock()
         group.id = "g1"
@@ -2443,6 +2350,8 @@ class TestPerformDeltaSync:
         group = MagicMock()
         group.id = "g1"
         group.display_name = "New Group"
+        group.description = None
+        group.created_date_time = None
         group.additional_data = {}
 
         c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={
@@ -2450,10 +2359,15 @@ class TestPerformDeltaSync:
             "next_link": None,
             "delta_link": "https://graph.microsoft.com/delta?token=new"
         })
-        c._handle_group_create = AsyncMock(return_value=True)
+        c._containing_groups = AsyncMock(return_value=[])
+        c._fetch_graph_group_members = AsyncMock(return_value=[])
 
         await c._perform_delta_sync("https://url", "key")
-        c._handle_group_create.assert_called_once()
+        c._fetch_graph_group_members.assert_awaited_once_with("g1")
+        c.data_entities_processor.on_new_user_groups.assert_called_once()
+        c.user_group_sync_point.update_sync_point.assert_awaited_once_with(
+            "key", {"nextLink": None, "deltaLink": "https://graph.microsoft.com/delta?token=new"}
+        )
 
     @pytest.mark.asyncio
     async def test_member_changes(self):
@@ -2465,6 +2379,8 @@ class TestPerformDeltaSync:
         group = MagicMock()
         group.id = "g1"
         group.display_name = "Group"
+        group.description = None
+        group.created_date_time = None
         group.additional_data = {
             "members@delta": [{"id": "user-1"}, {"id": "user-2", "@removed": True}]
         }
@@ -2474,11 +2390,20 @@ class TestPerformDeltaSync:
             "next_link": None,
             "delta_link": "https://graph.microsoft.com/delta?token=new"
         })
-        c._handle_group_create = AsyncMock(return_value=True)
-        c._process_member_change = AsyncMock()
+        c._containing_groups = AsyncMock(return_value=[])
+        c._fetch_graph_group_members = AsyncMock(return_value=[
+            {"id": "user-1", "email": "user1@test.com", "name": "User 1"}
+        ])
 
         await c._perform_delta_sync("https://url", "key")
-        assert c._process_member_change.call_count == 2
+        # The added and the removed member are applied by reading the group's members again
+        c._fetch_graph_group_members.assert_awaited_once_with("g1")
+        written = c.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert len(written) == 1
+        user_group, members = written[0]
+        assert user_group.source_user_group_id == "g1"
+        assert [m.source_user_id for m in members] == ["user-1"]
+        c.data_entities_processor.on_user_group_member_removed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pagination(self):
@@ -2518,14 +2443,21 @@ class TestPerformDeltaSync:
         group = MagicMock()
         group.id = "g1"
         group.display_name = "G"
+        group.description = None
+        group.created_date_time = None
         group.additional_data = {}
 
         c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={
             "groups": [group], "next_link": None, "delta_link": "https://delta"
         })
-        c._handle_group_create = AsyncMock(return_value=False)
+        c._containing_groups = AsyncMock(return_value=[])
+        c._fetch_graph_group_members = AsyncMock(side_effect=Exception("members unreadable"))
 
         await c._perform_delta_sync("https://url", "key")
+        # Nothing is written for the group and the delta link is kept, so the change is read again
+        c.data_entities_processor.on_new_user_groups.assert_not_called()
+        c.user_group_sync_point.update_sync_point.assert_not_awaited()
+        assert c._health.complete is False
 
 
 # =============================================================================
@@ -2538,7 +2470,7 @@ class TestHandleGroupCreate:
     async def test_success(self):
         c = _make_connector()
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[])
+        _mock_transitive_members(c, [])
 
         group = MagicMock()
         group.id = "g1"
@@ -2554,16 +2486,15 @@ class TestHandleGroupCreate:
         c = _make_connector()
         c.msgraph_client = MagicMock()
 
-        nested = MagicMock()
-        nested.id = "ng1"
-        nested.odata_type = "#microsoft.graph.group"
-        nested.additional_data = {}
-        nested.display_name = "Nested"
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[nested])
-        c._get_users_from_nested_group = AsyncMock(return_value=[
-            AppUser(source_user_id="u1", email="u@t.com", full_name="U",
-                    app_name=Connectors.SHAREPOINT_ONLINE, connector_id="c1")
-        ])
+        nested = _GraphGroupMock("ng1")
+        nested_user = MagicMock()
+        nested_user.id = "u1"
+        nested_user.odata_type = "#microsoft.graph.user"
+        nested_user.mail = "u@t.com"
+        nested_user.user_principal_name = "u@t.com"
+        nested_user.display_name = "U"
+        # transitiveMembers lists the nested group's users alongside the nested group itself
+        _mock_transitive_members(c, [nested, nested_user])
 
         group = MagicMock()
         group.id = "g1"
@@ -2573,6 +2504,8 @@ class TestHandleGroupCreate:
 
         result = await c._handle_group_create(group)
         assert result is True
+        (_, members), = c.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert [m.email for m in members] == ["u@t.com"]
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -2589,68 +2522,20 @@ class TestHandleGroupCreate:
 
 
 # =============================================================================
-# _get_users_from_nested_group Tests
-# =============================================================================
-
-
-class TestGetUsersFromNestedGroup:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        c = _make_connector()
-        c.msgraph_client = MagicMock()
-
-        member = MagicMock()
-        member.id = "u1"
-        member.odata_type = "#microsoft.graph.user"
-        member.additional_data = {}
-        member.mail = "u@t.com"
-        member.user_principal_name = "u@t.com"
-        member.display_name = "User"
-        member.created_date_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[member])
-
-        nested = MagicMock()
-        nested.id = "ng1"
-        nested.display_name = "Nested"
-
-        result = await c._get_users_from_nested_group(nested)
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_non_user_skipped(self):
-        c = _make_connector()
-        c.msgraph_client = MagicMock()
-
-        device = MagicMock()
-        device.id = "d1"
-        device.odata_type = "#microsoft.graph.device"
-        device.additional_data = {}
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[device])
-
-        nested = MagicMock()
-        nested.id = "ng1"
-        nested.display_name = "Nested"
-
-        result = await c._get_users_from_nested_group(nested)
-        assert len(result) == 0
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        c = _make_connector()
-        c.msgraph_client = MagicMock()
-        c.msgraph_client.get_group_members = AsyncMock(side_effect=Exception("fail"))
-
-        nested = MagicMock()
-        nested.id = "ng1"
-        nested.display_name = "Nested"
-
-        result = await c._get_users_from_nested_group(nested)
-        assert result == []
-
-
-# =============================================================================
 # run_sync Tests
 # =============================================================================
+
+
+def _mock_run_sync_state(c) -> None:
+    """Mocks the sync points a run reads and writes (permission model, inactive users, known sites)
+    and the notification a run that skipped part of the source sends."""
+    for sync_point in ("drive_delta_sync_point", "user_sync_point"):
+        mock_sync_point = MagicMock()
+        mock_sync_point.read_sync_point = AsyncMock(return_value=None)
+        mock_sync_point.update_sync_point = AsyncMock()
+        mock_sync_point.delete_sync_point = AsyncMock()
+        setattr(c, sync_point, mock_sync_point)
+    c.notify = AsyncMock()
 
 
 class TestRunSync:
@@ -2658,6 +2543,7 @@ class TestRunSync:
     async def test_full_sync_no_sites(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
@@ -2671,6 +2557,7 @@ class TestRunSync:
     async def test_full_sync_with_sites(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
@@ -2690,6 +2577,7 @@ class TestRunSync:
     async def test_user_sync_error(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(side_effect=Exception("user fail"))
         c._sync_user_groups = AsyncMock()
@@ -2704,20 +2592,26 @@ class TestRunSync:
     async def test_group_sync_error(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
-        c._sync_user_groups = AsyncMock(side_effect=Exception("group fail"))
+        c._sync_azure_ad_groups = AsyncMock(side_effect=Exception("group fail"))
         c._get_all_sites = AsyncMock(return_value=[])
 
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
-            await c.run_sync()
+            # The run goes on past the groups, then is recorded as failed
+            with pytest.raises(SharePointSyncIncomplete, match="group fail"):
+                await c.run_sync()
+        c.notify.assert_awaited_once()
+        assert c.full_sync_coverage().complete is False
 
     @pytest.mark.asyncio
     async def test_site_filter_excludes(self):
         """SITE_IDS sync filter runs inside _get_all_sites; excluded scope yields no record groups."""
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
@@ -2735,7 +2629,7 @@ class TestRunSync:
         search_empty = MagicMock()
         search_empty.value = []
         search_empty.odata_next_link = None
-        c._safe_api_call = AsyncMock(side_effect=[root_site, search_empty])
+        c._graph_read = AsyncMock(side_effect=[root_site, search_empty])
 
         site_ids_filters = FilterCollection(
             filters=[
@@ -2748,16 +2642,21 @@ class TestRunSync:
             ]
         )
 
+        c.data_entities_processor.on_record_group_deleted = AsyncMock()
+
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (site_ids_filters, FilterCollection())
             await c.run_sync()
 
         c.data_entities_processor.on_new_record_groups.assert_not_called()
+        # The excluded site is deleted from PipesHub, not only skipped.
+        c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with(discovered_site_id, c.connector_id)
 
     @pytest.mark.asyncio
     async def test_site_with_no_name_skipped(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
@@ -2771,6 +2670,7 @@ class TestRunSync:
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             await c.run_sync()
+        c.data_entities_processor.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_critical_error_raises(self):
@@ -2786,6 +2686,7 @@ class TestRunSync:
     async def test_site_sync_failure_in_batch(self):
         c = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
+        _mock_run_sync_state(c)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_users = AsyncMock(return_value=[])
         c._sync_user_groups = AsyncMock()
@@ -2798,7 +2699,11 @@ class TestRunSync:
 
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
-            await c.run_sync()  # Should not raise
+            # The failed site is recorded and the run is reported as failed at the end
+            with pytest.raises(SharePointSyncIncomplete, match="site sync fail"):
+                await c.run_sync()
+        c._sync_site_content.assert_awaited_once()
+        c.notify.assert_awaited_once()
 
 
 # =============================================================================

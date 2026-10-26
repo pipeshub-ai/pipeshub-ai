@@ -226,6 +226,15 @@ async def test_depth_bounds_a_flattened_request(service, provider) -> None:
 
 
 @pytest.mark.asyncio
+async def test_depth_bounds_a_flatten_from_the_root_one_hop_below_it(service, provider) -> None:
+    """From the root an App is one hop away, so each connector is walked `depth - 1` levels."""
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([row("r1", "Record")])
+    await service.get_nodes(user_id="u1", org_id="o1", flattened=True, depth=3)
+    calls = provider.get_knowledge_hub_connector_page_v3.call_args_list
+    assert calls and {c.kwargs["max_depth"] for c in calls} == {2}
+
+
+@pytest.mark.asyncio
 async def test_the_user_override_point_still_decides_the_user(
     logger, provider, config_service
 ) -> None:

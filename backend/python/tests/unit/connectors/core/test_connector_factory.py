@@ -435,6 +435,7 @@ class TestInitializeConnector:
         )
 
         assert result is None
+        mock_connector.on_background_init_failed.assert_awaited_once_with(None)
 
     @pytest.mark.asyncio
     async def test_init_exception_returns_none(self):
@@ -465,6 +466,8 @@ class TestInitializeConnector:
         )
 
         assert result is None
+        (error,) = mock_connector.on_background_init_failed.await_args.args
+        assert str(error) == "init boom", "the connector hears why it could not start"
 
     @pytest.mark.asyncio
     async def test_create_returns_none_skips_init(self):

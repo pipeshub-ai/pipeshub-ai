@@ -37,11 +37,14 @@ from app.agent_loop_lib.events.base import EventType
 from app.agents.agent_loop import parked_turn, tool_approvals
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
-from app.agents.agent_loop.clarification import emit_pre_run_clarification
+from app.agents.agent_loop.clarification import (
+    emit_already_answered,
+    emit_pre_run_clarification,
+)
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_exception
-from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.agents.agent_loop.factory import PipesHubAgentFactory, card_already_answered
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
@@ -434,6 +437,10 @@ async def run_agent_loop_stream(
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
         try:
+            if card_already_answered(context.previous_conversations, query_info.get("query", "")):
+                await emit_already_answered(context, event_sink=context.event_sink)
+                run_finished = True
+                return
             factory = PipesHubAgentFactory()
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, query_info.get("chatMode", "quick"),

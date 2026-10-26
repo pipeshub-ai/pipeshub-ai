@@ -749,6 +749,99 @@ describe('OrgController', () => {
     });
   });
 
+  describe('updateOrganizationDetails (operator objects, validator bypassed)', () => {
+    const bodies: Array<[string, Record<string, unknown>]> = [
+      ['contactEmail', { contactEmail: { $ne: null } }],
+      ['registeredName', { registeredName: { $where: '1' } }],
+      ['shortName', { shortName: { $gt: '' } }],
+      ['permanentAddress.city', { permanentAddress: { city: { $gt: '' } } }],
+      ['permanentAddress as an array', { permanentAddress: ['x'] }],
+      ['permanentAddress as a string', { permanentAddress: 'x' }],
+      ['permanentAddress as an empty string', { permanentAddress: '' }],
+      ['permanentAddress as 0', { permanentAddress: 0 }],
+      ['permanentAddress as false', { permanentAddress: false }],
+    ];
+
+    for (const [label, body] of bodies) {
+      it(`answers 400 and never queries or updates Mongo for ${label}`, async () => {
+        req.body = body;
+        const findOne = sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+        const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+        await controller.updateOrganizationDetails(req, res, next);
+
+        expect(next.calledOnce).to.be.true;
+        expect(next.firstCall.args[0].statusCode).to.equal(400);
+        expect(findOne.called).to.be.false;
+        expect(update.called).to.be.false;
+        expect(res.status.called).to.be.false;
+      });
+    }
+
+    it('writes only the known string address fields', async () => {
+      req.body = { permanentAddress: { city: 'Pune', $set: { isDeleted: true } } };
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+      await controller.updateOrganizationDetails(req, res, next);
+
+      expect(update.firstCall.args[1]).to.deep.equal({ permanentAddress: { city: 'Pune' } });
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    const run = async (saved: any, body: any) => {
+      req.body = body;
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012', permanentAddress: saved } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+      await controller.updateOrganizationDetails(req, res, next);
+      return update.firstCall.args[1] as Record<string, unknown>;
+    };
+    const full = { addressLine1: '1 Main', city: 'Pune', state: 'MH', postCode: '411001', country: 'IN' };
+
+    it('merges a partial address with the saved one', async () => {
+      const doc = await run({ ...full }, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { ...full, city: 'Goa' } });
+    });
+
+    it('uses a toObject() copy of a mongoose document and drops non-address keys', async () => {
+      req.body = { permanentAddress: { city: 'Goa' } };
+      const saved = { ...full, _id: 'x' };
+      sinon.stub(Org, 'findOne').resolves({
+        _id: '507f1f77bcf86cd799439012',
+        toObject: () => ({ permanentAddress: saved }),
+      } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+      await controller.updateOrganizationDetails(req, res, next);
+      expect(update.firstCall.args[1]).to.deep.equal({ permanentAddress: { ...full, city: 'Goa' } });
+    });
+
+    it('gives just the supplied fields when the saved address is null', async () => {
+      const doc = await run(null, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { city: 'Goa' } });
+    });
+
+    it('gives just the supplied fields when there is no saved address', async () => {
+      const doc = await run(undefined, { permanentAddress: { city: 'Goa' } });
+      expect(doc).to.deep.equal({ permanentAddress: { city: 'Goa' } });
+    });
+
+    it('replaces a full address field by field', async () => {
+      const next2 = { addressLine1: '2 Side', city: 'Goa', state: 'GA', postCode: '403001', country: 'IN' };
+      const doc = await run({ ...full }, { shortName: 'X', permanentAddress: next2 });
+      expect(doc).to.deep.equal({ shortName: 'X', permanentAddress: next2 });
+    });
+
+    it('writes nothing for an empty permanentAddress', async () => {
+      req.body = { permanentAddress: {} };
+      sinon.stub(Org, 'findOne').resolves({ _id: '507f1f77bcf86cd799439012' } as any);
+      const update = sinon.stub(Org, 'findByIdAndUpdate').resolves({} as any);
+
+      await controller.updateOrganizationDetails(req, res, next);
+
+      expect(update.firstCall.args[1]).to.deep.equal({});
+    });
+  });
+
   describe('getOrgLogo (additional)', () => {
     it('should handle missing mimeType by not setting Content-Type', async () => {
       const mockLogo = {
@@ -1016,7 +1109,7 @@ describe('OrgController - additional coverage', () => {
     it('should update shortName and permanentAddress fields', async () => {
       req.body = {
         shortName: 'TEST',
-        permanentAddress: '123 Main St',
+        permanentAddress: { addressLine1: '123 Main St' },
       }
 
       const mockOrg = {
@@ -1038,7 +1131,7 @@ describe('OrgController - additional coverage', () => {
         contactEmail: 'new@org.com',
         registeredName: 'New Name',
         shortName: 'NN',
-        permanentAddress: '456 St',
+        permanentAddress: { addressLine1: '456 St' },
       }
 
       const mockOrg = { _id: '507f1f77bcf86cd799439012', registeredName: 'Old' }

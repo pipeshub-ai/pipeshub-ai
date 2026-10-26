@@ -86,6 +86,19 @@ ISSUE_PAGE_SIZE = 100
 # the container is serialised, so cap what gets inlined.
 PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
 
+# Each inlined file costs one Contents API call, every time the PR is indexed. A PR
+# of 300 binary or too-large files would cost ~300 calls per update, so ~16 updates
+# of one such PR spend a whole hourly budget. Past this many, nothing more is inlined.
+PR_FILE_INLINE_MAX_FILES = 30
+
+# Diff and inlined file text kept per pull request. Parsing turns diff text into
+# blocks whose stored JSON is about ten times its size, and storage refuses a
+# record over 100 MB, so a PR whose diff deletes or re-adds the whole repository
+# (GitHub lists up to 3,000 files) failed outright. Past this, a file's change is
+# named but its text left out. 4 MiB is ~40 MB stored, and well above ordinary
+# PRs: the largest of 400 recent apache/airflow merges was 2.7 MB.
+PR_DIFF_TEXT_MAX_BYTES = 4 * 1024 * 1024
+
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a
 # single record cannot stall the stream indefinitely.
 ATTACHMENT_MAX_SIZE_BYTES = 25 * 1024 * 1024
@@ -152,6 +165,7 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 )
 
 HTTP_UNAUTHORIZED = 401
+HTTP_NOT_FOUND = 404
 
 # Transient statuses worth retrying. 403 is excluded: it is a genuine
 # permission denial by the time it gets here, because the data source reports
@@ -162,7 +176,7 @@ _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 # unsynced until the next sync).
 _RETRYABLE_TRANSPORT_ERRORS: frozenset[str] = frozenset({
     "RemoteProtocolError", "ConnectError", "ReadError", "WriteError", "CloseError",
-    "ConnectTimeout", "PoolTimeout",
+    "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout",
 })
 _GITHUB_MAX_RETRIES = 3
 _GITHUB_RETRY_BASE_DELAY_SECONDS = 1.0
@@ -179,13 +193,3 @@ _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS = 60
 # without paying for a per-user permission lookup (NamedUser.permissions
 # already carries the role for the queried repo).
 AFFILIATION_ALL = "all"
-
-# ---------------------------------------------------------------------------
-# Deletion safety valve
-# ---------------------------------------------------------------------------
-
-# A recursive Git Tree can return HTTP 200 with a truncated set. Deleting a
-# large fraction of a repo's code records on a single walk would wipe real
-# files, so refuse and leave them for the next complete walk.
-REPO_DELETE_VALVE_MAX_FRACTION = 0.5
-REPO_DELETE_VALVE_MIN_ABSOLUTE = 5

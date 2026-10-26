@@ -67,6 +67,19 @@ T = TypeVar("T")
 
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 
+# shortcut: a fixed bound on the handler's work after INDEXING_COMPLETE; make it an env setting if a deployment needs longer.
+POST_INDEXING_TAIL_TIMEOUT_S = 300.0
+
+
+async def finish_after_indexing_complete(event_gen: AsyncIterator[object]) -> None:
+    """Run the handler's bookkeeping after INDEXING_COMPLETE to its end, outside the
+    processing deadline but bounded on its own: a stalled graph call there would otherwise
+    keep the message unacknowledged forever. Expiry raises TimeoutError, which takes the
+    consumer's usual timeout path, so the message is redelivered."""
+    async with asyncio.timeout(POST_INDEXING_TAIL_TIMEOUT_S):
+        async for _event in event_gen:
+            pass
+
 # Read-ahead depth, as a multiple of the total in-flight index budget and
 # clamped at both ends. Two, not four: with the index ceilings now derived per
 # tier rather than at 100x a parse tier, four would prefetch more stream

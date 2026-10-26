@@ -346,6 +346,55 @@ describe('Storage Routes', () => {
     })
   })
 
+  describe('artifact set routes', () => {
+    const artifactRoutes: Array<[string, string, string]> = [
+      ['post', '/internal/artifacts/presign', 'internalPresignArtifactSet'],
+      ['get', '/internal/artifacts', 'internalListArtifactSets'],
+      ['post', '/internal/artifacts/:documentId/read-urls', 'internalGetArtifactReadUrls'],
+      ['put', '/internal/artifacts/:documentId/files/*', 'internalPutArtifactFile'],
+      ['get', '/internal/artifacts/:documentId/files/*', 'internalGetArtifactFile'],
+      ['delete', '/internal/artifacts/:documentId', 'internalPurgeArtifactSet'],
+    ]
+    const specPath = (route: string) =>
+      `/document${route.replace(':documentId', '{documentId}').replace(/\*/g, '{path}')}`
+
+    for (const [method, route, operationId] of artifactRoutes) {
+      it(`registers ${method.toUpperCase()} ${route} behind the storage token, documented as ${operationId}`, () => {
+        const router = createStorageRouter(container)
+        const layer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === route && l.route.methods[method],
+        )
+        expect(layer, route).to.not.be.undefined
+        const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+          .getCalls()
+          .filter((call: any) => call.args[0] === 'storage:token')
+          .map((call: any) => call.returnValue)
+        expect(storageTokenChecks).to.include(layer.route.stack[0].handle)
+
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yaml = require('js-yaml')
+        const spec = yaml.load(
+          require('fs').readFileSync(
+            require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+            'utf8',
+          ),
+        )
+        const op = spec.paths[specPath(route)]?.[method]
+        expect(op?.operationId).to.equal(operationId)
+        expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+      })
+    }
+
+    it('registers them ahead of /internal/:documentId, which would take "artifacts" for an id', () => {
+      const router = createStorageRouter(container)
+      const paths: string[] = (router as any).stack.filter((l: any) => l.route).map((l: any) => l.route.path)
+      const firstById = paths.indexOf('/internal/:documentId')
+      for (const [, route] of artifactRoutes) {
+        expect(paths.indexOf(route), route).to.be.lessThan(firstById)
+      }
+    })
+  })
+
   describe('config update route', () => {
     it('should register POST /updateAppConfig route', () => {
       const router = createStorageRouter(container)
@@ -366,10 +415,10 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 22 service-token /internal routes (incl. move-tree, connector delete, its
-// handover pair, missing, the three purges, the virtual-record document listing
-// and the flat-layout listing) + updateAppConfig
-      expect(routes.length).to.equal(23)
+// 28 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair, missing, the three purges, the virtual-record document listing,
+// the flat-layout listing and the six artifact-set routes) + updateAppConfig
+      expect(routes.length).to.equal(29)
     })
   })
 

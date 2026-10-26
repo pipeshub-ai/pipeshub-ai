@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -30,8 +31,8 @@ def _ok(data: object) -> AzureFilesResponse:
     return AzureFilesResponse(success=True, data=data)
 
 
-def _err(error: str) -> AzureFilesResponse:
-    return AzureFilesResponse(success=False, error=error)
+def _err(error: str, code: str | None = None) -> AzureFilesResponse:
+    return AzureFilesResponse(success=False, error=error, error_code=code)
 
 
 class FakeDataSource:
@@ -40,6 +41,8 @@ class FakeDataSource:
     def __init__(self, shares) -> None:
         self.shares = shares
         self.fail_dirs: set[tuple[str, str]] = set()
+        # (share, directory, page offset) whose page listing fails.
+        self.fail_pages: set[tuple[str, str, int]] = set()
         self.fail_list_shares = False
         self.listed: list[tuple[str, str]] = []
 
@@ -58,34 +61,50 @@ class FakeDataSource:
 
     async def list_shares(self, **kwargs: object) -> AzureFilesResponse:
         if self.fail_list_shares:
-            return _err("Azure Files API error: AuthenticationFailed")
+            return _err("Azure Files API error: AuthenticationFailed", "AuthenticationFailed")
         return _ok([{"name": s, "last_modified": LIST_TIME} for s in self.shares])
 
     async def list_directories_and_files(
-        self, share_name: str, directory_path: str = "", name_starts_with: str | None = None
+        self,
+        share_name: str,
+        directory_path: str = "",
+        name_starts_with: str | None = None,
+        results_per_page: int | None = None,
+        continuation_token: str | None = None,
     ) -> AzureFilesResponse:
         self.listed.append((share_name, directory_path))
         if (share_name, directory_path) in self.fail_dirs:
-            return _err("Azure Files API error: ServerBusy")
+            return _err("Azure Files API error: ServerBusy", "ServerBusy")
         tree = self.shares.get(share_name)
-        if tree is None or (directory_path and directory_path not in tree):
-            return _err(f"Directory not found: {share_name}/{directory_path}")
+        if tree is None:
+            return _err(f"Directory not found: {share_name}/{directory_path}", "ShareNotFound")
+        if directory_path and directory_path not in tree:
+            return _err(f"Directory not found: {share_name}/{directory_path}", "ResourceNotFound")
         items = []
         for path, item in tree.items():
             parent = path.rsplit("/", 1)[0] if "/" in path else ""
             if parent == directory_path:
                 items.append(dict(item))
-        return _ok(items)
+        if not results_per_page:
+            return _ok(items)
+        # The marker is the offset of the page, as opaque to the connector as Azure's.
+        start = int(continuation_token or 0)
+        if (share_name, directory_path, start) in self.fail_pages:
+            return _err("Azure Files API error: ServerBusy", "ServerBusy")
+        response = _ok(items[start:start + results_per_page])
+        if start + results_per_page < len(items):
+            response.continuation_token = str(start + results_per_page)
+        return response
 
     async def get_share_properties(self, share_name: str) -> AzureFilesResponse:
         if share_name not in self.shares:
-            return _err(f"Share not found: {share_name}")
+            return _err(f"Share not found: {share_name}", "ShareNotFound")
         return _ok({"name": share_name})
 
     async def get_file_properties(self, share_name: str, file_path: str) -> AzureFilesResponse:
         item = self.shares.get(share_name, {}).get(file_path)
         if not item:
-            return _err(f"File not found: {share_name}/{file_path}")
+            return _err(f"File not found: {share_name}/{file_path}", "ResourceNotFound")
         # The SDK parses the properties headers into naive datetimes.
         naive = item["last_write_time"].replace(tzinfo=None)
         return _ok({**item, "last_modified": naive, "last_write_time": naive, "creation_time": naive})
@@ -547,10 +566,12 @@ class TestO6O7Failures:
         ds.add("s", "a.txt")
         ds.fail_list_shares = True
         conn = _connector(ds, FakeProcessor())
-        with pytest.raises(ConnectionError, match="Failed to list shares"):
+        # The fake refuses with AuthenticationFailed: the owner is told to fix the credentials.
+        with pytest.raises(ConnectionError, match="Listing file shares was refused"):
             await _sync(conn)
         conn.notify.assert_awaited()
         assert conn.display_name in conn.notify.await_args.kwargs["message"]
+        assert "Credentials rejected" in conn.notify.await_args.kwargs["title"]
 
     async def test_every_share_failing_raises(self) -> None:
         ds = FakeDataSource({})
@@ -771,29 +792,46 @@ class TestO2ConnectionTest:
     async def test_list_only_sas_fails_on_read(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
-        ds.get_file_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
+        ds.get_file_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch", "AuthorizationPermissionMismatch"))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = FilterCollection()
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="needs the Read permission"):
+            await conn.test_connection_and_access()
         ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
     async def test_read_is_checked_on_a_folder_when_the_root_has_no_file(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "d", is_dir=True)
         ds.add("s", "d/a.txt")
-        ds.get_directory_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
+        ds.get_directory_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch", "AuthorizationPermissionMismatch"))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = _filters(["s"])
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="needs the Read permission"):
+            await conn.test_connection_and_access()
         ds.get_directory_properties.assert_awaited_once_with("s", "d")
 
     async def test_directory_listing_refused_fails(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
+        ds.list_directories_and_files = AsyncMock(return_value=_err(
+            "AuthorizationPermissionMismatch (HTTP 403): This request is not authorized.",
+            "AuthorizationPermissionMismatch",
+        ))
+        conn = _connector(ds, FakeProcessor())
+        conn.sync_filters = FilterCollection()
+        with pytest.raises(ConnectorInitError, match="needs the List permission"):
+            await conn.test_connection_and_access()
+
+    async def test_transient_failure_names_no_permission(self) -> None:
+        """A busy service is not a missing permission; telling the admin to change one misleads."""
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt")
         ds.fail_dirs.add(("s", ""))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = FilterCollection()
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="Could not list share s. Azure said: .*ServerBusy") as refused:
+            await conn.test_connection_and_access()
+        assert "permission" not in str(refused.value)
 
     async def test_share_sas_needs_no_list_shares(self) -> None:
         ds = FakeDataSource({})
@@ -858,5 +896,7 @@ class TestB1SharedUnlink:
         graph.unlink_nodes_missed_by_full_sync = AsyncMock(return_value=(3, True))
         seen = FullSyncSeen()
         seen.add(CollectionNames.RECORDS.value, "some-record")
-        assert await _unlink_what_full_sync_missed(conn, CONNECTOR_ID, graph, conn.logger, seen) is True
+        # Nothing is unlinked; the first such run owes one retry full sync (False).
+        with patch("app.connectors.core.sync.sync_runner._INCOMPLETE_FULL_SYNC_RETRYING", set()):
+            assert await _unlink_what_full_sync_missed(conn, CONNECTOR_ID, graph, conn.logger, seen) is False
         graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()

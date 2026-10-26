@@ -5,13 +5,15 @@ The listing, sync points and record store are fakes; the connector's sync code r
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from object_store_behaviour_fakes import (
     BUCKET,
     FakeAzureBlobDataSource,
@@ -22,7 +24,11 @@ from object_store_behaviour_fakes import (
 )
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+from app.services.notification.types import NotificationType
 
 OTHER = "bucket-2"
 
@@ -39,16 +45,21 @@ class _AzureStore(FakeAzureBlobDataSource):
         super().__init__(store)
         self.metadata: dict[str, dict[str, str]] = {}
         self.tiers: dict[str, str] = {}
+        self.tier_changed: dict[str, datetime] = {}
         self.deleted: set[str] = set()
+        # Containers whose listing Azure answers with this error.
+        self.refused: dict[str, Exception] = {}
         self.after_page: Any = None
         self.list_calls: list[str] = []
 
     async def list_blobs(self, container_name: str, prefix: str | None = None, **kw: object) -> Response:
         self.list_calls.append(container_name)
-        if container_name in self.deleted:
+        if container_name in self.deleted or container_name in self.refused:
+            error = self.refused.get(container_name) or ConnectionError("ContainerNotFound")
+
             # The SDK pager fails only when it is iterated.
             async def gone() -> AsyncIterator[dict[str, Any]]:
-                raise ConnectionError("ContainerNotFound")
+                raise error
                 yield  # pragma: no cover
             return Response(True, gone())
         inner = (await super().list_blobs(container_name, prefix, **kw)).data
@@ -58,6 +69,7 @@ class _AzureStore(FakeAzureBlobDataSource):
             async for blob in inner:
                 blob["metadata"] = self.metadata.get(blob["name"], {})
                 blob["blob_tier"] = self.tiers.get(blob["name"])
+                blob["blob_tier_change_time"] = self.tier_changed.get(blob["name"])
                 yield blob
                 n += 1
                 if self.after_page and n % self.page_size == 0:
@@ -430,3 +442,361 @@ class TestArchiveTier:
         records = db.by_path()
         assert records[path("cold.txt")].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert records[path("hot.txt")].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestTierChange:
+    """Setting a tier (rehydrating from Archive) changes neither Last-Modified nor the etag."""
+
+    @pytest.mark.asyncio
+    async def test_a_rehydrated_blob_is_sent_to_indexing(self, connector, store, db) -> None:
+        store.put("cold.txt")
+        store.put("other.txt")
+        connector.data_source.tiers = {"cold.txt": "Archive"}
+        await connector.run_sync()
+        assert db.by_path()[path("cold.txt")].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+        connector.data_source.tiers = {"cold.txt": "Hot"}
+        connector.data_source.tier_changed = {"cold.txt": store.tick()}
+        await connector.run_sync()
+
+        assert db.by_path()[path("cold.txt")].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_an_old_tier_change_does_not_resync_the_blob(self, connector, store, db) -> None:
+        connector.data_source.tier_changed = {"a.txt": store.tick()}
+        store.put("a.txt")
+        store.put("newest.txt")  # the newest blob sits on the checkpoint, which is inclusive
+        await connector.run_sync()
+        db.written.clear()
+
+        await connector.run_sync()
+
+        assert path("a.txt") not in db.written
+
+    @pytest.mark.asyncio
+    async def test_a_resynced_tier_change_moves_the_checkpoint(self, connector, store, db) -> None:
+        store.put("a.txt")
+        store.put("newest.txt")
+        await connector.run_sync()
+        connector.data_source.tier_changed = {"a.txt": store.tick()}
+        await connector.run_sync()
+        db.written.clear()
+
+        await connector.run_sync()
+
+        assert path("a.txt") not in db.written
+
+
+# Azure's text for a request signed with the wrong key, as the SDK raises it.
+_AUTH_FAILURE = (
+    "Server failed to authenticate the request. Make sure the value of Authorization header is formed "
+    "correctly including the signature.\nRequestId:62830b83\nTime:2026-10-23T10:24:58Z\n"
+    "ErrorCode:AuthenticationFailed\nauthenticationerrordetail:The MAC signature found in the HTTP request "
+    "'wJS3D2tZeiD9AeonSNQJ22XsR0xujOTKCFOjMXPW+k8=' is not the same as any computed signature. Server used "
+    "following string to sign: 'GET\n/acct/bucket-1\ncomp:list'.\nContent: <?xml version=\"1.0\"?><Error>"
+    "<Code>AuthenticationFailed</Code></Error>"
+)
+
+
+def azure_error(cls: type[HttpResponseError], text: str, status: int, code: str) -> HttpResponseError:
+    error = cls(message=text)
+    error.status_code, error.error_code = status, code
+    return error
+
+
+def assert_nothing_secret(text: str) -> None:
+    for leak in ("wJS3D2tZeiD9AeonSNQJ22XsR0xujOTKCFOjMXPW", "string to sign", "<?xml", "RequestId"):
+        assert leak not in text
+
+
+class TestFailureReports:
+    """A failed sync tells the user why, and an auth failure says it is one; logs keep only status, code and message."""
+
+    @pytest.mark.asyncio
+    async def test_refused_credentials_are_reported_as_an_auth_error(self, connector, store, db, caplog) -> None:
+        store.put("a.txt")
+        await connector.run_sync()
+        connector.data_source.refused[BUCKET] = azure_error(ClientAuthenticationError, _AUTH_FAILURE, 403, "AuthenticationFailed")
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError, match=BUCKET):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert sent["title"].endswith("Credentials rejected")
+        assert "HTTP 403 AuthenticationFailed: Server failed to authenticate the request." in sent["message"]
+        assert_nothing_secret(sent["message"])
+        assert_nothing_secret(caplog.text)
+        assert path("a.txt") in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_another_listing_failure_names_its_reason(self, connector, store, caplog) -> None:
+        store.put("a.txt")
+        connector.data_source.refused[BUCKET] = azure_error(
+            HttpResponseError, "The server is busy.\nRequestId:1\nContent: <?xml?>", 503, "ServerBusy",
+        )
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        assert f"{BUCKET}: HTTP 503 ServerBusy: The server is busy." in sent["message"]
+        assert_nothing_secret(caplog.text)
+
+    @pytest.mark.asyncio
+    async def test_files_that_failed_are_counted_in_a_notice(self, connector, store, db) -> None:
+        store.put("bad.txt")
+        store.put("good.txt")
+        real = connector._process_azure_blob
+
+        async def fail_bad(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "bad.txt":
+                raise ValueError("unreadable properties")
+            return await real(blob, *args)
+        connector._process_azure_blob = fail_bad
+
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["title"].endswith("Some files failed to sync")
+        assert sent["message"].startswith("1 file(s) could not be synced")
+        assert path("good.txt") in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_files_refused_for_their_credentials_are_reported_as_an_auth_error(
+        self, connector, store, db, caplog,
+    ) -> None:
+        store.put("bad.txt")
+        store.put("good.txt")
+        real = connector._process_azure_blob
+
+        async def refuse_bad(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "bad.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(blob, *args)
+        connector._process_azure_blob = refuse_bad
+
+        with caplog.at_level(logging.DEBUG):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert sent["title"].endswith("Credentials rejected")
+        assert sent["message"].startswith(
+            "Azure refused the connector's credentials for 1 file(s): HTTP 403 AuthorizationPermissionMismatch"
+        )
+        assert "could not be synced" not in sent["message"]
+        assert_nothing_secret(sent["message"])
+        assert_nothing_secret(caplog.text)
+        assert path("good.txt") in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_refused_and_other_failed_files_are_counted_apart(self, connector, store) -> None:
+        store.put("refused.txt")
+        store.put("broken.txt")
+        real = connector._process_azure_blob
+
+        async def fail_two(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "refused.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            if blob["name"] == "broken.txt":
+                raise ValueError("unreadable properties")
+            return await real(blob, *args)
+        connector._process_azure_blob = fail_two
+
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert "credentials for 1 file(s)" in sent["message"]
+        assert "1 other file(s) could not be synced. The next sync retries them" in sent["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_file_does_not_make_another_containers_failure_an_auth_error(
+        self, connector, config, store, other,
+    ) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("refused.txt")
+        other.put("c.txt")
+        connector.data_source.refused[OTHER] = azure_error(
+            HttpResponseError, "The server is busy.\nRequestId:1", 503, "ServerBusy",
+        )
+        real = connector._process_azure_blob
+
+        async def refuse(blob: dict, *args: object) -> tuple:
+            if blob["name"] == "refused.txt":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(blob, *args)
+        connector._process_azure_blob = refuse
+
+        with pytest.raises(RuntimeError, match=OTHER):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        assert sent["title"].endswith("Some containers failed to sync")
+        assert f"{OTHER}: HTTP 503 ServerBusy" in sent["message"]
+        # The files that failed in the container that synced are reported in the same notice.
+        assert "Azure refused the connector's credentials for 1 file(s)" in sent["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_old_copy_is_counted_as_a_failed_file(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        connector.notify.reset_mock()
+        real = connector._create_azure_blob_permissions
+
+        async def refuse(container_name: str, blob_name: str) -> list:
+            if blob_name == "a.pdf":
+                raise azure_error(HttpResponseError, _AUTH_FAILURE, 403, "AuthorizationPermissionMismatch")
+            return await real(container_name, blob_name)
+        connector._create_azure_blob_permissions = refuse
+
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert "credentials for 1 file(s)" in sent["message"]
+        assert "other file(s)" not in sent["message"]
+        assert path("a.pdf") not in db.paths()
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_an_old_copy_whose_lookup_fails_is_a_failed_file(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        connector.notify.reset_mock()
+
+        db.get_record_by_external_revision_id = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["title"].endswith("Some files failed to sync")
+        assert sent["message"].startswith("1 file(s) could not be synced")
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_keeps_the_record_of_a_moved_blob(self, connector, store, db, config) -> None:
+        store.put("a.pdf", "same bytes")
+        store.put("b.txt", "same bytes")
+        config.set_extensions("in", ["txt"])
+        await connector.run_sync()
+        store.delete("b.txt")  # its content is now only at a.pdf, which would take over its record
+
+        db.get_record_by_external_revision_id = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        config.sync_filters.pop("file_extensions")
+        await connector.run_sync()
+
+        assert path("b.txt") in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_container_list_is_an_auth_error(self, connector, config) -> None:
+        choose_containers(connector, config, None)
+        refused = Response(False, None, "HTTP 403 AuthenticationFailed: Server failed to authenticate the request.")
+        refused.error_code = "AuthenticationFailed"
+        connector.data_source.list_containers = AsyncMock(return_value=refused)
+
+        with pytest.raises(ConnectionError):
+            await connector.run_sync()
+
+        sent = connector.notify.await_args.kwargs
+        assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert sent["title"].endswith("Credentials rejected")
+        assert "HTTP 403 AuthenticationFailed" in sent["message"]
+
+
+class TestClearedTeamSelection:
+    """A team connector whose Container Names are cleared stops syncing; what it synced before must not stay readable by the org."""
+
+    @pytest.mark.asyncio
+    async def test_its_containers_are_removed(self, connector, store, other, db, config) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("a.txt")
+        other.put("b.txt")
+        await connector.run_sync()
+        assert {path("a.txt"), path("b.txt", OTHER)} <= db.paths()
+
+        config.sync_filters.pop("containers")
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert not db.paths()
+        assert BUCKET not in db.record_groups and OTHER not in db.record_groups
+        assert "The 2 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fail_mode", ["raise", "empty"])
+    async def test_an_unreadable_config_removes_nothing(self, connector, store, db, config, fail_mode) -> None:
+        choose_containers(connector, config, [BUCKET])
+        store.put("a.txt")
+        await connector.run_sync()
+        # The run's own filter load then sees no filters, as it would after a failed read.
+        config.fail_mode, config.fail_from = fail_mode, config.reads
+
+        with pytest.raises(ValueError):
+            await connector.run_sync()
+
+        assert path("a.txt") in db.paths()
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("excluded", [[OTHER], []], ids=["naming-one", "naming-none"])
+    async def test_a_not_in_filter_removes_nothing(self, connector, store, db, config, excluded) -> None:
+        choose_containers(connector, config, [BUCKET])
+        store.put("a.txt")
+        await connector.run_sync()
+
+        config.set_selection("containers", excluded, "not_in")
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert path("a.txt") in db.paths()
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    async def test_the_notice_counts_only_containers_actually_removed(self, connector, store, other, db, config) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("a.txt")
+        other.put("b.txt")
+        await connector.run_sync()
+        db.refused_group_deletes.add(OTHER)
+
+        config.set_selection("containers", [])
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert BUCKET not in db.record_groups and OTHER in db.record_groups
+        assert "The 1 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
+
+
+class TestFolderTimes:
+    """Azure keeps no folder times: a new folder is dated by the blob that implies it, and a stored one keeps its dates."""
+
+    @pytest.mark.asyncio
+    async def test_a_new_folder_takes_its_blobs_time_and_a_stored_one_keeps_its_own(self, connector, store, db) -> None:
+        store.put("a/x.txt")
+        first_ms = int(store.objects["a/x.txt"].modified.timestamp() * 1000)
+        await connector.run_sync()
+        folder = db.by_path()[path("a")]
+        assert (folder.source_created_at, folder.source_updated_at) == (first_ms, first_ms)
+        stored = folder.model_copy()
+
+        store.put("a/y.txt")
+        await connector.run_sync()
+
+        # The fake store replaces records whole; the real processor is what keeps stored times.
+        sent = db.by_path()[path("a")]
+        graph = AsyncMock()
+        graph.get_record_by_external_id = AsyncMock(return_value=stored)
+        graph.get_record_group_by_external_id = AsyncMock(return_value=None)
+        processor = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), AsyncMock())
+        processor.org_id = stored.org_id
+        saved, _ = await processor._process_record(sent, [], graph)
+        assert (saved.source_created_at, saved.source_updated_at) == (first_ms, first_ms)

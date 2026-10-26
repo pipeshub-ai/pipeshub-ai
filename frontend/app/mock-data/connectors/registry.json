@@ -4694,7 +4694,7 @@
                     },
                     {
                         "title": "Pipeshub Documentation",
-                        "url": "https://docs.pipeshub.com/connectors/azure/azurefiles",
+                        "url": "https://docs.pipeshub.com/connectors/azure-files/azure-files",
                         "type": "pipeshub"
                     }
                 ],

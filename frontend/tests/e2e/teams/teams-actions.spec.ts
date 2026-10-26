@@ -68,7 +68,7 @@ test.describe('Teams Actions', () => {
     const renamed = `${name} Updated`;
     await openTeam(page, name);
 
-    await page.getByRole('button', { name: 'Edit Team' }).click();
+    await page.getByRole('button', { name: 'Edit team' }).click();
     // Scoped to the panel, and strict: `openTeam` has just typed this name
     // into the list's search box, so an unscoped `input[value=…]` resolves to
     // that box first. The new name went into search, the name field kept the
@@ -77,7 +77,7 @@ test.describe('Teams Actions', () => {
     const nameInput = page.getByRole('dialog').locator(`input[value="${name}"]`);
     await expect(nameInput).toBeEditable({ timeout: 5_000 });
     await nameInput.fill(renamed);
-    await page.getByRole('button', { name: 'Save Edits' }).click();
+    await page.getByRole('button', { name: 'Save edits' }).click();
 
     await expect(page.getByText('Team updated!').first()).toBeVisible({ timeout: 10_000 });
     await page.goto('/workspace/teams/');
@@ -131,8 +131,8 @@ test.describe('Teams Actions', () => {
     await openTeam(page, name);
 
     // Delete is offered only in edit mode.
-    await page.getByRole('button', { name: 'Edit Team' }).click();
-    await page.getByRole('button', { name: 'Delete Team' }).click();
+    await page.getByRole('button', { name: 'Edit team' }).click();
+    await page.getByRole('button', { name: 'Delete team' }).click();
 
     await expect(page.getByText('Team deleted').first()).toBeVisible({ timeout: 10_000 });
     await page.goto('/workspace/teams/');

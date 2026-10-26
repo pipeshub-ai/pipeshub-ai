@@ -13,7 +13,10 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import {
+  PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
+} from '../../oauth_provider/constants/constants';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   CODE_GRAPH_TOOL_NAMES,
@@ -48,12 +51,44 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     : user.isOAuth === true
       ? 'oauth'
       : 'session';
+  const userAgent = productToken(req.headers['user-agent']);
+  const channel = channelOf(req.headers['x-pipeshub-channel']);
   return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
     domain: domainFromEmail(email),
     auth_type: authType,
+    // Which client and which of our channels: for a stateless transport,
+    // every request has to say it, not only initialize.
+    // Service tokens are OAuth too, but their client id is an internal
+    // per-org placeholder like the PAT one, not an app.
+    ...(authType === 'oauth' &&
+    clientId &&
+    !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
+      ? { oauth_client_id: clientId }
+      : {}),
+    ...(userAgent ? { user_agent: userAgent } : {}),
+    ...(channel ? { channel } : {}),
   };
+}
+
+/** The first product token of a User-Agent (`claude-code/2.1.0`), never the
+ *  whole header, which can carry machine and OS details. */
+function productToken(header: unknown): string | undefined {
+  if (typeof header !== 'string') return undefined;
+  const token = header.trim().split(/\s+/)[0] ?? '';
+  // Name with at most one `/version`: no `@` (an address) and no extra path.
+  return /^(?=.{1,80}$)[\w.+-]+(?:\/[\w.+-]+)?$/.test(token)
+    ? token
+    : undefined;
+}
+
+/** `X-PipesHub-Channel`, set by PipesHub's own clients (plugin, CLI, docs
+ *  snippets). Anything else is dropped rather than stored as typed. */
+function channelOf(header: unknown): string | undefined {
+  return typeof header === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(header)
+    ? header
+    : undefined;
 }
 
 /** Props for `mcp_connected`, or undefined when this request is not an
@@ -113,6 +148,24 @@ function mayReadCode(user: Record<string, unknown> | undefined): boolean {
   return Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CODE_READ);
 }
 
+/**
+ * The MCP tool scopes to mount for this caller. A token without both
+ * kb:write and kb:upload is offered the read tools only, so an agent is not
+ * shown tools that would answer 403. Session users get every tool, as in
+ * requireScopes; undefined mounts everything.
+ */
+export function mcpToolScopes(
+  user: Record<string, unknown> | undefined,
+): Array<'read'> | undefined {
+  if (!user?.isOAuth) return undefined;
+  const scopes: unknown = user.oauthScopes;
+  const held = Array.isArray(scopes) ? scopes : [];
+  return held.includes(OAuthScopeNames.KB_WRITE) &&
+    held.includes(OAuthScopeNames.KB_UPLOAD)
+    ? undefined
+    : ['read'];
+}
+
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -157,6 +210,7 @@ export const handleMCPRequest =
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        scopes: mcpToolScopes(req.user),
         serverURL,
         getSDK: () =>
           new PipeshubCore({

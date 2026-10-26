@@ -17,12 +17,27 @@ interface AgentChatHeaderProps {
   hasExpandButton?: boolean;
   /** A chat someone shared with the user: they cannot start chats on an agent they may not have. */
   readOnly?: boolean;
+  /** Who made the agent; on mobile it is listed in the menu instead of a header chip. */
+  creatorName?: string | null;
+  /** Share controls sit top-right; the mobile title stops short of them. */
+  hasShareGroup?: boolean;
 }
+
+/** Room the top-right share group (avatars + Share button + 16px inset) takes on a phone. */
+const MOBILE_SHARE_GROUP_PX = 200;
 
 /**
  * Top-left chat title for agent threads — name + chevron menu (ChatGPT-style).
  */
-export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButton, readOnly }: AgentChatHeaderProps) {
+export function AgentChatHeader({
+  agentId,
+  displayName,
+  isMobile,
+  hasExpandButton,
+  creatorName,
+  hasShareGroup,
+  readOnly,
+}: AgentChatHeaderProps) {
   const router = useRouter();
   const { t } = useTranslation();
   const toggleAgentsSidebar = useChatStore((s) => s.toggleAgentsSidebar);
@@ -71,7 +86,9 @@ export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButto
         top: 12,
         left: isMobile ? 52 : (hasExpandButton ? 52 : 16),
         zIndex: 25,
-        maxWidth: isMobile ? 'calc(100vw - 120px)' : 'min(480px, calc(100vw - 280px))',
+        maxWidth: isMobile
+          ? `calc(100vw - 52px - ${hasShareGroup ? MOBILE_SHARE_GROUP_PX : 16}px)`
+          : 'min(480px, calc(100vw - 280px))',
         pointerEvents: 'auto',
       }}
     >
@@ -117,6 +134,12 @@ export function AgentChatHeader({ agentId, displayName, isMobile, hasExpandButto
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="start" size="2">
+          {isMobile && creatorName && (
+            <>
+              <DropdownMenu.Label>{`${t('agentBuilder.createdBy')}: ${creatorName}`}</DropdownMenu.Label>
+              <DropdownMenu.Separator />
+            </>
+          )}
           <DropdownMenu.Item onSelect={handleNewAgentChat}>
             {t('chat.agentMenuNewChat')}
           </DropdownMenu.Item>

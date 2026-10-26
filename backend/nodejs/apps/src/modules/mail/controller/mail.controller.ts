@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import {
+  BadGatewayError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -16,6 +17,7 @@ import {
   MailSenderService,
   SMTP_SYNC_SEND_DEADLINE_MS,
 } from '../services/mail.sender.service';
+import { SMTP_PROBLEM_MESSAGES } from '../types/mail-event.types';
 
 @injectable()
 export class MailController {
@@ -40,8 +42,11 @@ export class MailController {
       if (!result.status) {
         // `data` is the mail library's own complaint, packed in by emailSender.
         this.logger.error('Sending the email failed', { reason: result.data });
+        // A bad SMTP setup is the admin's to fix; saying so beats "something went wrong".
         throw markClientSafe(
-          new InternalServerError(serverFailureMessage('send that email')),
+          result.problem
+            ? new BadGatewayError(SMTP_PROBLEM_MESSAGES[result.problem])
+            : new InternalServerError(serverFailureMessage('send that email')),
         );
       }
       res.status(200).json({
@@ -70,6 +75,10 @@ export class MailController {
     );
     return result.status === 'sent'
       ? { status: true, data: 'Email sent' }
-      : { status: false, data: result.error };
+      : {
+          status: false,
+          data: result.error,
+          problem: 'problem' in result ? result.problem : undefined,
+        };
   }
 }

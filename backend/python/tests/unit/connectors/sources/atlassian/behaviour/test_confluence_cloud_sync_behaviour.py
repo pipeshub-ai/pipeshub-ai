@@ -6,8 +6,10 @@ api.atlassian.com) is answered by an in-memory stub, and our databases are
 in-memory fakes.
 """
 
+import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -40,10 +42,16 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
+)
+from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.quota import (
+    AtlassianQuotaExhausted,
+    QuotaAwarePolicy,
 )
 from app.models.entities import (
     AppUser,
@@ -67,6 +75,13 @@ WIKI = f"{SITE}/wiki"
 @pytest.fixture
 def db() -> CloudRecordsDb:
     return CloudRecordsDb()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_notice_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What was already noticed is kept per connector id across instances; no test sees another's."""
+    monkeypatch.setattr(ConfluenceConnector, "_persistent_noticed", {})
+    monkeypatch.setattr(ConfluenceConnector, "_quota_noticed_reset", {})
 
 
 @pytest.fixture
@@ -110,6 +125,9 @@ def v1_page(pid: str, *, version: int = 1, space_id: int = 77, attachments: Opti
     }
 
 
+PAGE_TIME = "2024-05-01T10:00:00.000Z"
+
+
 def epoch_ms(value: datetime) -> int:
     return int(value.timestamp() * 1000)
 
@@ -150,6 +168,8 @@ class ContentSearch:
         self.queries: list[dict[str, str]] = []
         self.folders: list[dict[str, Any]] | None = None
         self.blogposts: list[dict[str, Any]] | None = None
+        self.comments: list[dict[str, Any]] | httpx.Response | None = None
+        self.attachments: list[dict[str, Any]] = []
         self.indexed: dict[str, dict[str, Any]] | httpx.Response | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -160,6 +180,12 @@ class ContentSearch:
             return json_response(search_page(self.folders))
         if self.blogposts is not None and cql.startswith("type=blogpost"):
             return json_response(search_page(self.blogposts))
+        if cql.startswith("type=attachment"):
+            return json_response(search_page(self.attachments))
+        if cql.startswith("type=comment"):
+            if isinstance(self.comments, httpx.Response):
+                return self.comments
+            return json_response(search_page(self.comments or []))
         by_id = re.search(r"(?:^| AND )id in \(([^)]*)\)", cql)
         if self.indexed is not None and by_id:
             if isinstance(self.indexed, httpx.Response):
@@ -215,12 +241,14 @@ class TestOAuthClientAndTokenRefresh:
         assert err.value.status_code == 409
         assert "is not connected. Check its settings and try again." in err.value.detail
         assert api.calls("GET", f"{V2}/spaces") == [], "nothing is sent without a token"
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(HTTPException, match="is not connected"):
+            await connector.test_connection_and_access()
 
     async def test_rejected_token_at_setup_is_reported_not_swallowed(self, api, db, checkpoints) -> None:
         api.on("GET", RESOURCES_PATH, json_response({"message": "Unauthorized"}, status=401))
         connector, _ = await make_connector(db, checkpoints)
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
+            await connector.init()
         assert connector.external_client is None
 
     async def test_a_token_reaching_several_sites_asks_for_a_single_site_app(self, api, db, checkpoints) -> None:
@@ -272,7 +300,8 @@ class TestSpacesAndPermissions:
         grants = {(p.entity_type, p.email or p.external_id, p.type) for p in db.record_group_permissions["1"]}
         assert (EntityType.USER, "ana@acme.com", PermissionType.OWNER) in grants
         assert (EntityType.GROUP, "grp-eng", PermissionType.READ) in grants
-        assert not any("stranger" in str(g) or "unknown" in str(g) for g in grants), "unknown principals get nothing"
+        assert (EntityType.GROUP, "acc-stranger", PermissionType.READ) in grants, "a hidden-email user keeps access via a pseudo-group"
+        assert not any("grp-unknown" in str(g) for g in grants), "an unknown group gets nothing"
         assert db.record_group_permissions["2"] == []
 
     async def test_a_failed_space_permission_read_keeps_the_stored_access(self, api, db, checkpoints) -> None:
@@ -434,7 +463,9 @@ class TestPageSync:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert checkpoints.values_for("confluence_pages/ENG") is None
+        saved = checkpoints.values_for("confluence_pages/ENG")
+        assert not saved.get("last_sync_time"), "a full listing keeps no checkpoint until it ends"
+        assert saved["full_resume_after"] == PAGE_TIME, "the next sync resumes after the saved batch"
 
     async def test_a_failed_folder_listing_page_does_not_move_the_folder_checkpoint(self, api, db, checkpoints, search) -> None:
         folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
@@ -445,7 +476,7 @@ class TestPageSync:
         await connector._sync_folders("ENG")
 
         assert "500" in db.records
-        assert checkpoints.values_for("confluence_folders/ENG") is None
+        assert checkpoints.values_for("confluence_folders/ENG")["last_sync_time"] == PAGE_TIME, "only past the saved batch"
 
     @staticmethod
     def _many_attachments(api: AtlassianApiStub, search: ContentSearch, second_page: object) -> None:
@@ -559,6 +590,19 @@ class TestPageSync:
 
         assert "att2" in db.records and "att1" not in db.records
         assert db.records["att2"].parent_node_id == db.records["10"].id
+
+    async def test_an_image_too_big_to_show_inside_the_page_stays_a_file(self, api, db, checkpoints, search) -> None:
+        poster = {"id": "att1", "title": "poster.png", "mediaType": "image/png", "fileId": "media-1",
+                  "fileSize": 50 * 1024 * 1024, "version": {"number": 1}}
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[poster])])
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [poster], "_links": {"base": WIKI}})
+        adf = '{"type":"doc","content":[{"type":"mediaSingle","content":[{"type":"media","attrs":{"id":"media-1","type":"file"}}]}]}'
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": adf}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "the page body leaves it out, so it is kept as a file"
 
 
 class TestGroups:
@@ -821,16 +865,13 @@ class TestRestrictedPageFiles:
         (update,) = db.permission_updates
         assert [p.email for p in update[1]] == []
 
-    async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
-        db.add_user("acc-ana", "ana@acme.com")
-        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+    async def test_a_file_first_seen_while_opening_a_page_is_left_to_the_sync(self, api, db, checkpoints) -> None:
+        """Opening a page creates no records: the sync stores files with the page's access and its filters."""
         connector, _ = await ready_connector(db, checkpoints)
 
-        await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
+        children = await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
 
-        file = db.records["att2"]
-        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10")
-        assert db.record_permissions["att2"] == []
+        assert children == {} and "att2" not in db.records
 
 
 class TestAuditLog:
@@ -890,8 +931,7 @@ class TestAuditLog:
         others = [{**v1_page(f"9{i:02d}"), "title": "Page 10"} for i in range(200)]
         search.by_cursor = {None: search_page(others, cursor="T2"), "T2": json_response({"message": "busy"}, status=503)}
 
-        with pytest.raises(ValueError):
-            await connector._sync_permission_changes_from_audit_log()
+        await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
         assert db.records["10"].access_rule == AccessRule.STRICT, "page 10 was on the page that failed; the next run reads it"
@@ -908,8 +948,7 @@ class TestAuditLog:
         api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
         search.by_cursor[None] = json_response({"message": "busy"}, status=503)
 
-        with pytest.raises(ValueError):
-            await connector._sync_permission_changes_from_audit_log()
+        await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
 
@@ -922,6 +961,21 @@ class TestAuditLog:
         await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
+
+    @pytest.mark.parametrize(("status", "moves"), [(503, False), (404, True)])
+    async def test_a_failing_audit_log_falls_back_to_rechecking_restrictions(
+        self, api, db, checkpoints, status, moves
+    ) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_permission_changes_from_audit_log()
+        checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] = 1_000
+        api.on("GET", f"{V1}/audit", json_response({"message": "no"}, status=status))
+        connector._recheck_restrictions = AsyncMock(return_value=True)
+
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        connector._recheck_restrictions.assert_awaited_once_with([ENG])
+        assert (checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] != 1_000) is moves
 
     async def test_a_page_restricted_later_takes_its_stored_files_with_it(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -1002,15 +1056,40 @@ class TestPlaceholderSweep:
 
         await connector._sweep_placeholder_records("org-1")
 
-        page, folder, gone = db.records["10"], db.records["500"], db.records["404"]
+        page, folder = db.records["10"], db.records["500"]
         assert page.record_name == "Design doc" and page.is_placeholder is True, "content stays unindexed"
         assert page.id == page_stub.id
         assert page.parent_external_record_id == "500" and page.parent_record_type == RecordType.FILE
         assert folder.record_name == "Specs" and folder.is_placeholder is False
         assert folder.access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
-        assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
+        assert "404" not in db.records and "gone-id" in db.kept_records, "an unreachable stub is kept as stored, not rewritten"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"
+
+    async def test_a_filled_in_stub_that_did_not_change_keeps_its_grants(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        page_stub = WebpageRecord(
+            org_id="org-1", record_name="10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.placeholders = [page_stub]
+        api.on("GET", f"{V2}/pages/10", {
+            "id": "10", "title": "Design doc", "spaceId": "77",
+            "version": {"number": 4, "createdAt": "2024-05-01T10:00:00.000Z"}, "_links": {"base": WIKI, "webui": "/x/10"},
+        })
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sweep_placeholder_records("org-1")
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        db.placeholders = [db.records["10"]]
+        writes_before = len(db.record_batches)
+
+        await connector._sweep_placeholder_records("org-1")
+
+        assert len(db.record_batches) == writes_before, "an unchanged stub is not written again"
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        assert db.records["10"].id in db.kept_records, "a full sync keeps its edges"
 
     async def test_a_chain_of_folder_ancestors_is_named_in_one_sweep(self, api, db, checkpoints) -> None:
         page_stub = WebpageRecord(
@@ -1099,6 +1178,8 @@ def space_group(space_id: str, key: str) -> RecordGroup:
 ENG = space_group("77", "ENG")
 PAGES_CHECKPOINT = "confluence_pages/ENG"
 OLD_CHECKPOINT = "2020-01-01T00:00:00.000Z"
+# A held checkpoint still moves past the batches that were saved, to their last change.
+HELD_AT_SAVED_BATCH = PAGE_TIME
 
 
 def in_space(*ids: str, archived: tuple[str, ...] = (), cursor: str | None = None) -> dict[str, Any]:
@@ -1108,6 +1189,83 @@ def in_space(*ids: str, archived: tuple[str, ...] = (), cursor: str | None = Non
         links["next"] = f"/wiki/api/v2/spaces/77/pages?cursor={cursor}&limit=250"
     items = [{"id": i, "status": "archived" if i in archived else "current", "title": f"Page {i}"} for i in ids]
     return {"results": items, "_links": links}
+
+
+def in_space_under(parents: dict[str, str | None]) -> dict[str, Any]:
+    """A v2 space listing of current pages with their parent ids."""
+    items = [{"id": i, "status": "current", "title": f"Page {i}", **({"parentId": p} if p else {})}
+             for i, p in parents.items()]
+    return {"results": items, "_links": {"base": WIKI}}
+
+
+class TestAttachmentsChangedWithoutThePage:
+    """Uploading a file, or a new version of one, adds no page version."""
+
+    async def test_a_file_added_to_an_unchanged_page_is_synced(self, api, db, checkpoints, search) -> None:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page([v1_page("10")])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        assert "att2" not in db.records
+        checkpoints.values_for("confluence_attachments/ENG")["checked_at"] = "2024-01-01T00:00:00.000Z"
+
+        search.by_cursor = {None: search_page([])}  # the page itself did not change
+        search.attachments = [{"id": "att2", "type": "attachment", "version": {"when": "2024-06-01T10:00:00.000Z"},
+                               "container": {"id": "10", "type": "page"}}]
+        search.indexed = {"10": v1_page("10", attachments=[SPEC])}
+        await connector._sync_spaces_content([ENG])
+
+        assert "att2" in db.records
+        assert checkpoints.values_for("confluence_attachments/ENG")["checked_at"] > "2024-01-01T00:00:00.000Z"
+
+
+class TestMovedPages:
+    """Moving a page need not change its version, so the listing by last change never brings it back."""
+
+    async def _synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11")])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": None}))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        search.by_cursor = {None: search_page([])}
+        return connector
+
+    @staticmethod
+    def _reads_of(search, page_id: str) -> int:
+        return sum(1 for q in search.queries if re.search(rf"id in \([^)]*\b{page_id}\b", q.get("cql", "")))
+
+    async def test_a_page_moved_without_a_new_version_gets_its_new_parent(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        search.indexed = {"11": {**v1_page("11"), "ancestors": [{"id": "10", "type": "page"}]}}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": "10"}))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert db.records["11"].parent_external_record_id == "10"
+
+    async def test_a_parent_the_apis_name_differently_is_read_again_once(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        search.indexed = {"11": v1_page("11")}  # its ancestors never name the listed parent
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": "10"}))
+
+        await connector._sync_spaces_content([ENG])
+        await connector._sync_spaces_content([ENG])
+
+        assert self._reads_of(search, "11") == 1
+
+    async def test_a_failed_listing_of_a_quiet_space_is_reported(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", lambda _: json_response({"message": "boom"}, status=500))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert any("couldn't check or remove" in p for p in connector._sync_problems)
 
 
 class TestContentGoneFromSource:
@@ -1132,7 +1290,7 @@ class TestContentGoneFromSource:
 
     def _checkpoint(self, checkpoints) -> str | None:
         value = checkpoints.values_for(PAGES_CHECKPOINT)
-        return value["last_sync_time"] if value else None
+        return value.get("last_sync_time") if value else None
 
     def _refilter(self, connector, checkpoints, search, *excluded: str) -> None:
         checkpoints.sync_points.clear()  # saving filters deletes the connector's sync points
@@ -1164,6 +1322,7 @@ class TestContentGoneFromSource:
         db.records["c2"] = comment.model_copy(update={"id": "reply-id", "external_record_id": "c2",
                                                       "parent_external_record_id": "c1"})
         api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "12"))
+        api.on("GET", f"{V2}/folders/900", {"id": "900", "status": "current", "spaceId": "77", "title": "Specs"})
 
         await connector._sync_spaces_content([ENG])
 
@@ -1225,6 +1384,26 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records, "the id search runs with the filters, so an excluded page stays out"
 
+    async def test_a_page_the_filters_leave_out_is_searched_for_once_a_day(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        await connector._sync_spaces_content([ENG])
+        search.by_cursor = {None: search_page([])}
+        await connector._sync_spaces_content([ENG])
+
+        def searches_for_11() -> int:
+            return sum(1 for q in search.queries if re.search(r"(?:^| AND )id in \([^)]*\b11\b", q.get("cql", "")))
+
+        search.queries.clear()
+        await connector._sync_spaces_content([ENG])
+        assert searches_for_11() == 0
+
+        key = next(k for k in checkpoints.sync_points if "unstored" in k and "CONFLUENCE_PAGE" in k)
+        checkpoints.sync_points[key]["at"] -= 2 * 24 * 3600
+        await connector._sync_spaces_content([ENG])
+        assert searches_for_11() == 1
+
     async def test_a_failed_search_for_a_listed_page_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
         api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
@@ -1235,7 +1414,7 @@ class TestContentGoneFromSource:
         search.indexed = json_response({"message": "Service Unavailable"}, status=503)
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_an_archived_page_the_account_can_see_is_kept(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1259,7 +1438,7 @@ class TestContentGoneFromSource:
 
         await connector._sync_spaces_content([ENG])
         assert "11" in db.records, "the delete failed once"
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records and "att2" not in db.records
@@ -1286,7 +1465,7 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert {"11", "att2"} <= set(db.records)
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_a_short_space_listing_page_is_followed_to_the_end(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1306,7 +1485,7 @@ class TestContentGoneFromSource:
 
         await connector._sync_spaces_content([ENG])
 
-        assert "11" in db.records and self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert "11" in db.records and self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_a_failed_change_search_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1352,9 +1531,10 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert "11" in db.records, "the listing skipped it, the filter did not exclude it"
-        assert self._checkpoint(checkpoints) is None
+        # Read again by id, it is seen, so the space settles and the full sync can finish.
+        assert self._checkpoint(checkpoints) is not None
 
-    async def test_with_no_content_filter_a_full_sync_never_removes_what_the_listing_skipped(
+    async def test_with_no_content_filter_a_full_sync_reads_again_what_the_listing_skipped(
         self, api, db, checkpoints, search
     ) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1364,7 +1544,7 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert "11" in db.records
-        assert not any(re.search(r"(?:^| AND )id in \(", q.get("cql", "")) for q in search.queries)
+        assert any(re.search(r"(?:^| AND )id in \(11\)", q.get("cql", "")) for q in search.queries), "read again by id"
 
     @pytest.mark.parametrize("failure", ["search", "graph"])
     async def test_a_failed_filter_check_removes_nothing_and_keeps_the_full_sync_owed(
@@ -1546,6 +1726,19 @@ class TestSpacesOutOfScope:
         await connector._remove_spaces_out_of_scope(spaces)
         assert "99" not in db.record_groups, "the pending space is finished though no record points at it"
 
+    async def test_an_empty_space_that_leaves_scope_is_removed(self, api, db, checkpoints, search) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        db.record_groups["77"] = ENG
+        db.record_groups["55"] = space_group("55", "EMPTY")
+        self._spaces(api, ("77", "ENG"), ("55", "EMPTY"))
+        await connector._remove_spaces_out_of_scope(await connector._sync_spaces())
+
+        self._spaces(api, ("77", "ENG"))
+        await connector._remove_spaces_out_of_scope(await connector._sync_spaces())
+
+        assert "55" not in db.record_groups, "a space with no records still goes"
+        assert "77" in db.record_groups
+
     async def test_an_empty_space_listing_removes_nothing(self, api, db, checkpoints, search) -> None:
         connector = await self._synced_in(db, checkpoints, search)
         self._spaces(api)
@@ -1564,3 +1757,1097 @@ class TestSpacesOutOfScope:
         await connector._remove_spaces_out_of_scope(spaces)
 
         assert "990" in db.records and checkpoints.values_for("confluence_space_scope/all") is None
+
+
+class TestConnectionErrors:
+    """Connection checks raise a message the admin can act on; the API shows it as is."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "says"),
+        [
+            (401, {"message": "Unauthorized"}, "rejected the credentials"),
+            (403, {"message": "Forbidden"}, "can't read Confluence"),
+            (404, {"message": "Not found"}, "No Confluence site was found"),
+            (503, {"message": "busy"}, r"did not answer the connection test \(HTTP 503\)"),
+        ],
+    )
+    async def test_a_failed_connection_test_says_why(self, api, db, checkpoints, status, body, says) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", json_response(body, status=status))
+
+        with pytest.raises(ConnectorInitError, match=says):
+            await connector.test_connection_and_access()
+
+    async def test_a_missing_oauth_scope_is_named(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        granted = [s for s in AtlassianScope.get_confluence_read_access() if s != "read:audit-log:confluence"]
+        api.on("GET", RESOURCES_PATH, json_response([{"id": CLOUD_ID, "name": "acme", "url": SITE, "scopes": granted}]))
+        api.on(
+            "GET", f"{V2}/spaces",
+            json_response({"code": 401, "message": "Unauthorized; scope does not match"}, status=401),
+        )
+
+        with pytest.raises(ConnectorInitError, match="Missing: read:audit-log:confluence"):
+            await connector.test_connection_and_access()
+
+    async def test_an_unreachable_site_is_reported(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+
+        def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        api.on("GET", f"{V2}/spaces", refuse)
+
+        with pytest.raises(ConnectorInitError, match="Couldn't reach Confluence"):
+            await connector.test_connection_and_access()
+
+    async def test_incomplete_settings_name_the_missing_one(self, api, db, checkpoints) -> None:
+        config = {"auth": {"authType": "API_TOKEN", "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}}
+        connector, _ = await make_connector(db, checkpoints, config)
+
+        with pytest.raises(ConnectorInitError, match="Base URL is required"):
+            await connector.init()
+
+
+class TestRetriesAndRateLimit:
+    async def test_oauth_calls_are_paced_below_api_token_calls(self, api, db, checkpoints) -> None:
+        oauth, _ = await ready_connector(db, checkpoints)
+        token, _ = await ready_connector(db, checkpoints, {"auth": {
+            "authType": "API_TOKEN", "baseUrl": SITE, "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}})
+
+        oauth_policy = oauth.external_client.get_client().resilience
+        token_policy = token.external_client.get_client().resilience
+        assert isinstance(oauth_policy, QuotaAwarePolicy) and oauth_policy.rate_limit == 6
+        assert isinstance(token_policy, QuotaAwarePolicy) and token_policy.rate_limit == 10
+        assert oauth_policy.max_retries == 3
+
+    async def test_a_re_init_keeps_the_same_policy(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        first = connector.external_client.get_client().resilience
+
+        assert await connector.init() is True
+
+        assert connector.external_client.get_client().resilience is first, "a spent quota is not forgotten"
+
+    def test_a_wait_longer_than_the_policy_allows_marks_the_quota_spent(self) -> None:
+        policy = QuotaAwarePolicy(rate_limit=6, max_retries=3, max_delay=60.0)
+
+        policy.note_response_status(429)
+        assert policy.note_retry(0, 5.0) >= 5.0, "a short Retry-After is waited out"
+        with pytest.raises(AtlassianQuotaExhausted):
+            policy.note_retry(0, 1800.0)
+
+        assert policy.quota_reset_at is not None
+
+    async def test_a_spent_quota_fails_every_request_fast(self) -> None:
+        policy = QuotaAwarePolicy(rate_limit=6, max_retries=3, max_delay=60.0)
+        policy.quota_reset_at = time.time() + 600
+
+        with pytest.raises(AtlassianQuotaExhausted, match="UTC"):
+            await policy.acquire()
+
+    async def test_a_spent_quota_ends_the_sync_with_one_notice_and_keeps_its_place(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        for step in ("_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users",
+                     "_remove_spaces_out_of_scope", "_sync_permission_changes_from_audit_log",
+                     "_sweep_placeholder_records", "register_authenticated_source_user"):
+            setattr(connector, step, AsyncMock())
+
+        async def quota_runs_out() -> list:
+            connector._client_policy.quota_reset_at = time.time() + 1800
+            raise AtlassianQuotaExhausted(connector._client_policy.quota_reset_at)
+
+        connector._sync_spaces = quota_runs_out
+
+        await connector.run_sync()  # not raised: the next sync resumes
+
+        (note,) = connector._notification_service.sent
+        assert "quota used up" in note["title"]
+        assert "Atlassian's hourly API quota" in note["message"] and "UTC" in note["message"]
+        assert connector.full_sync_coverage().complete is False, "a full sync stopped early unlinks nothing"
+
+
+class TestSyncProblemsNotice:
+    """One notice per failing run, to the creator and the org admins; none for a clean run."""
+
+    async def _run(self, connector: ConfluenceConnector) -> None:
+        for step in (
+            "_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users",
+            "_sync_spaces_content", "_remove_spaces_out_of_scope",
+            "_sync_permission_changes_from_audit_log", "_sweep_placeholder_records",
+            "register_authenticated_source_user",
+        ):
+            setattr(connector, step, AsyncMock())
+        await connector.run_sync()
+
+    async def test_a_failed_space_listing_is_reported_once_at_the_end(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+
+        (note,) = connector._notification_service.sent
+        assert "Couldn't read the Confluence space list (HTTP 503)" in note["message"]
+        assert note["recipient_user_ids"] == ["creator-1"]
+        assert [r.value for r in note["recipient_roles"]] == ["admin"]
+        assert "finished with problems" in note["title"]
+        assert connector.full_sync_coverage().complete is False, "a full sync unlinks nothing it did not see"
+
+    async def test_the_same_failure_is_reported_on_every_run(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+        await self._run(connector)
+
+        assert len(connector._notification_service.sent) == 2
+
+    async def test_a_clean_run_sends_nothing(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", {"results": [], "_links": {"base": WIKI}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+
+        assert connector._notification_service.sent == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_sync_that_stops_says_so_and_still_raises(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._sync_spaces = AsyncMock(side_effect=RuntimeError("graph store down"))
+
+        with pytest.raises(RuntimeError):
+            await self._run(connector)
+
+        (note,) = connector._notification_service.sent
+        assert note["title"].endswith("sync failed")
+        assert "The sync stopped: graph store down" in note["message"]
+
+    async def test_skipped_pages_are_counted_per_space(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
+        api.on_suffix("GET", "/restriction", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._report_sync_problems()
+
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 2 pages whose restrictions could not be read" in note["message"]
+
+    async def test_a_condition_counts_as_noticed_only_after_a_finished_run(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        condition = "Couldn't read the Confluence audit log (HTTP 403)"
+
+        async def run(finished: bool) -> int:
+            connector._sync_problems = []
+            connector._persistent_problems = set()
+            connector._note_problem(condition, unread=False, persistent=True)
+            connector._sync_finished = finished
+            before = len(connector._notification_service.sent)
+            await connector._report_sync_problems()
+            return len(connector._notification_service.sent) - before
+
+        assert await run(finished=False) == 1
+        assert await run(finished=False) == 1, "a run that stopped early may not have reached the check"
+        assert await run(finished=True) == 1
+        assert await run(finished=True) == 0, "shown once per change"
+
+    async def test_a_refused_audit_log_explains_what_it_needs(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        assert await connector._fetch_permission_audit_logs(0, 1) is None
+        await connector._report_sync_problems()
+
+        (note,) = connector._notification_service.sent
+        assert "audit log (HTTP 403)" in note["message"] and "administrator" in note["message"]
+        assert connector.full_sync_coverage().complete is True, "a refused audit log leaves no content unread"
+
+
+def page_changed_at(pid: str, when: str) -> dict[str, Any]:
+    page = v1_page(pid)
+    page["history"]["lastUpdated"]["when"] = when
+    return page
+
+
+class TestCheckpointPerBatch:
+    """The checkpoint moves after each saved batch, never past an item that was not saved."""
+
+    async def test_a_listing_cut_off_resumes_after_the_last_saved_batch(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page(
+            [page_changed_at("10", "2024-05-01T10:00:00.000Z"), page_changed_at("11", "2024-05-02T09:30:00.000Z")],
+            cursor="C2",
+        )
+        search.by_cursor["C2"] = json_response({"message": "busy"}, status=503)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        saved = checkpoints.values_for("confluence_pages/ENG")
+        assert saved["full_resume_after"] == "2024-05-02T09:30:00.000Z"
+
+        search.queries.clear()
+        search.by_cursor = {None: search_page([page_changed_at("12", "2024-05-04T09:00:00.000Z")])}
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert f'lastModified > "{cql_minute("2024-05-02T09:30:00.000Z", less_hours=24)}"' in search.queries[0]["cql"]
+        assert listing.full and listing.resumed and listing.complete
+        assert checkpoints.values_for("confluence_pages/ENG")["full_resume_after"] == "", "a finished listing clears it"
+
+    async def test_the_checkpoint_never_moves_back(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        now = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+
+        search.by_cursor = {None: search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")], cursor="C2")}
+        search.by_cursor["C2"] = json_response({"message": "busy"}, status=503)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == now
+
+    async def test_a_skipped_item_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")], cursor="C2")
+        search.by_cursor["C2"] = search_page([page_changed_at("11", "2024-05-03T10:00:00.000Z")])
+        api.on("GET", f"{V1}/content/10/restriction", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert checkpoints.values_for("confluence_pages/ENG") is None, "page 10 was not saved, so nothing moves"
+        assert "11" in db.records, "the rest of the listing is still synced"
+
+    async def test_a_page_that_fails_to_process_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._process_webpage_with_update = AsyncMock(side_effect=RuntimeError("bad page"))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert checkpoints.values_for("confluence_pages/ENG") is None
+
+
+class TestUsersListing:
+    async def test_guests_and_external_collaborators_are_marked_as_guests(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [{"results": [
+            {"user": {"accountId": "acc-1", "displayName": "Ana", "isGuest": False}, "email": "ana@acme.com"},
+            {"user": {"accountId": "acc-2", "displayName": "Gus", "isGuest": True}, "email": "gus@else.com"},
+            {"user": {"accountId": "acc-3", "displayName": "Eve", "isExternalCollaborator": True}, "email": "eve@else.com"},
+        ], "_links": {"base": WIKI}}, {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert {u.source_user_id: u.is_guest for u in db.app_users} == {"acc-1": False, "acc-2": True, "acc-3": True}
+
+    async def test_a_short_page_before_the_end_does_not_cut_the_user_list(self, api, db, checkpoints) -> None:
+        def users(first: int, count: int) -> dict[str, Any]:
+            return {"results": [{"user": {"accountId": f"acc-{i}", "displayName": f"User {i}"},
+                                 "email": f"user{i}@acme.com"} for i in range(first, first + count)],
+                    "_links": {"base": WIKI}}
+
+        api.on("GET", f"{V1}/search/user", [users(0, 100), users(100, 40), users(140, 60), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert len({u.source_user_id for u in db.app_users}) == 200
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/search/user")] == [
+            "0", "100", "140", "200",
+        ]
+
+
+class TestUsersGoneFromConfluence:
+    @staticmethod
+    def _users(*ids: int) -> dict[str, Any]:
+        return {"results": [{"user": {"accountId": f"acc-{i}", "displayName": f"User {i}"},
+                             "email": f"user{i}@acme.com"} for i in ids],
+                "_links": {"base": WIKI}}
+
+    async def test_a_user_missing_from_a_complete_list_loses_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2), {"results": []}])
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.withdrawn_users] == ["acc-3"]
+
+    async def test_a_cut_short_list_withdraws_no_one(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1), json_response({"message": "busy"}, status=503)])
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
+    async def test_most_users_missing_is_not_trusted(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1), {"results": []}])
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+        assert any("looks like a misread" in p for p in connector._sync_problems)
+
+
+def restriction_event(object_type: str, title: str) -> dict[str, Any]:
+    return {"results": [{"category": "Permissions", "summary": "Content restriction added",
+                         "associatedObjects": [{"objectType": object_type, "name": title},
+                                               {"objectType": "Space", "name": "Engineering"}]}],
+            "_links": {"base": WIKI}}
+
+
+class TestRestrictionChangesFromTheAuditLog:
+    async def test_the_first_sync_opens_the_audit_window_when_it_starts(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._open_audit_window()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        # Restricted after the page was read, while the first sync still runs.
+        api.on("GET", f"{V1}/audit", restriction_event("Page", "Page 10"))
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert api.calls("GET", f"{V1}/audit"), "the window opened at the start is read at the end"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+
+    async def test_a_folder_restriction_change_is_applied(self, api, db, checkpoints, search) -> None:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].access_rule == AccessRule.STRICT
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", restriction_event("Folder", "Specs"))
+        api.on("GET", f"{V1}/content/500/restriction", read_restricted_to("acc-ana"))
+        search.by_cursor[None] = search_page([folder])
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert db.records["500"].access_rule == AccessRule.RESTRICTED
+
+
+class TestBackgroundStartFailure:
+    async def test_a_sync_that_cannot_start_notifies_the_creator_and_admins(self, api, db, checkpoints) -> None:
+        api.on("GET", RESOURCES_PATH, json_response({"message": "Unauthorized"}, status=401))
+        connector, _ = await make_connector(db, checkpoints)
+        with pytest.raises(ConnectorInitError) as err:
+            await connector.init()
+
+        ConfluenceConnector._failed_start_noticed_at.clear()
+        await connector.on_background_init_failed(err.value)
+        await connector.on_background_init_failed(err.value)  # the same start, retried at once
+        ConfluenceConnector._failed_start_noticed_at[CONNECTOR_ID] -= 3600  # the next scheduled run
+        await connector.on_background_init_failed(err.value)
+
+        notes = connector._notification_service.sent
+        assert len(notes) == 2, "one notice per failed run, not per retry"
+        assert notes[0]["title"].endswith("could not start")
+        assert "Couldn't connect to Confluence" in notes[0]["message"]
+        assert "Unauthorized" not in notes[0]["message"] and "401" not in notes[0]["message"], "no raw response text"
+        assert notes[0]["recipient_user_ids"] == ["creator-1"]
+        assert [r.value for r in notes[0]["recipient_roles"]] == ["admin"]
+
+
+class TestLongRestrictionLists:
+    async def test_pages_follow_the_page_size_confluence_used(self, api, db, checkpoints, search) -> None:
+        for i in range(60):
+            db.add_user(f"acc-{i}", f"user{i}@acme.com")
+
+        def restriction(request: httpx.Request) -> httpx.Response:
+            start = int(AtlassianApiStub.query(request).get("start", "0"))
+            users = [{"accountId": f"acc-{i}"} for i in range(start, min(start + 25, 60))]
+            return json_response({"results": [{"operation": "read", "restrictions": {
+                "user": {"results": users, "start": start, "limit": 25, "size": len(users), "totalSize": 60},
+                "group": {"results": [], "start": start, "limit": 25, "size": 0},
+            }}]})
+
+        api.on("GET", f"{V1}/content/10/restriction", restriction)
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert len({p.email for p in db.record_permissions["10"]}) == 60
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/content/10/restriction")] == [
+            "0", "25", "50",
+        ]
+
+    async def test_a_read_restriction_naming_more_than_one_page_of_users_grants_them_all(
+        self, api, db, checkpoints, search
+    ) -> None:
+        for i in range(150):
+            db.add_user(f"acc-{i}", f"user{i}@acme.com")
+
+        def restriction(request: httpx.Request) -> httpx.Response:
+            start = int(AtlassianApiStub.query(request).get("start", "0"))
+            users = [{"accountId": f"acc-{i}"} for i in range(start, min(start + 100, 150))]
+            return json_response({"results": [{"operation": "read", "restrictions": {
+                "user": {"results": users, "start": start, "limit": 100, "size": len(users)},
+                "group": {"results": [], "start": start, "limit": 100, "size": 0},
+            }}]})
+
+        api.on("GET", f"{V1}/content/10/restriction", restriction)
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        granted = {p.email for p in db.record_permissions["10"]}
+        assert len(granted) == 150, "users past the first 100 keep their access"
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/content/10/restriction")] == ["0", "100"]
+
+
+class TestGroupsGoneFromConfluence:
+    def _groups(self, api: AtlassianApiStub, *groups: tuple[str, str]) -> None:
+        api.on("GET", f"{V1}/group", {"results": [{"id": gid, "name": name} for gid, name in groups],
+                                     "_links": {"base": WIKI}})
+        api.on_suffix("GET", "/membersByGroupId", {"results": [], "_links": {"base": WIKI}})
+
+    async def test_a_group_deleted_in_confluence_is_removed_with_its_access(self, api, db, checkpoints) -> None:
+        self._groups(api, ("g-eng", "engineering"), ("g-old", "old-team"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        await connector._create_pseudo_group("acc-hidden")
+
+        self._groups(api, ("g-eng", "engineering"))
+        api.on("GET", f"{V1}/group/g-old/membersByGroupId", json_response({"message": "gone"}, status=404))
+        await connector._sync_user_groups()
+
+        assert db.deleted_groups == ["g-old"], "the pseudo-group and the listed group stay"
+
+    async def test_a_failed_group_listing_removes_nothing(self, api, db, checkpoints) -> None:
+        self._groups(api, ("g-eng", "engineering"), ("g-old", "old-team"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+
+        api.on("GET", f"{V1}/group", json_response({"message": "busy"}, status=503))
+        await connector._sync_user_groups()
+
+        assert db.deleted_groups == []
+
+
+class TestListingsThatDoNotEnd:
+    async def test_a_page_list_whose_next_link_repeats_stops_and_holds_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
+        search.by_cursor["C2"] = search_page([v1_page("11")], cursor="C2")
+        connector, _ = await ready_connector(db, checkpoints)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert [q.get("cursor") for q in search.queries] == [None, "C2"], "C2 is not read twice"
+        assert any("pointed back" in p for p in connector._sync_problems)
+
+    async def test_an_empty_folder_page_that_points_further_is_a_failed_read(self, api, db, checkpoints, search) -> None:
+        search.folders = []
+
+        def folders(request: httpx.Request) -> httpx.Response:
+            return json_response({"results": [], "_links": {"base": WIKI, "next": "/rest/api/content/search?cursor=F2"}})
+
+        api.on("GET", f"{V1}/content/search", folders)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_folders("ENG")
+
+        assert checkpoints.values_for("confluence_folders/ENG") is None
+        assert any("folder list stopped early" in p for p in connector._sync_problems)
+
+    @pytest.mark.parametrize("next_page", [
+        {"results": [], "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P3"}},
+        {"results": [{"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}}],
+         "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P2"}},
+    ], ids=["empty-page-pointing-further", "next-link-repeats"])
+    async def test_a_space_permission_list_read_in_part_keeps_the_stored_access(
+        self, api, db, checkpoints, next_page
+    ) -> None:
+        first = {"results": [{"principal": {"type": "user", "id": "acc-ana"},
+                              "operation": {"key": "read", "targetType": "space"}}],
+                 "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P2"}}
+
+        def perms(request: httpx.Request) -> httpx.Response:
+            return json_response(next_page if AtlassianApiStub.query(request).get("cursor") == "P2" else first)
+
+        api.on("GET", f"{V2}/spaces/1/permissions", perms)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None
+
+    async def test_a_failed_group_read_keeps_the_stored_space_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces/1/permissions", lambda _: json_response({"results": [
+            {"principal": {"type": "access-class", "id": "all-licensed-users"},
+             "operation": {"key": "read", "targetType": "space"}},
+        ], "_links": {}}))
+        connector, _ = await ready_connector(db, checkpoints)
+        db.fail_group_listing = True
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None
+
+
+class TestAttachmentsGoneFromAPage:
+    def _page_with(self, api: AtlassianApiStub, search: ContentSearch, *ids: str, version: int = 1) -> None:
+        atts = [{"id": i, "title": f"{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                 "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/{i}.pdf"}} for i in ids]
+        search.by_cursor = {None: search_page([v1_page("10", version=version, attachments=atts)])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": atts, "_links": {"base": WIKI}})
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+
+    async def test_an_attachment_removed_from_a_page_is_removed(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1", "att2")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert {"att1", "att2"} <= set(db.records)
+
+        self._page_with(api, search, "att1", version=2)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records and "att2" not in db.records
+
+    async def test_the_last_attachment_removed_is_removed_too(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        self._page_with(api, search, version=2)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" not in db.records and "10" in db.records
+
+    async def test_an_attachment_list_read_in_part_removes_nothing(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1", "att2")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        self._page_with(api, search, "att1", version=2)
+        api.on("GET", f"{V2}/pages/10/attachments", [
+            {"results": [{"id": "att1", "title": "att1.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                          "version": {"number": 1}}],
+             "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+            json_response({"message": "busy"}, status=503),
+        ])
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert {"att1", "att2"} <= set(db.records)
+
+
+class TestAuditLogKeepsStubsAsStubs:
+    async def test_a_restriction_change_on_a_stub_does_not_make_it_indexable(self, api, db, checkpoints, search) -> None:
+        stub = WebpageRecord(
+            org_id="org-1", record_name="Out of scope", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.records["10"] = stub
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content_permissions_by_titles(["Page 10"])
+
+        assert db.records["10"].is_placeholder is True
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "its access is still updated"
+
+
+class TestFullListingMisses:
+    """A full listing that misses a stored current page reads it again by id, so a full sync keeps it."""
+
+    async def test_a_page_the_full_listing_missed_is_read_again_by_id(self, api, db, checkpoints, search) -> None:
+        helper = TestContentGoneFromSource()
+        connector = await helper._two_pages_synced(api, db, checkpoints, search)
+        helper._refilter(connector, checkpoints, search)
+        search.indexed = {"11": v1_page("11", version=2, attachments=[SPEC])}
+        writes_before = len(db.record_batches)
+
+        await connector._sync_spaces_content([ENG])
+
+        rewritten = {r.external_record_id for batch in db.record_batches[writes_before:] for r in batch}
+        assert {"10", "11"} <= rewritten, "the missed page is written again, so the full sync sees it"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_missed_page_that_cannot_be_read_again_is_kept_and_reported(
+        self, api, db, checkpoints, search
+    ) -> None:
+        helper = TestContentGoneFromSource()
+        connector = await helper._two_pages_synced(api, db, checkpoints, search)
+        helper._refilter(connector, checkpoints, search)
+        search.indexed = {}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records
+        assert connector.full_sync_coverage().complete is False, "the full sync must not unlink it"
+        assert any("could not be read in this sync" in p for p in connector._sync_problems)
+
+
+class TestNoRawErrorTextForUsers:
+    async def test_an_unexpected_setup_error_does_not_show_its_text(self, api, db, checkpoints, monkeypatch) -> None:
+        connector, _ = await make_connector(db, checkpoints)
+
+        async def broken(*_: object, **__: object) -> None:
+            raise RuntimeError("connect to http://10.0.0.5:8090 failed")
+
+        monkeypatch.setattr(connector, "_build_confluence_client", broken)
+
+        with pytest.raises(ConnectorInitError) as err:
+            await connector.init()
+
+        assert "10.0.0.5" not in str(err.value)
+
+
+class TestSpentQuotaEdges:
+    async def test_a_response_the_policy_refuses_to_wait_for_is_closed(self, monkeypatch) -> None:
+        from app.sources.client.http.http_resilient_transport import (
+            ResilientHTTPTransport,
+        )
+
+        closed: list[bool] = []
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):  # noqa: ANN204
+                yield b""
+
+            async def aclose(self) -> None:
+                closed.append(True)
+
+        async def answer_429(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, headers={"Retry-After": "1800"}, stream=Body(), request=request)
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", answer_429)
+        transport = ResilientHTTPTransport(QuotaAwarePolicy(rate_limit=100, max_retries=3))
+
+        with pytest.raises(AtlassianQuotaExhausted):
+            await transport.handle_async_request(httpx.Request("GET", f"{SITE}/wiki/api/v2/spaces"))
+
+        assert closed == [True], "the pooled connection is given back"
+
+    async def test_opening_a_page_while_the_quota_is_spent_says_when_to_retry(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        page = WebpageRecord(
+            org_id="org-1", record_name="Page", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, mime_type=MimeTypes.HTML.value,
+        )
+
+        async def spent(*_: object, **__: object) -> str:
+            raise AtlassianQuotaExhausted(time.time() + 600)
+
+        connector._fetch_page_content = spent
+
+        with pytest.raises(HTTPException) as err:
+            await connector.stream_record(page)
+
+        assert err.value.status_code == 429
+        assert int(err.value.headers["Retry-After"]) > 0
+
+
+class TestCommentRecordsFromOlderVersions:
+    """Older versions stored each comment as its own record; a page stored as blocks carries them."""
+
+    async def _html_page_with_comment_records(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        comment = CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id="c1",
+            external_record_group_id="77", parent_external_record_id="10", parent_record_type=RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana",
+        )
+        db.records["c1"] = comment
+        db.records["c2"] = comment.model_copy(update={"id": "reply-id", "external_record_id": "c2",
+                                                      "parent_external_record_id": "c1"})
+        return connector
+
+    async def test_they_go_once_the_page_is_stored_as_blocks(self, api, db, checkpoints, search) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+        search.by_cursor[None] = search_page([v1_page("10", version=2)])
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        assert not {"c1", "c2"} & set(db.records)
+
+    async def test_they_stay_when_comments_are_not_indexed(self, api, db, checkpoints, search, monkeypatch) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+
+        async def off(_: object) -> bool:
+            return False
+
+        monkeypatch.setattr(connector, "_comments_indexed", off)
+        search.by_cursor[None] = search_page([v1_page("10", version=2)])
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        assert {"c1", "c2"} <= set(db.records), "the blocks carry no comments, so the records are all there is"
+
+    async def test_a_reindex_drops_them_from_a_page_already_stored_as_blocks(
+        self, api, db, checkpoints, search
+    ) -> None:
+        # Stored as blocks while comments were not indexed; comment indexing is on again.
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.BLOCKS.value})
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "title": "Page 10", "spaceId": "77", "version": {"number": 1}})
+
+        await connector.reindex_records([db.records["10"]])
+
+        assert not {"c1", "c2"} & set(db.records)
+
+    async def test_an_unchanged_html_page_keeps_them(self, api, db, checkpoints, search) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.HTML.value
+        assert {"c1", "c2"} <= set(db.records), "an HTML page has no comments of its own"
+
+
+class TestSmallAuditFixes:
+    async def test_a_site_url_typed_with_wiki_is_not_doubled(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints, {"auth": {
+            "authType": "API_TOKEN", "baseUrl": f"{SITE}/wiki/", "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}})
+
+        assert connector.external_client.get_client().get_base_url() == f"{SITE}/wiki/api/v2"
+
+    async def test_cleanup_closes_the_http_client(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", {"results": []})
+        await connector.test_connection_and_access()
+        client = connector.external_client.get_client()
+        assert client.client is not None
+
+        await connector.cleanup()
+
+        assert client.client is None
+
+    async def test_cleanup_during_a_reindex_closes_the_client_after_it(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", {"results": []})
+        await connector.test_connection_and_access()
+        client = connector.external_client.get_client()
+        open_during: list[bool] = []
+
+        async def reindex(_: object) -> None:
+            await connector.cleanup()  # the instance is evicted meanwhile
+            open_during.append(client.client is not None)
+
+        connector._reindex_records = reindex
+        await connector.reindex_records([])
+
+        assert open_during == [True] and client.client is None
+
+    async def test_a_space_that_fails_does_not_stop_the_others(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        done: list[str] = []
+
+        async def one(space: object) -> None:
+            if space.short_name == "ENG":
+                raise RuntimeError("boom")
+            done.append(space.short_name)
+
+        connector._sync_space_content = one
+        await connector._sync_spaces_content([ENG, ENG.model_copy(update={"short_name": "OPS"})])
+
+        assert done == ["OPS"]
+        assert any("Space ENG: sync failed" in p for p in connector._sync_problems)
+
+    async def test_a_cancelled_sync_sends_no_notice(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        for step in ("_sync_users", "register_authenticated_source_user"):
+            setattr(connector, step, AsyncMock())
+        connector._sync_user_groups = AsyncMock(side_effect=lambda: connector._note_problem("a group could not be read"))
+        connector._sync_spaces = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await connector.run_sync()
+
+        assert connector._notification_service.sent == []
+
+    async def test_a_restriction_entry_without_an_id_keeps_the_page_restricted(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", {"results": [{"operation": "read", "restrictions": {
+            "user": {"results": [{"displayName": "Someone"}]}, "group": {"results": []}}}]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "not opened to the whole space"
+
+
+class TestSpaceGrantErrors:
+    async def test_a_failed_user_lookup_keeps_the_spaces_stored_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces/1/permissions", {"results": [
+            {"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}},
+        ]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        async def broken(**_: object) -> None:
+            raise RuntimeError("graph store unavailable")
+
+        db.get_user_by_source_id = broken
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None, "not saved without the grant"
+
+
+class TestFoldersGoneFromConfluence:
+    async def _folder_synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].external_record_group_id == "77"
+        search.folders = []
+        return connector
+
+    async def test_a_deleted_folder_is_removed(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/folders/500", json_response({"message": "not found"}, status=404))
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" not in db.records
+
+    async def test_a_folder_the_search_misses_but_confluence_still_has_is_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/folders/500", {"id": "500", "status": "current", "spaceId": "77", "title": "Specs"})
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" in db.records
+
+    async def test_a_failed_folder_search_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V1}/content/search", json_response({"message": "busy"}, status=503))
+        api.on("GET", f"{V2}/folders/500", json_response({"message": "not found"}, status=404))
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" in db.records
+
+
+class TestWebLinksThroughTheGateway:
+    async def test_a_page_link_points_at_the_site_not_the_api_gateway(self, api, db, checkpoints, search) -> None:
+        page = v1_page("10")
+        page["_links"]["self"] = f"https://api.atlassian.com{V1}/content/10"
+        search.by_cursor[None] = search_page([page])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].weburl == f"{WIKI}/spaces/ENG/pages/10"
+
+
+class TestUserSearchCap:
+    async def test_reaching_the_user_search_cap_is_reported(self, api, db, checkpoints, monkeypatch) -> None:
+        from app.connectors.sources.atlassian.confluence_cloud import (
+            connector as module,
+        )
+
+        monkeypatch.setattr(module, "USER_SEARCH_CAP", 150)
+
+        def users(first: int, count: int) -> dict[str, Any]:
+            return {"results": [{"user": {"accountId": f"acc-{i}"}, "email": f"u{i}@acme.com"}
+                                for i in range(first, first + count)], "_links": {"base": WIKI}}
+
+        api.on("GET", f"{V1}/search/user", [users(0, 100), users(100, 50), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert any("returns at most" in p for p in connector._sync_problems)
+
+
+def comment_on(page_id: str, when: str) -> dict[str, Any]:
+    return {"id": f"c-{page_id}-{when}", "type": "comment", "version": {"when": when},
+            "container": {"id": page_id, "type": "page"}}
+
+
+class TestCommentsReindexTheirPage:
+    """A comment changes neither its page's version nor its last modified time."""
+
+    async def _synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._reindex_pages_with_changed_comments("ENG")  # the first check only starts the clock
+        db.reindexed.clear()
+        return connector
+
+    def _checked_at(self, checkpoints) -> str:
+        return checkpoints.values_for("confluence_comments/ENG")["checked_at"]
+
+    async def test_a_page_whose_comments_changed_is_reindexed_once(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        after = (datetime.fromisoformat(self._checked_at(checkpoints).replace("Z", "+00:00"))
+                 + timedelta(minutes=5)).isoformat()
+        search.comments = [comment_on("10", after), comment_on("11", "2020-01-01T00:00:00+00:00")]
+
+        await connector._reindex_pages_with_changed_comments("ENG")
+        assert [r.external_record_id for r in db.reindexed] == ["10"], "only the page with a new comment"
+
+        # A later run in a quiet space doesn't re-index it again: the check's clock moved.
+        db.reindexed.clear()
+        key = next(k for k in checkpoints.sync_points if k.endswith("confluence_comments/ENG"))
+        checkpoints.sync_points[key]["checked_at"] = (
+            datetime.fromisoformat(after) + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        await connector._reindex_pages_with_changed_comments("ENG")
+        assert db.reindexed == []
+
+    async def test_a_failed_comment_search_keeps_the_clock(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        before = self._checked_at(checkpoints)
+        search.comments = json_response({"message": "busy"}, status=503)
+
+        await connector._reindex_pages_with_changed_comments("ENG")
+
+        assert self._checked_at(checkpoints) == before
+        assert any("changed comments" in p for p in connector._sync_problems)
+
+    async def test_comments_off_means_no_comment_search(self, api, db, checkpoints, search, monkeypatch) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+
+        async def off(_: object) -> bool:
+            return False
+
+        monkeypatch.setattr(connector, "_comments_indexed", off)
+        search.queries.clear()
+
+        await connector._reindex_pages_with_changed_comments("ENG")
+
+        assert not any(q["cql"].startswith("type=comment") for q in search.queries)
+
+    async def test_a_page_left_out_of_indexing_stays_out(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        db.records["10"].indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        after = (datetime.fromisoformat(self._checked_at(checkpoints).replace("Z", "+00:00"))
+                 + timedelta(minutes=5)).isoformat()
+        search.comments = [comment_on("10", after)]
+
+        await connector._reindex_pages_with_changed_comments("ENG")
+
+        assert db.reindexed == []
+
+class TestFooterCommentThreads:
+    async def test_a_reply_to_a_reply_stays_in_its_thread(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+
+        def comment(cid: str, parent: str | None, created: str) -> dict[str, Any]:
+            return {"id": cid, "parentCommentId": parent, "version": {"createdAt": created}}
+
+        threads = connector._organize_confluence_comments_to_threads([
+            comment("c3", "c2", "2024-05-03T00:00:00.000Z"),
+            comment("c1", None, "2024-05-01T00:00:00.000Z"),
+            comment("c2", "c1", "2024-05-02T00:00:00.000Z"),
+            comment("d1", None, "2024-04-01T00:00:00.000Z"),
+        ])
+
+        assert [[c["id"] for c in t] for t in threads] == [["d1"], ["c1", "c2", "c3"]]
+
+
+class TestRestrictionsWithoutTheAuditLog:
+    """Only administrators can read the audit log; without it, restrictions are re-checked from the listing."""
+
+    def _with_read_restriction(self, page: dict[str, Any], *account_ids: str) -> dict[str, Any]:
+        users = [{"accountId": a} for a in account_ids]
+        return {**page, "restrictions": {"read": {"restrictions": {
+            "user": {"results": users, "size": len(users)}, "group": {"results": [], "size": 0}}}}}
+
+    async def test_a_restriction_added_without_an_edit_is_applied(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([self._with_read_restriction(v1_page("10"))])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert db.records["10"].access_rule == AccessRule.STRICT
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+
+        # Restricted to Ana, page not edited: the listing shows it, the audit log can't.
+        restricted = self._with_read_restriction(v1_page("10"), "acc-ana")
+        search.by_cursor = {None: search_page([restricted])}
+        search.indexed = {"10": restricted}
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        assert any("audit log (HTTP 403)" in p for p in connector._sync_problems)
+
+    async def _refused_audit_log(self, api, connector) -> None:
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+
+    async def test_a_folder_restricted_without_an_edit_is_applied(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders, search.blogposts = [self._with_read_restriction(folder)], []
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].access_rule == AccessRule.STRICT
+        await self._refused_audit_log(api, connector)
+
+        search.folders = [self._with_read_restriction(folder, "acc-ana")]
+        api.on("GET", f"{V1}/content/500/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["500"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
+
+    async def test_a_stub_restricted_without_an_edit_gets_the_restriction_and_stays_a_stub(
+        self, api, db, checkpoints, search
+    ) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        db.records["5"] = WebpageRecord(
+            org_id="org-1", record_name="Out of scope", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="5",
+            external_record_group_id="77", connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        search.folders, search.blogposts = [], []
+        restricted = self._with_read_restriction(v1_page("5"), "acc-ana")
+        search.by_cursor = {None: search_page([restricted])}
+        search.indexed = {"5": restricted}
+        api.on("GET", f"{V1}/content/5/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await self._refused_audit_log(api, connector)
+
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["5"].is_placeholder is True
+        assert db.records["5"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["5"]] == ["ana@acme.com"]
+
+
+class TestFoldersAboveInScopePages:
+    async def test_a_full_sync_keeps_a_folder_the_filters_leave_out_while_pages_hang_under_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        db.records["10"] = db.records["500"].model_copy(
+            update={"id": "page-10", "external_record_id": "10", "parent_external_record_id": "500"}
+        )
+        db.full_sync = True
+
+        await connector._remove_folders_gone(ENG)
+
+        assert db.records["500"].id in db.kept_records

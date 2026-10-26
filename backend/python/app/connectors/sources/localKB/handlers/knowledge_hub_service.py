@@ -461,6 +461,8 @@ class KnowledgeHubService:
                     limit=limit, sort_field=sort_field, sort_dir=sort_dir,
                     filters=filters, cursor_token=token, secret=secret,
                     access=access, limit_apps=limit_apps,
+                    # Depth counts from the root, and each App is one hop below it.
+                    max_depth=max_depth - 1 if max_depth < 50 else 50,
                 )
             try:
                 global_page = await self._walk_pages(fetch_global, cursor, page)

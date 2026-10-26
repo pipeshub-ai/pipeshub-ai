@@ -78,6 +78,21 @@ async def test_neo4j_each_match_is_placed_by_walking_up_to_the_app() -> None:
 
 
 @pytest.mark.asyncio
+async def test_neo4j_a_depth_bounded_name_search_takes_the_walk_that_applies_the_bound() -> None:
+    statements = await _statements(_neo4j(["r1"]), {"search_query": "x"}, max_depth=2)
+    assert not any("AS kh_name_matches" in q for q, _ in statements)
+    listing = _listing(statements)[0]
+    assert "AS regionA" in listing and "[kh_x IN allNodes WHERE kh_x IN within] AS allNodes" in listing
+
+
+@pytest.mark.asyncio
+async def test_neo4j_a_name_search_deeper_than_50_takes_the_walk_of_that_depth() -> None:
+    statements = await _statements(_neo4j(["r1"]), {"search_query": "x"}, max_depth=60)
+    assert not any("AS kh_name_matches" in q for q, _ in statements)
+    assert "{1,60}" in _listing(statements)[0]
+
+
+@pytest.mark.asyncio
 async def test_neo4j_without_a_name_the_listing_walks_the_connector() -> None:
     statements = await _statements(_neo4j(["r1"]), None)
     assert not any("AS kh_name_matches" in q for q, _ in statements)
@@ -153,9 +168,9 @@ def _arango(candidates: list[str]) -> ArangoHTTPProvider:
     return provider
 
 
-async def _arango_steps(provider: ArangoHTTPProvider, filters: dict | None) -> list[tuple[str, dict]]:
+async def _arango_steps(provider: ArangoHTTPProvider, filters: dict | None, **overrides) -> list[tuple[str, dict]]:
     await provider.get_knowledge_hub_connector_page_v3(
-        APP, ORG, ["uk1"], [APP], ["g1"], flatten=True, filters=filters, name_parents=False,
+        APP, ORG, ["uk1"], [APP], ["g1"], flatten=True, filters=filters, name_parents=False, **overrides,
     )
     return provider._walked
 
@@ -176,6 +191,17 @@ async def test_arango_without_a_name_the_walk_is_unchanged() -> None:
     names = [name for name, _ in await _arango_steps(_arango(["records/r1"]), None)]
     assert "name_matches" not in names
     assert "step_app" in names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("max_depth", "name_first"), [(2, True), (50, True), (60, False)])
+async def test_arango_a_name_search_deeper_than_50_takes_the_full_walk(max_depth, name_first) -> None:
+    """The name-restricted walks look at most 50 hops up from a match."""
+    names = [name for name, _ in await _arango_steps(
+        _arango(["records/r1"]), {"search_query": "x"}, max_depth=max_depth,
+    )]
+    assert ("name_matches" in names) is name_first
+    assert ("step_app" in names) is not name_first
 
 
 @pytest.mark.asyncio

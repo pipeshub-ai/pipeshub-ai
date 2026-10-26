@@ -171,6 +171,17 @@ class AzureFilesStorageHelper:
     def rename_directory(self, share: str, old_path: str, new_path: str) -> None:
         self._service.get_share_client(share).get_directory_client(old_path).rename_directory(new_path)
 
+    def delete_directory_tree(self, share: str, path: str) -> None:
+        """Delete a directory and everything under it."""
+        share_client = self._service.get_share_client(share)
+        for item in share_client.get_directory_client(path).list_directories_and_files():
+            child = f"{path}/{item['name']}"
+            if item["is_directory"]:
+                self.delete_directory_tree(share, child)
+            else:
+                share_client.get_file_client(child).delete_file()
+        share_client.get_directory_client(path).delete_directory()
+
     def file_id(self, share: str, path: str, *, is_directory: bool = False) -> str:
         share_client = self._service.get_share_client(share)
         if is_directory:

@@ -1,5 +1,6 @@
 """Tests for the Linear connector."""
 
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +8,11 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.linear.api_gateway import (
+    LinearAuthError,
+    LinearRateLimited,
+    LinearTransientError,
+)
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
     LinearConnector,
@@ -19,12 +25,13 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.graphql.response import GraphQLResponse
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import ProgressStatus, RecordRelations
+from app.config.constants.arangodb import RecordRelations
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -55,11 +62,58 @@ from app.models.entities import (
     WebpageRecord,
 )
 import base64
+from typing import Never
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _memory_sync_point() -> MagicMock:
+    """An in-memory stand-in for SyncPoint: what is written is what is read back."""
+    store = {}
+
+    async def read(key) -> dict:
+        return dict(store.get(key) or {})
+
+    async def update(key, data) -> None:
+        store[key] = dict(data)
+
+    sync_point = MagicMock()
+    sync_point.store = store
+    sync_point.read_sync_point = AsyncMock(side_effect=read)
+    sync_point.update_sync_point = AsyncMock(side_effect=update)
+    return sync_point
+
+
+def _use_memory_state(connector) -> None:
+    """Checkpoints live in memory, retries do not really sleep, and the processor
+    calls made when records are removed or refreshed can be awaited."""
+    for name in (
+        "issues_sync_point", "attachments_sync_point", "documents_sync_point",
+        "projects_sync_point", "deletion_sync_point", "reconcile_sync_point",
+    ):
+        setattr(connector, name, _memory_sync_point())
+    connector._reconciler._sync_point = connector.reconcile_sync_point
+    connector._sleep = AsyncMock()
+    connector._api._sleep = connector._sleep
+    # The cheap "did anything change" probe is tested on its own.
+    connector._team_has_changes = AsyncMock(return_value=True)
+    processor = connector.data_entities_processor
+    for name, value in (
+        ("get_records_by_parent", []),
+        ("get_records_by_record_type", []),
+        ("get_records_in_record_group", []),
+        ("get_nodes_by_filters", []),
+        ("on_records_deleted_cascade", None),
+        ("on_records_detached_from_parent", None),
+        ("on_record_content_update", None),
+        ("on_record_group_deleted", None),
+        ("on_user_group_deleted", None),
+    ):
+        if not isinstance(getattr(processor, name), AsyncMock):
+            setattr(processor, name, AsyncMock(return_value=value))
+
 
 def _make_connector():
     """Build a LinearConnector with all dependencies mocked."""
@@ -94,6 +148,7 @@ def _make_connector():
         scope="team",
         created_by="test-user",
     )
+    _use_memory_state(connector)
     return connector
 
 
@@ -387,9 +442,13 @@ class TestLinearConnectorTeams:
             user_groups, record_groups = await connector._fetch_teams()
             assert len(user_groups) == 1
             assert len(record_groups) == 1
-            # Public team -> org-level permissions
+            # Public team -> its own member group plus the workspace members
+            # group; never an org-wide permission (guests are not members).
             _, perms = record_groups[0]
-            assert perms[0].entity_type == EntityType.ORG
+            assert [(p.entity_type, p.external_id) for p in perms] == [
+                (EntityType.GROUP, "team-1"),
+                (EntityType.GROUP, "linear-workspace-members"),
+            ]
 
     @pytest.mark.asyncio
     async def test_fetch_teams_private(self):
@@ -420,7 +479,9 @@ class TestLinearConnectorTeams:
             mock_fresh.return_value = mock_ds
             user_groups, record_groups = await connector._fetch_teams()
             _, perms = record_groups[0]
-            assert perms[0].entity_type == EntityType.GROUP
+            assert [(p.entity_type, p.external_id) for p in perms] == [
+                (EntityType.GROUP, "team-priv"),
+            ]
 
     @pytest.mark.asyncio
     async def test_fetch_teams_with_parent(self):
@@ -597,6 +658,7 @@ def _make_connector_cov():
         created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
+    _use_memory_state(connector)
     return connector
 
 
@@ -1291,89 +1353,6 @@ class TestLinearApplyDateFilters:
 
 
 # ===================================================================
-# Sync checkpoints
-# ===================================================================
-
-class TestLinearSyncCheckpoints:
-    @pytest.mark.asyncio
-    async def test_get_team_sync_checkpoint_no_data(self):
-        c = _make_connector_cov()
-        c.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
-        result = await c._get_team_sync_checkpoint("ENG")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_get_team_sync_checkpoint_with_data(self):
-        c = _make_connector_cov()
-        c.issues_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1234})
-        result = await c._get_team_sync_checkpoint("ENG")
-        assert result == 1234
-
-    @pytest.mark.asyncio
-    async def test_update_team_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.issues_sync_point.update_sync_point = AsyncMock()
-        await c._update_team_sync_checkpoint("ENG", 5000)
-        c.issues_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_team_project_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.projects_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 9999})
-        result = await c._get_team_project_sync_checkpoint("ENG")
-        assert result == 9999
-
-    @pytest.mark.asyncio
-    async def test_update_team_project_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.projects_sync_point.update_sync_point = AsyncMock()
-        await c._update_team_project_sync_checkpoint("ENG", 8888)
-        c.projects_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_attachments_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.attachments_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 7777})
-        result = await c._get_attachments_sync_checkpoint()
-        assert result == 7777
-
-    @pytest.mark.asyncio
-    async def test_update_attachments_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.attachments_sync_point.update_sync_point = AsyncMock()
-        await c._update_attachments_sync_checkpoint(6666)
-        c.attachments_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_documents_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.documents_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 5555})
-        result = await c._get_documents_sync_checkpoint()
-        assert result == 5555
-
-    @pytest.mark.asyncio
-    async def test_update_documents_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.documents_sync_point.update_sync_point = AsyncMock()
-        await c._update_documents_sync_checkpoint(4444)
-        c.documents_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_deletion_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.deletion_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 3333})
-        result = await c._get_deletion_sync_checkpoint("issues")
-        assert result == 3333
-
-    @pytest.mark.asyncio
-    async def test_update_deletion_sync_checkpoint(self):
-        c = _make_connector_cov()
-        c.deletion_sync_point.update_sync_point = AsyncMock()
-        await c._update_deletion_sync_checkpoint("issues", 2222)
-        c.deletion_sync_point.update_sync_point.assert_called_once()
-
-
-# ===================================================================
 # Sync orchestration
 # ===================================================================
 
@@ -1437,6 +1416,7 @@ class TestLinearSyncIssuesForTeams:
         c = _make_connector_cov()
         c.sync_filters = None
         c.indexing_filters = None
+        c._now = MagicMock(return_value=1_700_000_000_000)
 
         team_rg, perms = _make_team_record_group()
 
@@ -1445,21 +1425,62 @@ class TestLinearSyncIssuesForTeams:
             ticket = c._transform_issue_to_ticket_record(issue, "team-1")
             yield [(ticket, [])]
 
-        with patch.object(c, "_get_team_sync_checkpoint", new_callable=AsyncMock, return_value=None):
-            with patch.object(c, "_update_team_sync_checkpoint", new_callable=AsyncMock):
-                with patch.object(c, "_fetch_issues_for_team_batch", side_effect=fake_fetch):
-                    await c._sync_issues_for_teams([(team_rg, perms)])
+        with patch.object(c, "_fetch_issues_for_team_batch", side_effect=fake_fetch) as fetch:
+            full_sync_team_ids, failed = await c._sync_issues_for_teams([(team_rg, perms)])
 
         c.data_entities_processor.on_new_records.assert_called()
+        # A team with no checkpoint is read from the beginning...
+        assert fetch.call_args.kwargs["last_sync_time"] is None
+        assert full_sync_team_ids == {"team-1"}
+        assert failed == []
+        # ...and once its whole list is stored, the checkpoint (kept under the team's
+        # id) moves to the moment the run started.
+        assert c.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_error_continues(self):
         c = _make_connector_cov()
+        c._now = MagicMock(return_value=1_700_000_000_000)
         team_rg, perms = _make_team_record_group()
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
 
-        with patch.object(c, "_get_team_sync_checkpoint", new_callable=AsyncMock, side_effect=Exception("checkpoint error")):
-            await c._sync_issues_for_teams([(team_rg, perms), (team_rg2, perms2)])
+        async def read(key) -> dict:
+            if key == "team_issues_team-1":
+                raise Exception("checkpoint error")
+            return {}
+
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=read)
+
+        async def no_issues(*args, **kwargs) -> AsyncIterator[list]:
+            if False:
+                yield []
+
+        with patch.object(c, "_fetch_issues_for_team_batch", side_effect=no_issues) as fetch:
+            full_sync_team_ids, failed = await c._sync_issues_for_teams([(team_rg, perms), (team_rg2, perms2)])
+
+        # The first team is reported and its checkpoint is left alone; the second runs.
+        assert failed == ["Team ENG"]
+        assert full_sync_team_ids == {"team-2"}
+        assert fetch.call_count == 1
+        assert fetch.call_args.kwargs["team_id"] == "team-2"
+        assert "team_issues_team-1" not in c.issues_sync_point.store
+        assert c.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1_700_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_sync_issues_auth_error_stops_the_sync(self) -> None:
+        c = _make_connector_cov()
+        team_rg, perms = _make_team_record_group()
+        team_rg2, perms2 = _make_team_record_group("team-2", "DES")
+
+        def rejected(*args, **kwargs) -> Never:
+            raise LinearAuthError("token revoked", 401)
+
+        with patch.object(c, "_fetch_issues_for_team_batch", side_effect=rejected) as fetch:
+            with pytest.raises(LinearAuthError):
+                await c._sync_issues_for_teams([(team_rg, perms), (team_rg2, perms2)])
+
+        assert fetch.call_count == 1
+        assert c.issues_sync_point.store == {}
 
     @pytest.mark.asyncio
     async def test_sync_issues_no_external_group_id(self):
@@ -1474,22 +1495,32 @@ class TestLinearSyncAttachments:
     async def test_sync_attachments_with_data(self):
         c = _make_connector_cov()
         c.indexing_filters = None
+        c._now = MagicMock(return_value=1_700_000_000_000)
         team_rg, perms = _make_team_record_group()
 
         mock_ds = MagicMock()
         att = _make_attachment_data()
         mock_ds.attachments = AsyncMock(return_value=_mock_attachments_response([att], has_next=False))
 
-        # Set up tx_store to return parent record
         parent_record = MagicMock()
         parent_record.id = "parent-node-id"
 
-        with patch.object(c, "_get_attachments_sync_checkpoint", new_callable=AsyncMock, return_value=None):
-            with patch.object(c, "_update_attachments_sync_checkpoint", new_callable=AsyncMock):
-                with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
-                    c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-                    await c._sync_attachments([(team_rg, perms)])
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+            c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+            await c._sync_attachments([(team_rg, perms)])
+
+        # First run: no date filter, first page.
+        mock_ds.attachments.assert_awaited_once_with(first=50, after=None, filter=None)
+        (batch,), _ = c.data_entities_processor.on_new_records.await_args
+        assert len(batch) == 1
+        link, link_permissions = batch[0]
+        assert isinstance(link, LinkRecord)
+        assert link.external_record_id == "att-1"
+        assert link.parent_external_record_id == "issue-1"
+        assert link.external_record_group_id == "team-1"
+        assert link_permissions == []
+        assert c.attachments_sync_point.store["attachments"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_attachments_empty(self):
@@ -1502,6 +1533,7 @@ class TestLinearSyncDocuments:
     async def test_sync_documents_with_data(self):
         c = _make_connector_cov()
         c.indexing_filters = None
+        c._now = MagicMock(return_value=1_700_000_000_000)
         team_rg, perms = _make_team_record_group()
 
         mock_ds = MagicMock()
@@ -1510,17 +1542,30 @@ class TestLinearSyncDocuments:
 
         parent_record = MagicMock()
         parent_record.id = "parent-node-id"
+        parent_record.external_record_group_id = "team-1"
+        parent_record.is_placeholder = False
 
-        with patch.object(c, "_get_documents_sync_checkpoint", new_callable=AsyncMock, return_value=None):
-            with patch.object(c, "_update_documents_sync_checkpoint", new_callable=AsyncMock):
-                with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
-                    await c._sync_documents([(team_rg, perms)])
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+            await c._sync_documents([(team_rg, perms)])
+
+        mock_ds.documents.assert_awaited_once_with(first=50, after=None, filter=None)
+        (batch,), _ = c.data_entities_processor.on_new_records.await_args
+        assert len(batch) == 1
+        page, page_permissions = batch[0]
+        assert isinstance(page, WebpageRecord)
+        assert page.external_record_id == "doc-1"
+        assert page.parent_external_record_id == "issue-1"
+        assert page.parent_record_type == RecordType.TICKET
+        assert page.external_record_group_id == "team-1"
+        assert page_permissions == []
+        assert c.documents_sync_point.store["documents"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_documents_no_issue(self):
         c = _make_connector_cov()
         c.indexing_filters = None
+        c._now = MagicMock(return_value=1_700_000_000_000)
         team_rg, perms = _make_team_record_group()
 
         mock_ds = MagicMock()
@@ -1529,10 +1574,13 @@ class TestLinearSyncDocuments:
         doc["project"] = None
         mock_ds.documents = AsyncMock(return_value=_mock_documents_response([doc], has_next=False))
 
-        with patch.object(c, "_get_documents_sync_checkpoint", new_callable=AsyncMock, return_value=None):
-            with patch.object(c, "_update_documents_sync_checkpoint", new_callable=AsyncMock):
-                with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    await c._sync_documents([(team_rg, perms)])
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            await c._sync_documents([(team_rg, perms)])
+
+        # A document attached to nothing has no place to be filed: skipped, and the
+        # listing still counts as read to its end.
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+        assert c.documents_sync_point.store["documents"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_documents_empty(self):
@@ -1558,68 +1606,128 @@ class TestLinearSyncDeletedIssues:
     @pytest.mark.asyncio
     async def test_initial_sync_creates_checkpoint(self):
         c = _make_connector_cov()
+        c._now = MagicMock(return_value=1_700_000_000_000)
         team_rg, perms = _make_team_record_group()
-        c.deletion_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.deletion_sync_point.update_sync_point = AsyncMock()
-        await c._sync_deleted_issues([(team_rg, perms)])
-        c.deletion_sync_point.update_sync_point.assert_called()
+        mock_ds = MagicMock()
+        mock_ds.trashed_issues = AsyncMock(return_value=_mock_issues_response_cov([], has_next=False))
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            await c._sync_deleted_issues([(team_rg, perms)])
+
+        # The first run reads everything that is in the trash now.
+        mock_ds.trashed_issues.assert_awaited_once_with(
+            first=100, after=None,
+            filter={"team": {"id": {"in": ["team-1"]}}, "archivedAt": {"null": False}},
+        )
+        assert c.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_deleted_issues_trashed(self):
         c = _make_connector_cov()
+        c._now = MagicMock(return_value=1_700_000_500_000)
         team_rg, perms = _make_team_record_group()
-        c.deletion_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1000})
-        c.deletion_sync_point.update_sync_point = AsyncMock()
+        c.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1_700_000_000_000}
 
         mock_ds = MagicMock()
         trashed_issue = _make_issue_data()
         trashed_issue["trashed"] = True
         trashed_issue["archivedAt"] = "2024-06-01T10:00:00.000Z"
-        mock_ds.issues = AsyncMock(return_value=_mock_issues_response_cov([trashed_issue], has_next=False))
+        archived_only = _make_issue_data(issue_id="issue-2", identifier="ENG-2")
+        archived_only["trashed"] = False
+        archived_only["archivedAt"] = "2024-06-01T10:00:00.000Z"
+        mock_ds.trashed_issues = AsyncMock(
+            return_value=_mock_issues_response_cov([trashed_issue, archived_only], has_next=False))
+        c._remover.remove = AsyncMock(return_value=True)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with patch.object(c, "_mark_record_and_children_deleted", new_callable=AsyncMock):
-                await c._sync_deleted_issues([(team_rg, perms)])
+            await c._sync_deleted_issues([(team_rg, perms)])
+
+        # Later runs read what was archived since the last completed run, minus the
+        # one-minute overlap.
+        since = c._linear_datetime_from_timestamp(1_700_000_000_000 - 60_000)
+        assert mock_ds.trashed_issues.await_args.kwargs["filter"] == {
+            "team": {"id": {"in": ["team-1"]}}, "archivedAt": {"gte": since},
+        }
+        # Only the trashed issue is removed; an archived one stays.
+        c._remover.remove.assert_awaited_once_with("issue-1")
+        assert c.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1_700_000_500_000
+
+    @pytest.mark.asyncio
+    async def test_failed_trash_listing_keeps_the_checkpoint(self) -> None:
+        c = _make_connector_cov()
+        c.notify = AsyncMock()
+        team_rg, perms = _make_team_record_group()
+        c.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1_700_000_000_000}
+
+        failed = MagicMock()
+        failed.success = False
+        failed.message = "boom"
+        mock_ds = MagicMock()
+        mock_ds.trashed_issues = AsyncMock(return_value=failed)
+        c._remover.remove = AsyncMock(return_value=True)
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            await c._sync_deleted_issues([(team_rg, perms)])
+
+        # A response with no status is retried three times, then the step is reported.
+        assert mock_ds.trashed_issues.await_count == 4
+        assert [call.args[0] for call in c._sleep.await_args_list] == [1, 3, 9]
+        c._remover.remove.assert_not_awaited()
+        c.notify.assert_awaited_once()
+        assert c.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_deleted_issues_empty_teams(self):
         c = _make_connector_cov()
         await c._sync_deleted_issues([])
+        assert c.deletion_sync_point.store == {}
 
 
 class TestLinearSyncDeletedProjects:
     @pytest.mark.asyncio
-    async def test_initial_sync_creates_checkpoint(self):
+    async def test_compares_stored_projects_of_the_synced_teams(self) -> None:
         c = _make_connector_cov()
         team_rg, perms = _make_team_record_group()
-        c.deletion_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.deletion_sync_point.update_sync_point = AsyncMock()
-        await c._sync_deleted_projects([(team_rg, perms)])
+        team_rg2, perms2 = _make_team_record_group("team-2", "DES")
+        c._reconciler.run_projects = AsyncMock(return_value=2)
+
+        await c._sync_deleted_projects([(team_rg, perms), (team_rg2, perms2)])
+
+        c._reconciler.run_projects.assert_awaited_once_with({"team-1", "team-2"})
 
     @pytest.mark.asyncio
-    async def test_sync_deleted_projects_trashed(self):
+    async def test_no_teams_does_nothing(self) -> None:
+        c = _make_connector_cov()
+        c._reconciler.run_projects = AsyncMock(return_value=0)
+        await c._sync_deleted_projects([])
+        c._reconciler.run_projects.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_comparison_is_not_fatal(self) -> None:
         c = _make_connector_cov()
         team_rg, perms = _make_team_record_group()
-        c.deletion_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1000})
-        c.deletion_sync_point.update_sync_point = AsyncMock()
+        c._reconciler.run_projects = AsyncMock(side_effect=RuntimeError("listing failed"))
+        await c._sync_deleted_projects([(team_rg, perms)])
+        c._reconciler.run_projects.assert_awaited_once()
 
-        mock_ds = MagicMock()
-        trashed = _make_project_data()
-        trashed["trashed"] = True
-        trashed["archivedAt"] = "2024-06-01T10:00:00.000Z"
-        mock_ds.projects = AsyncMock(return_value=_mock_projects_response([trashed], has_next=False))
-
-        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with patch.object(c, "_mark_record_and_children_deleted", new_callable=AsyncMock):
-                await c._sync_deleted_projects([(team_rg, perms)])
+    @pytest.mark.asyncio
+    async def test_auth_error_stops_the_sync(self) -> None:
+        c = _make_connector_cov()
+        team_rg, perms = _make_team_record_group()
+        c._reconciler.run_projects = AsyncMock(side_effect=LinearAuthError("token revoked", 401))
+        with pytest.raises(LinearAuthError):
+            await c._sync_deleted_projects([(team_rg, perms)])
 
 
 class TestLinearMarkRecordDeleted:
     @pytest.mark.asyncio
     async def test_parent_not_found(self):
         c = _make_connector_cov()
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         await c._mark_record_and_children_deleted("nonexistent", "issue")
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            c.connector_id, "nonexistent")
+        c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_parent_with_children(self):
@@ -1627,15 +1735,29 @@ class TestLinearMarkRecordDeleted:
         parent = MagicMock()
         parent.id = "p1"
         parent.external_record_id = "ext-1"
+        parent.record_type = RecordType.TICKET
         child = MagicMock()
         child.id = "c1"
         child.external_record_id = "ext-child-1"
+        child.record_type = RecordType.LINK
 
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=parent)
-        c._tx_store.get_records_by_parent = AsyncMock(side_effect=[[child], []])
-        c._tx_store.delete_records_and_relations = AsyncMock()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
+        c.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=[[child], []])
 
         await c._mark_record_and_children_deleted("ext-1", "issue")
+
+        # The child goes with its parent, through the processor's delete path.
+        c.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["c1", "p1"], c.connector_id, cascade_children=False, include_trashed_roots=True)
+        c.data_entities_processor.on_records_detached_from_parent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_removal_error_is_logged_not_raised(self) -> None:
+        c = _make_connector_cov()
+        c._remover.remove = AsyncMock(side_effect=RuntimeError("db down"))
+        await c._mark_record_and_children_deleted("ext-1", "issue")
+        c._remover.remove.assert_awaited_once_with("ext-1")
+        c.logger.error.assert_called()
 
 
 # ===================================================================
@@ -1844,6 +1966,29 @@ class TestLinearFilterOptions:
         c = _make_connector_cov()
         c.data_source = MagicMock()
         mock_ds = MagicMock()
+        # Linear applies the search; it returns only what matched.
+        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+            [{"id": "t1", "name": "Engineering", "key": "ENG"}],
+            has_next=False,
+        ))
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            result = await c.get_filter_options("team_ids", search="  eng ")
+        mock_ds.teams.assert_awaited_once_with(
+            first=20,
+            after=None,
+            filter={"or": [
+                {"name": {"containsIgnoreCase": "eng"}},
+                {"key": {"containsIgnoreCase": "eng"}},
+            ]},
+        )
+        assert len(result.options) == 1
+        assert "Engineering" in result.options[0].label
+
+    @pytest.mark.asyncio
+    async def test_team_options_without_search_sends_no_filter(self) -> None:
+        c = _make_connector_cov()
+        c.data_source = MagicMock()
+        mock_ds = MagicMock()
         mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
             [
                 {"id": "t1", "name": "Engineering", "key": "ENG"},
@@ -1852,9 +1997,9 @@ class TestLinearFilterOptions:
             has_next=False,
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            result = await c.get_filter_options("team_ids", search="eng")
-        assert len(result.options) == 1
-        assert "Engineering" in result.options[0].label
+            result = await c.get_filter_options("team_ids")
+        mock_ds.teams.assert_awaited_once_with(first=20, after=None, filter=None)
+        assert [o.id for o in result.options] == ["t1", "t2"]
 
     @pytest.mark.asyncio
     async def test_team_options_api_failure(self):
@@ -2379,8 +2524,35 @@ class TestLinearFetchDocumentContent:
         mock_ds.document = AsyncMock(return_value=resp)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with pytest.raises(RuntimeError, match="Not found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await c._fetch_document_content("doc-1")
+
+        # A failure with no HTTP status is a transport failure: retried three times,
+        # then reported as "could not reach the source".
+        assert mock_ds.document.await_count == 4
+        assert [call.args[0] for call in c._sleep.await_args_list] == [1, 3, 9]
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response,expected_status,expected_calls", [
+        (GraphQLResponse(success=False, message="Entity not found: Document", status_code=400), 404, 1),
+        (GraphQLResponse(success=False, message="Unauthorized", status_code=401), 409, 1),
+        (GraphQLResponse(success=False, message="Too many requests", status_code=429), 429, 7),
+        (GraphQLResponse(success=False, message="Bad gateway", status_code=502), 502, 4),
+        (GraphQLResponse(success=True, data={"document": None}), 404, 1),
+    ])
+    async def test_failure_is_mapped_for_the_reader(self, response, expected_status, expected_calls) -> None:
+        c = _make_connector_cov()
+        c.data_source = MagicMock()
+        mock_ds = MagicMock()
+        mock_ds.document = AsyncMock(return_value=response)
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            with pytest.raises(HTTPException) as exc_info:
+                await c._fetch_document_content("doc-1")
+
+        assert exc_info.value.status_code == expected_status
+        assert mock_ds.document.await_count == expected_calls
 
     @pytest.mark.asyncio
     async def test_empty_content(self):
@@ -2576,6 +2748,7 @@ def _make_connector_fullcov():
         created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
+    _use_memory_state(connector)
     return connector
 
 
@@ -2721,258 +2894,6 @@ def _make_team_record_group_fullcov(team_id="team-1", name="Engineering", key="E
     )
     perms = [Permission(entity_type=EntityType.ORG, type=PermissionType.READ)]
     return rg, perms
-
-
-# ===================================================================
-# _fetch_projects_for_team_batch
-# ===================================================================
-
-
-class TestFetchProjectsForTeamBatch:
-    @pytest.mark.asyncio
-    async def test_single_batch_with_projects(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        project_data = _make_project_data_fullcov()
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [project_data])
-        )
-        mock_ds.project = AsyncMock(
-            return_value=_mock_response(data={"project": project_data})
-        )
-        mock_ds.get_file_size = AsyncMock(return_value=0)
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 1
-            has_project = any(
-                isinstance(r, ProjectRecord) for r, _ in batches[0]
-            )
-            assert has_project
-
-    @pytest.mark.asyncio
-    async def test_multi_team_project_is_written_once_before_its_children(self) -> None:
-        """A project in two teams comes back in both passes. Only its first synced team writes it,
-        and it is written before its documents and links so they find their parent in that team."""
-        project_data = _make_project_data_fullcov(content="")
-        project_data["teams"] = {"nodes": [{"id": "team-b"}, {"id": "team-a"}]}
-        child = MagicMock(name="project-document")
-
-        async def run(team_id: str) -> list:
-            connector = _make_connector_fullcov()
-            connector.data_source = MagicMock()
-            connector.sync_filters = None
-            connector.indexing_filters = None
-            mock_ds = MagicMock()
-            mock_ds.projects = AsyncMock(return_value=_mock_paginated("projects", [project_data]))
-            mock_ds.project = AsyncMock(return_value=_mock_response(data={"project": project_data}))
-            connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-            connector._prepare_project_related_records = AsyncMock(return_value=[(child, [])])
-            with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                batches = [b async for b in connector._fetch_projects_for_team_batch(
-                    team_id=team_id, team_key=team_id, synced_team_ids={"team-a", "team-b"})]
-            return [record for batch in batches for record, _ in batch]
-
-        assert await run("team-b") == []
-        written = await run("team-a")
-        assert isinstance(written[0], ProjectRecord) and written[1] is child
-        assert written[0].external_record_group_id == "team-a"
-        assert written[0].shared_with_me_record_group_ids == ["team-b"]
-
-    @pytest.mark.asyncio
-    async def test_empty_project_list(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [])
-        )
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 0
-
-    @pytest.mark.asyncio
-    async def test_project_fetch_failure(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_response(success=False, message="Error")
-        )
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            with pytest.raises(RuntimeError, match="Error"):
-                async for _ in connector._fetch_projects_for_team_batch(
-                    team_id="team-1", team_key="ENG"
-                ):
-                    pass
-
-    @pytest.mark.asyncio
-    async def test_project_with_pagination(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        proj1 = _make_project_data_fullcov(project_id="proj-1", name="P1")
-        proj2 = _make_project_data_fullcov(project_id="proj-2", name="P2")
-
-        page1 = _mock_paginated("projects", [proj1], has_next=True, end_cursor="cursor-1")
-        page2 = _mock_paginated("projects", [proj2], has_next=False)
-
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(side_effect=[page1, page2])
-        mock_ds.project = AsyncMock(
-            side_effect=[
-                _mock_response(data={"project": proj1}),
-                _mock_response(data={"project": proj2}),
-            ]
-        )
-        mock_ds.get_file_size = AsyncMock(return_value=0)
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 2
-
-    @pytest.mark.asyncio
-    async def test_project_with_indexing_filter_off(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        indexing_filters = MagicMock()
-        indexing_filters.is_enabled = MagicMock(return_value=False)
-        connector.indexing_filters = indexing_filters
-
-        project_data = _make_project_data_fullcov(content="")
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [project_data])
-        )
-        mock_ds.project = AsyncMock(
-            return_value=_mock_response(data={"project": project_data})
-        )
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 1
-            for record, _ in batches[0]:
-                if isinstance(record, ProjectRecord):
-                    assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
-
-    @pytest.mark.asyncio
-    async def test_project_with_related_issues(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        project_data = _make_project_data_fullcov(
-            content="",
-            issues={"nodes": [{"id": "issue-1"}, {"id": "issue-2"}]},
-        )
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [project_data])
-        )
-        mock_ds.project = AsyncMock(
-            return_value=_mock_response(data={"project": project_data})
-        )
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            for record, _ in batches[0]:
-                if isinstance(record, ProjectRecord):
-                    assert len(record.related_external_records) == 2
-
-    @pytest.mark.asyncio
-    async def test_project_processing_error_continues(self):
-        connector = _make_connector_fullcov()
-        connector.data_source = MagicMock()
-        connector.sync_filters = None
-        connector.indexing_filters = None
-
-        proj_bad = {"id": ""}
-        proj_good = _make_project_data_fullcov(project_id="proj-good", content="")
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [proj_bad, proj_good])
-        )
-        mock_ds.project = AsyncMock(
-            return_value=_mock_response(data={"project": proj_good})
-        )
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 1
 
 
 # ===================================================================
@@ -4166,67 +4087,51 @@ class TestSyncDeleted:
     async def test_sync_deleted_issues_empty_teams(self):
         connector = _make_connector_fullcov()
         await connector._sync_deleted_issues([])
+        assert connector.deletion_sync_point.store == {}
 
     @pytest.mark.asyncio
     async def test_sync_deleted_issues_initial_sync(self):
         connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
+        mock_ds = MagicMock()
+        mock_ds.trashed_issues = AsyncMock(return_value=_mock_paginated("issues", []))
 
         rg, perms = _make_team_record_group_fullcov()
         with patch(
             "app.connectors.sources.linear.connector.get_epoch_timestamp_in_ms",
             return_value=1705000000000,
+        ), patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
         ):
             await connector._sync_deleted_issues([(rg, perms)])
-        connector.deletion_sync_point.update_sync_point.assert_called_once()
+
+        # The whole trash is listed on the first run, then the checkpoint is set to
+        # the moment the run started.
+        assert mock_ds.trashed_issues.await_args.kwargs["filter"]["archivedAt"] == {"null": False}
+        assert connector.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1705000000000
 
     @pytest.mark.asyncio
     async def test_sync_deleted_issues_with_trashed(self):
         connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 1705000000000}
-        )
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
+        connector.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1705000000000}
 
         trashed_issue = _make_issue_data_fullcov(
             trashed=True,
             archived_at="2024-01-15T12:00:00.000Z",
         )
-
-        mock_ds = MagicMock()
-        mock_ds.issues = AsyncMock(
-            return_value=_mock_paginated("issues", [trashed_issue])
-        )
-
-        rg, perms = _make_team_record_group_fullcov()
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            with patch.object(
-                connector,
-                "_mark_record_and_children_deleted",
-                new_callable=AsyncMock,
-            ) as mock_delete:
-                await connector._sync_deleted_issues([(rg, perms)])
-                mock_delete.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_sync_deleted_issues_fetch_failure(self):
-        connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 1705000000000}
+        second_page_issue = _make_issue_data_fullcov(
+            issue_id="issue-2",
+            identifier="ENG-2",
+            trashed=True,
+            archived_at="2024-01-15T12:00:00.000Z",
         )
 
         mock_ds = MagicMock()
-        mock_ds.issues = AsyncMock(
-            return_value=_mock_response(success=False, message="Error")
-        )
+        mock_ds.trashed_issues = AsyncMock(side_effect=[
+            _mock_paginated("issues", [trashed_issue], has_next=True, end_cursor="cursor-1"),
+            _mock_paginated("issues", [second_page_issue]),
+        ])
+        # issue-1 is stored, issue-2 was never synced.
+        connector._remover.remove = AsyncMock(side_effect=[True, False])
 
         rg, perms = _make_team_record_group_fullcov()
 
@@ -4236,77 +4141,27 @@ class TestSyncDeleted:
             mock_fresh.return_value = mock_ds
             await connector._sync_deleted_issues([(rg, perms)])
 
-    @pytest.mark.asyncio
-    async def test_sync_deleted_projects_empty_teams(self):
-        connector = _make_connector_fullcov()
-        await connector._sync_deleted_projects([])
+        assert [c.args[0] for c in connector._remover.remove.await_args_list] == ["issue-1", "issue-2"]
+        assert [c.kwargs["after"] for c in mock_ds.trashed_issues.await_args_list] == [None, "cursor-1"]
 
     @pytest.mark.asyncio
-    async def test_sync_deleted_projects_initial_sync(self):
+    async def test_sync_deleted_issues_fetch_failure(self) -> None:
         connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
+        connector.notify = AsyncMock()
+        connector.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1705000000000}
 
-        rg, perms = _make_team_record_group_fullcov()
-        with patch(
-            "app.connectors.sources.linear.connector.get_epoch_timestamp_in_ms",
-            return_value=1705000000000,
-        ):
-            await connector._sync_deleted_projects([(rg, perms)])
-        connector.deletion_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_sync_deleted_projects_with_trashed(self):
-        connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 1705000000000}
-        )
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
-
-        trashed_project = _make_project_data_fullcov(
-            trashed=True,
-            archived_at="2024-01-16T12:00:00.000Z",
-        )
-
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [trashed_project])
-        )
-
-        rg, perms = _make_team_record_group_fullcov()
-
-        with patch.object(
-            connector, "_get_fresh_datasource", new_callable=AsyncMock
-        ) as mock_fresh:
-            mock_fresh.return_value = mock_ds
-            with patch.object(
-                connector,
-                "_mark_record_and_children_deleted",
-                new_callable=AsyncMock,
-            ) as mock_delete:
-                await connector._sync_deleted_projects([(rg, perms)])
-                mock_delete.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_sync_deleted_projects_trashed_before_checkpoint_skipped(self):
-        connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 1705400000000}
-        )
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
-
-        trashed_project = _make_project_data_fullcov(
+        trashed_issue = _make_issue_data_fullcov(
             trashed=True,
             archived_at="2024-01-15T12:00:00.000Z",
         )
-
         mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(
-            return_value=_mock_paginated("projects", [trashed_project])
-        )
+        # The first page arrives, the second never does.
+        failure = GraphQLResponse(success=False, message="Internal error", status_code=500)
+        mock_ds.trashed_issues = AsyncMock(side_effect=[
+            _mock_paginated("issues", [trashed_issue], has_next=True, end_cursor="cursor-1"),
+            failure, failure, failure, failure,
+        ])
+        connector._remover.remove = AsyncMock(return_value=True)
 
         rg, perms = _make_team_record_group_fullcov()
 
@@ -4314,13 +4169,103 @@ class TestSyncDeleted:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            with patch.object(
-                connector,
-                "_mark_record_and_children_deleted",
-                new_callable=AsyncMock,
-            ) as mock_delete:
-                await connector._sync_deleted_projects([(rg, perms)])
-                mock_delete.assert_not_called()
+            await connector._sync_deleted_issues([(rg, perms)])
+
+        # A failed page is not the end of the list: the checkpoint stays where it
+        # was and the cursor of the last stored page is kept for the next run.
+        saved = connector.deletion_sync_point.store["trashed_issues"]
+        assert saved["last_sync_time"] == 1705000000000
+        assert saved["resume_cursor"] == "cursor-1"
+        connector._remover.remove.assert_awaited_once_with("issue-1")
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_deleted_issues_resumes_from_saved_cursor(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.deletion_sync_point.store["trashed_issues"] = {
+            "last_sync_time": 1705000000000,
+            "resume_cursor": "cursor-1",
+            "resume_since": 1704999940000,
+            "resume_started_at": 1705000300000,
+        }
+        mock_ds = MagicMock()
+        mock_ds.trashed_issues = AsyncMock(return_value=_mock_paginated("issues", []))
+
+        rg, perms = _make_team_record_group_fullcov()
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            await connector._sync_deleted_issues([(rg, perms)])
+
+        assert mock_ds.trashed_issues.await_args.kwargs["after"] == "cursor-1"
+        # The interrupted run is the one that finishes: the checkpoint is its start.
+        saved = connector.deletion_sync_point.store["trashed_issues"]
+        assert saved["last_sync_time"] == 1705000300000
+        assert saved["resume_cursor"] == ""
+
+    @pytest.mark.asyncio
+    async def test_sync_deleted_projects_empty_teams(self) -> None:
+        connector = _make_connector_fullcov()
+        connector._reconciler.run_projects = AsyncMock()
+        await connector._sync_deleted_projects([])
+        connector._reconciler.run_projects.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_deleted_projects_removes_what_the_listing_no_longer_has(self) -> None:
+        connector = _make_connector_fullcov()
+        rg, perms = _make_team_record_group_fullcov()
+
+        kept = MagicMock(id="rec-kept", external_record_id="proj-1",
+                         external_record_group_id="team-1", is_placeholder=False, is_deleted=False)
+        gone = MagicMock(id="rec-gone", external_record_id="proj-gone",
+                         external_record_group_id="team-1", is_placeholder=False, is_deleted=False)
+        trashed = MagicMock(id="rec-trashed", external_record_id="proj-trashed",
+                            external_record_group_id="team-1", is_placeholder=False, is_deleted=False)
+        other_team = MagicMock(id="rec-other", external_record_id="proj-other",
+                               external_record_group_id="team-9", is_placeholder=False, is_deleted=False)
+        processor = connector.data_entities_processor
+        processor.get_records_by_record_type = AsyncMock(return_value=[kept, gone, trashed, other_team])
+
+        mock_ds = MagicMock()
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_paginated("projects", [
+            {"id": "proj-1", "trashed": False},
+            {"id": "proj-trashed", "trashed": True},
+        ]))
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            await connector._sync_deleted_projects([(rg, perms)])
+
+        mock_ds.execute_operation.assert_awaited_once_with("projectIds", {
+            "filter": {"accessibleTeams": {"some": {"id": {"in": ["team-1"]}}}},
+            "includeArchived": True,
+            "first": 25,
+        })
+        removed = [c.args[0] for c in processor.on_records_deleted_cascade.await_args_list]
+        assert removed == [["rec-gone"], ["rec-trashed"]]
+
+    @pytest.mark.asyncio
+    async def test_sync_deleted_projects_listing_failure_removes_nothing(self) -> None:
+        connector = _make_connector_fullcov()
+        rg, perms = _make_team_record_group_fullcov()
+        stored = MagicMock(id="rec-1", external_record_id="proj-1",
+                           external_record_group_id="team-1", is_placeholder=False, is_deleted=False)
+        processor = connector.data_entities_processor
+        processor.get_records_by_record_type = AsyncMock(return_value=[stored])
+
+        mock_ds = MagicMock()
+        mock_ds.execute_operation = AsyncMock(
+            return_value=_mock_response(success=False, message="Error")
+        )
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            await connector._sync_deleted_projects([(rg, perms)])
+
+        assert mock_ds.execute_operation.await_count == 4
+        processor.on_records_deleted_cascade.assert_not_awaited()
 
 
 # ===================================================================
@@ -4332,8 +4277,10 @@ class TestMarkRecordDeleted:
     @pytest.mark.asyncio
     async def test_mark_deleted_not_found(self):
         connector = _make_connector_fullcov()
-        connector._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        processor = connector.data_entities_processor
+        processor.get_record_by_external_id = AsyncMock(return_value=None)
         await connector._mark_record_and_children_deleted("ext-1", "issue")
+        processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mark_deleted_with_children(self):
@@ -4341,126 +4288,32 @@ class TestMarkRecordDeleted:
         parent = MagicMock()
         parent.id = "parent-id"
         parent.external_record_id = "ext-parent"
+        parent.record_type = RecordType.TICKET
 
         child = MagicMock()
         child.id = "child-id"
         child.external_record_id = "ext-child"
+        child.record_type = RecordType.WEBPAGE
 
-        connector._tx_store.get_record_by_external_id = AsyncMock(return_value=parent)
-        connector._tx_store.get_records_by_parent = AsyncMock(
-            side_effect=[[child], []]
+        sub_issue = MagicMock()
+        sub_issue.id = "sub-issue-id"
+        sub_issue.external_record_id = "ext-sub-issue"
+        sub_issue.record_type = RecordType.TICKET
+
+        processor = connector.data_entities_processor
+        processor.get_record_by_external_id = AsyncMock(return_value=parent)
+        processor.get_records_by_parent = AsyncMock(
+            side_effect=[[child, sub_issue], []]
         )
-        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
-            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+
+        # One delete for the document and the issue; the sub-issue stays and loses
+        # its parent link.
+        processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["child-id", "parent-id"], "linear-conn-1", cascade_children=False, include_trashed_roots=True
         )
-
-
-# ===================================================================
-# Sync checkpoints
-# ===================================================================
-
-
-class TestSyncCheckpoints:
-    @pytest.mark.asyncio
-    async def test_team_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.issues_sync_point = MagicMock()
-        connector.issues_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 123}
-        )
-        result = await connector._get_team_sync_checkpoint("ENG")
-        assert result == 123
-
-    @pytest.mark.asyncio
-    async def test_team_sync_checkpoint_none(self):
-        connector = _make_connector_fullcov()
-        connector.issues_sync_point = MagicMock()
-        connector.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
-        result = await connector._get_team_sync_checkpoint("ENG")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_update_team_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.issues_sync_point = MagicMock()
-        connector.issues_sync_point.update_sync_point = AsyncMock()
-        await connector._update_team_sync_checkpoint("ENG", 456)
-        connector.issues_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_team_project_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.projects_sync_point = MagicMock()
-        connector.projects_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 789}
-        )
-        result = await connector._get_team_project_sync_checkpoint("ENG")
-        assert result == 789
-
-    @pytest.mark.asyncio
-    async def test_update_team_project_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.projects_sync_point = MagicMock()
-        connector.projects_sync_point.update_sync_point = AsyncMock()
-        await connector._update_team_project_sync_checkpoint("ENG", 999)
-        connector.projects_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_attachments_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.attachments_sync_point = MagicMock()
-        connector.attachments_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 111}
-        )
-        result = await connector._get_attachments_sync_checkpoint()
-        assert result == 111
-
-    @pytest.mark.asyncio
-    async def test_update_attachments_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.attachments_sync_point = MagicMock()
-        connector.attachments_sync_point.update_sync_point = AsyncMock()
-        await connector._update_attachments_sync_checkpoint(222)
-        connector.attachments_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_documents_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.documents_sync_point = MagicMock()
-        connector.documents_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 333}
-        )
-        result = await connector._get_documents_sync_checkpoint()
-        assert result == 333
-
-    @pytest.mark.asyncio
-    async def test_update_documents_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.documents_sync_point = MagicMock()
-        connector.documents_sync_point.update_sync_point = AsyncMock()
-        await connector._update_documents_sync_checkpoint(444)
-        connector.documents_sync_point.update_sync_point.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_deletion_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": 555}
-        )
-        result = await connector._get_deletion_sync_checkpoint("issues")
-        assert result == 555
-
-    @pytest.mark.asyncio
-    async def test_update_deletion_sync_checkpoint(self):
-        connector = _make_connector_fullcov()
-        connector.deletion_sync_point = MagicMock()
-        connector.deletion_sync_point.update_sync_point = AsyncMock()
-        await connector._update_deletion_sync_checkpoint("issues", 666)
-        connector.deletion_sync_point.update_sync_point.assert_called_once()
+        processor.on_records_detached_from_parent.assert_awaited_once_with(["sub-issue-id"])
 
 
 # ===================================================================
@@ -5043,9 +4896,7 @@ class TestSyncIssuesForTeams:
     async def test_sync_issues_processes_batches(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-        connector.issues_sync_point = MagicMock()
-        connector.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.issues_sync_point.update_sync_point = AsyncMock()
+        connector._now = MagicMock(return_value=1705400000000)
 
         rg, perms = _make_team_record_group_fullcov()
 
@@ -5057,34 +4908,134 @@ class TestSyncIssuesForTeams:
             yield batch
 
         with patch.object(
-            connector, "_get_team_sync_checkpoint", new_callable=AsyncMock
-        ) as mock_cp:
-            mock_cp.return_value = None
-            with patch.object(
-                connector,
-                "_fetch_issues_for_team_batch",
-                side_effect=lambda **kw: fake_batch_gen(**kw),
-            ):
-                with patch.object(
-                    connector,
-                    "_update_team_sync_checkpoint",
-                    new_callable=AsyncMock,
-                ):
-                    await connector._sync_issues_for_teams([(rg, perms)])
-                    connector.data_entities_processor.on_new_records.assert_called()
+            connector,
+            "_fetch_issues_for_team_batch",
+            side_effect=lambda **kw: fake_batch_gen(**kw),
+        ) as mock_fetch:
+            result = await connector._sync_issues_for_teams([(rg, perms)])
+
+        connector.data_entities_processor.on_new_records.assert_awaited_once_with(batch)
+        assert result == ({"team-1"}, [])
+        # The listing is given the run and the checkpoint so it can save its cursor.
+        kwargs = mock_fetch.call_args.kwargs
+        assert kwargs["team_id"] == "team-1"
+        assert kwargs["team_key"] == "ENG"
+        assert kwargs["last_sync_time"] is None
+        assert kwargs["run"].started_at == 1705400000000
+        assert kwargs["failures"] == []
+        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_sync_issues_incremental_reads_since_last_run_with_overlap(self) -> None:
+        connector = _make_connector_fullcov()
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group_fullcov()
+
+        async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
+            if False:
+                yield []
+
+        with patch.object(
+            connector,
+            "_fetch_issues_for_team_batch",
+            side_effect=lambda **kw: fake_batch_gen(**kw),
+        ) as mock_fetch:
+            result = await connector._sync_issues_for_teams([(rg, perms)])
+
+        assert mock_fetch.call_args.kwargs["last_sync_time"] == 1705300000000 - 60_000
+        assert result == (set(), [])
+        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_sync_issues_resumes_an_interrupted_run(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.issues_sync_point.store["team_issues_team-1"] = {
+            "last_sync_time": 0,
+            "resume_cursor": "cursor-7",
+            "resume_since": 0,
+            "resume_started_at": 1705350000000,
+        }
+        rg, perms = _make_team_record_group_fullcov()
+
+        async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
+            if False:
+                yield []
+
+        with patch.object(
+            connector,
+            "_fetch_issues_for_team_batch",
+            side_effect=lambda **kw: fake_batch_gen(**kw),
+        ) as mock_fetch:
+            await connector._sync_issues_for_teams([(rg, perms)])
+
+        run = mock_fetch.call_args.kwargs["run"]
+        assert run.cursor == "cursor-7"
+        assert run.resumed is True
+        assert run.is_full is True
+        # Finishing a resumed run moves the checkpoint to when that run began.
+        saved = connector.issues_sync_point.store["team_issues_team-1"]
+        assert saved["last_sync_time"] == 1705350000000
+        assert saved["resume_cursor"] == ""
+
+    @pytest.mark.asyncio
+    async def test_sync_issues_holds_checkpoint_when_issues_could_not_be_stored(self) -> None:
+        connector = _make_connector_fullcov()
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group_fullcov()
+
+        async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
+            kwargs["failures"].append("ENG-7")
+            if False:
+                yield []
+
+        with patch.object(
+            connector,
+            "_fetch_issues_for_team_batch",
+            side_effect=lambda **kw: fake_batch_gen(**kw),
+        ):
+            outcomes = [
+                await connector._sync_issues_for_teams([(rg, perms)]) for _ in range(4)
+            ]
+
+        # Three syncs in a row keep the checkpoint and report the team; the fourth
+        # gives up on the issue and moves on.
+        assert [failed for _, failed in outcomes] == [["Engineering"]] * 3 + [[]]
+        saved = connector.issues_sync_point.store["team_issues_team-1"]
+        assert saved["last_sync_time"] == 1705400000000
+        assert saved["held_runs"] == 0
 
     @pytest.mark.asyncio
     async def test_sync_issues_team_error_continues(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
+        rg2, perms2 = _make_team_record_group_fullcov(team_id="team-2", name="Design", key="DES")
+
+        ticket = MagicMock(spec=TicketRecord)
+
+        async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
+            if kwargs["team_id"] == "team-1":
+                raise LinearTransientError("page 2 could not be read", 502)
+            yield [(ticket, [])]
 
         with patch.object(
-            connector, "_get_team_sync_checkpoint", new_callable=AsyncMock
-        ) as mock_cp:
-            mock_cp.side_effect = Exception("checkpoint error")
-            await connector._sync_issues_for_teams([(rg, perms)])
+            connector,
+            "_fetch_issues_for_team_batch",
+            side_effect=lambda **kw: fake_batch_gen(**kw),
+        ):
+            full, failed = await connector._sync_issues_for_teams([(rg, perms), (rg2, perms2)])
+
+        # A listing that could not be read to its end leaves the team's checkpoint
+        # untouched; the next team is still synced.
+        assert failed == ["Engineering"]
+        assert full == {"team-2"}
+        assert connector.issues_sync_point.store["team_issues_team-1"] == {"last_sync_time": 1705300000000}
+        assert connector.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1705400000000
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
 
 
 # ===================================================================
@@ -5118,35 +5069,119 @@ class TestSyncProjectsForTeams:
     async def test_sync_projects_processes_batches(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-        connector.projects_sync_point = MagicMock()
-        connector.projects_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.projects_sync_point.update_sync_point = AsyncMock()
+        connector._now = MagicMock(return_value=1705400000000)
 
         rg, perms = _make_team_record_group_fullcov()
+        rg2, perms2 = _make_team_record_group_fullcov(team_id="team-0", name="Design", key="DES")
 
         project = MagicMock(spec=ProjectRecord)
         project.source_updated_at = 1705312800000
         batch = [(project, [])]
 
-        async def fake_batch_gen(**kwargs):
-            yield batch
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(side_effect=[
+            _mock_paginated("projects", [{"id": "proj-1"}, {"id": "proj-hidden"}],
+                            has_next=True, end_cursor="cursor-1"),
+            _mock_paginated("projects", [{"id": "proj-2"}]),
+        ])
 
         with patch.object(
-            connector, "_get_team_project_sync_checkpoint", new_callable=AsyncMock
-        ) as mock_cp:
-            mock_cp.return_value = None
-            with patch.object(
-                connector,
-                "_fetch_projects_for_team_batch",
-                side_effect=lambda **kw: fake_batch_gen(**kw),
-            ):
-                with patch.object(
-                    connector,
-                    "_update_team_project_sync_checkpoint",
-                    new_callable=AsyncMock,
-                ):
-                    await connector._sync_projects_for_teams([(rg, perms)])
-                    connector.data_entities_processor.on_new_records.assert_called()
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ), patch.object(
+            connector, "_project_to_records", new_callable=AsyncMock,
+            side_effect=[batch, [], batch],
+        ) as mock_to_records:
+            await connector._sync_projects_for_teams([(rg, perms), (rg2, perms2)])
+
+        # Projects are listed once for all synced teams, ten at a time.
+        scope_filter = {"accessibleTeams": {"some": {"id": {"in": ["team-0", "team-1"]}}}}
+        assert [c.kwargs for c in mock_ds.projects.await_args_list] == [
+            {"first": 10, "after": None, "filter": scope_filter},
+            {"first": 10, "after": "cursor-1", "filter": scope_filter},
+        ]
+        # Each listed project is read in full; one that yields nothing is not stored.
+        assert [c.args for c in mock_to_records.await_args_list] == [
+            ("proj-1", {"team-0", "team-1"}),
+            ("proj-hidden", {"team-0", "team-1"}),
+            ("proj-2", {"team-0", "team-1"}),
+        ]
+        assert connector.data_entities_processor.on_new_records.await_count == 2
+        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_sync_projects_incremental_filters_by_update_time(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.sync_filters = None
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group_fullcov()
+
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(return_value=_mock_paginated("projects", [{"id": "proj-1"}]))
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ), patch.object(
+            connector, "_project_to_records", new_callable=AsyncMock, return_value=[]
+        ) as mock_to_records:
+            await connector._sync_projects_for_teams([(rg, perms)])
+
+        since = connector._linear_datetime_from_timestamp(1705300000000 - 60_000)
+        assert mock_ds.projects.await_args.kwargs["filter"] == {
+            "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
+            "updatedAt": {"gt": since},
+        }
+        mock_to_records.assert_awaited_once_with("proj-1", {"team-1"})
+
+    @pytest.mark.asyncio
+    async def test_sync_projects_failed_page_keeps_checkpoint_and_notifies(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.notify = AsyncMock()
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group_fullcov()
+
+        failure = GraphQLResponse(success=False, message="Internal error", status_code=500)
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(side_effect=[
+            _mock_paginated("projects", [{"id": "proj-1"}], has_next=True, end_cursor="cursor-1"),
+            failure, failure, failure, failure,
+        ])
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ), patch.object(
+            connector, "_project_to_records", new_callable=AsyncMock, return_value=[]
+        ):
+            await connector._sync_projects_for_teams([(rg, perms)])
+
+        saved = connector.projects_sync_point.store["projects"]
+        assert saved["last_sync_time"] == 1705300000000
+        assert saved["resume_cursor"] == "cursor-1"
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_projects_rate_limit_stops_the_sync(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.notify = AsyncMock()
+        rg, perms = _make_team_record_group_fullcov()
+
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(
+            return_value=GraphQLResponse(success=False, message="Rate limited", status_code=429)
+        )
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            with pytest.raises(LinearRateLimited):
+                await connector._sync_projects_for_teams([(rg, perms)])
+
+        # Six waits, then the seventh answer is final.
+        assert [c.args[0] for c in connector._sleep.await_args_list] == [5, 15, 30, 60, 120, 240]
+        assert mock_ds.projects.await_count == 7
+        connector.notify.assert_not_awaited()
+        assert "projects" not in connector.projects_sync_point.store
 
 
 # ===================================================================
@@ -5164,9 +5199,7 @@ class TestSyncAttachments:
     async def test_sync_attachments_with_data(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-        connector.attachments_sync_point = MagicMock()
-        connector.attachments_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.attachments_sync_point.update_sync_point = AsyncMock()
+        connector._now = MagicMock(return_value=1705400000000)
         connector.sync_filters = None
         connector.indexing_filters = None
 
@@ -5177,9 +5210,7 @@ class TestSyncAttachments:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=parent_record
         )
-        connector.data_entities_processor.get_record_by_weburl = AsyncMock(
-            return_value=None
-        )
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
 
         attachment = {
             "id": "attach-1",
@@ -5202,6 +5233,8 @@ class TestSyncAttachments:
             await connector._sync_attachments([(rg, perms)])
             connector.data_entities_processor.on_new_records.assert_called()
 
+        assert connector.attachments_sync_point.store["attachments"]["last_sync_time"] == 1705400000000
+
 
 # ===================================================================
 # _sync_documents
@@ -5218,9 +5251,7 @@ class TestSyncDocuments:
     async def test_sync_documents_with_data(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-        connector.documents_sync_point = MagicMock()
-        connector.documents_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.documents_sync_point.update_sync_point = AsyncMock()
+        connector._now = MagicMock(return_value=1705400000000)
         connector.sync_filters = None
         connector.indexing_filters = None
 
@@ -5228,8 +5259,12 @@ class TestSyncDocuments:
 
         parent_record = MagicMock()
         parent_record.id = "parent-id"
+        parent_record.external_record_group_id = "team-1"
+        parent_record.is_placeholder = False
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
-            return_value=parent_record
+            side_effect=lambda connector_id, external_record_id: (
+                parent_record if external_record_id == "issue-1" else None
+            )
         )
 
         document = {
@@ -5256,15 +5291,46 @@ class TestSyncDocuments:
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
             await connector._sync_documents([(rg, perms)])
-            connector.data_entities_processor.on_new_records.assert_called()
+
+        (batch,), _ = connector.data_entities_processor.on_new_records.await_args
+        assert [(r.external_record_id, r.parent_external_record_id, r.external_record_group_id)
+                for r, _ in batch] == [("doc-1", "issue-1", "team-1")]
+        assert batch[0][0].parent_node_id == "parent-id"
+        assert connector.documents_sync_point.store["documents"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_sync_documents_skips_placeholder_parent(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        rg, perms = _make_team_record_group_fullcov()
+
+        stub = MagicMock()
+        stub.id = "stub-id"
+        stub.external_record_group_id = "team-1"
+        stub.is_placeholder = True
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stub)
+
+        document = {
+            "id": "doc-1",
+            "url": "https://linear.app/doc/1",
+            "title": "Design Doc",
+            "issue": {"id": "issue-1", "team": {"id": "team-1"}},
+        }
+        mock_ds = MagicMock()
+        mock_ds.documents = AsyncMock(return_value=_mock_paginated("documents", [document]))
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            await connector._sync_documents([(rg, perms)])
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_documents_skips_standalone(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
-        connector.documents_sync_point = MagicMock()
-        connector.documents_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.documents_sync_point.update_sync_point = AsyncMock()
         connector.sync_filters = None
         connector.indexing_filters = None
 
@@ -5329,15 +5395,42 @@ class TestFetchDocumentContent:
 
         mock_ds = MagicMock()
         mock_ds.document = AsyncMock(
-            return_value=_mock_response(success=False, message="Not found")
+            return_value=GraphQLResponse(
+                success=False, message="Entity not found: Document", status_code=400
+            )
         )
 
         with patch.object(
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            with pytest.raises(RuntimeError, match="Not found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await connector._fetch_document_content("doc-missing")
+
+        # Not found is a definite answer: no retry, and the reader is told 404.
+        assert exc_info.value.status_code == 404
+        mock_ds.document.assert_awaited_once_with(id="doc-missing")
+        connector._sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transport_failure_is_retried_then_reported_unreachable(self) -> None:
+        connector = _make_connector_fullcov()
+        connector.data_source = MagicMock()
+
+        mock_ds = MagicMock()
+        mock_ds.document = AsyncMock(
+            return_value=_mock_response(success=False, message="Connection reset")
+        )
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._fetch_document_content("doc-1")
+
+        assert exc_info.value.status_code == 502
+        assert mock_ds.document.await_count == 4
+        assert [c.args[0] for c in connector._sleep.await_args_list] == [1, 3, 9]
 
     @pytest.mark.asyncio
     async def test_empty_content(self):
@@ -5550,8 +5643,10 @@ class TestGetTeamOptions:
                 "teams",
                 [
                     {"id": "t1", "name": "Engineering", "key": "ENG"},
-                    {"id": "t2", "name": "Design", "key": "DES"},
+                    {"id": "t3", "name": "Platform", "key": "PENG"},
                 ],
+                has_next=True,
+                end_cursor="cursor-2",
             )
         )
 
@@ -5559,9 +5654,23 @@ class TestGetTeamOptions:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            result = await connector.get_filter_options("team_ids", search="eng")
-            assert len(result.options) == 1
-            assert "Engineering" in result.options[0].label
+            result = await connector.get_filter_options(
+                "team_ids", limit=2, search="eng", cursor="cursor-1"
+            )
+
+        # Linear does the matching, on name or key, so paging stays correct.
+        mock_ds.teams.assert_awaited_once_with(
+            first=2,
+            after="cursor-1",
+            filter={"or": [
+                {"name": {"containsIgnoreCase": "eng"}},
+                {"key": {"containsIgnoreCase": "eng"}},
+            ]},
+        )
+        # What Linear returned is shown as is: a key match is not filtered away.
+        assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
+        assert result.has_more is True
+        assert result.cursor == "cursor-2"
 
     @pytest.mark.asyncio
     async def test_team_options_failure(self):

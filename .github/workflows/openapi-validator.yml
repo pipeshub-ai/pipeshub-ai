@@ -1,5 +1,9 @@
 name: OpenAPI Spec Validation
 
+# Two independent jobs, so a lint failure never hides the breaking-change result.
+# The breaking-change base is the main this pull request's merge commit was built on (HEAD^1),
+# so the diff holds only this pull request's changes.
+
 on:
   pull_request:
     branches:
@@ -8,104 +12,79 @@ on:
 permissions:
   contents: read
 
+env:
+  SPEC: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+
 jobs:
-  validate-openapi:
-    name: OpenAPI Spec Validation
+  lint:
+    name: Lint the spec with Spectral
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      # Step 1: Lint the spec with Spectral
       - name: Install Spectral
-        run: npm install -g @stoplight/spectral-cli
+        run: npm install -g @stoplight/spectral-cli@6.17.0
 
       - name: Lint OpenAPI spec with Spectral
-        run: spectral lint backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml --ruleset .spectral.yaml --fail-severity error
+        run: spectral lint "$SPEC" --ruleset .spectral.yaml --fail-severity error
 
-      # Step 2: Check route coverage (code routes vs spec)
+  breaking:
+    name: Detect breaking changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Depth 2 brings the merge commit's first parent, the base for the comparison.
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Write the base spec
+        run: git show "HEAD^1:$SPEC" > base-openapi.yaml
+
+      - name: Detect breaking changes with oasdiff
+        uses: oasdiff/oasdiff-action/breaking@5e81b5c380accc6b523f9d32a637ca630e33620b # v0.1.17
+        with:
+          base: base-openapi.yaml
+          revision: ${{ env.SPEC }}
+          fail-on: ERR
+
       - name: Set up Python
+        if: ${{ !cancelled() }}
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
-      - name: Check route coverage
+      # oasdiff ignores extensions, so it cannot see an operation leave the SDK.
+      - name: Check no operation leaves the SDK
+        if: ${{ !cancelled() }}
         run: |
-          pip install pyyaml
-          python .github/scripts/check-route-coverage.py
+          pip install --quiet pyyaml
+          python3 - base-openapi.yaml "$SPEC" <<'EOF'
+          import sys
+          import yaml
 
-      # Step 3: Check that API route changes include spec updates
-      - name: Check OpenAPI spec is updated with route changes
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin main --depth=1
+          def sdk_operations(path):
+              with open(path) as f:
+                  spec = yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+              return {
+                  (method.upper(), route)
+                  for route, item in (spec.get("paths") or {}).items()
+                  for method, op in item.items()
+                  if isinstance(op, dict) and op.get("x-pipeshub-sdk") is True
+              }
 
-          CHANGED_FILES=$(git diff --name-only origin/main..HEAD)
-
-          # Primary: route definition patterns (added or removed lines)
-          ROUTE_PATTERN='^[+-].*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|app\.use\(\s*['"'"'"]\/)'
-
-          # Secondary: API contract patterns for specific file types
-          VALIDATOR_PATTERN='^[+-].*z\.(object|string|number|boolean|array|any|enum|union|literal|nativeEnum)\('
-          CONTROLLER_PATTERN='^[+-].*(req\.(query|params|body)\b)'
-
-          HAS_ROUTE_CHANGES=false
-          AFFECTED_FILES=""
-
-          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx)$' | grep -v 'backend/nodejs/apps/tests/' || true)
-          if [ -n "$CODE_FILES" ]; then
-            while IFS= read -r file; do
-              FILE_DIFF=$(git diff origin/main..HEAD -- "$file" 2>/dev/null || true)
-
-              # Primary: route definition changes in any file
-              if echo "$FILE_DIFF" | grep -qE "$ROUTE_PATTERN"; then
-                HAS_ROUTE_CHANGES=true
-                AFFECTED_FILES="$AFFECTED_FILES\n  - $file"
-                continue
-              fi
-
-              # Secondary: API contract changes in specific file types
-              case "$file" in
-                */controllers/*.ts|*/controllers/*.js)
-                  if echo "$FILE_DIFF" | grep -qE "$CONTROLLER_PATTERN"; then
-                    HAS_ROUTE_CHANGES=true
-                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (controller parameter change)"
-                  fi
-                  ;;
-                */validators/*.ts|*/validator/*.ts|*/validators/*.js|*/validator/*.js)
-                  if echo "$FILE_DIFF" | grep -qE "$VALIDATOR_PATTERN"; then
-                    HAS_ROUTE_CHANGES=true
-                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (validation schema change)"
-                  fi
-                  ;;
-              esac
-            done <<< "$CODE_FILES"
-          fi
-
-          HAS_SPEC_CHANGES=$(echo "$CHANGED_FILES" | grep -c "pipeshub-openapi.yaml" || true)
-
-          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -eq 0 ]; then
-            echo "::error::OpenAPI spec update required! This PR modifies API routes but does not update pipeshub-openapi.yaml."
-            echo ""
-            echo "Affected files with route changes:"
-            echo -e "$AFFECTED_FILES"
-            echo ""
-            echo "Please update backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml to reflect the API changes."
-            exit 1
-          fi
-
-          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -gt 0 ]; then
-            echo "API route changes detected and OpenAPI spec is updated."
-          else
-            echo "No API route changes detected. OpenAPI spec update not required."
-          fi
-
-      # Step 4: Detect breaking changes against main (last — slowest step)
-      - name: Detect breaking changes with oasdiff
-        if: github.event_name == 'pull_request'
-        uses: oasdiff/oasdiff-action/breaking@5e81b5c380accc6b523f9d32a637ca630e33620b # v0.1.17
-        with:
-          base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
-          revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
-          fail-on: ERR
+          removed = sorted(sdk_operations(sys.argv[1]) - sdk_operations(sys.argv[2]))
+          for method, route in removed:
+              print(f"::error::{method} {route} is no longer in the SDK: the operation or its x-pipeshub-sdk flag was removed.")
+          if removed:
+              sys.exit(1)
+          print("No operation left the SDK.")
+          EOF

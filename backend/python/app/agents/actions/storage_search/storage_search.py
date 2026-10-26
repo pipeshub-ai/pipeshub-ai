@@ -34,6 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import regex
 from pydantic import BaseModel, Field
@@ -157,6 +158,34 @@ _FIND_ALLOWED_PRIMARIES: frozenset[str] = frozenset({
 # ever indicate an injection attempt. The pipe `|` is allowed for pipelines
 # (handled by splitting into exec stages); newlines are rejected outright.
 _INJECTION_RE = re.compile(r'[;&<>`\n\r]|\$\(|`|\|\|')
+
+
+def _unquoted(command: str) -> str:
+    """*command* with the text inside quotes blanked, as the shell tokenizer sees
+    it: inside quotes the operators above are plain characters (``List<String>``).
+    Line breaks stay visible, so they are refused wherever they are, and so
+    do ``$(`` and backticks inside double quotes, where a shell would run them."""
+    out: list[str] = []
+    quote = ""
+    escaped = False
+    for ch in command:
+        blank = ch if ch in "\n\r" or (quote == '"' and ch in "$(`") else " "
+        if escaped:
+            escaped = False
+            out.append(blank if quote else ch)
+        elif ch == "\\" and quote != "'":
+            escaped = True
+            out.append(blank if quote else ch)
+        elif quote:
+            if ch == quote:
+                quote = ""
+            out.append(blank)
+        elif ch in "'\"":
+            quote = ch
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _check_dangerous_flags(binary: str, args: list[str]) -> str | None:
@@ -344,11 +373,21 @@ _NO_ACCESSIBLE_MATCH_BODY = {
 _NO_ACCESSIBLE_MATCH = json_mod.dumps(_NO_ACCESSIBLE_MATCH_BODY)
 
 
-def _no_accessible_match(*, output_truncated: bool) -> str:
-    """The "nothing" answer; one that was cut at a size limit says so."""
-    if not output_truncated:
+_MAY_BE_INCOMPLETE_HINT = "Results may be incomplete: a record missing here may still match."
+
+
+def _no_accessible_match(*, output_truncated: bool, may_be_incomplete: bool = False) -> str:
+    """The "nothing" answer; one that was cut at a size limit says so. Where
+    the search ran over records the caller cannot read, it always carries the
+    same hint, whatever those records held."""
+    if not output_truncated and not may_be_incomplete:
         return _NO_ACCESSIBLE_MATCH
-    return json_mod.dumps({**_NO_ACCESSIBLE_MATCH_BODY, "output_truncated": True})
+    body = dict(_NO_ACCESSIBLE_MATCH_BODY)
+    if output_truncated:
+        body["output_truncated"] = True
+    if may_be_incomplete:
+        body["hint"] = _MAY_BE_INCOMPLETE_HINT
+    return json_mod.dumps(body)
 
 
 def _public_failure(output: str) -> str:
@@ -484,7 +523,7 @@ def _validate_command(command: str) -> tuple[bool, str]:
         return False, "Error: empty command provided"
 
     # Block injection metacharacters before any further processing.
-    m = _INJECTION_RE.search(command)
+    m = _INJECTION_RE.search(_unquoted(command))
     if m:
         return False, (
             f"Error: shell operator '{m.group()}' is not allowed. "
@@ -1503,6 +1542,31 @@ def _populate_view(connector_dir: str, view_dir: str, files: list[tuple[str, str
             continue
 
 
+async def sweep_orphan_views_at_startup(config_service: Any) -> None:  # noqa: ANN401
+    """Best effort: a view left by a process that died holds hard links to records."""
+    try:
+        storage_cfg = await config_service.get_config(config_node_constants.STORAGE.value)
+        if is_local_storage(storage_cfg):
+            mount_root = _resolve_mount_root((storage_cfg or {}).get("mountName", "PipesHub"))
+            await asyncio.to_thread(sweep_orphan_views, mount_root)
+    except Exception:
+        logger.warning("[storage_pattern_match] could not sweep old record views", exc_info=True)
+
+
+def sweep_orphan_views(mount_root: str) -> None:
+    """At startup: remove stale view directories under *mount_root* (older ones
+    only: another replica may share the mount and be using a fresh one)."""
+    try:
+        orgs = os.listdir(mount_root)
+    except OSError:
+        return
+    for org in orgs:
+        try:
+            _sweep_stale_views(os.path.join(mount_root, org, "PipesHub", _VIEWS_DIR_NAME))
+        except OSError:  # a stray file or an unreadable org must not stop the others
+            logger.warning("[storage_pattern_match] could not sweep views of %s", org, exc_info=True)
+
+
 def _views_root(connector_dir: str) -> str:
     """Beside ``records/`` (same filesystem, so hard links work), never inside it."""
     return os.path.join(os.path.dirname(os.path.dirname(connector_dir)), _VIEWS_DIR_NAME)
@@ -2043,11 +2107,21 @@ class StoragePatternMatch:
         max_stdout_bytes: int = 0,
         max_output_chars: int = _MAX_OUTPUT_CHARS,
         max_output_lines: int | None = None,
+        *,
+        readable_only: bool = False,
     ) -> tuple[bool, str]:
         """Run a command and parse record file paths from output into structured metadata.
 
         *max_output_lines* is the line cap the caller put on the command (a
         trailing ``head``); output that reaches it counts as truncated.
+
+        *readable_only* greps a view holding only the records the caller may
+        read, so the output limits can
+        only be reached by readable files and say nothing about the others.
+        Where no view can be made (more than ``_MAX_VIEW_FILES`` files, or the
+        access check is down) nothing is run and the answer is always "cut".
+        Elsewhere (*readable_only* off) the output limits
+        are not reported, only a constant hint that results may be incomplete.
         """
         org_id = self.state.get("org_id", "")
         logger.info(
@@ -2088,165 +2162,189 @@ class StoragePatternMatch:
                 "[find_records] running a command WITHOUT Landlock confinement (%s=true)",
                 _ALLOW_UNCONFINED_ENV,
             )
-        success, output = await _run_subprocess(
-            command, cwd=connector_dir, max_stdout_bytes=max_stdout_bytes,
-            max_output_chars=max_output_chars,
-            confine_to=connector_dir if confined else None,
-        )
-        # Not even at DEBUG: this stdout is from before the permission check,
-        # so it can name records the user may not read.
-        logger.info(
-            "[find_records] subprocess result: connector_id=%s success=%s output_len=%d",
-            connector_id, success, len(output),
-        )
-
-        # The command ran over every record in the connector, readable or not,
-        # so its raw stdout/stderr are never returned: only records that pass
-        # the permission check below, and one identical answer for "nothing".
-        if not success:
-            if "No matches found" in output:
-                return True, _NO_ACCESSIBLE_MATCH
-            return False, _public_failure(output)
-
-        if output.strip() == "No matches found.":
-            return True, _NO_ACCESSIBLE_MATCH
-
-        # Extract candidate record file paths (cheap regex, no file opens).
-        # Handles both grep -l output (plain paths) and grep -c output
-        # (path:count) so results can be ranked by keyword density.
-        all_lines = [line.strip() for line in output.splitlines() if line.strip()]
-        lines = [line for line in all_lines if not line.startswith(_TRUNCATION_MARKER_PREFIX)]
-        output_truncated = len(lines) < len(all_lines) or (
-            max_output_lines is not None and len(lines) >= max_output_lines
-        )
-        line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
-        for line in lines:
-            path = line
-            match_count = 1  # default for grep -l (no count info)
-
-            csm = _GREP_COUNT_RE.match(line)
-            if csm:
-                candidate_path = csm.group(1)
-                count = int(csm.group(2))
-                if count == 0:
-                    continue
-                if _RECORD_FILENAME_RE.match(os.path.basename(candidate_path)):
-                    path = candidate_path
-                    match_count = count
-
-            fm = _RECORD_FILENAME_RE.match(os.path.basename(path))
-            if fm:
-                line_vrids.append((path, fm.group(1), match_count))
-
-        # Sort by match count descending so the most relevant files win
-        # the max_results cap instead of arbitrary filesystem-order files.
-        line_vrids.sort(key=lambda x: x[2], reverse=True)
-
-        logger.info(
-            "[find_records] lines=%d line_vrids=%d", len(lines), len(line_vrids),
-        )
-
-        if not line_vrids:
-            return True, _no_accessible_match(output_truncated=output_truncated)
-
-        # Permission gate: keep only records the requesting user may access.
-        # Fail closed if the check cannot be performed.
-        accessible = await self._check_accessible_vrids([v for _, v, _c in line_vrids])
-        if accessible is None:
-            return False, (
-                "Error: cannot verify record access (permission service "
-                "unavailable). Refusing to return records."
-            )
-
-        candidates: list[tuple[str, str, int]] = []
-        seen: set[str] = set()
-        for path, vrid, match_count in line_vrids:
-            if vrid in accessible and vrid not in seen:
-                seen.add(vrid)
-                candidates.append((path, vrid, match_count))
-        paths_found = len(candidates)
+        # Execute the command
+        run_dir = connector_dir
+        view_dir: str | None = None
+        if readable_only:
+            view_dir, view_err = await self._build_accessible_view(connector_dir)
+            if view_dir is None:
+                # Grepping the whole connector instead would answer "does any
+                # record, readable or not, contain this", so nothing is run and
+                # the answer is the same for every pattern.
+                logger.info("[find_records] no readable view for %s: %s", connector_id, view_err)
+                return True, _no_accessible_match(output_truncated=True)
+            run_dir = view_dir
+        # Where the run covers only readable records the output limits say
+        # something true; elsewhere they depend on records the caller cannot read.
+        raw_cut_is_safe = view_dir is not None
         try:
-            ranked = await asyncio.to_thread(
-                _rank_candidates, candidates, connector_dir, _grep_search_regexes(command),
+            success, output = await _run_subprocess(
+                command, cwd=run_dir, max_stdout_bytes=max_stdout_bytes,
+                max_output_chars=max_output_chars,
+                confine_to=run_dir if confined else None,
             )
-        except Exception:
-            # Ranking only improves order; never lose the results over it.
-            logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
-            ranked = [(path, vrid, 0, count, "") for path, vrid, count in candidates]
+            # Not even at DEBUG: this stdout is from before the permission check,
+            # so it can name records the user may not read.
+            logger.info(
+                "[find_records] subprocess result: connector_id=%s success=%s output_len=%d",
+                connector_id, success, len(output),
+            )
 
-        graph_provider = self.state.get("graph_provider")
-        try:
-            graph_records = await graph_provider.get_records_by_record_ids(
-                record_ids=list(dict.fromkeys(accessible[vrid] for _p, vrid, *_rest in ranked if accessible[vrid])),
-                org_id=org_id,
-            )
-        except Exception:
-            logger.warning("[find_records] record lookup failed", exc_info=True)
-            return False, (
-                "Error: cannot verify record access (permission service "
-                "unavailable). Refusing to return records."
-            )
-        by_id = {
-            r.get("_key") or r.get("id"): r for r in graph_records or [] if isinstance(r, dict)
-        }
+            # The command ran over every record in the connector, readable or not,
+            # so its raw stdout/stderr are never returned: only records that pass
+            # the permission check below, and one identical answer for "nothing".
+            if not success:
+                if "No matches found" in output:
+                    return True, _no_accessible_match(output_truncated=False, may_be_incomplete=not raw_cut_is_safe)
+                return False, _public_failure(output)
 
-        records: list[dict[str, str]] = []
-        for _path, vrid, matched_terms, match_count, snippet in ranked:
-            if len(records) >= max_results:
-                break
-            record_id = accessible[vrid]
-            graph_rec = by_id.get(record_id) if record_id else None
-            if not graph_rec:
-                continue
-            # Named from the record the permission check chose, never from the
-            # storage path, whose folders can belong to other records or groups.
-            meta: dict[str, str] = {
-                "record_id": record_id,
-                "record_name": graph_rec.get("recordName") or "",
-                "virtual_record_id": vrid,
+            if output.strip() == "No matches found.":
+                return True, _no_accessible_match(output_truncated=False, may_be_incomplete=not raw_cut_is_safe)
+
+            # Extract candidate record file paths (cheap regex, no file opens).
+            # Handles both grep -l output (plain paths) and grep -c output
+            # (path:count) so results can be ranked by keyword density.
+            all_lines = [line.strip() for line in output.splitlines() if line.strip()]
+            lines = [line for line in all_lines if not line.startswith(_TRUNCATION_MARKER_PREFIX)]
+            output_truncated = len(lines) < len(all_lines) or (
+                max_output_lines is not None and len(lines) >= max_output_lines
+            )
+            if not raw_cut_is_safe:
+                output_truncated = False
+            line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
+            for line in lines:
+                path = line
+                match_count = 1  # default for grep -l (no count info)
+
+                csm = _GREP_COUNT_RE.match(line)
+                if csm:
+                    candidate_path = csm.group(1)
+                    count = int(csm.group(2))
+                    if count == 0:
+                        continue
+                    if _RECORD_FILENAME_RE.match(os.path.basename(candidate_path)):
+                        path = candidate_path
+                        match_count = count
+
+                fm = _RECORD_FILENAME_RE.match(os.path.basename(path))
+                if fm:
+                    line_vrids.append((path, fm.group(1), match_count))
+
+            # Sort by match count descending so the most relevant files win
+            # the max_results cap instead of arbitrary filesystem-order files.
+            line_vrids.sort(key=lambda x: x[2], reverse=True)
+
+            logger.info(
+                "[find_records] lines=%d line_vrids=%d", len(lines), len(line_vrids),
+            )
+
+            if not line_vrids:
+                return True, _no_accessible_match(output_truncated=output_truncated, may_be_incomplete=not raw_cut_is_safe)
+
+            # Permission gate: keep only records the requesting user may access.
+            # Fail closed if the check cannot be performed.
+            accessible = await self._check_accessible_vrids([v for _, v, _c in line_vrids])
+            if accessible is None:
+                return False, (
+                    "Error: cannot verify record access (permission service "
+                    "unavailable). Refusing to return records."
+                )
+
+            candidates: list[tuple[str, str, int]] = []
+            seen: set[str] = set()
+            for path, vrid, match_count in line_vrids:
+                if vrid in accessible and vrid not in seen:
+                    seen.add(vrid)
+                    candidates.append((path, vrid, match_count))
+            paths_found = len(candidates)
+            try:
+                ranked = await asyncio.to_thread(
+                    _rank_candidates, candidates, run_dir, _grep_search_regexes(command),
+                )
+            except Exception:
+                # Ranking only improves order; never lose the results over it.
+                logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
+                ranked = [(path, vrid, 0, count, "") for path, vrid, count in candidates]
+
+            graph_provider = self.state.get("graph_provider")
+            try:
+                graph_records = await graph_provider.get_records_by_record_ids(
+                    record_ids=list(dict.fromkeys(accessible[vrid] for _p, vrid, *_rest in ranked if accessible[vrid])),
+                    org_id=org_id,
+                )
+            except Exception:
+                logger.warning("[find_records] record lookup failed", exc_info=True)
+                return False, (
+                    "Error: cannot verify record access (permission service "
+                    "unavailable). Refusing to return records."
+                )
+            by_id = {
+                r.get("_key") or r.get("id"): r for r in graph_records or [] if isinstance(r, dict)
             }
-            if matched_terms:
-                meta["matched_terms"] = str(matched_terms)
-            if match_count > 1:
-                meta["match_count"] = str(match_count)
-            if snippet:
-                meta["match_preview"] = snippet
-            records.append(meta)
 
-        if not records:
-            return True, _no_accessible_match(output_truncated=output_truncated)
+            records: list[dict[str, str]] = []
+            for _path, vrid, matched_terms, match_count, snippet in ranked:
+                if len(records) >= max_results:
+                    break
+                record_id = accessible[vrid]
+                graph_rec = by_id.get(record_id) if record_id else None
+                if not graph_rec:
+                    continue
+                # Named from the record the permission check chose, never from the
+                # storage path, whose folders can belong to other records or groups.
+                meta: dict[str, str] = {
+                    "record_id": record_id,
+                    "record_name": graph_rec.get("recordName") or "",
+                    "virtual_record_id": vrid,
+                }
+                if matched_terms:
+                    meta["matched_terms"] = str(matched_terms)
+                if match_count > 1:
+                    meta["match_count"] = str(match_count)
+                if snippet:
+                    meta["match_preview"] = snippet
+                records.append(meta)
 
-        remember_record_ids(
-            self.state,
-            [meta["record_id"] for meta in records],
-            names={meta["record_id"]: meta["record_name"] for meta in records},
-        )
+            if not records:
+                return True, _no_accessible_match(output_truncated=output_truncated, may_be_incomplete=not raw_cut_is_safe)
 
-        hint_parts = [
-            "IMPORTANT: Do NOT blindly fetch all records. Review each record's "
-            "record and match_preview to determine relevance to the query. "
-            "Only pass record IDs for records that are clearly relevant. "
-            f"fetch_full_record accepts at most {_MAX_FETCH_RECORD_IDS} IDs per call.",
-        ]
 
-        if output_truncated:
-            hint_parts.append(
-                "The command's output was cut at a size limit, so records past it were "
-                "not searched: a record missing here may still match.",
+            remember_record_ids(
+                self.state,
+                [meta["record_id"] for meta in records],
+                names={meta["record_id"]: meta["record_name"] for meta in records},
             )
 
-        result = {
-            "records": records,
-            "total_found": paths_found,
-            "returned": len(records),
-            "output_truncated": output_truncated,
-            "hint": " ".join(hint_parts),
-            "success": True,
-        }
+            hint_parts = [
+                "IMPORTANT: Do NOT blindly fetch all records. Review each record's "
+                "record and match_preview to determine relevance to the query. "
+                "Only pass record IDs for records that are clearly relevant. "
+                f"fetch_full_record accepts at most {_MAX_FETCH_RECORD_IDS} IDs per call.",
+            ]
 
-        logger.info(
-            "[storage_pattern_match.find_records] paths_found=%d returned=%d",
-            paths_found, len(records),
-        )
-        return True, json_mod.dumps(result, indent=2)
+            if output_truncated:
+                hint_parts.append(
+                    "The command's output was cut at a size limit, so records past it were "
+                    "not searched: a record missing here may still match.",
+                )
+            elif not raw_cut_is_safe:
+                hint_parts.append(_MAY_BE_INCOMPLETE_HINT)
+
+            result = {
+                "records": records,
+                "total_found": paths_found,
+                "returned": len(records),
+                "output_truncated": output_truncated,
+                "hint": " ".join(hint_parts),
+                "success": True,
+            }
+
+            logger.info(
+                "[storage_pattern_match.find_records] paths_found=%d returned=%d",
+                paths_found, len(records),
+            )
+            return True, json_mod.dumps(result, indent=2)
+        finally:
+            if view_dir:
+                await asyncio.to_thread(_remove_view, view_dir)
 

@@ -38,7 +38,7 @@ test.describe('Invite a teammate', () => {
     const tagInput = dialog.getByRole('textbox').first();
     await tagInput.fill(invitee);
     await tagInput.press('Enter');
-    await dialog.getByRole('button', { name: 'Send Invite' }).click();
+    await dialog.getByRole('button', { name: 'Send invite' }).click();
     // The email is either queued for background delivery or sent before the request
     // returns; either way acceptInvite waits for it to land in Mailpit.
     await expect(page.getByText(/Invites queued|Invite sent!/).first()).toBeVisible({ timeout: 15_000 });

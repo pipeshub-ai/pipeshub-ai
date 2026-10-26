@@ -305,7 +305,9 @@ def build_connector_stats_response(
     get_connector_stats query results.
 
     Args:
-        rows: Query results with recordType, indexingStatus, extractionStatus, cnt
+        rows: Query results with recordType, indexingStatus, extractionStatus,
+            entitiesStatus (the record's ``entities`` stage state on its current
+            revision; absent or None when it has none), cnt
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
@@ -316,6 +318,7 @@ def build_connector_stats_response(
     """
     indexing_status_counts = {s: 0 for s in statuses}
     extraction_status_counts = dict.fromkeys(statuses, 0)
+    entities_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -328,6 +331,9 @@ def build_connector_stats_response(
         ex = row.get("extractionStatus")
         if ex in extraction_status_counts:
             extraction_status_counts[ex] += cnt
+        en = row.get("entitiesStatus")
+        if en in entities_status_counts:
+            entities_status_counts[en] += cnt
         rt = row.get("recordType")
         if rt:
             if rt not in record_type_counts:
@@ -336,12 +342,15 @@ def build_connector_stats_response(
                     "total": 0,
                     "indexingStatus": {s: 0 for s in statuses},
                     "extractionStatus": dict.fromkeys(statuses, 0),
+                    "entitiesStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:
                 record_type_counts[rt]["indexingStatus"][st] += cnt
             if ex in statuses:
                 record_type_counts[rt]["extractionStatus"][ex] += cnt
+            if en in statuses:
+                record_type_counts[rt]["entitiesStatus"][en] += cnt
 
     return {
         "orgId": org_id,
@@ -351,6 +360,7 @@ def build_connector_stats_response(
             "total": total,
             "indexingStatus": indexing_status_counts,
             "extractionStatus": extraction_status_counts,
+            "entitiesStatus": entities_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
     }

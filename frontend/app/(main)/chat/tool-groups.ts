@@ -93,6 +93,7 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
       label: (entry.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       instanceId: entry._id,
+      typeId: entry.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
       toolLabels,

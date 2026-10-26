@@ -93,15 +93,11 @@ def tool_output(
 ) -> str | list[Part]:
     """The tool's return value: plain text, or text plus images for a multimodal model.
 
-    Transports that cannot carry images inside a tool result get them through
-    ``pending_tool_images``, which ``shape_retrieved_image_injection`` delivers
-    as a user message instead. The stash is filled only for those, since
-    nothing else drains it.
+    Transports that cannot carry images inside a tool result move them to a
+    user message after the results (``agent_loop_lib/transport/tool_images.py``).
     """
     if not images or not state.get("is_multimodal_llm"):
         return text
-    if not state.get("supports_multipart_tool_result", True):
-        state.setdefault("pending_tool_images", []).extend(images)
     from app.agent_loop_lib.core.messages import TextPart
 
     image_parts = [part for image in images if (part := image_dict_to_part(image)) is not None]

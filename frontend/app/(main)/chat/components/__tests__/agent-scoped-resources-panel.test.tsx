@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { useChatStore } from '@/chat/store';
+import { buildAgentChatMcpGroups } from '@/app/(main)/agents/api';
+import type { AgentDetail } from '@/app/(main)/agents/types';
 
 const api = vi.hoisted(() => ({ getNodeChildren: vi.fn(), searchNodes: vi.fn() }));
 
@@ -103,5 +105,32 @@ describe('Agent chat sources panel', () => {
     }
     await waitFor(() => expect(screen.getByText('No connectors found')).toBeTruthy());
     expect(within(document.body).queryByText('Specs space')).toBeNull();
+  });
+});
+
+describe('Agent chat MCP tab', () => {
+  it("shows an attached server's own logo, on its tools too", () => {
+    const agent = {
+      mcpServers: [
+        {
+          _key: 'srv-1',
+          name: 'atlassian_rovo',
+          // Renamed in the builder: the logo still comes from the catalog type.
+          displayName: 'Team wiki',
+          typeId: 'atlassian_rovo',
+          instanceId: 'inst-1',
+          tools: [{ name: 'search', fullName: 'mcp_atlassian_rovo_search' }],
+        },
+      ],
+    } as unknown as AgentDetail;
+    useChatStore.setState({ agentChatMcpGroups: buildAgentChatMcpGroups(agent) });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+    expect(screen.getByText('Team wiki')).toBeTruthy();
+    expect(screen.getAllByRole('img', { name: 'atlassian icon' })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
+    expect(screen.getAllByRole('img', { name: 'atlassian icon' })).toHaveLength(2);
   });
 });

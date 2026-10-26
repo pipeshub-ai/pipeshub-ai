@@ -23,11 +23,11 @@ Three public entry points:
     without the model having to re-upload the file.
 
 ``shape_image_injection``
-    PRE_MODEL hook that injects ``ImagePart`` objects into the initial
-    ``UserMessage`` when the LLM supports vision.  Converts the
-    ``image_url`` dicts stored on ``context.attachment_image_blocks`` into
-    ``ImagePart`` instances on every model call — the stored context keeps
-    the lightweight text version; the model always sees the image data.
+    PRE_MODEL hook that puts ``ImagePart`` objects on the current request
+    when the LLM supports vision.  Converts the ``image_url`` dicts stored on
+    ``context.attachment_image_blocks`` into ``ImagePart`` instances on every
+    model call, on a copy of the message — the stored context keeps the
+    lightweight text version; the model always sees the image data.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
     from app.utils.chat_helpers import ImageBudget
     from app.utils.image_admission import ImageAdmission
+    from app.utils.render_budget import RecordRenderOutcome, RenderBudget
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,6 @@ __all__ = [
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
-    "shape_retrieved_image_injection",
 ]
 
 
@@ -57,10 +57,30 @@ __all__ = [
 # First-turn resolution (read-only — no blob writes)
 # ---------------------------------------------------------------------------
 
+# Marks an `image_url` dict on `context.attachment_image_blocks` as the user's
+# own attachment. Prefetch adds retrieved images to the same list, and the
+# transport's image cap keeps the user's before those.
+USER_ATTACHED_KEY = "user_attached"
+
+
+def default_message_budget(context: "AgentContext") -> int:
+    """The message budget for `context`'s model when the system prompt is not
+    known yet. The factory passes the real one; this serves direct callers."""
+    from app.agent_loop_lib.context.base import ContextBudget
+
+    return ContextBudget.for_model(
+        context.model_name or None, context_window=context.configured_context_window,
+    ).effective_max_tokens
+
+
+
 
 async def resolve_attachments_for_goal(
     context: "AgentContext",
     log: logging.Logger,
+    *,
+    max_chars: int | None = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve current-turn attachments from blob and populate citation maps.
 
@@ -74,6 +94,14 @@ async def resolve_attachments_for_goal(
     string when nothing was resolved) and *image_blocks* is a list of
     LangChain ``{"type": "image_url", ...}`` dicts to be injected into the
     initial ``UserMessage`` when the LLM supports vision.
+
+    Documents render within *max_chars* (by default the current attachments'
+    share of the model's message budget): a document is inlined into the
+    current request, which no compaction layer shortens, so an unbounded one
+    alone could overflow the window. One cut short says where it stopped and
+    how to read on. Images go through the request's `ImageAdmission` as the
+    user's own (`ImageOrigin.ATTACHMENT`), so the per-model cap, dedup and
+    downscale apply to them as to every other image.
     """
     attachments = context.tool_state.get("attachments") or []
     if not attachments:
@@ -84,10 +112,15 @@ async def resolve_attachments_for_goal(
         log.warning("No blob_store available; cannot resolve attachment content")
         return "", []
 
+    from app.agents.agent_loop.history_window import current_attachment_chars
     from app.utils.attachment_utils import resolve_attachments
     from app.utils.chat_helpers import CitationRefMapper
+    from app.utils.image_admission import admission_from_state
+    from app.utils.render_budget import RenderBudget
 
     state = context.tool_state
+    if max_chars is None:
+        max_chars = current_attachment_chars(default_message_budget(context))
 
     ref_mapper = state.get("citation_ref_mapper")
     if ref_mapper is None:
@@ -108,9 +141,12 @@ async def resolve_attachments_for_goal(
             ref_mapper=ref_mapper,
             out_records=attachment_records,
             image_budget=image_budget,
+            image_admission=admission_from_state(state),
             user_id=context.user_id,
             graph_provider=context.graph_provider,
             is_service_account=context.is_service_account,
+            render_budget=RenderBudget(max_chars=max(max_chars, 0)),
+            outcomes=outcomes,
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
@@ -127,7 +163,7 @@ async def resolve_attachments_for_goal(
         b["text"] for b in blocks if b.get("type") == "text" and b.get("text")
     ]
     image_blocks = [
-        b for b in blocks if b.get("type") == "image_url"
+        {**b, USER_ATTACHED_KEY: True} for b in blocks if b.get("type") == "image_url"
     ]
 
     text = ""
@@ -267,8 +303,7 @@ async def _rehydrate_citation_maps(
     these are the IDs the model should pass to ``dynamic_fetch_full_record``.
     """
     from app.modules.artifacts.reader import record_artifact_reader
-    from app.utils.chat_helpers import CitationRefMapper
-    from app.utils.chat_helpers import record_to_message_content
+    from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
     from app.utils.record_access import caller_can_read_virtual_record
 
     state = context.tool_state
@@ -375,6 +410,9 @@ def _merge_records_into_state(
 # ---------------------------------------------------------------------------
 
 _DOC_MIME_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown"})
+# Below this a document's render would be little more than its header; it is
+# named instead, with how to read it.
+_MIN_HISTORY_ATTACHMENT_CHARS = 2_000
 _IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg"})
 
 
@@ -391,6 +429,8 @@ async def resolve_history_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    render_budget: "RenderBudget | None" = None,
+    outcomes: "list[RecordRenderOutcome] | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -418,13 +458,22 @@ async def resolve_history_attachments(
     asking about, and skipped dedup and the downscale to the provider's
     per-image limits on the way.
 
+    ``render_budget`` is what earlier turns' documents may render into,
+    shared across every turn the seeding replays (the history window's
+    attachment share). A document cut short ends with a note saying where it
+    stopped and how to read on; one with no room left is named, not inlined.
+    None renders documents in full.
+
     Returns ``(text, image_blocks)`` where *text* is the rendered
     ``<record>`` content (empty string if nothing resolved) and
     *image_blocks* is a list of LangChain ``image_url`` dicts for
     multimodal injection.
     """
+    from app.agents.agent_loop.history_window import attachment_stub
     from app.modules.artifacts.reader import record_artifact_reader
-    from app.utils.chat_helpers import ImageBudget, record_to_message_content
+    from app.utils.attachment_utils import render_attachment_record
+    from app.utils.chat_helpers import ImageBudget
+    from app.utils.image_admission import ImageOrigin
     from app.utils.record_access import caller_can_read_virtual_record
 
     if image_budget is None:
@@ -432,6 +481,12 @@ async def resolve_history_attachments(
 
     text_parts: list[str] = []
     image_blocks: list[dict[str, Any]] = []
+    not_inlined: list[str] = []
+    docs_left = sum(
+        1 for att in attachments
+        if isinstance(att, dict) and att.get("virtualRecordId")
+        and (att.get("mimeType") or "").lower() in _DOC_MIME_TYPES
+    )
 
     for att in attachments:
         if not isinstance(att, dict):
@@ -455,6 +510,11 @@ async def resolve_history_attachments(
             continue
 
         if mime in _DOC_MIME_TYPES:
+            sharing = docs_left
+            docs_left -= 1
+            if render_budget is not None and render_budget.call_chars_remaining < _MIN_HISTORY_ATTACHMENT_CHARS:
+                not_inlined.append(str(att.get("recordName") or "a file"))
+                continue
             try:
                 if vrid in vrmap:
                     record = vrmap[vrid]
@@ -465,8 +525,12 @@ async def resolve_history_attachments(
                     if not record:
                         continue
                     vrmap[vrid] = record
-                content_list, ref_mapper = record_to_message_content(
+                content_list, ref_mapper = render_attachment_record(
                     record, ref_mapper=ref_mapper, is_multimodal_llm=False,
+                    image_budget=None, image_admission=None,
+                    image_origin=ImageOrigin.HISTORY,
+                    render_budget=render_budget, docs_left=sharing,
+                    outcomes=outcomes, logger=logger,
                 )
                 text = "".join(
                     item["text"] for item in content_list
@@ -499,6 +563,8 @@ async def resolve_history_attachments(
                     vrid, exc_info=True,
                 )
 
+    if not_inlined:
+        text_parts.append(attachment_stub(not_inlined))
     return "\n".join(text_parts), image_blocks
 
 
@@ -598,41 +664,53 @@ def _langchain_image_to_part(block: dict[str, Any]) -> Any:
 
 
 def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
-    """PRE_MODEL hook: injects image attachment content into the initial
-    ``UserMessage`` so the LLM receives actual image data instead of a
-    text placeholder.
+    """PRE_MODEL hook: puts the current turn's image attachments on the
+    current request so the LLM receives the image data, not a placeholder.
 
     Converts LangChain ``image_url`` dicts (stored on
     ``context.attachment_image_blocks`` by the factory after this hook is
-    registered) into ``ImagePart`` objects and appends them to the first
-    ``UserMessage``'s content on every model call.  The stored context
-    keeps the lightweight text version; the model always sees the image.
+    registered) into ``ImagePart`` objects on every model call. The images
+    go on a copy of the current request (``context/protection.py``), never on
+    the stored message: in a chat the first user message is an earlier
+    question, and writing to a stored message would carry the images into
+    every later call and turn.
 
     The check is deferred to dispatch time (not registration time) because
     ``_build_hooks`` runs before ``resolve_attachments_for_goal`` populates
     ``context.attachment_image_blocks``.
+
+    Sub-agents share this hook (one kernel per request) but not the user's
+    attachments: a child's request is its delegated task, so only the root
+    run's calls carry them.
     """
 
     _cached_parts: list[Any] = []
 
     async def _middleware(ctx: Any, next_fn: "Next") -> None:
-        if not _cached_parts and context.attachment_image_blocks:
-            parts = [_langchain_image_to_part(b) for b in context.attachment_image_blocks]
-            _cached_parts.extend(p for p in parts if p is not None)
-
-        if not _cached_parts:
+        if getattr(ctx, "is_child_run", False):
             await next_fn()
             return
+        if not _cached_parts and context.attachment_image_blocks:
+            _cached_parts.extend(_attachment_image_parts(context.attachment_image_blocks))
 
-        from app.agent_loop_lib.core.messages import (
-            TextPart,
-            UserMessage,
-        )
-
-        _inject_into_first_user_message(ctx.messages, _cached_parts, TextPart, UserMessage)
+        if _cached_parts:
+            ctx.messages = _with_images_on_current_request(ctx.messages, _cached_parts)
         await next_fn()
 
     return _middleware
+
+
+def _attachment_image_parts(blocks: list[dict[str, Any]]) -> list[Any]:
+    """`ImagePart`s for `blocks`, the user's own marked as attached."""
+    parts = []
+    for block in blocks:
+        part = _langchain_image_to_part(block)
+        if part is None:
+            continue
+        if block.get(USER_ATTACHED_KEY):
+            part = part.model_copy(update={"user_attached": True})
+        parts.append(part)
+    return parts
 
 
 def _image_identity(part: Any) -> str | None:
@@ -649,81 +727,31 @@ def _image_identity(part: Any) -> str | None:
         return getattr(source, "data", None)
 
 
-def _inject_into_first_user_message(
-    messages: list[Any], parts: list[Any], text_part_cls: Any, user_message_cls: Any,
-) -> None:
-    """Append `parts` (`ImagePart`s) to the first `UserMessage` in
-    `messages`, converting plain-string content to multipart first. Shared
-    by `shape_image_injection` (attachment images) and
-    `shape_retrieved_image_injection` (tool-sourced images, Ollama
-    fallback) — same target message, same multipart-conversion rule.
-    """
-    for msg in messages:
-        if not isinstance(msg, user_message_cls):
-            continue
-        content = msg.content
-        if isinstance(content, str):
-            msg.content = [text_part_cls(text=content), *parts]
-        elif isinstance(content, list):
-            # Dedup per image, not by "any image present" — the latter
-            # would drop a whole batch of newly-popped
-            # `pending_tool_images` (each batch is popped exactly once,
-            # see `shape_retrieved_image_injection`, so a dropped batch is
-            # gone for good) whenever the message already carried an
-            # unrelated image, e.g. an attachment injected by
-            # `shape_image_injection` or an earlier retrieved-image batch.
-            #
-            # Key on the normalised data URL rather than `source.data`: the
-            # same image can arrive as a base64 source or a url source
-            # depending on which producer built the part, and those two
-            # carry different `data` strings for identical bytes.
-            existing_sources = {
-                _image_identity(p) for p in content
-                if getattr(p, "type", None) == "image"
-            }
-            new_parts = [p for p in parts if _image_identity(p) not in existing_sources]
-            if new_parts:
-                msg.content = [*content, *new_parts]
-        break
+def _with_images_on_current_request(messages: list[Any], parts: list[Any]) -> list[Any]:
+    """A copy of `messages` whose current request carries `parts`
+    (`ImagePart`s), converting plain-string content to multipart first.
+    Images the request already carries are not added twice. The message
+    objects in `messages` are never modified."""
+    from app.agent_loop_lib.context.protection import current_request_index
+    from app.agent_loop_lib.core.messages import TextPart
 
-
-def shape_retrieved_image_injection(context: "AgentContext") -> "Middleware[Any]":
-    """PRE_MODEL fallback hook: delivers tool-sourced images (search/fetch
-    results) to providers whose tool-result messages have images stripped
-    before the request leaves (Ollama, OpenAI-family models on Chat
-    Completions — see `LangChainTransport._supports_multipart_tool_result` /
-    `converters.py`'s `strip_tool_images`).
-
-    Only registered by `factory.py` when the resolved chat model needs it,
-    so OpenAI/Anthropic (which deliver images natively via multipart
-    `ToolMessage` content) never see the same image injected twice.
-
-    Pops (not peeks) `context.tool_state["pending_tool_images"]` on every
-    dispatch — `retrieval.py`/`citations.py` repopulate it fresh on each
-    tool call within the turn, so each batch of tool-sourced images is
-    delivered exactly once, on the very next model call after the tool
-    call that produced them.
-    """
-
-    async def _middleware(ctx: Any, next_fn: "Next") -> None:
-        pending = context.tool_state.pop("pending_tool_images", [])
-        if not pending:
-            await next_fn()
-            return
-
-        from app.utils.chat_helpers import image_dict_to_part
-
-        image_parts = [p for img in pending if (p := image_dict_to_part(img)) is not None]
-        if not image_parts:
-            await next_fn()
-            return
-
-        from app.agent_loop_lib.core.messages import (
-            TextPart,
-            UserMessage,
-        )
-
-        _inject_into_first_user_message(ctx.messages, image_parts, TextPart, UserMessage)
-        await next_fn()
-
-    return _middleware
+    index = current_request_index(messages)
+    if index is None:
+        return messages
+    request = messages[index]
+    content = request.content
+    if isinstance(content, str):
+        new_content = [TextPart(text=content), *parts]
+    else:
+        # Key on the normalised data URL rather than `source.data`: the same
+        # image can arrive as a base64 source or a url source depending on
+        # which producer built the part, and those two carry different
+        # `data` strings for identical bytes.
+        existing = {_image_identity(p) for p in content if getattr(p, "type", None) == "image"}
+        new_parts = [p for p in parts if _image_identity(p) not in existing]
+        if not new_parts:
+            return messages
+        new_content = [*content, *new_parts]
+    shaped = list(messages)
+    shaped[index] = request.model_copy(update={"content": new_content})
+    return shaped

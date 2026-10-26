@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
+from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -93,6 +94,7 @@ def _node_item_to_row(item: Any) -> NodeRow:
         indexing_status=status,
         source_created_at=created_at,
         source_modified_at=updated_at,
+        upload_dated=getattr(item, "origin", None) == OriginType.COLLECTION.value and node_type == "record",
     )
 
 

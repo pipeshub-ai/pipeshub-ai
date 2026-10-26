@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { useThread, useThreadRuntime } from '@assistant-ui/react';
+import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
@@ -17,10 +17,11 @@ import { InlineCitationPopoverHost } from './response-tabs/citations/inline-cita
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { loadOlderMessagesForSlot } from '../../streaming';
-import { parseArtifactMarkers } from '../../utils/parse-download-markers';
-import { buildMessagePairs, extractTextContent } from './message-pairs';
+import { extractAnswerMarkers } from '../../utils/parse-download-markers';
+import { buildMessagePairs } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
 import { shouldShowJumpToNewest } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -188,15 +189,15 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
-  // Use useThread to get reactive thread state
-  const thread = useThread();
-  const threadRuntime = useThreadRuntime();
+  // Reactive thread messages plus the client used to append follow-up messages
+  const threadMessages = useAuiState((s) => s.thread.messages);
+  const aui = useAui();
 
-  // Track thread.messages changes as a render reason
-  const prevThreadMsgsRef = useRef(thread.messages);
-  if (thread.messages !== prevThreadMsgsRef.current) {
-    debugLog.reason('[chat] [MessageList]', ['thread.messages']);
-    prevThreadMsgsRef.current = thread.messages;
+  // Track threadMessages changes as a render reason
+  const prevThreadMsgsRef = useRef(threadMessages);
+  if (threadMessages !== prevThreadMsgsRef.current) {
+    debugLog.reason('[chat] [MessageList]', ['threadMessages']);
+    prevThreadMsgsRef.current = threadMessages;
   }
 
   // Callback ref setter for message elements
@@ -211,24 +212,23 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Build message pairs (user question + assistant answer) in chronological order
   const messagePairs = useMemo<MessagePair[]>(
     () =>
-      buildMessagePairs(thread.messages, {
+      buildMessagePairs(threadMessages, {
         isStreaming,
         streamingQuestion,
         pendingCollections,
         regenerateMessageId,
         emptyCitationMaps: EMPTY_CITATION_MAPS,
       }),
-    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+    [threadMessages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
 
   // The highest version any message in this conversation has shown for a
   // given artifact `recordId`. Every version bump re-registers the SAME
   // recordId, so an older message's card can compare its own `version`
   // against this map to know a later turn has since produced a newer copy —
-  // derived entirely from markers already persisted on each message
-  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
-  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
-  // folded in too.
+  // derived entirely from markers already persisted on each message, no extra
+  // API call. The row still streaming has no saved answer yet (its text is
+  // model output, see `MarkerSource`), so only its live SSE `artifacts` count.
   const latestArtifactVersions = useMemo(() => {
     const versions = new Map<string, number>();
     const record = (recordId: string | undefined, version: number | undefined) => {
@@ -236,18 +236,16 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       const current = versions.get(recordId);
       if (current === undefined || version > current) versions.set(recordId, version);
     };
-    for (const msg of thread.messages) {
-      if (msg.role !== 'assistant') continue;
-      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-      if (!content.includes('::artifact[')) continue;
-      const { artifacts } = parseArtifactMarkers(content);
+    for (const pair of messagePairs) {
+      if (pair.isStreaming || !pair.answer.includes('::artifact[')) continue;
+      const { artifacts } = extractAnswerMarkers(pair.answer, 'persisted');
       for (const artifact of artifacts) record(artifact.recordId, artifact.version);
     }
     if (isStreaming) {
       for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
     }
     return versions;
-  }, [thread.messages, isStreaming, streamingArtifacts]);
+  }, [messagePairs, isStreaming, streamingArtifacts]);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
@@ -259,6 +257,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Jump to newest ─────────────────────────────────────────────────
   const [showJumpToNewest, setShowJumpToNewest] = useState(false);
+  // Height of the sticky composer dock, so the jump button sits above it, not on it.
+  const [composerDockHeight, setComposerDockHeight] = useState(0);
   const updateJumpToNewestVisibility = useCallback(() => {
     const container = scrollContainerRef.current;
     const key = lastMessageKeyRef.current;
@@ -294,12 +294,12 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Diagnostic: log message pair count for rendering pipeline debugging ──
   if (process.env.NODE_ENV === 'development') {
-    const assistantMsgs = thread.messages.filter(m => m.role === 'assistant').length;
-    const userMsgs = thread.messages.filter(m => m.role === 'user').length;
-    if (messagePairs.length === 0 && thread.messages.length > 0) {
+    const assistantMsgs = threadMessages.filter(m => m.role === 'assistant').length;
+    const userMsgs = threadMessages.filter(m => m.role === 'user').length;
+    if (messagePairs.length === 0 && threadMessages.length > 0) {
       console.warn(
         '[debugging] [MessageList] 0 pairs but',
-        thread.messages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
+        threadMessages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
         'isStreaming:', isStreaming
       );
     }
@@ -816,8 +816,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // bottom-tracking scroll.
   //
   // IMPORTANT: `messagePairs` (the full array) is intentionally NOT in the
-  // deps — only `messagePairs.length` is. During streaming, `useThread()` may
-  // return a new `thread.messages` reference on every render (even with the
+  // deps — only `messagePairs.length` is. During streaming, `useAuiState()` may
+  // return a new `threadMessages` reference on every render (even with the
   // same logical content), which would invalidate the `messagePairs` useMemo
   // and produce a new array reference ~60fps. If the full array were a dep,
   // this effect would re-run on every render, its cleanup would cancel the
@@ -896,8 +896,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const container = scrollContainerRef.current;
     if (!container) return;
 
+    const measureDock = () => setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+    measureDock();
     const observer = new ResizeObserver(() => {
       recalcSpacerHeight();
+      measureDock();
     });
     observer.observe(container);
     if (composerDockRef.current) observer.observe(composerDockRef.current);
@@ -1034,13 +1037,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Handle Ask More question click — send through runtime
   const handleAskMoreClick = useCallback(
     (question: string) => {
-      threadRuntime.append({
+      aui.thread().append({
         role: 'user',
         content: [{ type: 'text', text: question }],
         startRun: true,
       });
     },
-    [threadRuntime]
+    [aui]
   );
 
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
@@ -1081,7 +1084,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     >
       <Box
         style={{
-          ...chatContentColumnStyle(isMobile),
+          ...chatContentColumnStyle(),
           flexShrink: 0,
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
@@ -1109,36 +1112,41 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                 key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
-                <ChatResponse
-                  question={pair.question}
-                  answer={pair.answer}
-                  citationMaps={pair.citationMaps}
-                  citationCallbacks={citationCallbacks}
-                  confidence={pair.confidence}
-                  isStreaming={pair.isStreaming}
-                  modelInfo={pair.modelInfo}
-                  collections={pair.collections}
-                  appliedFilters={pair.appliedFilters}
-                  attachments={pair.attachments}
-                  messageId={pair.messageId}
-                  isLastMessage={isLast}
-                  rowId={pair.key}
-                  citationMessageRowKey={pair.key}
-                  createdAt={pair.createdAt}
-                  streamingContent={pair.isStreaming ? streamingContent : undefined}
-                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
-                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
-                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
-                  streamingParts={pair.isStreaming ? streamingParts : undefined}
-                  latestArtifactVersions={latestArtifactVersions}
-                  persistedParts={pair.persistedParts}
-                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
-                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
-                  feedbackInfo={pair.feedbackInfo}
-                  status={pair.status}
-                  streamError={pair.streamError}
-                  unanswered={pair.unanswered}
-                />
+                <ErrorBoundary
+                  resetKeys={[pair.key, pair.messageId]}
+                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
+                >
+                  <ChatResponse
+                    question={pair.question}
+                    answer={pair.answer}
+                    citationMaps={pair.citationMaps}
+                    citationCallbacks={citationCallbacks}
+                    confidence={pair.confidence}
+                    isStreaming={pair.isStreaming}
+                    modelInfo={pair.modelInfo}
+                    collections={pair.collections}
+                    appliedFilters={pair.appliedFilters}
+                    attachments={pair.attachments}
+                    messageId={pair.messageId}
+                    isLastMessage={isLast}
+                    rowId={pair.key}
+                    citationMessageRowKey={pair.key}
+                    createdAt={pair.createdAt}
+                    streamingContent={pair.isStreaming ? streamingContent : undefined}
+                    currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
+                    streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                    streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                    streamingParts={pair.isStreaming ? streamingParts : undefined}
+                    latestArtifactVersions={latestArtifactVersions}
+                    persistedParts={pair.persistedParts}
+                    persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                    persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
+                    feedbackInfo={pair.feedbackInfo}
+                    status={pair.status}
+                    streamError={pair.streamError}
+                    unanswered={pair.unanswered}
+                  />
+                </ErrorBoundary>
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver
@@ -1199,7 +1207,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
           <Flex
             direction="column"
             align="center"
-            style={{ position: 'relative', paddingBottom: isMobile ? 'var(--space-2)' : 0 }}
+            style={{
+              position: 'relative',
+              paddingBottom: isMobile ? 'max(var(--space-2), env(safe-area-inset-bottom, 0px))' : 0,
+            }}
           >
             {composer}
           </Flex>
@@ -1216,7 +1227,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       <Box
         style={{
           position: 'absolute',
-          bottom: 'var(--space-3)',
+          bottom: composerDockHeight + 12,
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 2,

@@ -5,46 +5,37 @@ drive processing, page processing, permissions, error handling, and record updat
 Each test covers many code paths to maximize statement coverage.
 """
 
-import asyncio
 import logging
-import re
-import urllib.parse
-import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
-    CountryToRegionMapper,
-    MicrosoftRegion,
-    SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
-    SiteMetadata,
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    ProgressStatus,
 )
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
-    SyncFilterKey,
+)
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    DRIVE_CHECKPOINT,
+    CountryToRegionMapper,
+    ListPermissionScope,
+    MicrosoftRegion,
+    SharePointConnector,
+    SiteMetadata,
+)
+from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
+    EVERYONE_EXCEPT_EXTERNAL,
 )
 from app.models.entities import (
-    AppUser,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
-
+from app.models.permission import EntityType
 
 # ===========================================================================
 # Helpers
@@ -68,6 +59,9 @@ def _make_mock_deps():
     ])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+    data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+    data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    data_entities_processor.on_record_group_deleted = AsyncMock()
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
@@ -91,6 +85,38 @@ def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
     connector = SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1")
     return connector, dep, dsp, cs, tx
+
+
+def _mock_drive_root(connector, root_id="root-item") -> None:
+    """The library root folder that _process_drive_delta reads before listing."""
+    connector.client = MagicMock()
+    connector.client.drives.by_drive_id.return_value.root.get = AsyncMock(return_value=MagicMock(id=root_id))
+
+
+def _mock_container_sync_point(connector) -> None:
+    """The sync point ContainerTracker keeps the last listing's sites and libraries in."""
+    connector.drive_delta_sync_point = MagicMock()
+    connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+    connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+    connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+
+
+def _mock_listing(builder, values) -> None:
+    builder.get = AsyncMock(return_value=MagicMock(value=values, odata_next_link=None))
+
+
+def _without_checkpoints(results) -> list:
+    return [r for r in results if r is not DRIVE_CHECKPOINT]
+
+
+def _readable_scope(web_url="https://contoso.sharepoint.com/sites/test") -> ListPermissionScope:
+    """A list whose permissions were read and that has no uniquely permissioned items."""
+    return ListPermissionScope(
+        web_url=web_url,
+        list_url=f"{web_url}/_api/web/lists(guid'list-1')",
+        has_unique_role_assignments=False,
+        unique_items={},
+    )
 
 
 def _make_mock_site(site_id, name, display_name=None, web_url=None, created=None, modified=None):
@@ -514,10 +540,8 @@ class TestSiteDiscovery:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector._safe_api_call = AsyncMock(side_effect=[
-            root_site,  # root site
-            MagicMock(value=[search_site], odata_next_link=None),  # search
-        ])
+        connector.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
+        _mock_listing(connector.client.sites, [search_site])
         connector._get_subsites = AsyncMock(return_value=[])
 
         sites = await connector._get_all_sites()
@@ -553,7 +577,7 @@ class TestSiteDiscovery:
 
         subsite = _make_mock_site("host.com,sub1,sub2", "subsite", web_url="https://contoso.sharepoint.com/sites/parent/sub")
 
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[subsite]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.sites, [subsite])
 
         subsites = await connector._get_subsites("host.com,parent,web")
         assert len(subsites) == 1
@@ -579,6 +603,7 @@ class TestDriveProcessing:
         users = [MagicMock(email="user@test.com")]
 
         connector._get_item_permissions = AsyncMock(return_value=[])
+        connector._get_library_scope = AsyncMock(return_value=_readable_scope())
         connector._pass_drive_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -590,8 +615,12 @@ class TestDriveProcessing:
         assert result.is_new is True
         assert result.record is not None
         assert result.record.record_name == "document.pdf"
-        assert result.record.inherit_permissions is False
-        dep.inheritance_when_unreadable.assert_awaited_once_with(CollectionNames.RECORDS.value, None)
+        assert result.record.signed_url is None
+        # The item inherits: it stores no grants of its own and Graph's permissions are not read.
+        assert result.record.inherit_permissions is True
+        assert result.new_permissions == []
+        connector._get_item_permissions.assert_not_awaited()
+        dep.inheritance_when_unreadable.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_process_drive_item_deleted(self):
@@ -881,7 +910,9 @@ class TestHandleRecordUpdates:
         )
         dep.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
         await connector._handle_record_updates(update)
-        dep.on_record_deleted.assert_called_once_with(record_id="rec-1")
+        dep.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-1"], connector.connector_id, cascade_children=True, include_trashed_roots=True
+        )
 
     @pytest.mark.asyncio
     async def test_handle_metadata_and_content_update(self):
@@ -989,6 +1020,9 @@ class TestSharePointFullSync:
 
         # Mock client
         connector.client = MagicMock()
+        connector.user_sync_point = MagicMock()
+        connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        _mock_container_sync_point(connector)
 
         # Mock filter loading
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
@@ -1027,6 +1061,9 @@ class TestSharePointFullSync:
         connector.client = MagicMock()
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        connector.user_sync_point = MagicMock()
+        connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        _mock_container_sync_point(connector)
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
                     new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())), \
@@ -1054,7 +1091,9 @@ class TestSharePointFullSync:
 
         # Mock _process_site_drives to yield a new record
         async def fake_drives(*args, **kwargs):
-            from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+            from app.connectors.sources.microsoft.common.msgraph_client import (
+                RecordUpdate,
+            )
             record = MagicMock()
             record.indexing_status = None
             update = RecordUpdate(
@@ -1147,25 +1186,40 @@ class TestSharePointPermissions:
             is_root=False,
         )
 
-        connector._get_sharepoint_access_token = AsyncMock(return_value="token")
-        connector._get_sharepoint_group_users = AsyncMock(side_effect=[
-            # Owner group - M365 group
-            [{"LoginName": "c:0o.c|federateddirectoryclaimprovider|abcdefab-1234-5678-9012-abcdefabcdef", "Title": "Team", "PrincipalType": 4}],
-            # Member group - direct user
-            [{"LoginName": "user@test.com", "PrincipalType": 1, "Email": "user@test.com", "Id": 1}],
-            # Visitor group - everyone claim
-            [{"LoginName": "c:0(.s|true|spo-grid-all-users", "PrincipalType": 0, "Title": "Everyone"}],
-        ])
-        connector._get_custom_sharepoint_groups = AsyncMock(return_value=[])
+        def assignment(member, role_name) -> dict:
+            return {"Member": member, "RoleDefinitionBindings": {"results": [{"Name": role_name}]}}
+
+        rest_urls = []
+
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
+            rest_urls.append(url)
+            yield {"results": [
+                # Owners - M365 group
+                assignment({"LoginName": "c:0o.c|federateddirectoryclaimprovider|abcdefab-1234-5678-9012-abcdefabcdef", "Title": "Team", "PrincipalType": 4}, "Full Control"),
+                # Member - direct user
+                assignment({"LoginName": "user@test.com", "PrincipalType": 1, "Email": "user@test.com", "Id": 1}, "Edit"),
+                # Visitor - everyone claim
+                assignment({"LoginName": "c:0(.s|true|spo-grid-all-users", "PrincipalType": 0, "Title": "Everyone"}, "Read"),
+            ]}
+
+        connector._sharepoint_rest_pages = rest_pages
 
         perms = await connector._get_site_permissions("site-1")
-        assert len(perms) >= 2  # M365 group + user + org access
+        assert rest_urls == [
+            "https://contoso.sharepoint.com/sites/test/_api/web/roleassignments?$expand=Member,RoleDefinitionBindings"
+        ]
+        assert len(perms) == 3  # M365 group + user + everyone-claim group
+        assert {(p.entity_type, p.external_id or p.email) for p in perms} == {
+            (EntityType.GROUP, "abcdefab-1234-5678-9012-abcdefabcdef"),
+            (EntityType.USER, "1"),
+            (EntityType.GROUP, EVERYONE_EXCEPT_EXTERNAL),
+        }
 
     @pytest.mark.asyncio
     async def test_get_site_permissions_no_cache(self):
         connector, *_ = _make_connector()
         perms = await connector._get_site_permissions("missing-site")
-        assert perms == []
+        assert perms is None
 
     @pytest.mark.asyncio
     async def test_get_site_permissions_no_token(self):
@@ -1175,7 +1229,8 @@ class TestSharePointPermissions:
         )
         connector._get_sharepoint_access_token = AsyncMock(return_value=None)
         perms = await connector._get_site_permissions("site-1")
-        assert perms == []
+        # Unreadable: None keeps what is stored, where [] would remove everyone's access.
+        assert perms is None
 
 
 # ===========================================================================
@@ -1229,6 +1284,16 @@ class TestConnectionTest:
     @pytest.mark.asyncio
     async def test_test_connection(self):
         connector, *_ = _make_connector()
+        connector.client = MagicMock()
+        connector.client.sites.by_site_id.return_value.get = AsyncMock(
+            return_value=MagicMock(web_url="https://contoso.sharepoint.com")
+        )
+        _mock_listing(connector.client.sites, [])
+
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
+            yield {"results": []}
+
+        connector._sharepoint_rest_pages = rest_pages
         result = await connector.test_connection_and_access()
         assert result is True
 
@@ -1247,6 +1312,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1273,8 +1339,11 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
-        assert len(results) == 1
+        assert len(_without_checkpoints(results)) == 1
+        assert results[-1] is DRIVE_CHECKPOINT
         connector.drive_delta_sync_point.update_sync_point.assert_awaited()
+        # A complete listing without a token also looks for records the library no longer has.
+        dep.get_records_in_record_group.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_delta_sync_with_existing_sync_point(self):
@@ -1283,6 +1352,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         valid_delta = "https://graph.microsoft.com/v1.0/sites/s/drives/d/root/delta?token=abc"
@@ -1312,6 +1382,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         invalid_delta = "http://evil.com/delta"
@@ -1332,7 +1403,10 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
-        # Should have cleared the invalid sync point
+        # Should have started a full listing from the root
+        connector.msgraph_client.get_delta_response_sharepoint.assert_awaited_once_with(
+            "https://graph.microsoft.com/v1.0/sites/site-1/drives/drive-1/root/delta"
+        )
         calls = connector.drive_delta_sync_point.update_sync_point.call_args_list
         assert any(call.kwargs.get('sync_point_data', {}).get('deltaLink') is None
                    or call.args[1].get('deltaLink') is None
@@ -1345,6 +1419,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1376,7 +1451,8 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
-        assert len(results) == 2
+        assert len(_without_checkpoints(results)) == 2
+        assert results.count(DRIVE_CHECKPOINT) == 2
         assert connector.msgraph_client.get_delta_response_sharepoint.await_count == 2
 
     @pytest.mark.asyncio
@@ -1386,6 +1462,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1409,6 +1486,7 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
+        results = _without_checkpoints(results)
         assert len(results) == 1
         assert results[0][0] is None  # record is None for deleted
         assert results[0][2].is_deleted is True
@@ -1420,6 +1498,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1451,7 +1530,10 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
-        assert len(results) == 1
+        assert len(_without_checkpoints(results)) == 1
+        # The failed item is reported and the token stays, so the next run reads it again.
+        assert connector._health.complete is False
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delta_sync_empty_drive_items_breaks(self):
@@ -1460,6 +1542,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1478,15 +1561,16 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
-        assert len(results) == 0
+        assert results == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
-    async def test_delta_sync_null_response_returns_early(self):
-        """Null response from get_delta_response_sharepoint should return early."""
+    async def test_delta_sync_read_error_returns_early(self):
+        """A delta page that can't be read ends the listing and keeps the stored token."""
         connector, dep, *_ = _make_connector()
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
         connector.indexing_filters = FilterCollection()
 
         connector.drive_delta_sync_point = MagicMock()
@@ -1495,13 +1579,15 @@ class TestProcessDriveDelta:
 
         dep.get_all_active_users = AsyncMock(return_value=[])
 
-        connector.msgraph_client.get_delta_response_sharepoint = AsyncMock(return_value=None)
+        connector.msgraph_client.get_delta_response_sharepoint = AsyncMock(side_effect=Exception("delta read failed"))
 
         results = []
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
         assert len(results) == 0
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
+        assert connector._health.complete is False
 
     @pytest.mark.asyncio
     async def test_delta_sync_indexing_filter_disables_indexing(self):
@@ -1510,6 +1596,7 @@ class TestProcessDriveDelta:
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sharepoint_domain = "https://contoso.sharepoint.com"
         connector.msgraph_client = MagicMock()
+        _mock_drive_root(connector)
 
         # Create a filter collection where DOCUMENTS is disabled
         connector.indexing_filters = MagicMock()
@@ -1538,6 +1625,7 @@ class TestProcessDriveDelta:
         async for r in connector._process_drive_delta("site-1", "drive-1"):
             results.append(r)
 
+        results = _without_checkpoints(results)
         assert len(results) == 1
         assert results[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -1556,7 +1644,8 @@ class TestProcessSiteDrives:
         connector.rate_limiter = AsyncMock()
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
-        connector._safe_api_call = AsyncMock(return_value=None)
+        _mock_listing(connector.client.sites.by_site_id.return_value.drives, [])
+        _mock_container_sync_point(connector)
         connector.sync_filters = FilterCollection()
 
         results = []
@@ -1564,6 +1653,7 @@ class TestProcessSiteDrives:
             results.append(r)
 
         assert len(results) == 0
+        dep.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_drives_with_no_id_skipped(self):
@@ -1578,7 +1668,8 @@ class TestProcessSiteDrives:
         no_id_drive.id = None
         no_id_drive.name = "No-ID-Drive"
 
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[no_id_drive]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.drives, [no_id_drive])
+        _mock_container_sync_point(connector)
 
         results = []
         async for r in connector._process_site_drives("site-1", "internal-1"):
@@ -1595,15 +1686,21 @@ class TestProcessSiteDrives:
         connector.rate_limiter.__aexit__ = AsyncMock()
 
         drive = _make_mock_drive("d1", "Docs")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[drive]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.drives, [drive])
+        _mock_container_sync_point(connector)
         connector._pass_drive_key_filters = MagicMock(return_value=False)
         connector._normalize_document_library_url = MagicMock(return_value="/docs")
+        connector.data_entities_processor.on_record_group_deleted = AsyncMock()
 
         results = []
         async for r in connector._process_site_drives("site-1", "internal-1"):
             results.append(r)
 
         assert len(results) == 0
+        # A library the filter excludes is deleted from PipesHub, not only skipped.
+        connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
+            "d1", connector.connector_id
+        )
 
     @pytest.mark.asyncio
     async def test_drives_processed_and_yields_items(self):
@@ -1616,7 +1713,8 @@ class TestProcessSiteDrives:
         connector.sync_filters = FilterCollection()
 
         drive = _make_mock_drive("d1", "Shared Documents")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[drive]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.drives, [drive])
+        _mock_container_sync_point(connector)
         connector._pass_drive_key_filters = MagicMock(return_value=True)
         connector._normalize_document_library_url = MagicMock(return_value="/docs")
         connector._get_library_access = AsyncMock(return_value=(True, []))
@@ -1783,13 +1881,13 @@ class TestProcessSitePages:
         connector.page_sync_point = MagicMock()
         connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
         connector.page_sync_point.update_sync_point = AsyncMock()
-        connector._safe_api_call = AsyncMock(return_value=None)
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [])
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
-        assert len(results) == 0
+        assert results == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_pages_new_page_yielded(self):
@@ -1802,23 +1900,22 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         page = _make_mock_page("page-1", "Welcome")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[page]))
-        connector._get_page_permissions = AsyncMock(return_value=[])
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [page])
+        connector._get_site_pages_scope = AsyncMock(return_value=_readable_scope())
         connector._pass_page_date_filters = MagicMock(return_value=True)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
+        results = _without_checkpoints(results)
         assert len(results) == 1
         record, perms, update = results[0]
         assert update.is_new is True
-        assert record.inherit_permissions is False
+        # The page inherits from Site Pages: no grants of its own.
+        assert record.inherit_permissions is True
+        assert perms == []
         assert connector.stats['pages_processed'] == 1
 
     @pytest.mark.asyncio
@@ -1832,20 +1929,16 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         # Create system account page
         system_page = _make_mock_page("sp-1", "System Page")
         system_page.created_by.user.display_name = "System Account"
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[system_page]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [system_page])
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
-        assert len(results) == 0
+        assert results == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_pages_existing_page_updated(self):
@@ -1858,12 +1951,8 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         page = _make_mock_page("page-2", "Updated Page", e_tag="new-etag")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[page]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [page])
         connector._get_page_permissions = AsyncMock(return_value=[])
         connector._pass_page_date_filters = MagicMock(return_value=True)
 
@@ -1881,6 +1970,7 @@ class TestProcessSitePages:
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
+        results = _without_checkpoints(results)
         assert len(results) == 1
         record, perms, update = results[0]
         assert update.is_updated is True
@@ -1900,19 +1990,15 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         page = _make_mock_page("page-3", "Filtered Page")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[page]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [page])
         connector._pass_page_date_filters = MagicMock(return_value=False)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
-        assert len(results) == 0
+        assert results == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_pages_no_id_skipped(self):
@@ -1925,19 +2011,15 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         no_id_page = MagicMock()
         no_id_page.id = None
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[no_id_page]))
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [no_id_page])
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
-        assert len(results) == 0
+        assert results == [DRIVE_CHECKPOINT]
 
     @pytest.mark.asyncio
     async def test_pages_indexing_filter_off(self):
@@ -1953,24 +2035,21 @@ class TestProcessSitePages:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector.page_sync_point = MagicMock()
-        connector.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        connector.page_sync_point.update_sync_point = AsyncMock()
-
         page = _make_mock_page("page-idx", "IndexOff Page")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[page]))
-        connector._get_page_permissions = AsyncMock(return_value=[])
+        _mock_listing(connector.client.sites.by_site_id.return_value.pages, [page])
+        connector._get_site_pages_scope = AsyncMock(return_value=_readable_scope())
         connector._pass_page_date_filters = MagicMock(return_value=True)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
+        results = _without_checkpoints(results)
         assert len(results) == 1
         assert results[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
-    async def test_pages_with_last_sync_time(self):
+    async def test_pages_listed_in_full_despite_last_sync_time(self):
         connector, dep, dsp, cs, tx = _make_connector()
         connector.connector_name = Connectors.SHAREPOINT_ONLINE
         connector.sync_filters = FilterCollection()
@@ -1987,15 +2066,19 @@ class TestProcessSitePages:
         connector.page_sync_point.update_sync_point = AsyncMock()
 
         page = _make_mock_page("page-inc", "Incremental Page")
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[page]))
-        connector._get_page_permissions = AsyncMock(return_value=[])
+        pages_builder = connector.client.sites.by_site_id.return_value.pages
+        _mock_listing(pages_builder, [page])
+        connector._get_site_pages_scope = AsyncMock(return_value=_readable_scope())
         connector._pass_page_date_filters = MagicMock(return_value=True)
 
         results = []
         async for r in connector._process_site_pages("site-1", "Test Site"):
             results.append(r)
 
-        assert len(results) == 1
+        assert len(_without_checkpoints(results)) == 1
+        # Every page is listed, with no lastModifiedDateTime filter from a stored sync time.
+        pages_builder.get.assert_awaited_once_with()
+        connector.page_sync_point.read_sync_point.assert_not_awaited()
 
 
 # ===========================================================================
@@ -2289,25 +2372,31 @@ class TestGetItemPermissions:
         perm_obj.link.scope = "anonymous"
         perm_obj.link.type = "read"
 
-        connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[perm_obj]))
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(return_value=[perm_obj])
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
         # The call succeeds; the one anonymous-link permission yields nothing,
         # since it names no grantee.
         assert result == []
+        connector.msgraph_client.get_file_permission.assert_awaited_once_with(
+            "drive-1", "item-1", raise_on_error=True
+        )
 
     @pytest.mark.asyncio
-    async def test_get_item_permissions_error_returns_empty(self):
+    async def test_get_item_permissions_error_returns_none(self):
         connector, *_ = _make_connector()
         connector.client = MagicMock()
         connector.rate_limiter = AsyncMock()
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector._safe_api_call = AsyncMock(side_effect=Exception("API error"))
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
-        assert result == []
+        # Unreadable, not "no permissions".
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_item_permissions_empty_response(self):
@@ -2317,7 +2406,8 @@ class TestGetItemPermissions:
         connector.rate_limiter.__aenter__ = AsyncMock()
         connector.rate_limiter.__aexit__ = AsyncMock()
 
-        connector._safe_api_call = AsyncMock(return_value=None)
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
         assert result == []

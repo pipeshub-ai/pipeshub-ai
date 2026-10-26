@@ -2695,10 +2695,13 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
-            elif record.is_placeholder:
+            elif record.is_placeholder and not (
+                record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED
+            ):
                 # The record is upserted below whether or not its content changed,
                 # so a changed restriction reaches the node without a content edit.
-                # A stub carries no ACL and must not reset a real record's rule.
+                # A stub carries no ACL and must not reset a real record's rule, unless it
+                # knows its source restriction (a rewrite, or RESTRICTED) and so corrects it.
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
@@ -4325,6 +4328,22 @@ class DataSourceEntitiesProcessor:
         for group in groups:
             self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, group.id)
 
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        """Note one stored user group whose members could not be read in full, so its stored
+        members stay and the unlink after the full sync in progress, if any, leaves it alone.
+        Every stored copy with that external id is noted, as in finish_full_sync_memberships:
+        older syncs wrote one copy per run, and grants may sit on any of them.
+        A lookup that fails raises."""
+        if self._full_sync_run(connector_id) is None:
+            return
+        groups = CollectionNames.GROUPS.value
+        async with self.data_store_provider.transaction() as tx_store:
+            copies = await tx_store.get_nodes_by_filters(
+                groups, {"connectorId": connector_id, "externalGroupId": external_group_id}, raise_on_error=True
+            )
+        for doc in copies or []:
+            self._note_full_sync_seen(connector_id, groups, doc.get("_key") or doc.get("id"))
+
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         """Note a record group a connector keeps as stored without writing it as seen by the
         full sync in progress, if any, so the unlink after that sync keeps the links its
@@ -5470,6 +5489,17 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
+    async def get_typed_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """Like ``get_record_by_external_id``, but as its subclass (WebpageRecord, FileRecord, ...).
+
+        The external-id lookup returns a base Record, which cannot be queued for indexing.
+        """
+        record = await self.get_record_by_external_id(connector_id, external_record_id)
+        graph = getattr(self.data_store_provider, "graph_provider", None)
+        if record is None or graph is None:
+            return record
+        return await graph.get_record_by_id(record.id)
+
     async def get_records_by_parent(
         self,
         connector_id: str,
@@ -6513,6 +6543,19 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_record_by_conversation_index(
                 connector_id, conversation_index, thread_id, self.org_id, user_id
             )
+
+    @retry_on_deadlock()
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Take away everything the user was granted directly on this connector's content and groups, for a
+        person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            if not user:
+                return 0
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)
+        if removed:
+            await self._access_changed([connector_id])
+        return removed
 
     @retry_on_deadlock()
     async def remove_user_access_to_record(

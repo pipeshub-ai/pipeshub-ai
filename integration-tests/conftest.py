@@ -128,6 +128,7 @@ from local_auth import (  # noqa: E402
     obtain_user_session_token,
 )
 from pipeshub_client import PipeshubClient  # noqa: E402
+from helper.simulator_addresses import allow_the_simulators  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
 from helper.clients.auth_client import AuthClient, UserAccountClient  # noqa: E402
@@ -336,9 +337,11 @@ def _tag_requests_with_test_id(request: pytest.FixtureRequest) -> Generator[None
 def local_oauth_credentials() -> None:
     """
     When running in local mode without CLIENT_ID/CLIENT_SECRET, obtain them from the backend
-    (initAuth -> authenticate -> create OAuth app) and set in env so PipeshubClient works.
+    (initAuth -> authenticate -> create OAuth app) and set them in env for the tests that
+    exercise client_credentials. The app acts as a service account; PipeshubClient itself
+    signs in as the admin test user on the local stack.
     """
-    if os.getenv("PIPESHUB_TEST_ENV") != "local":
+    if os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() != "local":
         return
     if os.getenv("CLIENT_ID") and os.getenv("CLIENT_SECRET"):
         return
@@ -428,7 +431,8 @@ def user_session_client(pipeshub_client: PipeshubClient) -> SessionClient:
     """The test user logged in with a password, for session-only routes.
 
     OAuth client management, OAuth consent and personal access tokens refuse
-    the client-credentials token ``pipeshub_client`` holds (#3626).
+    OAuth and personal access tokens (#3626). Against a remote instance
+    ``pipeshub_client`` holds a client-credentials token.
     """
     if not (os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv("PIPESHUB_TEST_USER_PASSWORD")):
         pytest.skip(
@@ -760,6 +764,7 @@ def pytest_configure(config: pytest.Config) -> None:
     global _IS_XDIST_WORKER
     # Before any session fixture or pytest_sessionstart makes its first call.
     install_requests_hook()
+    allow_the_simulators()
     _IS_XDIST_WORKER = hasattr(config, "workerinput")
     _integration_test_reports_by_nodeid = {}
     _integration_test_report_order = []

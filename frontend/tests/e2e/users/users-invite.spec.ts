@@ -77,7 +77,7 @@ test.describe('Users Invite', () => {
     await tagInput.fill('not-a-valid-email');
     await tagInput.press('Enter');
 
-    await expect(dialog.getByRole('button', { name: 'Send Invite' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Send invite' })).toBeDisabled();
   });
 
   test('submit invite sends invitations and lists the invited user', async ({ page, apiContext }) => {
@@ -94,7 +94,7 @@ test.describe('Users Invite', () => {
       await tagInput.fill(email);
       await tagInput.press('Enter');
 
-      const submitButton = dialog.getByRole('button', { name: 'Send Invite' });
+      const submitButton = dialog.getByRole('button', { name: 'Send invite' });
       await expect(submitButton).toBeEnabled();
       await submitButton.click();
 

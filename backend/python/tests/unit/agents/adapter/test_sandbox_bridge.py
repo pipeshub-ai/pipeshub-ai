@@ -32,6 +32,7 @@ from app.agent_loop_lib.tools.builtin.sandbox import input_staging
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import peek_staged_input_files
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agents.actions.util.attachments import AttachmentBundle
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.sandbox_bridge import (
     CODING_SANDBOX_PATH_PATTERN,
@@ -50,6 +51,7 @@ from app.agents.agent_loop.sandbox_bridge import (
 from app.models.entities import ArtifactType, LifecycleStatus
 from app.services.artifact_registry import ArtifactMetadata
 from app.services.artifact_registry.access import ArtifactNotFoundError
+from app.services.record_content import AttachmentFailure, ResolvedRecordContent
 
 
 def _make_metadata(**overrides: Any) -> ArtifactMetadata:
@@ -495,6 +497,150 @@ class TestCodingSandboxArtifactStaging:
 
         assert seen["a.png"] == {"input/artifacts/a.png": b"a-bytes"}
         assert seen["b.png"] == {"input/artifacts/b.png": b"b-bytes"}
+
+    # -- files the user uploaded to the conversation ---------------------
+
+    async def _stage_uploads(
+        self,
+        monkeypatch,
+        refs: list[str],
+        *,
+        uploads: dict[str, tuple[str, bytes]],
+        attachments: list[dict[str, Any]] | None = None,
+        history: list[dict[str, Any]] | None = None,
+        artifacts: dict[str, bytes] | None = None,
+    ) -> tuple[ToolCallContext, list[list[str]]]:
+        """Run the staging hook for `refs` with this turn's `attachments` and
+        earlier turns' `history`. `uploads` maps a record ID to the (file
+        name, bytes) the access-checked resolver returns; any other ID comes
+        back denied. Returns the call context and every batch of record IDs
+        the resolver was asked for."""
+        context = _make_context(previous_conversations=history or [])
+        context.tool_state["attachments"] = attachments or []
+        registry = self._make_registry(artifacts or {})
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        calls: list[list[str]] = []
+
+        async def _resolve(state: object, record_ids: list[str]) -> AttachmentBundle:
+            calls.append(list(record_ids))
+            bundle = AttachmentBundle()
+            for record_id in record_ids:
+                if record_id in uploads:
+                    name, data = uploads[record_id]
+                    bundle.resolved.append(ResolvedRecordContent(
+                        record_id=record_id, filename=name, mime_type="image/jpeg",
+                        size_bytes=len(data), content=data, version=None, source="blob",
+                    ))
+                else:
+                    bundle.failures.append(AttachmentFailure(
+                        ref=record_id, error="denied", error_type="RecordAccessDeniedError",
+                    ))
+            return bundle
+
+        monkeypatch.setattr("app.agents.agent_loop.sandbox_bridge.resolve_attachments", _resolve)
+        ctx = ToolCallContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_input={"code": "", "input_artifacts": refs},
+        )
+        await coding_sandbox_artifact_staging(context)(ctx, _noop_next)
+        return ctx, calls
+
+    @pytest.mark.parametrize("ref", ["photo.jpg", "rec-up"])
+    async def test_upload_staged_with_its_original_bytes_by_name_or_record_id(self, monkeypatch, ref) -> None:
+        ctx, calls = await self._stage_uploads(
+            monkeypatch, [ref],
+            attachments=[{"recordId": "rec-up", "recordName": "photo.jpg", "mimeType": "image/jpeg"}],
+            uploads={"rec-up": ("photo.jpg", b"original-jpeg")},
+        )
+
+        assert calls == [["rec-up"]]
+        assert peek_staged_input_files() == {"input/artifacts/photo.jpg": b"original-jpeg"}
+        assert ctx.metadata["staged_input_artifacts"] == [
+            {"ref": ref, "record_id": "rec-up", "name": "photo.jpg", "path": "input/artifacts/photo.jpg"},
+        ]
+        assert "input_artifacts_not_found" not in ctx.metadata
+
+    async def test_earlier_turn_upload_is_found_and_the_latest_wins_a_repeated_name(self, monkeypatch) -> None:
+        history = [
+            {"role": "user_query", "attachments": [{"recordId": "rec-old", "recordName": "photo.jpg"}]},
+            {"role": "bot_response"},
+            {"role": "user_query", "attachments": [{"recordId": "rec-new", "recordName": "photo.jpg"}]},
+            {"role": "bot_response"},
+        ]
+        ctx, calls = await self._stage_uploads(
+            monkeypatch, ["photo.jpg"], history=history,
+            uploads={"rec-old": ("photo.jpg", b"old"), "rec-new": ("photo.jpg", b"new")},
+        )
+
+        assert calls == [["rec-new"]]
+        assert peek_staged_input_files() == {"input/artifacts/photo.jpg": b"new"}
+
+    async def test_ref_naming_no_upload_is_reported_missing_without_a_fetch(self, monkeypatch) -> None:
+        ctx, calls = await self._stage_uploads(
+            monkeypatch, ["other.png"],
+            attachments=[{"recordId": "rec-up", "recordName": "photo.jpg"}],
+            uploads={"rec-up": ("photo.jpg", b"x")},
+        )
+
+        assert calls == []
+        assert ctx.metadata["input_artifacts_not_found"] == ["other.png"]
+        assert not peek_staged_input_files()
+
+    async def test_upload_the_resolver_denies_is_reported_missing(self, monkeypatch) -> None:
+        ctx, _ = await self._stage_uploads(
+            monkeypatch, ["photo.jpg"],
+            attachments=[{"recordId": "rec-up", "recordName": "photo.jpg"}],
+            uploads={},
+        )
+
+        assert ctx.metadata["input_artifacts_not_found"] == ["photo.jpg"]
+        assert "staged_input_artifacts" not in ctx.metadata
+        assert not peek_staged_input_files()
+
+    @pytest.mark.parametrize(("stored_name", "staged_name"), [
+        ("../../x.png", "x.png"),
+        ("a\\b\\x.png", "x.png"),
+        ("..", "rec-up"),
+    ])
+    async def test_upload_file_name_cannot_leave_the_staging_directory(
+        self, monkeypatch, stored_name, staged_name,
+    ) -> None:
+        await self._stage_uploads(
+            monkeypatch, ["rec-up"],
+            attachments=[{"recordId": "rec-up", "recordName": stored_name}],
+            uploads={"rec-up": (stored_name, b"x")},
+        )
+
+        assert peek_staged_input_files() == {f"input/artifacts/{staged_name}": b"x"}
+
+    async def test_generated_artifact_wins_over_a_same_named_upload(self, monkeypatch) -> None:
+        _, calls = await self._stage_uploads(
+            monkeypatch, ["photo.jpg"],
+            attachments=[{"recordId": "rec-up", "recordName": "photo.jpg"}],
+            uploads={"rec-up": ("photo.jpg", b"upload")},
+            artifacts={"photo.jpg": b"generated"},
+        )
+
+        assert calls == []
+        assert peek_staged_input_files() == {"input/artifacts/photo.jpg": b"generated"}
+
+    async def test_two_uploads_sharing_a_name_are_staged_at_distinct_paths(self, monkeypatch) -> None:
+        ctx, _ = await self._stage_uploads(
+            monkeypatch, ["rec-a", "rec-b"],
+            attachments=[
+                {"recordId": "rec-a", "recordName": "photo.jpg"},
+                {"recordId": "rec-b", "recordName": "photo.jpg"},
+            ],
+            uploads={"rec-a": ("photo.jpg", b"a"), "rec-b": ("photo.jpg", b"b")},
+        )
+
+        assert peek_staged_input_files() == {
+            "input/artifacts/photo.jpg": b"a",
+            "input/artifacts/rec-b_photo.jpg": b"b",
+        }
+        assert [entry["path"] for entry in ctx.metadata["staged_input_artifacts"]] == [
+            "input/artifacts/photo.jpg", "input/artifacts/rec-b_photo.jpg",
+        ]
 
 
 class TestCodingSandboxArtifactBridge:

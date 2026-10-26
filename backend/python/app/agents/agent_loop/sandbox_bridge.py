@@ -90,6 +90,7 @@ from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     set_staged_input_files_for_task,
 )
+from app.agents.actions.util.attachments import resolve_attachments
 from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType, ArtifactVisibility
@@ -338,10 +339,12 @@ class PipesHubCodingSandboxTool(CodingSandboxTool):
                 name="input_artifacts", type=ParameterType.ARRAY, required=False, default=None,
                 items={"type": "string"},
                 description=(
-                    "Names or artifact IDs of previously generated artifacts from THIS "
-                    "conversation (a chart/CSV/document from an earlier run_code call, or "
-                    "one saved via artifacts__save_artifact / image generation) to make "
-                    "available in this run. Each is staged at input/artifacts/<name> before "
+                    "Files from THIS conversation to make available in this run: a file "
+                    "the user uploaded (its file name or record ID — the original file, "
+                    "not the preview you see), or a previously generated artifact (a "
+                    "chart/CSV/document from an earlier run_code call, or one saved via "
+                    "artifacts__save_artifact / image generation) by name or artifact ID. "
+                    "Each is staged at input/artifacts/<name> before "
                     "your code runs — read it from there directly; do not regenerate an "
                     "artifact that already exists. Compacted tool-result artifacts "
                     "(artifact_1, artifact_2, …) are staged at "
@@ -356,9 +359,10 @@ class PipesHubCodingSandboxTool(CodingSandboxTool):
     def description(self) -> str:
         return (
             super().description
-            + "\n\nTo reuse a previously generated artifact (a chart, CSV, or other file "
-            "from an earlier call in this conversation) in this run, pass its name in "
-            "input_artifacts — it will be staged at input/artifacts/<name>. Do not "
+            + "\n\nTo work on a file the user uploaded, or reuse a previously generated "
+            "artifact (a chart, CSV, or other file from an earlier call in this "
+            "conversation), pass its name in input_artifacts — it will be staged at "
+            "input/artifacts/<name>. Do not "
             "regenerate an artifact that already exists. Only files written to $OUTPUT_DIR "
             "are attached to the response automatically as downloadable artifacts — never "
             "re-run code just to attach, verify, or 'provide' a file already written there. "
@@ -680,11 +684,22 @@ async def _resolve_input_artifacts(
 
     When `inmemory_store` is provided, refs are tried there FIRST (fast,
     in-process lookup for context-compacted tool results like ``artifact_4``)
-    before falling back to ``ArtifactRegistryService`` (blob-backed)."""
+    before falling back to ``ArtifactRegistryService`` (blob-backed). A ref
+    neither knows is tried last as a file the user uploaded to this
+    conversation (see `_stage_conversation_uploads`)."""
     actor = context.artifact_actor
     files: dict[str, bytes] = {}
     resolved: list[dict[str, Any]] = []
     missing: list[str] = []
+    uploads: list[tuple[str, str]] = []
+
+    def _try_upload(ref: str) -> None:
+        record_id = _conversation_upload_id(context, ref)
+        if record_id:
+            uploads.append((ref, record_id))
+        else:
+            missing.append(ref)
+
     for ref in refs:
         if not isinstance(ref, str) or not ref.strip():
             logger.debug("_resolve_input_artifacts: skipping empty/non-str ref: %r", ref)
@@ -734,7 +749,7 @@ async def _resolve_input_artifacts(
 
         # --- Fall back to ArtifactRegistryService (blob-backed) ---
         if registry is None:
-            missing.append(ref)
+            _try_upload(ref)
             continue
         try:
             metadata: ArtifactMetadata = await registry.resolve(
@@ -745,11 +760,11 @@ async def _resolve_input_artifacts(
             logger.warning(
                 "_resolve_input_artifacts: ref %r not found or access denied: %s", ref, exc,
             )
-            missing.append(ref)
+            _try_upload(ref)
             continue
         except Exception:
             logger.warning("Failed to stage input artifact %r", ref, exc_info=True)
-            missing.append(ref)
+            _try_upload(ref)
             continue
         staged_path = f"input/artifacts/{metadata.name}"
         logger.info(
@@ -775,7 +790,65 @@ async def _resolve_input_artifacts(
             files[schema_path] = schema_json.encode("utf-8")
             resolved_entry["schema_path"] = schema_path
         resolved.append(resolved_entry)
+    if uploads:
+        await _stage_conversation_uploads(context, uploads, files, resolved, missing)
     return files, resolved, missing
+
+
+def _conversation_upload_id(context: "AgentContext", ref: str) -> str | None:
+    """Record ID of the upload `ref` names, by record ID or file name — this
+    turn's uploads first, then earlier turns newest first, so a repeated
+    file name means the latest one. Only uploads the chat route already
+    access-checked (`keep_accessible_attachments`) are candidates."""
+    history = [
+        att for turn in reversed(context.previous_conversations or [])
+        for att in turn.get("attachments") or []
+    ]
+    for att in [*(context.tool_state.get("attachments") or []), *history]:
+        record_id = att.get("recordId")
+        if record_id and ref in (record_id, att.get("recordName")):
+            return record_id
+    return None
+
+
+async def _stage_conversation_uploads(
+    context: "AgentContext",
+    uploads: list[tuple[str, str]],
+    files: dict[str, bytes],
+    resolved: list[dict[str, Any]],
+    missing: list[str],
+) -> None:
+    """Stage the original bytes of the uploads `(ref, record_id)` names, read
+    through the same access-checked resolver as the `attachment_record_ids`
+    tools. Mutates `files`/`resolved`/`missing` the way
+    `_resolve_input_artifacts` reports every other ref."""
+    bundle = await resolve_attachments(context.tool_state, [record_id for _, record_id in uploads])
+    for failure in bundle.failures:
+        logger.warning("_resolve_input_artifacts: upload %s not staged: %s", failure.ref, failure.error)
+    contents = {item.record_id: item for item in bundle.resolved}
+    staged: dict[str, str] = {}
+    for ref, record_id in uploads:
+        item = contents.get(record_id)
+        if item is None:
+            missing.append(ref)
+            continue
+        # The file name is the client's: keep only its last segment, since
+        # the sandbox rejects a staged path that leaves its directory.
+        name = (item.filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if name in ("", ".", ".."):
+            name = record_id
+        path = staged.get(record_id)
+        if path is None:
+            path = f"input/artifacts/{name}"
+            if path in files:
+                path = f"input/artifacts/{record_id}_{name}"
+            files[path] = item.content
+            staged[record_id] = path
+        logger.info(
+            "_resolve_input_artifacts: ref %r -> upload record_id=%s (%d bytes) staged_path=%s",
+            ref, record_id, item.size_bytes, path,
+        )
+        resolved.append({"ref": ref, "record_id": record_id, "name": name, "path": path})
 
 
 def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxManager):

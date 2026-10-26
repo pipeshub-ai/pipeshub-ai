@@ -317,7 +317,7 @@ function PersonalActionsPageContent() {
   const resolveCta = useCallback(
     (item: ActionCatalogItem): { cta: ActionCardCta; label: string } => {
       if (!item.hasOrgInstance) {
-        return { cta: 'setup', label: t('workspace.actions.cta.add') };
+        return { cta: 'setup', label: t('workspace.actions.cta.setup') };
       }
       if (!item.isUserAuthenticated) {
         return { cta: 'authenticate', label: t('workspace.actions.cta.authenticate') };

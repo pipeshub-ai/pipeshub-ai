@@ -321,12 +321,12 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toBeNull();
   });
 
-  it('does not treat an interstitial user message as answering the card', () => {
+  it('treats a message typed while the card was open as its answer and closes the card', () => {
     const payload = {
       name: 'ask_user_question',
       questions: [{ question: 'Which region?', options: ['EU', 'US'] }],
     };
-    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'ask me question' }),
       message({
         _id: 't',
@@ -338,10 +338,10 @@ describe('loadHistoricalMessages', () => {
       message({ _id: 'a2', messageType: 'bot_response', content: 'Hi!' }),
     ]);
 
-    expect(unansweredAskUserQuestion).toMatchObject({
-      assistantMessageId: 'a1',
-      status: 'pending',
-    });
+    expect(unansweredAskUserQuestion).toBeNull();
+    expect(messages[1].id).toBe('a1');
+    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
   });
 
   it('keeps an earlier unanswered card visible when a later card becomes pending', () => {
@@ -371,7 +371,8 @@ describe('loadHistoricalMessages', () => {
     ]);
 
     expect(messages[1].id).toBe('a1');
-    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toEqual(first);
+    // The second request was typed while the first card was open, so it answered that card.
+    expect(messages[1].metadata?.custom?.persistedAskUserQuestion).toEqual({ ...first, repliedInChat: true });
     expect(messages[3].id).toBe('a2');
     expect(messages[3].metadata?.custom?.persistedAskUserQuestion).toEqual(second);
     expect(unansweredAskUserQuestion).toMatchObject({
@@ -591,7 +592,7 @@ describe('loadHistoricalMessages', () => {
     ).toEqual(['q-proceed', 'q-topic']);
   });
 
-  it('keeps the card on its own row when the user chats on past an unanswered question', () => {
+  it('keeps the card on its own row, closed, when the user chats on past an unanswered question', () => {
     // The live path saves the new question's `tool_call` BEFORE the bot row, so
     // the resume's reply is merged away into the card row. The card must stay
     // addressed to the surviving row: a resume that binds to the merged-away id
@@ -641,8 +642,11 @@ describe('loadHistoricalMessages', () => {
 
     const rowIds = messages.filter((m) => m.role === 'assistant').map((m) => m.id);
     expect(rowIds).toEqual(['a1', 'a3', 'a4']);
-    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('a1');
-    expect(unansweredAskUserQuestion?.answers).toMatchObject({
+    // "you know ki i am in pune" was typed while the follow-up question was open: it answered it.
+    expect(unansweredAskUserQuestion).toBeNull();
+    const cardRow = messages.find((m) => m.id === 'a1');
+    expect(cardRow?.metadata?.custom?.persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
+    expect(cardRow?.metadata?.custom?.persistedAskUserQuestionAnswers).toMatchObject({
       'q-help': { questionUuid: 'q-help', selectedOptionIds: ['web'], userInputs: {} },
     });
   });

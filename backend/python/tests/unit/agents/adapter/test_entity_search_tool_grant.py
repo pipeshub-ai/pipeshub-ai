@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
     ENTITY_SEARCH_TOOL_ENV_VAR,
+    NAMED_ENTITIES_ENABLED_STATE_KEY,
     SEARCH_BY_ENTITIES_TOOL_NAME,
     entity_search_tool_offered,
 )
@@ -33,7 +34,7 @@ from app.agents.agent_loop.hooks.progressive_tools import (
 )
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
-_NER_FLAG = "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled"
+_NER_FLAG = "app.agents.agent_loop.factory.is_named_entity_extraction_enabled"
 _JIRA = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
 _MODES = ("quick", "react", "planExecute", "deep")
 _QUESTIONS = ("Who owns the Contoso renewal?", "Summarize the Q3 incident reviews for Northwind")
@@ -74,6 +75,7 @@ def _environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def _create(
     mode: str = "quick", *, query: str = _QUESTIONS[0], ner: bool = True, store: bool = True,
+    flag: AsyncMock | None = None,
 ) -> tuple[Any, Any, Any, Any]:
     context = make_context(
         llm=FakeChatModel(), has_knowledge=True, agent_knowledge=[_JIRA], query=query,
@@ -81,7 +83,7 @@ async def _create(
     context.tool_state["web_search_config"] = {"provider": "duckduckgo"}
     if store:
         context.tool_state["entity_vector_store"] = MagicMock()
-    flag = AsyncMock(return_value=ner)
+    flag = flag or AsyncMock(return_value=ner)
     with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=_registry()), \
             patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None), \
             patch(_NER_FLAG, flag):
@@ -115,7 +117,6 @@ def _schema(schema: Any) -> Any:  # noqa: ANN401
 
 
 class TestTheSwitch:
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(("env", "expected"), [
         ({}, False),
         ({ENTITY_SEARCH_TOOL_ENV_VAR: "true"}, True),
@@ -127,29 +128,48 @@ class TestTheSwitch:
         ({"HIGH_ACCURACY_MODE": "true", ENTITY_SEARCH_TOOL_ENV_VAR: "false"}, False),
         ({"HIGH_ACCURACY_MODE": "true", ENTITY_SEARCH_TOOL_ENV_VAR: "true"}, True),
     ])
-    async def test_only_the_switch_turns_it_on(
+    def test_only_the_switch_turns_it_on(
         self, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: bool,
     ) -> None:
         for name, value in env.items():
             monkeypatch.setenv(name, value)
-        with patch(_NER_FLAG, AsyncMock(return_value=True)):
-            assert await entity_search_tool_offered({"entity_vector_store": object()}) is expected
+        state = {"entity_vector_store": object(), NAMED_ENTITIES_ENABLED_STATE_KEY: True}
+        assert entity_search_tool_offered(state) is expected
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(("store", "ner"), [(None, True), (object(), False)])
-    async def test_it_needs_extraction_and_the_entity_store(
-        self, monkeypatch: pytest.MonkeyPatch, store: object, ner: bool,
+    @pytest.mark.parametrize(("store", "ner"), [(None, True), (object(), False), (object(), None)])
+    def test_it_needs_extraction_and_the_entity_store(
+        self, monkeypatch: pytest.MonkeyPatch, store: object, ner: bool | None,
     ) -> None:
         monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
-        with patch(_NER_FLAG, AsyncMock(return_value=ner)):
-            assert await entity_search_tool_offered({"entity_vector_store": store}) is False
+        state: dict[str, Any] = {"entity_vector_store": store}
+        if ner is not None:
+            state[NAMED_ENTITIES_ENABLED_STATE_KEY] = ner
+        assert entity_search_tool_offered(state) is False
+
+
+class TestTheNamedEntityFlag:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("switch", ("off", "on"))
+    @pytest.mark.parametrize("ner", (True, False))
+    async def test_one_read_decides_both(self, monkeypatch: pytest.MonkeyPatch, switch: str, ner: bool) -> None:
+        if switch == "on":
+            monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
+        flag = AsyncMock(return_value=ner)
+        context, _agent, _runtime, _ = await _create(flag=flag)
+        flag.assert_awaited_once()
+        assert context.tool_state[NAMED_ENTITIES_ENABLED_STATE_KEY] is ner
+        assert context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] is (ner and switch == "on")
 
     @pytest.mark.asyncio
-    async def test_off_reads_no_flag(self) -> None:
-        flag = AsyncMock(return_value=True)
-        with patch(_NER_FLAG, flag):
-            assert await entity_search_tool_offered({"entity_vector_store": object()}) is False
-        flag.assert_not_awaited()
+    @pytest.mark.parametrize("mode", _MODES)
+    @pytest.mark.parametrize("ner", (True, False))
+    async def test_off_leaves_out_what_reads_named_entities(self, mode: str, ner: bool) -> None:
+        """Shown with extraction off, they made the model call tools that could only fail."""
+        _context, agent, runtime, goal = await _create(mode, ner=ner)
+        assert runtime.tool_registry.has("knowledgegraph__find_records_by_value") is ner
+        assert runtime.tool_registry.has("knowledgegraph__search_entities")
+        _system, schemas = _surface(mode, agent, runtime, goal)
+        assert ("named_entity_kinds" in schemas) is ner
 
 
 class TestGrantPerMode:

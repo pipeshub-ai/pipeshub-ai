@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from helper import suite_extensions
+
 # A well-formed Mongo ObjectId that no document has.
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
@@ -365,3 +367,38 @@ TOOL_RULES_HANDLERS = frozenset({
     "api/routes/toolsets.py::get_toolset_tool_rules",
     "api/routes/toolsets.py::update_toolset_tool_rules",
 })
+
+
+@dataclass(frozen=True)
+class SwitchedOff:
+    """A part of the product a stack may run without. While it is off, its
+    routes give this answer before any admin check, so the live suite skips
+    them on that stack instead of failing."""
+
+    path_prefix: str
+    status: int
+    words: str
+    why: str
+
+    def applies(self, route: AdminRoute, status: int, text: str) -> bool:
+        return (
+            route.path.startswith(self.path_prefix)
+            and status == self.status
+            and self.words.lower() in text.lower()
+        )
+
+
+SWITCHED_OFF: tuple[SwitchedOff, ...] = ()
+
+# Rows a downstream build adds (helper/suite_extensions.py). Last, so the
+# extension can build its rows with everything above.
+_extensions = suite_extensions.modules("admin_route_table")
+NODE_ADMIN_ROUTES = suite_extensions.add_rows(
+    NODE_ADMIN_ROUTES, "NODE_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+PYTHON_ADMIN_ROUTES = suite_extensions.add_rows(
+    PYTHON_ADMIN_ROUTES, "PYTHON_ADMIN_ROUTES", _extensions, key=lambda row: row.key)
+ADMIN_BODIES = suite_extensions.add_items(ADMIN_BODIES, "ADMIN_BODIES", _extensions)
+PYTHON_CONDITIONAL_ADMIN = suite_extensions.add_items(
+    PYTHON_CONDITIONAL_ADMIN, "PYTHON_CONDITIONAL_ADMIN", _extensions)
+SWITCHED_OFF = suite_extensions.add_rows(
+    SWITCHED_OFF, "SWITCHED_OFF", _extensions, key=lambda rule: rule.path_prefix)

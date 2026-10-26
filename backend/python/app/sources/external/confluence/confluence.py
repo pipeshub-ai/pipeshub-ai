@@ -63,6 +63,19 @@ def _validate_authorship_value(field: str, value: str) -> str:
     )
 
 
+def _matched_by_something_else(user: dict[str, Any], email: str) -> bool:
+    """Whether a Jira user search for ``email`` could have found this user by name, or found someone else.
+
+    The search also matches display names, which users set themselves, by word prefix.
+    """
+    query = email.lower()
+    shown = (user.get("emailAddress") or "").lower()
+    if shown and shown != query:
+        return True
+    # Substring, not word prefix: "(alice@acme.com)" as a display name must not pass.
+    return query in str(user.get("displayName") or "").lower()
+
+
 class ConfluenceDataSource:
     def __init__(self, client: ConfluenceClient) -> None:
         """Default init for the connector-specific data source."""
@@ -3230,17 +3243,62 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_comments_v1(
+        self,
+        space_key: str,
+        modified_after: Optional[str] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
+        headers: Optional[dict[str, Any]] = None,
+        content_type: str = "comment",
+    ) -> HTTPResponse:
+        """Comments (or attachments) of a space changed after a time, with the page or blog post each is on.
+
+        v1 ``GET .../rest/api/content/search`` with CQL ``type=comment`` (or ``content_type``);
+        ``container`` is expanded so each result names its page.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        if content_type not in ("comment", "attachment"):
+            raise ValueError(f"Unsupported content type: {content_type}")
+        cql_parts = [f"type={content_type}", f'space="{_escape_cql_literal(space_key)}"']
+        if modified_after:
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
+            cql_parts.append(f'lastModified > "{formatted_date}"')
+        _query: dict[str, Any] = {"cql": " AND ".join(cql_parts), "expand": "container,version"}
+        if limit is not None:
+            _query["limit"] = limit
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
+            _query["start"] = start
+        req = HTTPRequest(
+            method="GET",
+            url=self._v1_rest_api_base() + "/content/search",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_page_permissions_v1(
         self,
         page_id: str,
         expand: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[dict[str, Any]] = None,
+        start: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> HTTPResponse:
         """Fetch page permissions using v1 content API.
 
         Args:
             page_id: The page ID
             expand: Properties to expand (default includes user/group details)
+            start: Offset into each operation's user and group lists
+            limit: Most users and most groups per operation in one response (Cloud default 100)
 
         Returns:
             HTTPResponse containing restrictions data
@@ -3253,6 +3311,10 @@ class ConfluenceDataSource:
             _query: Dict[str, Any] = {"expand": expand}
         else:
             _query: Dict[str, Any] = {}
+        if start is not None:
+            _query["start"] = start
+        if limit is not None:
+            _query["limit"] = limit
         _path: Dict[str, Any] = {"id": page_id}
 
         url = self._v1_rest_api_base() + _safe_format_url("/content/{id}/restriction", _path)
@@ -8773,7 +8835,7 @@ class ConfluenceDataSource:
         
         if len(exact_matches) == 1:
             user = exact_matches[0]
-        elif len(results) == 1:
+        elif len(results) == 1 and not _matched_by_something_else(results[0], normalized_email):
             user = results[0]
         else:
             # Multiple results with no exact email match — ambiguous, skip

@@ -33,6 +33,7 @@ import {
   type ConfigStatus,
   type SignInRemovalStatus,
 } from './types';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ============================================================
 // Page
@@ -259,11 +260,11 @@ export default function AuthenticationPage() {
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
-      <Box style={{ padding: '64px 100px 80px' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
-          <Box>
-            <Heading size="5" style={{ color: 'var(--slate-12)' }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.authentication.title')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
@@ -400,7 +401,7 @@ export default function AuthenticationPage() {
             )}
           </Flex>
         </Flex>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Floating save bar ── */}
       <SettingsSaveBar

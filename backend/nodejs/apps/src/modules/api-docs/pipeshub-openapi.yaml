@@ -547,6 +547,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -591,6 +594,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -833,6 +839,44 @@ components:
           type: integer
           minimum: 0
           description: Number of documents removed.
+    ArtifactFilePath:
+      type: string
+      description: |
+        A file inside an artifact set. Only these are accepted: `manifest.json`,
+        `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
+        `properties.json`, `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
+        Anything else, including `..`, a leading `/` or a backslash, is refused.
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+    ArtifactFileUrl:
+      type: object
+      required:
+        - path
+        - method
+        - url
+        - headers
+      properties:
+        path:
+          $ref: '#/components/schemas/ArtifactFilePath'
+        method:
+          type: string
+          enum:
+            - GET
+            - PUT
+        url:
+          type: string
+          description: |
+            A signed S3 or Azure URL, or on local storage this API's
+            `/document/internal/artifacts/{documentId}/files/{path}` route.
+            A credential: do not log it.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Headers to send with the request, exactly as given: the signed
+            `Content-Type` on S3, `x-ms-blob-type` on Azure, the storage token
+            on local storage.
     # ==================== COMMON SCHEMAS ====================
 
     ArtifactGalleryItem:
@@ -5679,6 +5723,37 @@ components:
                 User id of whoever uploaded the file to the knowledge base.
                 Absent for connector records and for files uploaded before the
                 field existed.
+            sourceTimestampOrigin:
+              type: string
+              description: |
+                Knowledge-base uploads only: what set sourceCreatedAtTimestamp
+                and sourceLastModifiedTimestamp. `upload`: the upload time (the
+                file came without a last-modified time); `file`: the file's
+                last-modified time sent with the upload; `content`: dates the
+                document states in its header (CONTENT_DOCUMENT_DATES), stored at
+                midnight UTC of each stated day. Absent for connector records,
+                whose timestamps are the source system's, and for files uploaded
+                before the field existed.
+            uploadSourceCreatedAtTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                With sourceTimestampOrigin `content`: the
+                sourceCreatedAtTimestamp the upload had set, kept so it can be
+                restored.
+            uploadSourceLastModifiedTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                With sourceTimestampOrigin `content`: the
+                sourceLastModifiedTimestamp the upload had set.
+            uploadSourceTimestampOrigin:
+              type: string
+              description: |
+                With sourceTimestampOrigin `content`: what had set the upload's
+                values (`upload` or `file`).
             connectorId:
               type: string
             connectorName:
@@ -7318,6 +7393,14 @@ components:
                   description: Record counts by classification (`classify` stage) status.
                   additionalProperties:
                     type: integer
+                entitiesStatus:
+                  type: object
+                  description: |
+                    Record counts by named-entity extraction (`entities` stage)
+                    status, read from each record's `entities` stage state on its
+                    current revision. A record with no such state is not counted.
+                  additionalProperties:
+                    type: integer
             byRecordType:
               type: array
               description: The same counts per record type; empty before the first sync.
@@ -7338,6 +7421,11 @@ components:
                   extractionStatus:
                     type: object
                     description: Record counts by classification (`classify` stage) status.
+                    additionalProperties:
+                      type: integer
+                  entitiesStatus:
+                    type: object
+                    description: Record counts by named-entity extraction (`entities` stage) status.
                     additionalProperties:
                       type: integer
 
@@ -8467,6 +8555,13 @@ components:
         - Retrieves relevant context from matching documents
         - Generates a response with citations to source materials
         - Suggests follow-up questions based on the conversation
+
+        **History:** a new conversation starts with no history, and
+        history is never accepted from the caller. A body carrying a
+        non-empty `previousConversations` is rejected with 400 (an empty
+        list is ignored). Send follow-up questions to
+        `POST /conversations/{conversationId}/messages`; the server replays
+        the stored conversation.
       required:
         - query
       properties:
@@ -8701,7 +8796,12 @@ components:
         First turn of an agent conversation. Used as-is by the non-streaming
         `POST /agents/{agentKey}/conversations`, where `chatMode` may be
         omitted; `AgentStreamCreateConversationRequest` additionally requires
-        it. Unknown fields are stripped during validation.
+        it. Unknown fields are stripped during validation, except
+        `previousConversations`: history is never accepted from the caller,
+        so a non-empty `previousConversations` is rejected with 400 (an
+        empty list is ignored). Follow-up turns go to
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
+        where the server replays the stored conversation.
       required:
         - query
       properties:
@@ -8900,6 +9000,8 @@ components:
         - `protocol` — optional inert compatibility field; when present it must
           be `agui`, which is also the protocol used when the field is omitted
         - `agentCapabilities` — optional per-request agent capability toggles
+        - `answers` — optional changed answers to the question card the reply
+          followed; the turn is re-run with them and they replace the saved ones
       properties:
         query:
           type: string
@@ -8931,6 +9033,19 @@ components:
             of the chat may still refer to them.
         filters:
           $ref: '#/components/schemas/Filters'
+        answers:
+          type: string
+          maxLength: 8000
+          pattern: '^\s*User selections:'
+          description: |
+            The answers to the question card this reply followed, in the form
+            the app sends them (`User selections:` followed by one
+            `N. "question" → answer` line each). When present, the turn is
+            re-run with these answers instead of the saved ones, and they are
+            saved in their place. Rejected with 400 when the reply being
+            regenerated did not follow a question card, or when the request
+            also edits the question (`query` or `attachments`).
+          example: "User selections:\n1. \"Which region?\" → EU"
         modelKey:
           type: string
           minLength: 1
@@ -10747,7 +10862,7 @@ components:
 
     ShareRequest:
       type: object
-      description: Request to share a conversation or search with other users
+      description: Request to share a conversation with other users (read-only)
       required:
         - userIds
       properties:
@@ -10759,16 +10874,113 @@ components:
           minItems: 1
           description: IDs of users to share with
           example: ["507f1f77bcf86cd799439011"]
-        accessLevel:
+
+    RetrieveRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
           type: string
-          enum: [read, write]
-          default: read
+          minLength: 1
+          maxLength: 100000
+          description: What to find, searched as written unless `rewriteQuery` is true.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 8
+          description: Most chunks to return, best first.
+        filters:
+          $ref: '#/components/schemas/Filters'
+        createdAfter:
+          type: string
+          description: '"YYYY-MM-DD" or an ISO 8601 datetime with an offset, inclusive. When the source record was created.'
+        createdBefore:
+          type: string
+          description: As `createdAfter`, the other end.
+        modifiedAfter:
+          type: string
+          description: As `createdAfter`, on when the source record last changed.
+        modifiedBefore:
+          type: string
+          description: As `modifiedAfter`, the other end.
+        maxChunksPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
           description: |
-            Permission level for shared users:
-
-            - `read` — Can view only
-            - `write` — Can add messages
-
+            Most chunks from any one record. Left out, the search's own per-record
+            allowance applies: at most `max(4, limit / 6)` passages from one record
+            with default settings (4 at `limit` 8, 8 at `limit` 50). With `limit`
+            4 or less, one record can fill the page.
+        rewriteQuery:
+          type: boolean
+          default: false
+          description: Rewrite and expand the query with the org's model first (slower).
+    RetrieveChunk:
+      type: object
+      required: [id, text, record, citation]
+      properties:
+        id:
+          type: string
+          description: Stable for the same indexed block, for deduplication and caching.
+        text:
+          type: string
+        score:
+          type: number
+          nullable: true
+        record:
+          type: object
+          properties:
+            recordId:
+              type: string
+            name:
+              type: string
+              nullable: true
+            connector:
+              type: string
+              nullable: true
+            mimeType:
+              type: string
+              nullable: true
+            updatedAt:
+              type: string
+              nullable: true
+        citation:
+          type: object
+          properties:
+            url:
+              type: string
+              nullable: true
+              description: Deep link to the passage (a `#:~:text=` fragment where the source supports one).
+            recordUrl:
+              type: string
+              nullable: true
+              description: Link to the record itself.
+            pageNum:
+              type: array
+              nullable: true
+              items:
+                type: integer
+            blockIndex:
+              type: integer
+              nullable: true
+    RetrieveResponse:
+      type: object
+      required: [chunks, incomplete]
+      properties:
+        requestId:
+          type: string
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveChunk'
+        incomplete:
+          type: boolean
+          description: True when part of the search could not run (for example a source timed out).
+        message:
+          type: string
+          description: Why `chunks` is empty, when it is.
     SemanticSearchRequest:
       type: object
       description: |
@@ -10851,8 +11063,10 @@ components:
           type: boolean
           default: true
           description: |
-            Whether the AI model rewrites the query and adds expanded variants before
-            searching. Set it to `false` to search the query exactly as sent, with no
+            Whether the AI model's rewrite of the query and its expanded variants are
+            searched as well. The query as sent is always searched, so an exact code or
+            name in it is never lost to the rewrite. Set it to `false` to search the query
+            exactly as sent and nothing else, with no
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
@@ -11142,6 +11356,13 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        block_group_index:
+          type: integer
+          nullable: true
+          description: |
+            Set on each passage of a section brought back whole (see `distanceFromMatch`): the
+            index of that section in its record, so passages of two sections of one record can be
+            told apart. Absent on a hit that matched directly.
         timelinePeriod:
           type: integer
           minimum: 0
@@ -12915,6 +13136,13 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         access_type:
           type: string
           description: How the user can access this agent.
@@ -13005,6 +13233,13 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         models:
           type: array
           description: |
@@ -13287,6 +13522,7 @@ components:
         - clickup
         - confluence
         - confluencedatacenter
+        - docs
         - drive
         - github
         - gmail
@@ -13299,6 +13535,7 @@ components:
         - redshift
         - salesforce
         - sharepoint
+        - sheets
         - slack
         - teams
         - zoom
@@ -13436,6 +13673,15 @@ components:
           type: boolean
           default: false
           description: Create the agent as a service-account agent
+        serviceAccountUserId:
+          type: string
+          description: |
+            The `userId` of the service account this agent should search
+            knowledge as, as returned by the service accounts API. Only valid
+            on a service-account agent: sending it without `isServiceAccount`
+            is refused rather than ignored, so a request cannot quietly create
+            an agent that searches as its creator. Omit it and the agent
+            searches as its creator.
         toolsets:
           type: array
           maxItems: 100
@@ -13673,6 +13919,13 @@ components:
           type: boolean
         isServiceAccount:
           type: boolean
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         createdBy:
           type: string
         updatedBy:
@@ -13784,6 +14037,16 @@ components:
           type: boolean
           default: false
           description: Mark agent as a service account
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent should search
+            knowledge as. Only valid on a service-account agent, checked
+            against what the agent will be once the request is applied, so one
+            request may convert an agent and bind it. Null is accepted on any
+            agent and clears the binding, going back to searching as the
+            agent's creator.
         toolsets:
           type: array
           maxItems: 100
@@ -23723,6 +23986,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The mail (SMTP) server rejected the configured username or password,
+            or could not be reached. The message says which, so an admin can fix
+            the mail settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/graph/list:
     get:
@@ -27572,6 +27844,331 @@ paths:
           description: The body is not a list of 1 to 500 ids.
         '401':
           description: The storage scoped token was missing or invalid.
+  /document/internal/artifacts/presign:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get upload URLs for every file of one content revision (service-to-service)
+      description: |
+        Finds or creates the one document that stands for this content revision
+        of the virtual record, and returns an upload URL for each file. Its files
+        live under `record-revisions/{virtualRecordId}/{rev}/` in the organisation, which
+        comes from the storage token only. Calling again for the same revision
+        returns the same document, so the call is safe to repeat. URLs expire
+        after 15 minutes.
+      operationId: internalPresignArtifactSet
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The revision and the files to upload.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - virtualRecordId
+                - rev
+                - files
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                virtualRecordId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{1,128}$'
+                rev:
+                  type: string
+                  pattern: '^[0-9a-f]{8,64}$'
+                  description: The content revision, as lowercase hex.
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - contentType
+                    properties:
+                      path:
+                        $ref: '#/components/schemas/ArtifactFilePath'
+                      contentType:
+                        type: string
+                        maxLength: 127
+                        description: The file's media type, e.g. `application/json`.
+      responses:
+        '200':
+          description: The revision's document and one upload URL per file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - documentId
+                  - virtualRecordId
+                  - rev
+                  - root
+                  - expiresInSeconds
+                  - files
+                properties:
+                  documentId:
+                    type: string
+                  virtualRecordId:
+                    type: string
+                  rev:
+                    type: string
+                  root:
+                    type: string
+                    description: The storage key prefix holding the revision's files.
+                  expiresInSeconds:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactFileUrl'
+        '400':
+          description: The body is not valid (an id, a revision, or a path that is not accepted).
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '403':
+          description: The body names a different organisation than the storage token. Nothing was created.
+  /document/internal/artifacts:
+    get:
+      tags:
+        - Internal Storage
+      summary: List the stored content revisions of a virtual record (service-to-service)
+      description: Lists the artifact-set documents of one virtual record in the caller's organisation, oldest first.
+      operationId: internalListArtifactSets
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: The revisions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - revisions
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - documentId
+                        - virtualRecordId
+                        - rev
+                      properties:
+                        documentId:
+                          type: string
+                        virtualRecordId:
+                          type: string
+                        rev:
+                          type: string
+                        storageVendor:
+                          type: string
+                        createdAt:
+                          type: integer
+                          description: Milliseconds since the epoch.
+                        updatedAt:
+                          type: integer
+                          description: Milliseconds since the epoch.
+        '400':
+          description: The virtual record id is missing or not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/artifacts/{documentId}:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a content revision and all its files (service-to-service)
+      description: |
+        Removes every file under the revision's root, then its document. A
+        revision that is already gone counts as purged, so the call is safe to
+        repeat. If the files cannot be removed the document is kept and the call
+        answers 503, so it can be retried.
+      operationId: internalPurgeArtifactSet
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: The files could not be removed; the document was kept so the removal can be retried.
+  /document/internal/artifacts/{documentId}/read-urls:
+    post:
+      tags:
+        - Internal Storage
+      summary: Get download URLs for files of one content revision (service-to-service)
+      description: |
+        Returns a download URL for each requested file of the revision. On S3
+        and Azure these are signed URLs that expire after 15 minutes; on local
+        storage they point at this API's file route. Each supports HTTP Range.
+      operationId: internalGetArtifactReadUrls
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      requestBody:
+        description: The files to read.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - paths
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                paths:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    $ref: '#/components/schemas/ArtifactFilePath'
+      responses:
+        '200':
+          description: One download URL per path.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - documentId
+                  - expiresInSeconds
+                  - files
+                properties:
+                  documentId:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactFileUrl'
+        '400':
+          description: The document id or a path is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '403':
+          description: The body names a different organisation than the storage token.
+        '404':
+          description: No such revision in the caller's organisation.
+  /document/internal/artifacts/{documentId}/files/{path}:
+    parameters:
+      - $ref: '#/components/parameters/InternalDocumentId'
+      - name: path
+        in: path
+        required: true
+        description: The file inside the revision; may contain `/`.
+        schema:
+          $ref: '#/components/schemas/ArtifactFilePath'
+    put:
+      tags:
+        - Internal Storage
+      summary: Write one file of a content revision on local storage (service-to-service)
+      description: |
+        The local-storage counterpart of a signed upload URL, as returned by
+        presign. Replaces the file whole or leaves the old one in place. Only
+        answered when storage is local.
+      operationId: internalPutArtifactFile
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The file's bytes.
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: The file was stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - path
+                  - size
+                properties:
+                  path:
+                    type: string
+                  size:
+                    type: integer
+        '400':
+          description: The document id or path is not valid, the body was not sent as bytes, or storage is not local.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such revision in the caller's organisation.
+        '413':
+          description: The file is larger than 100 MB.
+        '503':
+          description: The file could not be saved. Safe to retry.
+    get:
+      tags:
+        - Internal Storage
+      summary: Read one file of a content revision on local storage (service-to-service)
+      description: |
+        The local-storage counterpart of a signed download URL, as returned by
+        read-urls. Supports HTTP Range. Only answered when storage is local.
+      operationId: internalGetArtifactFile
+      security:
+        - scopedToken: []
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: The requested byte range of the file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: The document id or path is not valid, or storage is not local.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such revision or file.
+        '416':
+          description: The requested range is outside the file.
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -29371,6 +29968,129 @@ paths:
           description: Parent folder ID. Omit to create at the knowledge base root.
           schema:
             type: string
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folderName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Name of the folder
+                  example: "Project Documents"
+              required:
+                - folderName
+      responses:
+        '200':
+          description: Folder created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderCreateResponseSchema'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+            - Supplying `parentId` or `parent_id` is rejected with HTTP 400 (use `POST /knowledgeBase/{kbId}/folder/{folderId}/subfolder` instead)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks WRITER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Knowledge base or parent folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Conflict. Possible reasons:
+
+            - A folder with this name already exists at the knowledge base root or within the parent folder
+            - The parent folder is in Recently deleted; restore it first, or choose another folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while creating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Create subfolder
+      description: |
+        Create a nested subfolder inside an existing parent folder.
+
+        **Required permission:** WRITER or higher
+
+        **Folder features:**
+
+        - Organize records hierarchically
+        - Support nested subfolders (unlimited depth)
+        - Inherit parent KB permissions
+
+        **Naming rules:**
+
+        - 1–255 characters
+        - XSS protection applied
+        - Spaces and special characters allowed
+        - Duplicate names rejected within the same parent (`409`)
+
+        **Response:** Returns `id` and `name` for the created folder.
+      operationId: createSubfolder
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          required: true
+          description: Parent folder ID
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         description: "Request payload"
@@ -34048,13 +34768,10 @@ paths:
 
         **Overview:**
 
-        Allows the conversation owner to grant access to other users.
-        Shared users can view the conversation and optionally add messages.
-
-        **Access Levels:**
-
-        - `read` - Can view conversation and messages (default)
-        - `write` - Can view and add new messages
+        Allows the conversation owner to grant other users read-only access.
+        Shared users can view the conversation; only the owner adds messages.
+        Recipients see the full transcript, including citations and tool output,
+        as the owner sees it.
 
         **Permissions:**
 
@@ -36132,6 +36849,85 @@ paths:
           description: Unauthorized — valid bearer token required.
 
   # -------------------- Semantic Search --------------------
+  /retrieve:
+    post:
+      tags:
+        - Semantic Search
+      summary: Retrieve chunks with citations
+      description: |
+        Ranked passages ("chunks") for a query, each with its record and a
+        citation link, for building your own RAG pipeline or agent on
+        PipesHub. Results are filtered by the caller's permissions exactly as
+        `POST /search` is, and take the same `filters` and date bounds.
+
+        Unlike `POST /search`, nothing is stored: no search history and no
+        citation documents, so an application can call this on every request
+        it serves. The query is searched as sent unless `rewriteQuery` is
+        true.
+
+        Nothing to find (no match, no accessible records, nothing indexed
+        yet) is a `200` with an empty `chunks` list.
+      operationId: retrieve
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrieveRequest'
+            examples:
+              simple:
+                summary: Chunks from one collection
+                value:
+                  query: "how do we roll back a canary?"
+                  limit: 8
+                  filters:
+                    kb: ["3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"]
+      responses:
+        '200':
+          description: Ranked chunks, each with its record and citation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResponse'
+        '400':
+          description: |
+            Invalid request: `query` missing or empty, `limit` or
+            `maxChunksPerRecord` outside 1-50, a date that does not parse, or
+            a `filters` key the `Filters` schema does not list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:write` scope.
+        '404':
+          description: |
+            A referenced app or collection filter could not be resolved, or
+            nothing selected below app level exists or is readable by the
+            caller (as for `POST /search`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            The selection cannot be searched as asked (as for `POST /search`);
+            the message says what to change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error, or the AI search service was unreachable.
+        '503':
+          description: The search index or the permission check is temporarily unavailable.
+
   /search:
     post:
       tags:
@@ -42025,6 +42821,7 @@ paths:
       operationId: listToolsetRegistry
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -42079,6 +42876,7 @@ paths:
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -42104,6 +42902,7 @@ paths:
       operationId: createToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
@@ -42160,6 +42959,7 @@ paths:
       operationId: listConfiguredToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Configured toolsets retrieved successfully
@@ -42184,6 +42984,7 @@ paths:
       operationId: checkToolsetStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -42208,6 +43009,7 @@ paths:
       operationId: getToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -42231,6 +43033,7 @@ paths:
       deprecated: true
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -42267,6 +43070,7 @@ paths:
       operationId: updateToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -42305,6 +43109,7 @@ paths:
       operationId: deleteToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetId
           in: path
@@ -42330,6 +43135,7 @@ paths:
       operationId: reauthenticateToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -42363,6 +43169,7 @@ paths:
       operationId: getToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -42399,6 +43206,7 @@ paths:
       operationId: handleToolsetOAuthCallback
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: code
           in: query
@@ -42440,6 +43248,7 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -42734,6 +43543,7 @@ paths:
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -42879,6 +43689,7 @@ paths:
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -42919,6 +43730,7 @@ paths:
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -42968,6 +43780,7 @@ paths:
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -42998,6 +43811,7 @@ paths:
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -43028,6 +43842,7 @@ paths:
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -43069,6 +43884,7 @@ paths:
       operationId: getToolsetInstances
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Instances retrieved successfully
@@ -43093,6 +43909,7 @@ paths:
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
@@ -43152,6 +43969,7 @@ paths:
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -43177,6 +43995,7 @@ paths:
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -43210,6 +44029,7 @@ paths:
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -43235,6 +44055,7 @@ paths:
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -43268,6 +44089,7 @@ paths:
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -43310,6 +44132,7 @@ paths:
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -43333,6 +44156,7 @@ paths:
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -43356,6 +44180,7 @@ paths:
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -43386,6 +44211,7 @@ paths:
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -43416,6 +44242,7 @@ paths:
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -43448,6 +44275,7 @@ paths:
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -43489,6 +44317,7 @@ paths:
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -43513,6 +44342,7 @@ paths:
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetType
           in: path
@@ -43549,6 +44379,7 @@ paths:
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetType
           in: path

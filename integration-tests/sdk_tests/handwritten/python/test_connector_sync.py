@@ -48,9 +48,13 @@ def test_handwritten_connector_sync(pipeshub: Pipeshub):
     )
     connector_id = created.connector.connector_id
     try:
-        # RSS has no auth, so it has no filter options, and it cannot resync before it is enabled.
-        with raises_status(400):
-            pipeshub.connector_filters.get_connector_filters(connector_id=connector_id)
+        # RSS has no auth, so its saved settings are enough for filter options, but none of
+        # them come from the service. It cannot resync before it is enabled.
+        filters = pipeshub.connector_filters.get_connector_filters(
+            connector_id=connector_id
+        )
+        assert filters.success is True
+        assert filters.filter_options == {}
         with raises_status(404):
             pipeshub.connector_filters.get_filter_field_options(
                 connector_id=connector_id, filter_key="sdk_test_no_such_filter"

@@ -80,13 +80,28 @@ class OAuthProviderTestBase:
 def oauth_credentials(
     pipeshub_client: PipeshubClient,
 ) -> Iterator[dict]:
-    """Provide client_id, client_secret, and a fresh access_token for tests."""
-    pipeshub_client._ensure_access_token()
-    yield {
+    """Provide client_id, client_secret, and a fresh access_token for tests.
+
+    The token is minted here rather than taken from ``pipeshub_client``: on the
+    local stack that client uses a login session, and these tests introspect
+    and revoke an OAuth access token.
+    """
+    credentials = {
         "client_id": os.environ.get("CLIENT_ID", ""),
         "client_secret": os.environ.get("CLIENT_SECRET", ""),
-        "access_token": pipeshub_client._access_token,
     }
+    credentials["access_token"] = _client_credentials_token(pipeshub_client, credentials)
+    yield credentials
+
+
+def _client_credentials_token(pipeshub_client: PipeshubClient, credentials: dict) -> str:
+    resp = OAuthProviderClient(pipeshub_client).token(
+        grant_type="client_credentials",
+        client_id=credentials["client_id"],
+        client_secret=credentials["client_secret"],
+    )
+    assert resp.status_code == 200, f"token fetch failed: {resp.status_code} {resp.text}"
+    return str(resp.json()["access_token"])
 
 
 # ====================================================================
@@ -157,6 +172,7 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     @pytest.fixture(autouse=True)
     def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
+        self.access_token = oauth_credentials["access_token"]
 
     def test_response_and_errors(self, user_session_client: SessionClient) -> None:
         """401 missing auth, 403 OAuth access token, 400 invalid consent body."""
@@ -173,7 +189,12 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
         )
 
         # A client must not be able to consent with a token it already holds.
-        resp = self.oauth.authorize_consent(**consent, auth=True)
+        resp = self.oauth.post(
+            "/api/v1/oauth2/authorize",
+            json=consent,
+            auth=False,
+            headers={"Authorization": f"Bearer {self.access_token}"},
+        )
         assert resp.status_code == 403, (
             f"Expected 403 for an OAuth access token, got {resp.status_code}: {resp.text}"
         )
@@ -345,8 +366,9 @@ class TestOAuthRevoke(OAuthProviderTestBase):
         assert_response_matches_openapi_operation(
             resp.json(), "oauthRevoke", status_code="401"
         )
-        self.pipeshub_client._fetch_access_token()
-        self.oauth_credentials["access_token"] = self.pipeshub_client._access_token
+        self.oauth_credentials["access_token"] = _client_credentials_token(
+            self.pipeshub_client, self.oauth_credentials
+        )
 
 
 # ====================================================================

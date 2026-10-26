@@ -192,8 +192,16 @@ describe('StorageController purge', () => {
 
       const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
       const indexed = DocumentModel.schema.indexes().map(([keys]) => Object.keys(keys))
+      // An index serves a branch when all its keys are in the branch, or when
+      // its leading keys are exactly the branch's (a compound index's prefix).
       for (const branch of filter.$or as Filter[]) {
-        const covered = indexed.some((keys) => keys.every((key) => key in branch))
+        const branchKeys = Object.keys(branch)
+        const covered = indexed.some(
+          (keys) =>
+            keys.every((key) => key in branch) ||
+            (keys.length > branchKeys.length &&
+              keys.slice(0, branchKeys.length).every((key) => key in branch)),
+        )
         expect(covered, `no index serves ${Object.keys(branch).join(', ')}`).to.be.true
       }
     })

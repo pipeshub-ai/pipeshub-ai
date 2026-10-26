@@ -2441,6 +2441,36 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def get_record_content_revs(
         self,
         record_ids: list[str],
@@ -4334,8 +4364,8 @@ class IGraphDBProvider(ABC):
         over to one of these holders. A trashed holder counts: a restore needs
         the content, and the trash purge releases it later. VRIDs nobody holds
         are absent from the result. Each holder carries ``id``, ``connectorId``,
-        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
-        ``isDeleted`` (a bool).
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.
@@ -4402,6 +4432,26 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than answering an empty set, which would read
         as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
         """
         raise NotImplementedError
 
@@ -5227,6 +5277,17 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction context
         """
         pass
+
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
+        teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_uploaded_document_ids(

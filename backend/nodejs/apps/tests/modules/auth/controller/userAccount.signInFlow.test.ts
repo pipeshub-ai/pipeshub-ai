@@ -43,6 +43,7 @@ import type { ICacheService } from '../../../../src/libs/services/cache/cacheSer
 import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types';
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -146,6 +147,8 @@ type AzureClaims = Awaited<ReturnType<typeof azureAd.validateAzureAdUser>>;
 type AzureIdentity = ReturnType<typeof azureAd.microsoftAccountIdentity>;
 
 describe('UserAccountController sign-in flow', () => {
+  useCommunitySignInLists();
+
   let controller: UserAccountController;
   let sessionService: SessionService;
   let redisStore: Map<string, string>;

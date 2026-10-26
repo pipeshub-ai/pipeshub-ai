@@ -252,8 +252,9 @@ async def ids_within_scope(
     All of them for a turn with none of these.
 
     For the tools that reach a record by name or by id, which no vector
-    filter narrows. A file the user attached to this conversation is always
-    readable: it is part of the question, not of the sources.
+    filter narrows. A file the user attached to this conversation, in this
+    turn or an earlier one, is always readable: it is part of the question,
+    not of the sources.
     """
     from app.config.constants.arangodb import CollectionNames
     from app.modules.retrieval.selection_scope import (
@@ -268,9 +269,14 @@ async def ids_within_scope(
     scoped = _has_selection(filters) or picked is not None or any(key in filters for key in ALLOWED_FILTER_KEYS)
     if not scoped or not ids:
         return set(ids)
+    earlier = [
+        attachment
+        for turn in state.get("previous_conversations") or [] if isinstance(turn, dict)
+        for attachment in turn.get("attachments") or []
+    ]
     attached = {
         attachment.get("recordId")
-        for attachment in state.get("attachments") or []
+        for attachment in [*(state.get("attachments") or []), *earlier]
         if isinstance(attachment, dict)
     } & set(ids)
     if attached:

@@ -99,18 +99,16 @@ SCHEDULED_ELSEWHERE = (
     "every connector type, and each run waits on a real scheduler tick"
 )
 
-FILTER_KEEPS_EXCLUDED_ITEM = (
-    "a narrowed sync filter must remove the excluded item from every store (record, "
-    "vectors, stored files). This connector's full sync only drops the item's sync edges "
-    "(event_service.py, delete_connector_sync_edges) and never deletes it, so its record "
-    "and vectors stay behind where nobody can find them"
-)
-
 INDEXED = "COMPLETED"
 NOT_INDEXED = "AUTO_INDEX_OFF"
 MANUAL_INDEXING_FILTER = {
     "indexing": {
         "values": {"enable_manual_sync": {"operator": "is", "type": "boolean", "value": True}}
+    }
+}
+AUTO_INDEXING_FILTER = {
+    "indexing": {
+        "values": {"enable_manual_sync": {"operator": "is", "type": "boolean", "value": False}}
     }
 }
 
@@ -397,7 +395,9 @@ def static_marks_for(cls: type, fn: Callable[..., Any]) -> list[pytest.MarkDecor
     scenario = fn.__name__.removeprefix("test_matrix_")
     bug = getattr(cls, "KNOWN_BUGS", {}).get(scenario)
     if bug:
-        return [pytest.mark.xfail(reason=bug, strict=True)]
+        # Only a failed check is the bug. A probe that crashes (a docker exec, a store
+        # that will not answer) has to fail the run, not pass as the expected failure.
+        return [pytest.mark.xfail(reason=bug, strict=True, raises=AssertionError)]
     return []
 
 
@@ -1100,21 +1100,26 @@ class ConnectorScenarioMatrix:
                 await run.sync_until(_present, "the item created with manual indexing on")
             return item
 
-        item = await run.rounds.run("indexing", body)
-        view = await run.record(item)
-        assert view is not None
-        assert view.indexing_status == NOT_INDEXED, (
-            f"{run.adapter.source}: with manual indexing on, a new item should be "
-            f"{NOT_INDEXED}, but is {view.indexing_status}"
-        )
-        if view.virtual_record_id:
-            assert await run.vector.count_for_virtual_record(view.virtual_record_id) == 0, (
-                f"{run.adapter.source}: an item synced with manual indexing on has vectors"
+        try:
+            item = await run.rounds.run("indexing", body)
+            view = await run.record(item)
+            assert view is not None
+            assert view.indexing_status == NOT_INDEXED, (
+                f"{run.adapter.source}: with manual indexing on, a new item should be "
+                f"{NOT_INDEXED}, but is {view.indexing_status}"
             )
-            await run.wait_search(item.text, view.virtual_record_id, expect=False,
-                                  as_user=run.adapter.owner)
-        keep = run.item(Role.KEEP)
-        await _admin_can_find(run, keep, await run.wait_indexed(keep))
+            if view.virtual_record_id:
+                assert await run.vector.count_for_virtual_record(view.virtual_record_id) == 0, (
+                    f"{run.adapter.source}: an item synced with manual indexing on has vectors"
+                )
+                await run.wait_search(item.text, view.virtual_record_id, expect=False,
+                                      as_user=run.adapter.owner)
+            keep = run.item(Role.KEEP)
+            await _admin_can_find(run, keep, await run.wait_indexed(keep))
+        finally:
+            # Later cases (the scheduled sync) need what they create indexed.
+            await run.adapter.apply_filters(AUTO_INDEXING_FILTER)
+            await run.settle()
 
     @pytest.mark.order(9)
     @needs(Action.CREATE, Action.SCHEDULED_SYNC)

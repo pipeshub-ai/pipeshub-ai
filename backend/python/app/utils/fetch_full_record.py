@@ -13,7 +13,13 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.entities import Record, RecordType, TicketRecord
+from app.models.entities import (
+    USER_EMAIL_PLACEHOLDER,
+    Record,
+    RecordType,
+    TicketRecord,
+    substitute_user_email,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -245,6 +251,7 @@ class _RecordResolver:
         self._frontend_url = frontend_url
         self._endpoints_read = False
         self._excluded: asyncio.Future[frozenset[str]] | None = None
+        self._viewer_email: asyncio.Future[str | None] | None = None
         # Records the caller may read that exist but have no indexed content,
         # by id: their status and metadata, so "not indexed" can name them.
         self.not_indexed: dict[str, dict[str, str]] = {}
@@ -270,6 +277,31 @@ class _RecordResolver:
             logger.warning("Demo data setting unreadable for %s", self._user_id, exc_info=True)
             return frozenset()
 
+    async def _with_viewer_link(self, graph_record: dict[str, Any]) -> dict[str, Any]:
+        """``graph_record`` with a shared mailbox's link opened as this viewer.
+
+        Search fills the viewer's email into a Gmail link before handing records
+        on; a record read here comes straight from the graph and still holds the
+        placeholder, which reached citations as ``authuser={user.email}``.
+        """
+        web_url = graph_record.get("webUrl")
+        if not web_url or USER_EMAIL_PLACEHOLDER not in web_url:
+            return graph_record
+        if self._viewer_email is None:
+            self._viewer_email = asyncio.ensure_future(self._read_viewer_email())
+        resolved = substitute_user_email(web_url, await self._viewer_email, graph_record.get("connectorName"))
+        return graph_record if resolved == web_url else {**graph_record, "webUrl": resolved}
+
+    async def _read_viewer_email(self) -> str | None:
+        if not (self._graph_provider and self._user_id):
+            return None
+        try:
+            user = await self._graph_provider.get_user_by_user_id(self._user_id)
+        except Exception:
+            logger.warning("User unreadable for %s; mail links keep the placeholder", self._user_id, exc_info=True)
+            return None
+        return user.get("email") if isinstance(user, dict) else None
+
     async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
         # The map is not only retrieval's: attachment and FK enrichment write
         # to it too, so an entry proves nothing where the batch check has run.
@@ -284,7 +316,7 @@ class _RecordResolver:
             if not cached.get("virtualRecordId"):
                 cached["virtualRecordId"] = cached.get("virtual_record_id")
             try:
-                record = await self._download(cached)
+                record = await self._download(await self._with_viewer_link(cached))
             except Exception:
                 logger.warning("Blob read failed for map entry %s", record_id, exc_info=True)
                 return record_id, None, STORAGE_ERROR
@@ -306,6 +338,7 @@ class _RecordResolver:
 
         if not graph_record:
             return record_id, None, UNAVAILABLE
+        graph_record = await self._with_viewer_link(graph_record)
         # Search leaves switched-off demo data out; opening it by id must too.
         if graph_record.get("connectorId") in await self._excluded_apps():
             return record_id, None, UNAVAILABLE

@@ -171,4 +171,4 @@ jobs:
           MONGO_IT_URI: ${{ matrix.uri }}
           REPLICA_SET_AVAILABLE: ${{ matrix.rs_available }}
           TS_NODE_PROJECT: tsconfig.test.json
-        run: npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts
+        run: npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts

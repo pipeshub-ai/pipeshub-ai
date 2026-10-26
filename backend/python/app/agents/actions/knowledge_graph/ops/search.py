@@ -95,6 +95,7 @@ from app.utils.pattern_match import (
     render_pattern_match_coverage_note,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
+    split_hint_entries,
 )
 
 if TYPE_CHECKING:
@@ -153,6 +154,11 @@ _MAX_FIT_PASSES = 3
 # Naming grep hits on records the fit dropped may take 1/8 of the result:
 # bounded, so dropping more records cannot grow the hint past what they freed.
 _DROPPED_GREP_HINT_SHARE = 8
+# Records only grep found may take 1/4: the best few with full metadata, the
+# rest named on one line. A large store's keyword index returns up to 50, and
+# as full blocks sized ahead of the records they displaced the ranked passages.
+_GREP_ONLY_HINT_SHARE = 4
+_MAX_FULL_GREP_ONLY_HINTS = 10
 
 
 def _ranked_header(blocks: int, records: int, omitted: int, *, by_relevance: bool) -> str:
@@ -1101,6 +1107,14 @@ async def _execute_search(
             knowledge.ranked = passage_cap.units
 
         has_semantic_blocks = bool(knowledge.ranked)
+        grep_only_full, grep_only_brief, grep_only_unlisted = pm_record_entries, [], 0
+        # With no passages to make room for, every grep-only record keeps its metadata.
+        if has_semantic_blocks:
+            grep_only_full, grep_only_brief, grep_only_unlisted = split_hint_entries(
+                pm_record_entries, virtual_record_id_to_result,
+                result_max_chars // _GREP_ONLY_HINT_SHARE,
+                max_full=_MAX_FULL_GREP_ONLY_HINTS,
+            )
 
         def keyword_hint(selection: Selection) -> tuple[list[dict[str, Any]], str]:
             """The grep records named for ``selection``, and the hint naming them.
@@ -1112,7 +1126,7 @@ async def _execute_search(
             shown = {unit.get("virtual_record_id") for unit in selection.ranked}
             dropped = [hit for hit in loaded_grep_hits if hit["virtual_record_id"] not in shown]
             entries = [
-                *pm_record_entries,
+                *grep_only_full,
                 *grep_hits_within(
                     dropped, virtual_record_id_to_result,
                     result_max_chars // _DROPPED_GREP_HINT_SHARE,
@@ -1123,12 +1137,14 @@ async def _execute_search(
                     entries, virtual_record_id_to_result,
                     has_semantic_blocks=has_semantic_blocks,
                     max_records=max(len(entries), 1),
+                    brief_records=grep_only_brief,
+                    unlisted=grep_only_unlisted,
                 )
             except Exception as exc:
                 # The semantic answer above is complete without the hint.
                 logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
                 return [], coverage_note
-            return (entries if hint else []), hint + coverage_note
+            return ([*entries, *grep_only_brief] if hint else []), hint + coverage_note
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:

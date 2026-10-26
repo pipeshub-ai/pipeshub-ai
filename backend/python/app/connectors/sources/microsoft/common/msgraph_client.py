@@ -76,6 +76,9 @@ class RecordUpdate:
     old_permissions: Optional[List[Permission]] = None
     new_permissions: Optional[List[Permission]] = None
     external_record_id: Optional[str] = None
+    # False when the record's permissions could not be read this run: its stored access is kept, and the
+    # caller must read the item again later.
+    permissions_known: bool = True
 
 @dataclass
 class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):

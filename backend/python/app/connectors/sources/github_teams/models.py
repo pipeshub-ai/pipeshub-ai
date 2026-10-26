@@ -42,6 +42,7 @@ class GitHubLiterals(str, Enum):
     """String constants used as dict keys and sync-point payload fields."""
 
     LAST_SYNC_TIME = "last_sync_time"
+    ISSUE_TOTAL = "issue_total"
     LAST_COMMIT_SHA = "last_commit_sha"
     DEFAULT_BRANCH = "default_branch"
     FULL_NAME = "full_name"

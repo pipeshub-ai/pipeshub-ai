@@ -154,6 +154,11 @@ class Routes(Enum):
     STORAGE_CONNECTOR_VIRTUAL_RECORDS = "/api/v1/document/internal/connector/{connector_id}/virtual-records"
     STORAGE_RELOCATE_RECORDS = "/api/v1/document/internal/records/relocate"
     STORAGE_MISSING_DOCUMENTS = "/api/v1/document/internal/missing"
+    # Artifact sets: one storage document per content revision of a virtual record.
+    STORAGE_ARTIFACTS = "/api/v1/document/internal/artifacts"
+    STORAGE_ARTIFACTS_PRESIGN = "/api/v1/document/internal/artifacts/presign"
+    STORAGE_ARTIFACT_SET = "/api/v1/document/internal/artifacts/{documentId}"
+    STORAGE_ARTIFACT_READ_URLS = "/api/v1/document/internal/artifacts/{documentId}/read-urls"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

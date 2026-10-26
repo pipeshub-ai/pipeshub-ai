@@ -732,10 +732,10 @@ class TestGitLabIssues:
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
         )
 
-        comment_bodies = [
-            note["body"] for note in
-            await _notes_for(gitlab_connector, "issues", issue["iid"])
-        ]
+        notes = await _notes_for(gitlab_connector, "issues", issue["iid"])
+        # Internal notes are for Planner and up; the issue's readers include Guests, so the
+        # connector leaves them out of the issue's content.
+        comment_bodies = [note["body"] for note in notes if not note.get("internal")]
         serialised = str(expected)
         for body in comment_bodies:
             fragment = body.strip().split("\n")[0][:40]
@@ -743,6 +743,10 @@ class TestGitLabIssues:
                 f"comment {fragment!r} is missing from the issue blocks — the per-issue "
                 "comment fetch is not reaching the block builder"
             )
+        for note in notes:
+            fragment = note["body"].strip().split("\n")[0][:40]
+            if note.get("internal") and fragment:
+                assert fragment not in serialised, f"internal note {fragment!r} is in the issue blocks"
         logger.info(
             "TC-GL-ISSUE-BLOCKS-001 passed: issue #%s blocks + %d comment(s) validated",
             issue["iid"], len(comment_bodies),

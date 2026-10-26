@@ -156,6 +156,7 @@ export default function MultipleProviders({
               <button
                 key={tab.method}
                 type="button"
+                className="touch-hit"
                 onClick={() => setActiveMethod(tab.method)}
                 style={{
                   flexShrink: 0,

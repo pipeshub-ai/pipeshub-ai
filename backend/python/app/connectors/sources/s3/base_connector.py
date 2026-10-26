@@ -10,13 +10,14 @@ import asyncio
 import mimetypes
 import uuid
 from abc import abstractmethod
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterable
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any
+from urllib.parse import quote
 
-from aiolimiter import AsyncLimiter
+from aiobotocore.config import AioConfig
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -193,7 +194,7 @@ def get_parent_weburl_for_s3(parent_external_id: str, base_console_url: str = "h
         path = path.lstrip("/")
         if path and not path.endswith("/"):
             path = path + "/"
-        return f"{base_console_url}/s3/object/{bucket_name}?prefix={path}"
+        return f"{base_console_url}/s3/object/{bucket_name}?prefix={quote(path, safe='/')}"
     else:
         bucket_name = parent_external_id
         return f"{base_console_url}/s3/buckets/{bucket_name}"
@@ -269,6 +270,10 @@ def get_mimetype_for_s3(key: str, *, is_folder: bool = False) -> str:
 
 class _BucketGone(Exception):
     """The store answered NoSuchBucket: the bucket was deleted at the source."""
+
+
+class _ObjectGone(Exception):
+    """The store answered 404 for the object: it is no longer at its key."""
 
 
 class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
@@ -347,7 +352,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         self.data_source: Any | None = None  # Will be S3DataSource or MinIODataSource
         self.batch_size = 100
-        self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         # Per bucket, records moved during this listing, by id, to the external id they moved from:
         # two new copies of a deleted object must not both take its record before the
         # batch naming it is saved, and the batch saves each move in place.
@@ -363,6 +367,16 @@ class S3CompatibleBaseConnector(BaseConnector):
         self._creator: User | None = None
         # Set when a bucket of this full sync was not listed to the end; asyncio runs the buckets on one thread.
         self._skipped_part_of_a_bucket = False
+        # Per run, for one notification at its end: buckets the key may not list, buckets
+        # whose listing failed at the source, and buckets whose sync failed here, with why.
+        self._unreadable_buckets: set[str] = set()
+        self._unlisted_buckets: dict[str, str] = {}
+        self._failed_buckets: dict[str, str] = {}
+        # Bucket groups written in this full sync, after the bucket's first listed page, so a
+        # bucket the key cannot read gets no empty group; None in an incremental run, which
+        # leaves groups as they are.
+        self._bucket_groups_written: set[str] | None = None
+        self._bucket_creation_ms: dict[str, int] = {}
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -417,11 +431,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             if not self.data_source:
                 raise ConnectionError(f"{self.connector_name} connector is not initialized.")
 
-            # Per-run, so folder edges are still rebuilt on every full sync —
-            # the memo only removes repeats *within* one run.
-            self._ensured_folders.clear()
-            self._creator = None
-            self._skipped_part_of_a_bucket = False
+            self._start_run(full=True)
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -484,15 +494,86 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if bucket_name:
                     await self._get_bucket_region(bucket_name)
 
-            # Create record groups for buckets first
-            await self._create_record_groups_for_buckets(buckets_to_sync, bucket_creation_ms)
-
+            self._bucket_creation_ms = bucket_creation_ms
             await self._sync_buckets(buckets_to_sync)
+            await self._report_bucket_problems(chosen=bool(self.bucket_name or selected_buckets))
 
             self.logger.info(f"{self.connector_name} full sync completed.")
         except Exception as ex:
             self.logger.error(f"❌ Error in {self.connector_name} connector run: {ex}", exc_info=True)
             raise
+
+    def _start_run(self, *, full: bool) -> None:
+        """Reset what one run collects."""
+        # Per run, so folder edges are still rebuilt on every full sync; the memo only removes repeats within one run.
+        self._ensured_folders.clear()
+        self._creator = None
+        self._skipped_part_of_a_bucket = False
+        self._unreadable_buckets = set()
+        self._unlisted_buckets = {}
+        self._failed_buckets = {}
+        self._bucket_groups_written = set() if full else None
+        self._bucket_creation_ms = {}
+
+    async def _ensure_bucket_group(self, bucket_name: str) -> None:
+        """Write the bucket's group once per full sync, so its edges are re-created."""
+        if self._bucket_groups_written is None or bucket_name in self._bucket_groups_written:
+            return
+        await self._create_record_groups_for_buckets([bucket_name], self._bucket_creation_ms)
+        self._bucket_groups_written.add(bucket_name)
+
+    async def _report_bucket_problems(self, *, chosen: bool) -> None:
+        """One notification per kind of bucket problem this run had, then fail the run if a sync failed here.
+
+        A bucket the source refused or failed to list is skipped and the run goes on: its
+        records are kept. ``chosen`` says the user picked the buckets, so an unreadable one
+        is an error; otherwise it is a bucket the key can list but was never given.
+        """
+        def names(buckets: Iterable[str]) -> str:
+            listed = sorted(buckets)
+            shown = ", ".join(listed[:10])
+            return f"{shown} and {len(listed) - 10} more" if len(listed) > 10 else shown
+
+        if self._unreadable_buckets:
+            hint = "" if chosen else ", or choose the buckets to sync in the Bucket Names filter"
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR if chosen else NotificationSeverity.WARNING,
+                title=self._notification_title("Buckets skipped: access denied"),
+                message=f"{len(self._unreadable_buckets)} bucket(s) could not be read and were skipped: "
+                f"{names(self._unreadable_buckets)}. Give the key s3:ListBucket and s3:GetObject on them{hint}.",
+            )
+        if self._unlisted_buckets:
+            first = sorted(self._unlisted_buckets)[0]
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("Some buckets could not be listed"),
+                message=f"Could not list {len(self._unlisted_buckets)} bucket(s): {names(self._unlisted_buckets)} "
+                f"({first}: {self._unlisted_buckets[first]}). Their files are kept and the next sync retries them.",
+            )
+        if self._failed_buckets:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("Some buckets failed to sync"),
+                message=f"{len(self._failed_buckets)} bucket(s) failed to sync: {names(self._failed_buckets)}. "
+                "Their files are kept and the next sync retries them.",
+            )
+            # Records may not have been saved, so the run must not show as a success.
+            raise RuntimeError(f"{self.connector_name.value} sync failed for bucket(s): {names(self._failed_buckets)}")
+
+    def _paced(self) -> AbstractAsyncContextManager[None]:
+        """One request's share of the declared rate limit, shared by every bucket of the connector."""
+        return self.resilience.guard() if self.resilience else nullcontext()
+
+    def _with_retry_budget(self, client: Any) -> Any:  # noqa: ANN401 - S3Client or MinIOClient
+        """Give botocore the declared retry budget: it retries throttling (503 SlowDown) and 5xx itself."""
+        if self.resilience:
+            client.get_session().set_default_client_config(
+                AioConfig(retries={"mode": "standard", "total_max_attempts": self.resilience.max_retries + 1})
+            )
+        return client
 
     def _shared_client(self) -> AbstractAsyncContextManager[object]:
         """One data-source client for the whole run, where the data source offers it."""
@@ -510,6 +591,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     await self._sync_bucket(bucket_name)
                 except Exception as e:
                     self._skipped_part_of_a_bucket = True
+                    self._failed_buckets[bucket_name] = str(e)
                     self.logger.error(f"Error syncing bucket {bucket_name}: {e}", exc_info=True)
 
         async with asyncio.TaskGroup() as tasks:
@@ -620,7 +702,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         buckets: list[dict] = []
         token = None
         while True:
-            response = await self.data_source.list_buckets(MaxBuckets=1000, ContinuationToken=token)
+            async with self._paced():
+                response = await self.data_source.list_buckets(MaxBuckets=1000, ContinuationToken=token)
             if not response.success:
                 return response
             # An account without buckets answers {"Buckets": []}; no "Buckets" key is a broken answer.
@@ -676,7 +759,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             return self.region or "us-east-1"
 
         try:
-            response = await self.data_source.get_bucket_location(Bucket=bucket_name)
+            async with self._paced():
+                response = await self.data_source.get_bucket_location(Bucket=bucket_name)
             if response.success and response.data:
                 location = response.data.get("LocationConstraint")
                 region = "us-east-1" if location is None or location == "" else location
@@ -727,11 +811,33 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.data_entities_processor, self.connector_id, bucket_name, scope.list_prefixes, listed, self.logger
             )
         else:
-            self._skipped_part_of_a_bucket = True
+            # Only a bucket with stored records or a stored group needs the full sync to keep its
+            # hands off; one never read (the key can list it but not read it) must not stop every
+            # full sync's cleanup. A group not written this run would otherwise lose its edges.
+            if recorded or await self._unwritten_group_is_stored(bucket_name):
+                self._skipped_part_of_a_bucket = True
             self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
         )
+
+    async def _unwritten_group_is_stored(self, bucket_name: str) -> bool:
+        """Whether the bucket has a stored group this full sync has not written. Unsure counts as yes."""
+        if self._bucket_groups_written is not None and bucket_name in self._bucket_groups_written:
+            return False
+        try:
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={
+                    "connectorId": self.connector_id,
+                    "groupType": RecordGroupType.BUCKET.value,
+                    "externalGroupId": bucket_name,
+                },
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not check for a stored group of bucket {bucket_name}: {e}")
+            return True
+        return bool(groups)
 
     async def _claim_records_of_gone_copies(self, bucket_name: str, unrecorded: list[dict], listed: set[str]) -> None:
         """Process the unchanged objects that have no record of their own, when that is safe.
@@ -822,52 +928,69 @@ class S3CompatibleBaseConnector(BaseConnector):
         max_timestamp = last_sync_time if last_sync_time else 0
         listed: set[str] = set()
         unjudged = False
+        # A refused position is dropped once; refused again, the listing fails as any other.
+        restarted = False
 
         while has_more:
+            listing = False
             try:
-                async with self.rate_limiter:
+                async with self._paced():
+                    listing = True
                     response = await self.data_source.list_objects_v2(
                         Bucket=bucket_name,
                         MaxKeys=self.list_page_size,
                         ContinuationToken=continuation_token,
                         Prefix=prefix or None,
                     )
+                    listing = False
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
-                        # Only this code proves the bucket is gone; access and network errors prove nothing.
-                        bucket_gone = error_msg.startswith("NoSuchBucket")
-                        if "AccessDenied" in error_msg or "not authorized" in error_msg:
+                        status = getattr(response, "status_code", None)
+                        if (
+                            continuation_token
+                            and not restarted
+                            and status == HttpStatusCode.BAD_REQUEST.value
+                            and error_msg.startswith("InvalidArgument")
+                        ):
+                            # A saved position the store no longer takes would fail every run; list from the start.
                             self.logger.warning(
-                                f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
-                            )
-                            self.logger.warning(
-                                f"Please verify your IAM policy includes the following permissions for bucket '{bucket_name}':\n"
-                                f"  - s3:ListBucket on arn:aws:s3:::{bucket_name}\n"
-                                f"  - s3:GetBucketLocation on arn:aws:s3:::{bucket_name}\n"
-                                f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
-                                f"Also check if there's a bucket policy that might be blocking access."
-                            )
-                            await self.notify(
-                                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                                title=self._notification_title("Access denied"),
-                                message=f"Access denied when listing objects in bucket '{bucket_name}'. "
-                                f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
-                                severity=NotificationSeverity.ERROR,
-                            )
-                        else:
-                            self.logger.error(
-                                f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                                f"Listing of bucket {bucket_name} refused its saved position ({error_msg}); "
+                                "listing the bucket again from the start"
                             )
                             await self.notify(
                                 type=NotificationType.CONNECTOR_SYNC_ERROR,
-                                title=self._notification_title("Failed to list objects in bucket"),
-                                message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
-                                severity=NotificationSeverity.ERROR,
+                                severity=NotificationSeverity.WARNING,
+                                title=self._notification_title("Bucket listed again from the start"),
+                                message=f"The saved listing position for bucket '{bucket_name}' was no longer "
+                                "valid, so this sync lists the whole bucket again.",
                             )
+                            await self.record_sync_point.update_sync_point(
+                                sync_point_key, {"continuation_token": None, "listing_started_at": None}
+                            )
+                            continuation_token = None
+                            resumed = False
+                            restarted = True
+                            listing_started_at = get_epoch_timestamp_in_ms()
+                            continue
+                        # Only this code proves the bucket is gone; access and network errors prove nothing.
+                        bucket_gone = error_msg.startswith("NoSuchBucket")
+                        if status == HttpStatusCode.FORBIDDEN.value or error_msg.startswith("AccessDenied"):
+                            self.logger.warning(
+                                f"Access denied when listing objects in bucket {bucket_name} (status {status}): "
+                                f"{error_msg}. The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."
+                            )
+                            self._unreadable_buckets.add(bucket_name)
+                        else:
+                            self.logger.error(
+                                f"Failed to list objects in bucket {bucket_name} (status {status}): {error_msg}"
+                            )
+                            self._unlisted_buckets[bucket_name] = error_msg
                         listing_failed = True
                         has_more = False
                         continue
+
+                    await self._ensure_bucket_group(bucket_name)
 
                     objects_data = response.data or {}
                     # S3 leaves "Contents" out of an empty page, which can still be truncated.
@@ -948,7 +1071,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                         has_more = False
                         continue
 
-                    if continuation_token:
+                    # A saved token marks the pages before it done: their records are written first,
+                    # and after a failed object the token stays before it.
+                    if continuation_token and not failed.count:
+                        if batch_records:
+                            await self._save_records(*self._split_moves(batch_records, bucket_name))
+                            batch_records = []
                         await self.record_sync_point.update_sync_point(
                             sync_point_key,
                             {
@@ -959,9 +1087,14 @@ class S3CompatibleBaseConnector(BaseConnector):
                         )
 
             except Exception as e:
+                if not listing:
+                    # Our own failure (a graph or sync point write), not the store's: the bucket
+                    # fails, and the run fails once the other buckets are synced.
+                    raise
                 self.logger.error(
                     f"Error during bucket sync for {bucket_name}: {e}", exc_info=True
                 )
+                self._unlisted_buckets[bucket_name] = str(e)
                 listing_failed = True
                 has_more = False
 
@@ -1196,8 +1329,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
-            version = 0 if not existing_record else existing_record.version + 1
-
             file_record = FileRecord(
                 id=record_id,
                 record_name=record_name,
@@ -1206,7 +1337,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,
                 external_revision_id=composite_revision,
-                version=version,
+                # The processor bumps the stored version only when the revision changed;
+                # a version set here would rise on every re-sent unchanged object.
+                version=0,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -1258,7 +1391,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         if not bucket_name or not key:
             return True
         try:
-            async with self.rate_limiter:
+            async with self._paced():
                 response = await self.data_source.head_object(Bucket=bucket_name, Key=key)
         except Exception as e:
             self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {e}")
@@ -1322,7 +1455,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                 title=self._notification_title("Connection test failed"),
                 message=str(e),
             )
-            return False
+            # False would show only a generic "verify your credentials"; the reason is the useful part.
+            raise ConnectorInitError(f"{self.display_name}: could not check access: {e}") from e
         if problem is None:
             self.logger.info(f"{self.connector_name} connection test successful.")
             return True
@@ -1387,7 +1521,8 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def _bucket_access_problem(self, bucket_name: str, prefix: str = "") -> str | None:
         """Why the key cannot list or read objects under ``prefix`` in the bucket, or None."""
-        listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
+        async with self._paced():
+            listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
         if not listing.success:
             hint = (
                 f" The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."
@@ -1397,7 +1532,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         contents = (listing.data or {}).get("Contents") or []
         if not contents:
             return None
-        head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
+        async with self._paced():
+            head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
         if not head.success:
             hint = (
                 f" The key needs s3:GetObject on arn:aws:s3:::{bucket_name}/*."
@@ -1508,7 +1644,7 @@ class S3CompatibleBaseConnector(BaseConnector):
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
         if filter_key == "buckets":
-            return await self._get_bucket_options(page, limit, search)
+            return await self._get_bucket_options(page, limit, search, cursor)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
 
@@ -1516,71 +1652,54 @@ class S3CompatibleBaseConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: str | None
+        search: str | None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
-        """Get list of available buckets."""
+        """One page of buckets, filtered by the store (name starts with ``search``) and paged with its token."""
+        def failure(message: str) -> FilterOptionsResponse:
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=limit, has_more=False, message=message
+            )
+
         try:
             if not self.data_source:
-                return FilterOptionsResponse(
-                    success=False,
-                    options=[],
-                    page=page,
-                    limit=limit,
-                    has_more=False,
-                    message=f"{self.connector_name} connector is not initialized"
+                return failure(f"{self.connector_name.value} connector is not initialized")
+            async with self._paced():
+                response = await self.data_source.list_buckets(
+                    MaxBuckets=limit, ContinuationToken=cursor or None, Prefix=search or None
                 )
-
-            response = await self._list_all_buckets()
             if not response.success:
+                return failure(f"Failed to list buckets: {response.error}")
+            data = response.data
+            # An account without buckets answers {"Buckets": []}; no "Buckets" key is a broken answer.
+            if not isinstance(data, dict) or "Buckets" not in data:
+                return failure("Failed to list buckets: the response has no bucket list")
+            names = [b["Name"] for b in data["Buckets"] or [] if b.get("Name")]
+            token = data.get("ContinuationToken")
+            if search:
+                # A store that ignores Prefix (MinIO) answers with every bucket.
+                names = [n for n in names if n.startswith(search)]
+            if not token and len(names) > limit:
+                # A store that ignores MaxBuckets (MinIO) answers with every bucket; page them here.
+                start = (page - 1) * limit
                 return FilterOptionsResponse(
-                    success=False,
-                    options=[],
+                    success=True,
+                    options=[FilterOption(id=n, label=n) for n in names[start:start + limit]],
                     page=page,
                     limit=limit,
-                    has_more=False,
-                    message=f"Failed to list buckets: {response.error}"
+                    has_more=start + limit < len(names),
                 )
-
-            all_buckets = [
-                bucket.get("Name") for bucket in response.data["Buckets"]
-                if bucket.get("Name")
-            ]
-
-            if search:
-                search_lower = search.lower()
-                all_buckets = [
-                    bucket for bucket in all_buckets
-                    if search_lower in bucket.lower()
-                ]
-
-            start_idx = (page - 1) * limit
-            end_idx = start_idx + limit
-            paginated_buckets = all_buckets[start_idx:end_idx]
-            has_more = end_idx < len(all_buckets)
-
-            options = [
-                FilterOption(id=bucket, label=bucket)
-                for bucket in paginated_buckets
-            ]
-
             return FilterOptionsResponse(
                 success=True,
-                options=options,
+                options=[FilterOption(id=n, label=n) for n in names],
                 page=page,
                 limit=limit,
-                has_more=has_more
+                has_more=bool(token),
+                cursor=token,
             )
-
         except Exception as e:
             self.logger.error(f"Error getting bucket options: {e}", exc_info=True)
-            return FilterOptionsResponse(
-                success=False,
-                options=[],
-                page=page,
-                limit=limit,
-                has_more=False,
-                message=f"Error: {str(e)}"
-            )
+            return failure(f"Error: {str(e)}")
 
     def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from the source."""
@@ -1613,8 +1732,13 @@ class S3CompatibleBaseConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except _ObjectGone as gone:
+                    # Indexing could only fail to fetch it; the next sync's listing removes the record.
+                    if record.mime_type != MimeTypes.FOLDER.value:
+                        self.logger.info(f"Not reindexing record {record.id}: {gone} is no longer in the bucket")
+                    continue
                 except Exception as e:
-                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)
                     continue
 
             if updated_records:
@@ -1650,13 +1774,18 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
 
-            response = await self.data_source.head_object(
-                Bucket=bucket_name,
-                Key=normalized_key
-            )
+            async with self._paced():
+                response = await self.data_source.head_object(Bucket=bucket_name, Key=normalized_key)
 
             if not response.success:
-                self.logger.warning(f"Object {normalized_key} not found in bucket {bucket_name}")
+                status = getattr(response, "status_code", None)
+                if status == HttpStatusCode.NOT_FOUND.value:
+                    raise _ObjectGone(f"{bucket_name}/{normalized_key}")
+                # Not proof of anything: reindex what is stored, and indexing reports the fetch.
+                self.logger.warning(
+                    f"Could not check {bucket_name}/{normalized_key} for record {record.id} (status {status}): "
+                    f"{response.error}"
+                )
                 return None
 
             obj_metadata = response.data
@@ -1708,7 +1837,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
                 external_revision_id=composite_revision,
-                version=record.version + 1,
+                version=0,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -1748,8 +1877,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             return updated_record, permissions
 
+        except _ObjectGone:
+            raise
         except Exception as e:
-            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)
             return None
 
     async def run_incremental_sync(self) -> None:
@@ -1765,7 +1896,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 raise ConnectionError(f"{self.connector_name} connector is not initialized.")
 
             # Per run, as in run_sync: a folder removed between runs must be re-created.
-            self._ensured_folders.clear()
+            self._start_run(full=False)
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
@@ -1799,6 +1930,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     await self._get_bucket_region(bucket_name)
 
             await self._sync_buckets(buckets_to_sync)
+            await self._report_bucket_problems(chosen=bool(self.bucket_name or selected_buckets))
 
             self.logger.info(f"{self.connector_name} incremental sync completed.")
         except Exception as ex:

@@ -3,6 +3,7 @@ import {
   StoredAuthStep,
   withoutRemovedSignInMethods,
 } from '../../../../src/modules/auth/utils/removedSignInMethods';
+import { useCommunitySignInLists, useSignInLists } from '../../../helpers/sign-in-lists';
 
 const step = (order: number, ...types: string[]): StoredAuthStep => ({
   order,
@@ -10,6 +11,8 @@ const step = (order: number, ...types: string[]): StoredAuthStep => ({
 });
 
 describe('withoutRemovedSignInMethods', () => {
+  useCommunitySignInLists();
+
   it('leaves a policy without removed methods unchanged', () => {
     const stored = [step(1, 'password', 'google'), step(2, 'otp')];
     const result = withoutRemovedSignInMethods(stored);
@@ -94,5 +97,17 @@ describe('withoutRemovedSignInMethods', () => {
     ]);
     expect(result.removed).to.deep.equal(['oauth', 'samlSso']);
     expect(result.steps).to.deep.equal([step(1, 'otp', 'password')]);
+  });
+});
+
+describe('withoutRemovedSignInMethods in an edition that removes nothing', () => {
+  useSignInLists([], {});
+
+  it('keeps SAML, OAuth and Azure AD steps as they are', () => {
+    const stored = [step(1, 'samlSso', 'azureAd'), step(2, 'oauth', 'otp')];
+    const result = withoutRemovedSignInMethods(stored);
+    expect(result.steps).to.deep.equal(stored);
+    expect(result.removed).to.deep.equal([]);
+    expect(result.changed).to.equal(false);
   });
 });

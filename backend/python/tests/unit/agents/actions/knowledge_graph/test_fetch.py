@@ -391,26 +391,6 @@ class TestExecuteFetchRecordImageDelivery:
         assert isinstance(output.data, str)
 
     @pytest.mark.asyncio
-    async def test_without_native_multipart_support_stashes_fallback(self) -> None:
-        from app.utils.chat_helpers import CitationRefMapper
-
-        ctx = _make_context(is_multimodal_llm=True)
-        ctx.tool_state["supports_multipart_tool_result"] = False
-        with patch(
-            "app.utils.fetch_full_record.create_fetch_full_record_tool",
-            return_value=_fake_tool_returning([_image_record()]),
-        ):
-            output, _ = await execute_fetch_record(
-                context=ctx,
-                virtual_records={"vr-1": _image_record()},
-                citation_ref_mapper=CitationRefMapper(),
-                record_ids=["rec-1"],
-            )
-
-        assert isinstance(output.data, list)
-        assert len(ctx.tool_state["pending_tool_images"]) == 1
-
-    @pytest.mark.asyncio
     async def test_shared_image_budget_is_debited(self) -> None:
         """The fetch must draw on the same conversation-wide budget as
         retrieval/attachments, not a private one."""

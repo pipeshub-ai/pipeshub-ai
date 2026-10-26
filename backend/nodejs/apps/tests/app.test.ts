@@ -174,6 +174,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
+  sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
@@ -668,6 +669,45 @@ describe('Application', () => {
       }
     });
 
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
       const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
       sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
@@ -710,6 +750,42 @@ describe('Application', () => {
       expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
       expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
       expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
+
+    it('writes an access-log line for an API request a mounted router answers', async () => {
+      // A mounted router sees req.path relative to its mount point ("/"), and the
+      // log line is written after it answers: the API check must use the full URL.
+      const healthRouter = express.Router();
+      healthRouter.get('/', (_req, res) => {
+        res.json({ status: 'healthy' });
+      });
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+      const mountedApp = new Application();
+      await mountedApp.initialize();
+      const server = http.createServer((mountedApp as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      let status = 0;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path: '/api/v1/health?probe=mounted-router' }, (res) => {
+              status = res.statusCode ?? 0;
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(status).to.equal(200);
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('probe=mounted-router'));
+      expect(accessLines).to.have.length(1);
+      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
     });
   });
 

@@ -79,11 +79,25 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, ...AI_SPECS],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, /responsive\//, ...AI_SPECS],
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
+      },
+    },
+
+    // Every screen at phone, tablet and desktop sizes. Each test sets its own
+    // viewport, so no device preset here.
+    {
+      name: 'responsive',
+      testMatch: /responsive\/.*\.spec\.ts/,
+      dependencies: ['setup'],
+      use: {
+        storageState: '.auth/user.json',
+        // Its own screenshots go to EVIDENCE_DIR.
+        screenshot: 'off',
+        trace: 'off',
       },
     },
 

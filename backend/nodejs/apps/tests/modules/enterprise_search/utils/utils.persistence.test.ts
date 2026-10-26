@@ -535,6 +535,18 @@ describe('Saving chat answers (enterprise search utils)', () => {
       ])
     })
 
+    it('marks a reply the user stopped, and only that one', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'plan it' } as IMessage,
+        { messageType: 'bot_response', content: 'Working on EU', status: 'stopped' } as IMessage,
+        { messageType: 'bot_response', content: 'Done.' } as IMessage,
+      ])
+
+      expect(history[0]).to.not.have.property('status')
+      expect(at(history, 1).status).to.equal('stopped')
+      expect(history[2]).to.not.have.property('status')
+    })
+
     it('adds no tool history for an answer without tool calls', () => {
       const [turn] = formatPreviousConversations([
         { messageType: 'bot_response', content: 'Hi', parts: [{ type: 'text', content: 'Hi' }] } as IMessage,
@@ -580,6 +592,71 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(results).to.have.length(1)
       expect(results[0]?.result).to.contain('current')
       expect(results[0]?.result).to.not.contain('discarded')
+    })
+  })
+
+  describe('formatPreviousConversations unanswered turns', () => {
+    it('replays a turn that failed before an answer as a failed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Summarise the Q3 deck' } as IMessage,
+        { messageType: 'bot_response', content: 'It covers revenue.' } as IMessage,
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+      ])
+
+      expect(history.map((turn) => turn.role)).to.deep.equal([
+        'user_query',
+        'bot_response',
+        'user_query',
+        'bot_response',
+      ])
+      expect(at(history, 3)).to.deep.equal({ role: 'bot_response', content: '', status: 'failed' })
+    })
+
+    it('marks a failed turn whose error follows a system row', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'system', content: 'Forked from an earlier conversation' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+        { messageType: 'user_query', content: 'Only the blocked ones' } as IMessage,
+      ])
+
+      const roles = history.map((turn) => turn.role)
+      expect(roles.indexOf('bot_response')).to.be.greaterThan(roles.indexOf('user_query'))
+      expect(roles.indexOf('bot_response')).to.be.lessThan(roles.lastIndexOf('user_query'))
+      expect(history.find((turn) => turn.role === 'bot_response')).to.deep.equal({
+        role: 'bot_response',
+        content: '',
+        status: 'failed',
+      })
+    })
+
+    it('keeps dropping an error row that follows an answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Open tickets?' } as IMessage,
+        { messageType: 'bot_response', content: 'Three.' } as IMessage,
+        { messageType: 'error', content: 'Something went wrong' } as IMessage,
+      ])
+
+      expect(history).to.have.length(2)
+    })
+
+    it('marks an answer the user stopped', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Compare every epic' } as IMessage,
+        { messageType: 'bot_response', content: 'Epic A is', status: 'stopped' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.include({ role: 'bot_response', content: 'Epic A is', status: 'stopped' })
+    })
+
+    it('adds no status to a completed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Hi' } as IMessage,
+        { messageType: 'bot_response', content: 'Hello' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.not.have.property('status')
     })
   })
 

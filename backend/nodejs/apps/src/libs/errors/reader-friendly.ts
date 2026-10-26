@@ -55,6 +55,11 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // backend/python/app/utils/user_messages.py (DATABASE_UNREACHABLE) — the 503
   // when a route cannot read the calling user's record.
   "We couldn't reach PipesHub's database just now. Please try again in a few seconds.",
+  // backend/nodejs/apps/src/modules/mail/types/mail-event.types.ts
+  // (SMTP_PROBLEM_MESSAGES) — the 502 from the mail route when the SMTP server
+  // rejected the sign-in or could not be reached.
+  "The email wasn't sent because the mail (SMTP) server rejected the username or password. An admin can update them in Workspace settings > Mail.",
+  "The email wasn't sent because PipesHub couldn't reach the mail (SMTP) server. An admin can check the host and port in Workspace settings > Mail.",
 ]);
 
 const normalise = (text: string): string => text.trim().replace(/\s+/g, ' ');

@@ -165,6 +165,15 @@ def test_each_connector_is_one_flattened_page() -> None:
     assert by_app["rg-1"]["granted_ids"] == ["grant-rg-1"]
 
 
+def test_a_depth_bound_reaches_every_connector_page() -> None:
+    provider = FakeProvider({"kb-1": [row("k1", "kb one")], "rg-1": [row("g1", "group one")]})
+    asyncio.run(_search(provider, limit=10, max_depth=2))
+    assert {call["max_depth"] for call in provider.calls} == {2}
+    provider = FakeProvider({"kb-1": [row("k1", "kb one")]})
+    asyncio.run(_search(provider, limit=10))
+    assert provider.calls[0]["max_depth"] == 50
+
+
 def test_parents_are_named_once_for_the_merged_page() -> None:
     """Each connector's page comes back unnamed; the page this request returns
     is named in one batch check, not one per connector."""

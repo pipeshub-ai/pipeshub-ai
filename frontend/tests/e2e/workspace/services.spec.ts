@@ -12,24 +12,24 @@ test.describe('Workspace Services', () => {
   });
 
   test('displays infrastructure services section', async ({ page }) => {
-    const sectionHeading = page.locator('text=/Infrastructure Services/i').first();
+    const sectionHeading = page.locator('text=/Infrastructure services/i').first();
     await expect(sectionHeading).toBeVisible({ timeout: 5_000 });
   });
 
   test('displays application services section', async ({ page }) => {
-    const sectionHeading = page.locator('text=/Application Services/i').first();
+    const sectionHeading = page.locator('text=/Application services/i').first();
     await expect(sectionHeading).toBeVisible({ timeout: 5_000 });
   });
 
   test('shows core infrastructure service rows @smoke', async ({ page }) => {
     await expect(page.locator('text=Redis').first()).toBeVisible({ timeout: 5_000 });
     await expect(page.locator('text=MongoDB').first()).toBeVisible({ timeout: 5_000 });
-    // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message Broker")
-    const broker = page.locator('text=/Kafka|Redis Streams|Message Broker/');
+    // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message broker")
+    const broker = page.locator('text=/Kafka|Redis Streams|Message broker/');
     await expect(broker.first()).toBeVisible({ timeout: 5_000 });
-    const graphDb = page.locator('text=/ArangoDB|Neo4j|Graph Database/');
+    const graphDb = page.locator('text=/ArangoDB|Neo4j|Graph database/');
     await expect(graphDb.first()).toBeVisible({ timeout: 5_000 });
-    const vectorDb = page.locator('text=/Qdrant|Vector Database/');
+    const vectorDb = page.locator('text=/Qdrant|Vector database/');
     await expect(vectorDb.first()).toBeVisible({ timeout: 5_000 });
   });
 
@@ -44,10 +44,10 @@ test.describe('Workspace Services', () => {
   });
 
   test('shows application service rows', async ({ page }) => {
-    await expect(page.locator('text=Query Service').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Connector Service').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Indexing Service').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Docling Service').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Query service').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Connector service').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Indexing service').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Docling service').first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('shows health status badges', async ({ page }) => {
@@ -75,7 +75,7 @@ test.describe('Workspace Services', () => {
   });
 
   test('displays service health policy info', async ({ page }) => {
-    const policyText = page.locator('text=/Service Health Policy/i');
+    const policyText = page.locator('text=/Service health policy/i');
     await expect(policyText).toBeVisible({ timeout: 5_000 });
   });
 

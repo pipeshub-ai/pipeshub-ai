@@ -169,24 +169,39 @@ class KBClient(APIClient):
         kb_id: str,
         folder_name: str,
         parent_id: str | None = None,
+        use_subfolder_route: bool = True,
     ) -> dict[str, Any]:
         """Create a folder in a knowledge base.
 
         Args:
             kb_id: KB ID
             folder_name: Folder name
-            parent_id: Optional parent folder ID
+            parent_id: Optional parent folder ID. None creates at root.
+            use_subfolder_route: Whether to use the dedicated subfolder route
+                (default: True). Set False to exercise the legacy ?folderId= query.
 
         Returns:
             Response body from the API
+
+        Raises:
+            ValueError: If parent_id is an empty string.
         """
         payload: dict[str, Any] = {"folderName": folder_name}
-        # A parentId in the body is ignored — the create-folder endpoint reads
-        # only the name. Nesting is done with the ?folderId= query parameter,
-        # which the gateway routes to the connector's /folder/{id}/subfolder
-        # (kb_controllers.ts:511-518).
-        params = {"folderId": parent_id} if parent_id else None
-        resp = self.post(f"/{kb_id}/folder", json=payload, params=params)
+        if parent_id is None:
+            resp = self.post(f"/{kb_id}/folder", json=payload)
+        elif not parent_id.strip():
+            raise ValueError("parent_id cannot be an empty string")
+        elif use_subfolder_route:
+            resp = self.post(
+                f"/{kb_id}/folder/{quote(parent_id, safe='')}/subfolder",
+                json=payload,
+            )
+        else:
+            resp = self.post(
+                f"/{kb_id}/folder",
+                json=payload,
+                params={"folderId": parent_id},
+            )
         resp.raise_for_status()
         return resp.json()
 

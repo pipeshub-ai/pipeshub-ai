@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 
@@ -48,6 +48,7 @@ _SERVER_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 100
 _DEFAULT_PAGE_SIZE = 10
 _LINK_LAST_RE = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="last"')
+_LINK_NEXT_RE = re.compile(r'<([^>]*)>;\s*rel="next"')
 
 _TRUNCATION_MARKERS = ("diff too large", "binary file", "file is too large", "large diffs")
 
@@ -58,6 +59,13 @@ _TRUNCATION_MARKERS = ("diff too large", "binary file", "file is too large", "la
 _RESERVED_RESOURCES = frozenset({"core", "graphql"})
 _DEFAULT_RESERVE_PERCENT = 10
 _RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
+
+# github.com/user-attachments is the web host, not the API: it answers an API token
+# with 404 (verified against github.com, public repository included) and an
+# anonymous request with a redirect to signed storage. The token is therefore never
+# sent there; it would only make every download fail, and it has no business on a
+# host other than the API.
+_ATTACHMENT_HEADERS = {"Accept": "*/*"}
 
 # Set while a record is streamed to a person who opened it: one request they
 # asked for, which the reserve would refuse although GitHub would grant it.
@@ -165,6 +173,19 @@ def _parse_iso(value: str) -> datetime | str:
 def _iso(dt: datetime) -> str:
     aware = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return aware.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _next_cursor(link_header: str) -> str | None:
+    """The ``after`` cursor of a ``Link: rel="next"`` URL, or None.
+
+    Only the cursor is taken, never the URL itself, so the next request still
+    goes to the configured API host.
+    """
+    match = _LINK_NEXT_RE.search(link_header or "")
+    if not match:
+        return None
+    values = parse_qs(urlsplit(match.group(1)).query).get("after")
+    return values[0] if values else None
 
 
 def _wrap(value: Any, key: str | None = None) -> Any:
@@ -517,7 +538,14 @@ class GitHubAsyncDataSource:
         page: int | None = None,
         sort: str | None = None,
         direction: str | None = None,
+        after: str | None = None,
     ) -> GitHubResponse:
+        """One page of a repository's issues (pull requests included, as GitHub lists them).
+
+        GitHub refuses ``page`` numbers past 10,000 items here (422, "use cursor
+        based pagination"). Pass the previous page's ``next_cursor`` as ``after``
+        to read further; ``page`` is then not sent.
+        """
         params: dict[str, Any] = {"state": state}
         if labels:
             params["labels"] = ",".join(labels)
@@ -530,7 +558,7 @@ class GitHubAsyncDataSource:
         if direction:
             params["direction"] = direction
         return await self._listing(
-            f"/repos/{owner}/{repo}/issues", params, per_page, page,
+            f"/repos/{owner}/{repo}/issues", params, per_page, page, after=after,
         )
 
     async def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse:
@@ -800,13 +828,29 @@ class GitHubAsyncDataSource:
     # Attachment / image streaming (direct downloads, not the REST API)
     # ------------------------------------------------------------------
 
-    async def get_img_bytes(self, image_url: str) -> GitHubResponse:
-        headers = {"Authorization": f"Bearer {self._rest.token}", "Accept": "*/*"}
+    async def get_img_bytes(self, image_url: str, max_bytes: int | None = None) -> GitHubResponse:
+        """Download an image, refusing (success=False) one over ``max_bytes``.
+
+        Streamed, so an oversized body is abandoned at the limit instead of being
+        read whole into memory first: any upload can be embedded with image
+        syntax, a 100 MB video included.
+
+        Sent without the token: see ``_ATTACHMENT_HEADERS``.
+        """
+        headers = dict(_ATTACHMENT_HEADERS)
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                return GitHubResponse(success=True, data=resp.content)
+                async with client.stream("GET", image_url, headers=headers) as resp:
+                    resp.raise_for_status()
+                    declared = resp.headers.get("Content-Length")
+                    if max_bytes is not None and declared and declared.isdigit() and int(declared) > max_bytes:
+                        return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        body.extend(chunk)
+                        if max_bytes is not None and len(body) > max_bytes:
+                            return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    return GitHubResponse(success=True, data=bytes(body))
         except httpx.HTTPStatusError as e:
             return GitHubResponse(
                 success=False,
@@ -831,12 +875,8 @@ class GitHubAsyncDataSource:
         on non-2xx rather than returning a response envelope, so the caller's
         eager-first-chunk wrapper can surface it as a clean HTTP error.
         """
-        headers = {
-            "Authorization": f"Bearer {self._rest.token}",
-            "Accept": "application/vnd.github+json",
-        }
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", weburl, headers=headers) as response:
+            async with client.stream("GET", weburl, headers=dict(_ATTACHMENT_HEADERS)) as response:
                 response.raise_for_status()
                 if max_bytes is not None:
                     declared = response.headers.get("Content-Length")
@@ -873,19 +913,32 @@ class GitHubAsyncDataSource:
         params: dict[str, Any] | None,
         per_page: int | None,
         page: int | None,
+        *,
+        after: str | None = None,
     ) -> GitHubResponse:
-        """One page when page args are given, otherwise every page (100 at a time)."""
+        """One page when page args are given, otherwise every page (100 at a time).
+
+        A single page also carries ``next_cursor``, the ``after`` cursor GitHub
+        offers in its ``Link`` header (None when it offers none). Given ``after``,
+        the page is addressed by that cursor instead of by number.
+        """
         try:
-            if per_page is None and page is None:
+            if per_page is None and page is None and after is None:
                 return GitHubResponse(
                     success=True, data=_wrap(await self._list_all(path, params)),
                 )
             _per_page, _page = self._clamp_page_args(per_page, page)
             query = dict(params or {})
-            query.update({"per_page": _per_page, "page": _page})
-            batch = await self._rest.get_json(path, query)
+            query["per_page"] = _per_page
+            if after is not None:
+                query["after"] = after
+            else:
+                query["page"] = _page
+            response = await self._rest.request("GET", path, params=query)
+            batch = response.json()
             return GitHubResponse(
                 success=True, data=_wrap(batch if isinstance(batch, list) else []),
+                next_cursor=_next_cursor(response.headers.get("link", "")),
             )
         except Exception as e:
             return self._err(e)

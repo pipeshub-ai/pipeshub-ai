@@ -353,6 +353,29 @@ class TestSandbox:
         summary = self.summarizer.summarize_result("run_code", {}, r)
         assert "SyntaxError" in summary.result_summary
 
+    def test_sandbox_result_non_zero_exit_names_the_error(self) -> None:
+        r = _result(content={
+            "stdout": "", "stderr": "Traceback (most recent call last):\n  ...\nZeroDivisionError: division by zero",
+            "exit_code": 1, "error_analysis": {"category": "runtime", "message": "ZeroDivisionError: division by zero"},
+        })
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Failed with exit code 1: ZeroDivisionError: division by zero"
+
+    def test_sandbox_result_non_zero_exit_falls_back_to_stderr(self) -> None:
+        r = _result(content={"stdout": "", "stderr": "Killed\n", "exit_code": 137, "error_analysis": None})
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Failed with exit code 137: Killed"
+
+    def test_sandbox_result_zero_exit_is_success(self) -> None:
+        r = _result(content={"stdout": "42", "stderr": "", "exit_code": 0})
+        summary = self.summarizer.summarize_result("run_code", {}, r)
+        assert summary.result_summary == "Executed successfully"
+
+    def test_install_packages_failure(self) -> None:
+        r = _result(content={"success": False, "installed": [], "stdout": "", "stderr": "ERROR: No matching distribution"})
+        summary = self.summarizer.summarize_result("install_packages", {}, r)
+        assert summary.result_summary == "Failed: ERROR: No matching distribution"
+
 
 # ---------------------------------------------------------------------------
 # create_plan / spawn_agent / task_complete

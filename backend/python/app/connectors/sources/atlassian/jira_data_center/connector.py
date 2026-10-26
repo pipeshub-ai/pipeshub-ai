@@ -401,6 +401,12 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 class JiraDataCenterConnector(BaseConnector):
     """Jira Data Center connector: sync orchestration aligned with Jira Cloud"""
 
+    user_link_steps = ("_link_users_and_groups",)
+    _SYNC_STATE = (
+        "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
+        "_dc_name_to_source_id",
+    )
+
     def __init__(
         self,
         logger: Logger,
@@ -1432,6 +1438,18 @@ class JiraDataCenterConnector(BaseConnector):
     # ============================================================================
     # User & Group Management
     # ============================================================================
+
+    async def _link_users_and_groups(self) -> None:
+        """The sync's user and group steps. Project roles, grants and issue edges wait for the next full sync."""
+        if not self.data_source:
+            return
+        with self._keep_sync_state(*self._SYNC_STATE):
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
+            jira_users = await self._fetch_users()
+            if jira_users:
+                await self.data_entities_processor.on_new_app_users(jira_users)
+            await self._sync_user_groups(jira_users)
 
     async def _fetch_users(self) -> list[AppUser]:
         """

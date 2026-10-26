@@ -184,11 +184,20 @@ class TestMergeCap:
     the merge's, which then drops records."""
 
     @staticmethod
-    async def _merge(raw: list[dict], coverage: PatternMatchCoverage, **kwargs) -> None:
+    async def _merge(
+        raw: list[dict], coverage: PatternMatchCoverage, readable: "set[str] | None" = None, **kwargs,
+    ) -> None:
+        """*readable* are the records the caller may read; all of them by default."""
         from app.utils.pattern_match import merge_pattern_match_results
 
         graph = AsyncMock()
-        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        allowed = {r["virtual_record_id"] for r in raw} if readable is None else readable
+        graph.filter_accessible_virtual_record_ids = AsyncMock(
+            side_effect=lambda vrids, *a, **k: {v: f"rec-{v}" for v in vrids if v in allowed},
+        )
+        graph.get_records_by_record_ids = AsyncMock(side_effect=lambda record_ids, org_id: [
+            {"_key": r, "indexingStatus": "COMPLETED", "recordName": r} for r in record_ids
+        ])
         await merge_pattern_match_results(
             raw_records=raw, virtual_record_id_to_result={}, user_id="u1", org_id="o1",
             blob_store=AsyncMock(), graph_provider=graph, is_multimodal_llm=False,
@@ -204,6 +213,15 @@ class TestMergeCap:
 
         assert coverage.records_truncated
         assert "more records matched than are listed" in render_pattern_match_coverage_note(coverage)
+
+    @pytest.mark.asyncio
+    async def test_records_the_caller_cannot_read_never_count_towards_the_cap(self) -> None:
+        raw = [{"virtual_record_id": f"vr-{i}"} for i in range(80)]
+        for readable in ({"vr-0"}, {"vr-0", "vr-79"}):
+            coverage = PatternMatchCoverage()
+            await self._merge(raw, coverage, readable=readable)
+            assert coverage.complete
+            assert render_pattern_match_coverage_note(coverage) == ""
 
     @pytest.mark.asyncio
     async def test_records_within_the_cap_leave_the_search_complete(self) -> None:

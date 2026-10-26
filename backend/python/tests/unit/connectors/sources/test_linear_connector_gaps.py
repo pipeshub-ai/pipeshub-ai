@@ -1,6 +1,7 @@
 """Targeted coverage tests for remaining gaps in linear.connector."""
 
 from uuid import uuid4
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,7 +9,13 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
-from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.linear.api_gateway import (
+    LinearAuthError,
+    LinearPaginationError,
+    LinearRateLimited,
+    LinearTransientError,
+)
+from app.connectors.sources.linear.connector import LinearConnector, file_record_id
 from app.models.blocks import BlockGroup, BlocksContainer, ChildRecord, ChildType, GroupSubType, GroupType
 from app.models.entities import (
     AppUser,
@@ -24,6 +31,53 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.graphql.response import GraphQLError, GraphQLResponse
+
+
+def _memory_sync_point() -> MagicMock:
+    """An in-memory stand-in for SyncPoint: what is written is what is read back."""
+    store = {}
+
+    async def read(key) -> dict:
+        return dict(store.get(key) or {})
+
+    async def update(key, data) -> None:
+        store[key] = dict(data)
+
+    sync_point = MagicMock()
+    sync_point.store = store
+    sync_point.read_sync_point = AsyncMock(side_effect=read)
+    sync_point.update_sync_point = AsyncMock(side_effect=update)
+    return sync_point
+
+
+def _use_memory_state(connector) -> None:
+    """Checkpoints live in memory, retries do not really sleep, and the processor
+    calls made when records are removed or refreshed can be awaited."""
+    for name in (
+        "issues_sync_point", "attachments_sync_point", "documents_sync_point",
+        "projects_sync_point", "deletion_sync_point", "reconcile_sync_point",
+    ):
+        setattr(connector, name, _memory_sync_point())
+    connector._reconciler._sync_point = connector.reconcile_sync_point
+    connector._sleep = AsyncMock()
+    connector._api._sleep = connector._sleep
+    # The cheap "did anything change" probe is tested on its own.
+    connector._team_has_changes = AsyncMock(return_value=True)
+    processor = connector.data_entities_processor
+    for name, value in (
+        ("get_records_by_parent", []),
+        ("get_records_by_record_type", []),
+        ("get_records_in_record_group", []),
+        ("get_nodes_by_filters", []),
+        ("on_records_deleted_cascade", None),
+        ("on_records_detached_from_parent", None),
+        ("on_record_content_update", None),
+        ("on_record_group_deleted", None),
+        ("on_user_group_deleted", None),
+    ):
+        if not isinstance(getattr(processor, name), AsyncMock):
+            setattr(processor, name, AsyncMock(return_value=value))
 
 
 def _make_connector() -> LinearConnector:
@@ -55,6 +109,7 @@ def _make_connector() -> LinearConnector:
     cs = AsyncMock()
     conn = LinearConnector(logger, dep, dsp, cs, "linear-gap", "team", "u1")
     conn._tx_store = tx
+    _use_memory_state(conn)
     return conn
 
 
@@ -254,7 +309,7 @@ class TestFilterOptionsAndUsers:
         assert len(users) == 1
 
     @pytest.mark.asyncio
-    async def test_fetch_users_stops_when_no_end_cursor(self):
+    async def test_fetch_users_fails_when_more_pages_have_no_cursor(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
@@ -263,9 +318,9 @@ class TestFilterOptionsAndUsers:
             has_next=True,
             end_cursor=None,
         ))
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            users = await conn._fetch_users()
-        assert len(users) == 1
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), \
+                pytest.raises(RuntimeError, match="Failed to fetch users"):
+            await conn._fetch_users()
 
 
 class TestIssueBatchCommentFiles:
@@ -443,9 +498,16 @@ class TestIssueBatchCommentFiles:
         mock_ds.issues = AsyncMock(return_value=MagicMock(success=False, message="rate limited"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(RuntimeError, match="rate limited"):
-                async for _ in conn._fetch_issues_for_team_batch("team-1", "ENG"):
-                    pass
+            batches = []
+            # A page that cannot be read is an error, never "no more issues".
+            with pytest.raises(LinearTransientError):
+                async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
+                    batches.append(batch)
+
+        assert batches == []
+        # No status on the response: treated as a transport failure and retried.
+        assert mock_ds.issues.await_count == 4
+        assert [c.args[0] for c in conn._sleep.await_args_list] == [1, 3, 9]
 
 
 class TestParseProjectUpdates:
@@ -541,7 +603,14 @@ class TestProjectStreaming:
         assert container.block_groups[0].children_records == [child]
 
     @pytest.mark.asyncio
-    async def test_process_project_blockgroups_api_failure(self):
+    @pytest.mark.parametrize("response,expected_status,expected_calls", [
+        (GraphQLResponse(success=False, message="Entity not found: Project", status_code=400), 404, 1),
+        (GraphQLResponse(success=False, message="Too many requests", status_code=429), 429, 7),
+        (GraphQLResponse(success=False, message="Unauthorized", status_code=401), 409, 1),
+        (GraphQLResponse(success=False, message="Internal error", status_code=503), 502, 4),
+        (GraphQLResponse(success=False, message="Connection reset"), 502, 4),
+    ])
+    async def test_process_project_blockgroups_api_failure(self, response, expected_status, expected_calls) -> None:
         conn = _make_connector()
         record = ProjectRecord(
             id="rec-p1",
@@ -557,11 +626,40 @@ class TestProjectStreaming:
             record_group_type=RecordGroupType.PROJECT,
         )
         mock_ds = MagicMock()
-        mock_ds.project = AsyncMock(return_value=MagicMock(success=False, message="not found"))
+        mock_ds.project = AsyncMock(return_value=response)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(RuntimeError, match="not found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_project_blockgroups_for_streaming(record)
+
+        assert exc_info.value.status_code == expected_status
+        assert mock_ds.project.await_count == expected_calls
+        mock_ds.project.assert_awaited_with("proj-1")
+
+    @pytest.mark.asyncio
+    async def test_process_project_blockgroups_empty_payload_is_not_found(self) -> None:
+        conn = _make_connector()
+        record = ProjectRecord(
+            id="rec-p1",
+            org_id="org-linear-gaps",
+            record_name="Project",
+            record_type=RecordType.PROJECT,
+            external_record_id="proj-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR,
+            connector_id="linear-gap",
+            external_record_group_id="team-1",
+            record_group_type=RecordGroupType.PROJECT,
+        )
+        mock_ds = MagicMock()
+        mock_ds.project = AsyncMock(return_value=GraphQLResponse(success=True, data={"project": None}))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(HTTPException) as exc_info:
+                await conn._process_project_blockgroups_for_streaming(record)
+
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_process_project_blockgroups_with_links_and_documents(self):
@@ -649,7 +747,8 @@ class TestFetchUsersEdgeCases:
 
 class TestIssueBatchPaginationAndErrors:
     @pytest.mark.asyncio
-    async def test_fetch_issues_batch_stops_when_next_page_has_no_cursor(self):
+    async def test_fetch_issues_batch_fails_when_more_pages_have_no_cursor(self):
+        """A page that says more follow but gives no cursor is an incomplete listing, not the end."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.indexing_filters = None
@@ -665,10 +764,11 @@ class TestIssueBatchPaginationAndErrors:
             conn, "_extract_files_from_markdown", new=AsyncMock(return_value=([], [])),
         ):
             batches = []
-            async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
+            with pytest.raises(LinearPaginationError):
+                async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
+                    batches.append(batch)
 
-        assert len(batches) == 1
+        assert batches == []
 
     @pytest.mark.asyncio
     async def test_fetch_issues_batch_continues_after_single_issue_error(self):
@@ -836,7 +936,14 @@ class TestIssueStreaming:
         mock_parse.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_issue_blockgroups_api_failure(self):
+    @pytest.mark.parametrize("response,expected_status,expected_calls", [
+        (GraphQLResponse(success=False, message="Entity not found: Issue", status_code=400), 404, 1),
+        (GraphQLResponse(success=False, message="Too many requests", status_code=429), 429, 7),
+        (GraphQLResponse(success=False, message="Unauthorized", status_code=401), 409, 1),
+        (GraphQLResponse(success=False, message="Internal error", status_code=503), 502, 4),
+        (GraphQLResponse(success=False, message="Connection reset"), 502, 4),
+    ])
+    async def test_process_issue_blockgroups_api_failure(self, response, expected_status, expected_calls) -> None:
         conn = _make_connector()
         record = TicketRecord(
             id="rec-i1",
@@ -852,11 +959,113 @@ class TestIssueStreaming:
             record_group_type=RecordGroupType.PROJECT,
         )
         mock_ds = MagicMock()
-        mock_ds.issue = AsyncMock(return_value=MagicMock(success=False, message="not found"))
+        mock_ds.issue = AsyncMock(return_value=response)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(RuntimeError, match="not found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_issue_blockgroups_for_streaming(record)
+
+        assert exc_info.value.status_code == expected_status
+        assert mock_ds.issue.await_count == expected_calls
+        mock_ds.issue.assert_awaited_with(id="iss-1")
+
+    @pytest.mark.asyncio
+    async def test_process_issue_blockgroups_empty_payload_is_not_found(self) -> None:
+        conn = _make_connector()
+        record = TicketRecord(
+            id="rec-i1",
+            org_id="org-linear-gaps",
+            record_name="Bug",
+            record_type=RecordType.TICKET,
+            external_record_id="iss-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR,
+            connector_id="linear-gap",
+            external_record_group_id="team-1",
+            record_group_type=RecordGroupType.PROJECT,
+        )
+        mock_ds = MagicMock()
+        mock_ds.issue = AsyncMock(return_value=GraphQLResponse(success=True, data={"issue": None}))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(HTTPException) as exc_info:
+                await conn._process_issue_blockgroups_for_streaming(record)
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_process_issue_blockgroups_reads_remaining_comment_pages(self) -> None:
+        conn = _make_connector()
+        conn.indexing_filters = None
+        record = TicketRecord(
+            id="rec-i1",
+            org_id="org-linear-gaps",
+            record_name="Bug",
+            record_type=RecordType.TICKET,
+            external_record_id="iss-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR,
+            connector_id="linear-gap",
+            external_record_group_id="team-1",
+            record_group_type=RecordGroupType.PROJECT,
+        )
+        issue = _make_issue_payload(
+            description="",
+            comments={
+                "nodes": [{"id": "c-1", "body": "first", "createdAt": "2024-01-01T10:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "comments-1"},
+            },
+        )
+        mock_ds = MagicMock()
+        mock_ds.issue = AsyncMock(return_value=MagicMock(success=True, data={"issue": issue}))
+        mock_ds.execute_operation = AsyncMock(return_value=MagicMock(success=True, data={"issue": {"comments": {
+            "nodes": [{"id": "c-2", "body": "second", "createdAt": "2024-01-02T10:00:00.000Z"}],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }}}))
+        parsed = BlocksContainer(blocks=[], block_groups=[])
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
+            conn, "_parse_issue_to_blocks", new=AsyncMock(return_value=parsed),
+        ) as mock_parse:
+            await conn._process_issue_blockgroups_for_streaming(record)
+
+        mock_ds.execute_operation.assert_awaited_once_with(
+            "issueComments", {"id": "iss-1", "first": 100, "after": "comments-1"})
+        seen = mock_parse.await_args.kwargs["issue_data"]["comments"]["nodes"]
+        assert [c["id"] for c in seen] == ["c-1", "c-2"]
+
+    @pytest.mark.asyncio
+    async def test_process_issue_blockgroups_failed_comment_page_is_mapped(self) -> None:
+        conn = _make_connector()
+        record = TicketRecord(
+            id="rec-i1",
+            org_id="org-linear-gaps",
+            record_name="Bug",
+            record_type=RecordType.TICKET,
+            external_record_id="iss-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR,
+            connector_id="linear-gap",
+            external_record_group_id="team-1",
+            record_group_type=RecordGroupType.PROJECT,
+        )
+        issue = _make_issue_payload(comments={
+            "nodes": [{"id": "c-1", "body": "first"}],
+            "pageInfo": {"hasNextPage": True, "endCursor": "comments-1"},
+        })
+        mock_ds = MagicMock()
+        mock_ds.issue = AsyncMock(return_value=MagicMock(success=True, data={"issue": issue}))
+        mock_ds.execute_operation = AsyncMock(
+            return_value=GraphQLResponse(success=False, message="Too many requests", status_code=429))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(HTTPException) as exc_info:
+                await conn._process_issue_blockgroups_for_streaming(record)
+
+        assert exc_info.value.status_code == 429
 
 
 class TestSyncAttachmentsEdgeCases:
@@ -864,18 +1073,43 @@ class TestSyncAttachmentsEdgeCases:
     async def test_sync_attachments_api_failure(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
         conn.sync_filters = None
         conn.indexing_filters = None
+        conn.attachments_sync_point.store["attachments"] = {"last_sync_time": 1700000000000}
         rg, perms = _make_team_rg()
+
         mock_ds = MagicMock()
         mock_ds.attachments = AsyncMock(return_value=MagicMock(success=False, message="forbidden"))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
+        # The step is reported and the checkpoint stays put, so nothing is skipped.
+        assert mock_ds.attachments.await_count == 4
+        conn.notify.assert_awaited_once()
+        assert conn.attachments_sync_point.store["attachments"] == {"last_sync_time": 1700000000000}
+
+    @pytest.mark.asyncio
+    async def test_sync_attachments_auth_failure_stops_the_sync(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
+        conn.sync_filters = None
+        conn.indexing_filters = None
+        rg, perms = _make_team_rg()
+
+        mock_ds = MagicMock()
+        mock_ds.attachments = AsyncMock(
+            return_value=GraphQLResponse(success=False, message="Unauthorized", status_code=401))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(LinearAuthError):
+                await conn._sync_attachments([(rg, perms)])
+
+        mock_ds.attachments.assert_awaited_once()
+        conn.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_attachments_skips_unknown_team_and_missing_parent(self):
@@ -893,24 +1127,23 @@ class TestSyncAttachmentsEdgeCases:
         mock_ds = MagicMock()
         mock_ds.attachments = AsyncMock(return_value=_attachments_resp(attachments))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sync_attachments_stops_when_next_page_has_no_cursor(self):
+    async def test_sync_attachments_fails_when_more_pages_have_no_cursor(self):
+        """The pass stops without moving its checkpoint, and the full sync counts as incomplete."""
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1705400000000)
         conn.sync_filters = None
         conn.indexing_filters = None
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
-
         attachment = {
             "id": "attach-1",
             "url": "https://example.com/file",
@@ -924,14 +1157,13 @@ class TestSyncAttachmentsEdgeCases:
             [attachment], has_next=True, end_cursor=None,
         ))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(
-            conn, "_update_attachments_sync_checkpoint", new=AsyncMock(),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
-        conn.data_entities_processor.on_new_records.assert_awaited_once()
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+        mock_ds.attachments.assert_awaited_once()
+        assert not conn.attachments_sync_point.store.get("attachments", {}).get("last_sync_time")
+        assert conn.full_sync_coverage().complete is False
 
 
 class TestFetchTeamsExtended:
@@ -998,28 +1230,32 @@ class TestSyncIssuesForTeamsExtended:
     @pytest.mark.asyncio
     async def test_incremental_sync_updates_checkpoint_for_tickets_and_files(self):
         conn = _make_connector()
+        conn._now = MagicMock(return_value=1704070000000)
         rg, perms = _make_team_rg()
-        conn._get_team_sync_checkpoint = AsyncMock(return_value=1700000000000)
-        conn._update_team_sync_checkpoint = AsyncMock()
+        conn.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1700000000000}
 
         ticket = _ticket_record(source_updated_at=1704067200000)
         file_rec = _file_record()
+        seen = {}
 
-        async def batch_gen(**_kwargs):
+        async def batch_gen(**kwargs) -> AsyncIterator[list]:
+            seen.update(kwargs)
             yield [(ticket, []), (file_rec, [])]
 
         conn._fetch_issues_for_team_batch = batch_gen
-        await conn._sync_issues_for_teams([(rg, perms)])
+        full_sync_team_ids, failed = await conn._sync_issues_for_teams([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_awaited_once()
-        conn._update_team_sync_checkpoint.assert_awaited_with("ENG", 1704067200000)
+        assert seen["last_sync_time"] == 1700000000000 - 60_000
+        assert (full_sync_team_ids, failed) == (set(), [])
+        # The checkpoint is when this run started, not the newest updatedAt it saw:
+        # an issue changed while the list was being read is picked up next time.
+        assert conn.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_skips_empty_batches_from_fetch(self):
         conn = _make_connector()
         rg, _ = _make_team_rg()
-        conn._get_team_sync_checkpoint = AsyncMock(return_value=None)
-        conn._update_team_sync_checkpoint = AsyncMock()
 
         async def batch_gen(**_kwargs):
             yield []
@@ -1027,6 +1263,7 @@ class TestSyncIssuesForTeamsExtended:
 
         conn._fetch_issues_for_team_batch = batch_gen
         await conn._sync_issues_for_teams([(rg, [])])
+
         assert conn.data_entities_processor.on_new_records.await_count == 1
 
 
@@ -1066,6 +1303,8 @@ class TestSyncAttachmentsExtended:
 
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         related = MagicMock()
         related.id = "related-node"
 
@@ -1089,9 +1328,7 @@ class TestSyncAttachmentsExtended:
         mock_ds = MagicMock()
         mock_ds.attachments = AsyncMock(return_value=_attachments_resp([attachment]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_attachments_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
         saved = conn.data_entities_processor.on_new_records.call_args[0][0]
@@ -1102,13 +1339,13 @@ class TestSyncAttachmentsExtended:
     async def test_paginates_attachments_and_updates_checkpoint(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1705400000000)
         conn.sync_filters = None
         conn.indexing_filters = None
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
-
         attachment = {
             "id": "attach-1",
             "url": "https://example.com/file",
@@ -1117,26 +1354,40 @@ class TestSyncAttachmentsExtended:
             "updatedAt": "2024-01-15T12:00:00.000Z",
             "issue": {"id": "issue-1", "team": {"id": "team-1"}},
         }
-        mock_ds = MagicMock()
-        mock_ds.attachments = AsyncMock(side_effect=[
-            _attachments_resp([attachment], has_next=True, end_cursor="cur-1"),
-            _attachments_resp([], has_next=False),
-        ])
+        saved_while_reading = []
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_attachments_sync_checkpoint", new=AsyncMock()) as mock_update:
+        async def attachments(**kwargs) -> GraphQLResponse:
+            if kwargs["after"] is None:
+                return _attachments_resp([attachment], has_next=True, end_cursor="cur-1")
+            # By the time the second page is asked for, the first one is stored and
+            # its cursor saved: an interruption here would resume from "cur-1".
+            saved_while_reading.append(dict(conn.attachments_sync_point.store["attachments"]))
+            return _attachments_resp([], has_next=False)
+
+        mock_ds = MagicMock()
+        mock_ds.attachments = AsyncMock(side_effect=attachments)
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
-        assert mock_ds.attachments.await_count == 2
-        mock_update.assert_awaited()
+        assert [c.kwargs["after"] for c in mock_ds.attachments.await_args_list] == [None, "cur-1"]
+        assert saved_while_reading == [{
+            "last_sync_time": 0, "resume_cursor": "cur-1", "resume_since": 0,
+            "resume_started_at": 1705400000000, "held_runs": 0,
+        }]
+        # Read to the end: the cursor is dropped and the checkpoint is the run's start.
+        assert conn.attachments_sync_point.store["attachments"] == {
+            "last_sync_time": 1705400000000, "resume_cursor": "", "resume_since": 0,
+            "resume_started_at": 0, "held_runs": 0,
+        }
 
 
 class TestSyncDocumentsExtended:
     @pytest.mark.asyncio
-    async def test_skips_project_attached_documents(self):
+    async def test_syncs_project_attached_documents(self) -> None:
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1705400000000)
         conn.sync_filters = None
         conn.indexing_filters = None
         rg, perms = _make_team_rg()
@@ -1144,23 +1395,105 @@ class TestSyncDocumentsExtended:
         doc = {
             "id": "doc-1",
             "title": "Roadmap",
+            "url": "https://linear.app/org/document/doc-1",
             "updatedAt": "2024-06-01T10:00:00.000Z",
             "issue": None,
             "project": {"id": "proj-1"},
         }
+        project_record = _project_record(id="proj-node")
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=lambda **kw: (
+            project_record if kw.get("external_record_id") == "proj-1" else None
+        ))
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=MagicMock(
             success=True,
             data={"documents": {"nodes": [doc], "pageInfo": {"hasNextPage": False}}},
         ))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_documents_sync_checkpoint", new=AsyncMock()) as mock_update:
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
-        conn.data_entities_processor.on_new_records.assert_not_called()
-        mock_update.assert_awaited()
+        # A project's document is a record whose parent is the project.
+        (batch,), _ = conn.data_entities_processor.on_new_records.await_args
+        assert len(batch) == 1
+        page, permissions = batch[0]
+        assert isinstance(page, WebpageRecord)
+        assert page.external_record_id == "doc-1"
+        assert page.parent_external_record_id == "proj-1"
+        assert page.parent_record_type == RecordType.PROJECT
+        assert page.parent_node_id == "proj-node"
+        assert page.external_record_group_id == "team-1"
+        assert permissions == []
+        assert conn.documents_sync_point.store["documents"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_project_documents_follow_the_projects_indexing_filter(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.sync_filters = None
+        conn.indexing_filters = MagicMock()
+        conn.indexing_filters.is_enabled = MagicMock(
+            side_effect=lambda key: key != IndexingFilterKey.PROJECTS)
+        rg, perms = _make_team_rg()
+
+        def doc(doc_id, **parent) -> dict:
+            return {"id": doc_id, "title": doc_id, "url": f"https://linear.app/org/document/{doc_id}",
+                    "updatedAt": "2024-06-01T10:00:00.000Z", **parent}
+
+        records = {"proj-1": _project_record(id="proj-node"), "iss-1": _ticket_record(id="issue-node")}
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda **kw: records.get(kw.get("external_record_id")))
+        mock_ds = MagicMock()
+        mock_ds.documents = AsyncMock(return_value=_documents_resp([
+            doc("doc-project", project={"id": "proj-1"}),
+            doc("doc-issue", issue={"id": "iss-1"}),
+        ]))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            await conn._sync_documents([(rg, perms)])
+
+        (batch,), _ = conn.data_entities_processor.on_new_records.await_args
+        status = {r.external_record_id: r.indexing_status for r, _ in batch}
+        assert status["doc-project"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert status["doc-issue"] != ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_document_is_filed_under_its_parent_records_team(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.sync_filters = None
+        conn.indexing_filters = None
+        rg1, perms1 = _make_team_rg("team-1")
+        rg2, perms2 = _make_team_rg("team-2")
+
+        def doc(doc_id, issue_id) -> dict:
+            # What Linear says about the issue's team is not what decides.
+            return {"id": doc_id, "title": doc_id, "url": f"https://linear.app/org/document/{doc_id}",
+                    "updatedAt": "2024-06-01T10:00:00.000Z",
+                    "issue": {"id": issue_id, "team": {"id": "team-1"}}}
+
+        records = {
+            "iss-moved": _ticket_record(id="node-moved", external_record_id="iss-moved",
+                                        external_record_group_id="team-2"),
+            "iss-outside": _ticket_record(id="node-outside", external_record_id="iss-outside",
+                                          external_record_group_id="team-9"),
+        }
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda **kw: records.get(kw.get("external_record_id")))
+        mock_ds = MagicMock()
+        mock_ds.documents = AsyncMock(return_value=_documents_resp([
+            doc("doc-moved", "iss-moved"),
+            doc("doc-outside", "iss-outside"),
+            doc("doc-orphan", "iss-unknown"),
+        ]))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            await conn._sync_documents([(rg1, perms1), (rg2, perms2)])
+
+        (batch,), _ = conn.data_entities_processor.on_new_records.await_args
+        assert [(r.external_record_id, r.external_record_group_id) for r, _ in batch] == [
+            ("doc-moved", "team-2"),
+        ]
 
     @pytest.mark.asyncio
     async def test_syncs_issue_documents_and_paginates(self):
@@ -1171,10 +1504,11 @@ class TestSyncDocumentsExtended:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=lambda **kw: (
             parent if kw.get("external_record_id") == "issue-1" else None
         ))
-
         doc = {
             "id": "doc-1",
             "title": "Design",
@@ -1190,53 +1524,11 @@ class TestSyncDocumentsExtended:
             MagicMock(success=True, data={"documents": {"nodes": [], "pageInfo": {"hasNextPage": False}}}),
         ])
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_documents_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
-        conn.data_entities_processor.on_new_records.assert_awaited()
-        assert mock_ds.documents.await_count == 2
-
-
-class TestFetchProjectsBatchExtended:
-    @pytest.mark.asyncio
-    async def test_uses_list_payload_when_full_project_fetch_fails(self):
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        conn.indexing_filters = None
-        conn.organization_url_key = "org"
-
-        project_summary = {
-            "id": "proj-1",
-            "name": "Alpha",
-            "url": "https://linear.app/org/project/alpha",
-            "content": "[brief.pdf](https://files/brief.pdf)",
-            "createdAt": "2024-01-01T00:00:00.000Z",
-            "updatedAt": "2024-06-01T00:00:00.000Z",
-            "issues": {"nodes": [{"id": "iss-linked"}]},
-        }
-        mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(return_value=MagicMock(
-            success=True,
-            data={"projects": {"nodes": [project_summary], "pageInfo": {"hasNextPage": False}}},
-        ))
-        mock_ds.project = AsyncMock(return_value=MagicMock(success=False, message="forbidden"))
-
-        file_rec = _file_record()
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_extract_files_from_markdown", new=AsyncMock(return_value=([(file_rec, [])], [])),
-        ), patch.object(conn, "_prepare_project_related_records", new=AsyncMock(return_value=[])):
-            batches = []
-            async for batch in conn._fetch_projects_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
-
-        assert batches
-        project_records = [rec for rec, _ in batches[0] if isinstance(rec, ProjectRecord)]
-        file_records = [rec for rec, _ in batches[0] if isinstance(rec, FileRecord)]
-        assert project_records
-        assert project_records[0].related_external_records
-        assert file_records
+        conn.data_entities_processor.on_new_records.assert_awaited_once()
+        assert [c.kwargs["after"] for c in mock_ds.documents.await_args_list] == [None, "c1"]
 
 
 class TestParseProjectBlocksExtended:
@@ -1387,21 +1679,70 @@ class TestStreamRecordExtended:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.external_client = MagicMock()
+        upload = "https://uploads.linear.app/org/report.pdf"
         record = _file_record(
-            external_record_id="https://files.example.com/report.pdf",
+            external_record_id=file_record_id(upload, "iss-1"),
             mime_type="application/pdf",
         )
+        requested = []
 
-        async def download(_url):
+        async def download(url) -> AsyncIterator[bytes]:
+            requested.append(url)
             yield b"pdf-chunk"
 
         mock_ds = MagicMock()
         mock_ds.download_file = download
         conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
         response = await conn.stream_record(record)
         body = b"".join([chunk async for chunk in response.body_iterator])
+
         assert body == b"pdf-chunk"
         assert response.media_type == "application/pdf"
+        # The record id carries the parent; the download is the upload URL alone.
+        assert requested == [upload]
+        assert response.headers["content-disposition"] == (
+            "attachment; filename=\"spec.pdf\"; filename*=UTF-8''spec.pdf")
+
+    @pytest.mark.asyncio
+    async def test_file_name_from_link_text_cannot_break_the_header(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.external_client = MagicMock()
+        record = _file_record(
+            record_name='re"port\r\nX-Injected: 1 – résumé',
+            external_record_id=file_record_id("https://uploads.linear.app/org/a", "iss-1"),
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+
+        response = await conn.stream_record(record)
+
+        value = response.headers["content-disposition"]
+        assert "\r" not in value and "\n" not in value
+        assert value.startswith('attachment; filename="re_portX-Injected: 1 _ r_sum_"; filename*=UTF-8\'\'')
+        assert value.endswith("r%C3%A9sum%C3%A9")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("external_record_id", [
+        "https://files.example.com/report.pdf",
+        "http://uploads.linear.app/org/report.pdf",
+        "https://uploads.linear.app.evil.example/org/report.pdf",
+        "https://user:secret@uploads.linear.app/org/report.pdf",
+        "https://files.example.com/report.pdf#parent=iss-1",
+        "file-1",
+    ])
+    async def test_file_record_that_is_not_a_linear_upload_is_never_fetched(self, external_record_id) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.external_client = MagicMock()
+        record = _file_record(external_record_id=external_record_id)
+        conn._get_fresh_datasource = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.stream_record(record)
+
+        assert exc_info.value.status_code == 422
+        conn._get_fresh_datasource.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_streams_webpage_markdown(self):
@@ -1486,6 +1827,8 @@ class TestSyncIndexingFiltersAndErrors:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
 
         attachment = {
@@ -1499,9 +1842,7 @@ class TestSyncIndexingFiltersAndErrors:
         mock_ds = MagicMock()
         mock_ds.attachments = AsyncMock(return_value=_attachments_resp([attachment]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_attachments_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
         saved = conn.data_entities_processor.on_new_records.call_args[0][0]
@@ -1516,6 +1857,8 @@ class TestSyncIndexingFiltersAndErrors:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
         conn.data_entities_processor.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("db down"))
 
@@ -1530,9 +1873,7 @@ class TestSyncIndexingFiltersAndErrors:
         mock_ds = MagicMock()
         mock_ds.attachments = AsyncMock(return_value=_attachments_resp([attachment]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_attachments_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_attachments([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_awaited_once()
@@ -1546,6 +1887,8 @@ class TestSyncIndexingFiltersAndErrors:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
 
         attachment = {
@@ -1560,8 +1903,6 @@ class TestSyncIndexingFiltersAndErrors:
         mock_ds.attachments = AsyncMock(return_value=_attachments_resp([attachment]))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(
             conn,
             "_transform_attachment_to_link_record",
             side_effect=ValueError("transform failed"),
@@ -1574,14 +1915,17 @@ class TestSyncIndexingFiltersAndErrors:
     async def test_sync_attachments_outer_exception(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
         conn.sync_filters = None
         conn.indexing_filters = None
         rg, perms = _make_team_rg()
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(side_effect=RuntimeError("boom"))), patch.object(
-            conn, "_get_attachments_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(side_effect=RuntimeError("boom"))):
             await conn._sync_attachments([(rg, perms)])
+
+        conn.notify.assert_awaited_once()
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        assert "attachments" not in conn.attachments_sync_point.store
 
     @pytest.mark.asyncio
     async def test_document_indexing_filter_off(self):
@@ -1593,6 +1937,8 @@ class TestSyncIndexingFiltersAndErrors:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
 
         doc = {
@@ -1607,9 +1953,7 @@ class TestSyncIndexingFiltersAndErrors:
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=_documents_resp([doc]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_documents_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
         saved = conn.data_entities_processor.on_new_records.call_args[0][0]
@@ -1624,6 +1968,8 @@ class TestSyncIndexingFiltersAndErrors:
         rg, perms = _make_team_rg()
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
 
         doc = {
@@ -1637,8 +1983,6 @@ class TestSyncIndexingFiltersAndErrors:
         mock_ds.documents = AsyncMock(return_value=_documents_resp([doc]))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(
             conn,
             "_transform_document_to_webpage_record",
             side_effect=ValueError("transform failed"),
@@ -1651,16 +1995,21 @@ class TestSyncIndexingFiltersAndErrors:
     async def test_documents_fetch_failure(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
         conn.sync_filters = None
         conn.indexing_filters = None
+        conn.documents_sync_point.store["documents"] = {"last_sync_time": 1700000000000}
         rg, perms = _make_team_rg()
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=MagicMock(success=False, message="forbidden"))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
+
+        assert mock_ds.documents.await_count == 4
+        conn.notify.assert_awaited_once()
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        assert conn.documents_sync_point.store["documents"] == {"last_sync_time": 1700000000000}
 
 
 class TestFetchBatchEdgeCases:
@@ -1677,7 +2026,8 @@ class TestFetchBatchEdgeCases:
         assert users == []
 
     @pytest.mark.asyncio
-    async def test_fetch_teams_stops_when_next_page_has_no_cursor(self):
+    async def test_fetch_teams_fails_when_more_pages_have_no_cursor(self):
+        """Teams missing from a partial list would be unlinked after a full sync: fail instead."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.organization_url_key = "org"
@@ -1688,10 +2038,9 @@ class TestFetchBatchEdgeCases:
             end_cursor=None,
         ))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            _, record_groups = await conn._fetch_teams()
-
-        assert len(record_groups) == 1
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), \
+                pytest.raises(RuntimeError, match="Failed to fetch teams"):
+            await conn._fetch_teams()
 
     @pytest.mark.asyncio
     async def test_fetch_issues_empty_list_breaks(self):
@@ -1710,18 +2059,21 @@ class TestFetchBatchEdgeCases:
         assert batches == []
 
     @pytest.mark.asyncio
-    async def test_fetch_projects_batch_processing_error(self):
+    async def test_sync_projects_processing_error_keeps_the_checkpoint(self) -> None:
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
         conn.indexing_filters = None
         conn.organization_url_key = "org"
-
+        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000}
+        rg, perms = _make_team_rg()
         project_summary = {
             "id": "proj-1",
             "name": "Alpha",
             "url": "https://linear.app/org/project/alpha",
             "createdAt": "2024-01-01T00:00:00.000Z",
             "updatedAt": "2024-06-01T00:00:00.000Z",
+            "teams": {"nodes": [{"id": "team-1", "private": False}]},
         }
         mock_ds = MagicMock()
         mock_ds.projects = AsyncMock(return_value=_projects_resp([project_summary]))
@@ -1732,11 +2084,13 @@ class TestFetchBatchEdgeCases:
             "_transform_to_project_record",
             side_effect=ValueError("bad project"),
         ):
-            batches = []
-            async for batch in conn._fetch_projects_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
+            await conn._sync_projects_for_teams([(rg, perms)])
 
-        assert batches == []
+        # The project was not stored, so the listing does not count as done: the
+        # checkpoint stays and the failure is reported.
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        conn.notify.assert_awaited_once()
+        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1700000000000
 
 
 class TestApplyDateFiltersExtended:
@@ -1780,6 +2134,7 @@ class TestDeletionSyncExtended:
     @pytest.mark.asyncio
     async def test_deleted_issues_skips_when_no_team_ids(self):
         conn = _make_connector()
+        conn._get_fresh_datasource = AsyncMock()
         rg = RecordGroup(
             id="rg-empty",
             org_id="org-linear-gaps",
@@ -1790,26 +2145,34 @@ class TestDeletionSyncExtended:
             short_name="EMP",
             group_type=RecordGroupType.PROJECT,
         )
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1000)):
-            await conn._sync_deleted_issues([(rg, [])])
+        await conn._sync_deleted_issues([(rg, [])])
+        conn._get_fresh_datasource.assert_not_awaited()
+        assert conn.deletion_sync_point.store == {}
 
     @pytest.mark.asyncio
     async def test_deleted_issues_empty_page_breaks(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1704070000000)
+        conn.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1704067200000}
+        conn._remover.remove = AsyncMock()
         rg, perms = _make_team_rg()
         mock_ds = MagicMock()
-        mock_ds.issues = AsyncMock(return_value=_issues_resp([]))
+        mock_ds.trashed_issues = AsyncMock(return_value=_issues_resp([]))
 
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds),
-        ), patch.object(conn, "_mark_record_and_children_deleted", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_deleted_issues([(rg, perms)])
 
+        mock_ds.trashed_issues.assert_awaited_once()
+        conn._remover.remove.assert_not_awaited()
+        assert conn.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1704070000000
+
     @pytest.mark.asyncio
-    async def test_deleted_issues_marks_trashed_and_paginates(self):
+    async def test_deleted_issues_marks_trashed(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1704070000000)
+        conn.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1704067200000}
         rg, perms = _make_team_rg()
         trashed = _make_issue_payload(
             id="iss-trashed",
@@ -1817,34 +2180,64 @@ class TestDeletionSyncExtended:
             archivedAt="2024-06-15T10:00:00.000Z",
         )
         mock_ds = MagicMock()
-        mock_ds.issues = AsyncMock(side_effect=[
-            _issues_resp([trashed], has_next=True, end_cursor=None),
-        ])
+        mock_ds.trashed_issues = AsyncMock(side_effect=[_issues_resp([trashed], has_next=False)])
+        # The issue is stored with an attachment and a sub-issue.
+        stored = _ticket_record(id="node-trashed", external_record_id="iss-trashed")
+        attachment = MagicMock(id="node-attachment", external_record_id="att-1", record_type=RecordType.LINK)
+        sub_issue = _ticket_record(id="node-sub", external_record_id="iss-sub")
+        processor = conn.data_entities_processor
+        processor.get_record_by_external_id = AsyncMock(return_value=stored)
+        processor.get_records_by_parent = AsyncMock(side_effect=lambda connector_id, parent_id: (
+            [attachment, sub_issue] if parent_id == "iss-trashed" else []
+        ))
 
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds),
-        ), patch.object(conn, "_mark_record_and_children_deleted", new=AsyncMock()) as mock_mark, patch.object(
-            conn, "_update_deletion_sync_checkpoint", new=AsyncMock(),
-        ) as mock_update:
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_deleted_issues([(rg, perms)])
 
-        mock_mark.assert_awaited_once()
-        mock_update.assert_awaited_once()
+        mock_ds.trashed_issues.assert_awaited_once()
+        processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["node-attachment", "node-trashed"], "linear-gap", cascade_children=False, include_trashed_roots=True)
+        processor.on_records_detached_from_parent.assert_awaited_once_with(["node-sub"])
+        assert conn.deletion_sync_point.store["trashed_issues"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_deleted_issues_exception_is_logged(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
+        conn.deletion_sync_point.store["trashed_issues"] = {"last_sync_time": 1704067200000}
         rg, perms = _make_team_rg()
 
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_get_fresh_datasource", new=AsyncMock(side_effect=RuntimeError("api down")),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(side_effect=RuntimeError("api down"))):
             await conn._sync_deleted_issues([(rg, perms)])
+
+        conn.logger.error.assert_called()
+        conn.notify.assert_awaited_once()
+        assert conn.deletion_sync_point.store["trashed_issues"] == {"last_sync_time": 1704067200000}
+
+    @pytest.mark.asyncio
+    async def test_deleted_issues_rate_limit_stops_the_sync(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
+        rg, perms = _make_team_rg()
+        mock_ds = MagicMock()
+        mock_ds.trashed_issues = AsyncMock(return_value=GraphQLResponse(
+            success=False, message="Rate limit exceeded", status_code=400,
+            errors=[GraphQLError(message="Rate limit exceeded", extensions={"code": "RATELIMITED"})],
+        ))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(LinearRateLimited):
+                await conn._sync_deleted_issues([(rg, perms)])
+
+        assert mock_ds.trashed_issues.await_count == 7
+        conn.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deleted_projects_skips_when_no_team_ids(self):
         conn = _make_connector()
+        conn._get_fresh_datasource = AsyncMock()
         rg = RecordGroup(
             id="rg-empty",
             org_id="org-linear-gaps",
@@ -1855,50 +2248,52 @@ class TestDeletionSyncExtended:
             short_name="EMP",
             group_type=RecordGroupType.PROJECT,
         )
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1000)):
-            await conn._sync_deleted_projects([(rg, [])])
+        await conn._sync_deleted_projects([(rg, [])])
+        conn.data_entities_processor.get_records_by_record_type.assert_not_awaited()
+        conn._get_fresh_datasource.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deleted_projects_api_failure(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         rg, perms = _make_team_rg()
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(
+            return_value=[_project_record(id="node-1")])
         mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(return_value=MagicMock(success=False, message="forbidden"))
+        mock_ds.execute_operation = AsyncMock(
+            return_value=GraphQLResponse(success=False, message="unauthorized", status_code=401))
 
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds),
-        ):
-            await conn._sync_deleted_projects([(rg, perms)])
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            with pytest.raises(LinearAuthError):
+                await conn._sync_deleted_projects([(rg, perms)])
+
+        # Not being allowed to list projects says nothing about which ones exist.
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_deleted_projects_filters_by_checkpoint(self):
+    async def test_deleted_projects_are_found_whenever_they_were_trashed(self) -> None:
         conn = _make_connector()
         conn.data_source = MagicMock()
         rg, perms = _make_team_rg()
-        old_trashed = {
-            "id": "proj-old",
-            "name": "Old",
-            "trashed": True,
-            "archivedAt": "2023-01-01T00:00:00.000Z",
-        }
-        new_trashed = {
-            "id": "proj-new",
-            "name": "New",
-            "trashed": True,
-            "archivedAt": "2024-06-15T10:00:00.000Z",
-        }
+        listing = [
+            {"id": "proj-old", "trashed": True, "archivedAt": "2023-01-01T00:00:00.000Z"},
+            {"id": "proj-new", "trashed": True, "archivedAt": "2024-06-15T10:00:00.000Z"},
+            {"id": "proj-live", "trashed": False, "archivedAt": None},
+            {"id": "proj-archived", "trashed": False, "archivedAt": "2024-06-15T10:00:00.000Z"},
+        ]
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[
+            _project_record(id=f"node-{p['id']}", external_record_id=p["id"]) for p in listing
+        ] + [_project_record(id="node-proj-purged", external_record_id="proj-purged")])
         mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(return_value=_projects_resp([old_trashed, new_trashed]))
+        mock_ds.execute_operation = AsyncMock(return_value=_projects_resp(listing))
 
-        with patch.object(conn, "_get_deletion_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds),
-        ), patch.object(conn, "_mark_record_and_children_deleted", new=AsyncMock()) as mock_mark, patch.object(
-            conn, "_update_deletion_sync_checkpoint", new=AsyncMock(),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_deleted_projects([(rg, perms)])
 
-        mock_mark.assert_awaited_once_with(external_record_id="proj-new", record_type="project")
+        # There is no deletion checkpoint for projects: the stored ones are compared
+        # with what Linear lists now. Trashed and purged go; archived stays.
+        removed = [c.args[0] for c in conn.data_entities_processor.on_records_deleted_cascade.await_args_list]
+        assert removed == [["node-proj-old"], ["node-proj-new"], ["node-proj-purged"]]
 
 
 class TestMarkDeletedExtended:
@@ -1908,23 +2303,24 @@ class TestMarkDeletedExtended:
         parent = MagicMock()
         parent.id = "parent-id"
         parent.external_record_id = "ext-parent"
-
+        parent.record_type = RecordType.TICKET
         child = MagicMock()
         child.id = "child-id"
         child.external_record_id = "ext-child"
-
+        child.record_type = RecordType.WEBPAGE
         grandchild = MagicMock()
         grandchild.id = "grand-id"
         grandchild.external_record_id = "ext-grand"
-
-        conn._tx_store.get_record_by_external_id = AsyncMock(return_value=parent)
-        conn._tx_store.get_records_by_parent = AsyncMock(side_effect=[[child], [grandchild]])
-        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        grandchild.record_type = RecordType.FILE
+        processor = conn.data_entities_processor
+        processor.get_record_by_external_id = AsyncMock(return_value=parent)
+        processor.get_records_by_parent = AsyncMock(side_effect=[[child], [grandchild]])
 
         await conn._mark_record_and_children_deleted("ext-parent", "issue")
-        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
-            ["parent-id", "child-id", "grand-id"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
-        )
+
+        # One delete, deepest first, with the processor's own cascade switched off.
+        processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["grand-id", "child-id", "parent-id"], "linear-gap", cascade_children=False, include_trashed_roots=True)
 
 
 class TestParseBlocksExtended:
@@ -2058,7 +2454,7 @@ class TestStreamRecordErrors:
         conn.data_source = MagicMock()
         conn.external_client = MagicMock()
         record = _file_record(
-            external_record_id="https://files.example.com/report.pdf",
+            external_record_id=file_record_id("https://uploads.linear.app/org/report.pdf", "iss-1"),
             mime_type="application/pdf",
         )
 
@@ -2080,7 +2476,7 @@ class TestStreamRecordErrors:
         conn = _make_connector()
         conn.external_client = MagicMock()
         record = _file_record(
-            external_record_id="https://files.example.com/report.pdf",
+            external_record_id=file_record_id("https://uploads.linear.app/org/report.pdf", "iss-1"),
             mime_type="application/pdf",
         )
 
@@ -2090,7 +2486,7 @@ class TestStreamRecordErrors:
         mock_ds = MagicMock()
         mock_ds.download_file = download
 
-        async def fake_init():
+        async def fake_init() -> bool:
             conn.data_source = MagicMock()
             return True
 
@@ -2389,6 +2785,7 @@ class TestCoverageBoostFinal:
     async def test_sync_documents_standalone_document(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1705400000000)
         conn.sync_filters = None
         conn.indexing_filters = None
         rg, perms = _make_team_rg()
@@ -2403,13 +2800,11 @@ class TestCoverageBoostFinal:
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=_documents_resp([doc]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ), patch.object(conn, "_update_documents_sync_checkpoint", new=AsyncMock()) as mock_update:
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
-        mock_update.assert_awaited()
+        assert conn.documents_sync_point.store["documents"]["last_sync_time"] == 1705400000000
 
     @pytest.mark.asyncio
     async def test_sync_documents_skips_missing_team_and_parent(self):
@@ -2437,11 +2832,13 @@ class TestCoverageBoostFinal:
         ]
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=_documents_resp(docs))
-        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        # issue-1 is stored under a team that is not synced; issue-2 is not stored.
+        outside = _ticket_record(external_record_id="issue-1", external_record_group_id="other-team")
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=lambda **kw: (
+            outside if kw.get("external_record_id") == "issue-1" else None
+        ))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
@@ -2450,26 +2847,37 @@ class TestCoverageBoostFinal:
     async def test_sync_documents_outer_exception(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn.notify = AsyncMock()
         rg, perms = _make_team_rg()
+        conn.documents_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with patch.object(conn, "_get_documents_sync_checkpoint", new=AsyncMock(side_effect=RuntimeError("boom"))):
-            await conn._sync_documents([(rg, perms)])
+        await conn._sync_documents([(rg, perms)])
+
+        conn.notify.assert_awaited_once()
+        conn.documents_sync_point.update_sync_point.assert_not_awaited()
+        conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sync_projects_for_teams_incremental(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1704070000000)
+        conn.sync_filters = None
         conn.indexing_filters = None
+        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1704067200000}
         rg, perms = _make_team_rg()
+        mock_ds = MagicMock()
+        mock_ds.projects = AsyncMock(return_value=_projects_resp([]))
 
-        async def empty_batch(*_args, **_kwargs):
-            if False:
-                yield []
-
-        with patch.object(conn, "_get_team_project_sync_checkpoint", new=AsyncMock(return_value=1704067200000)), patch.object(
-            conn, "_fetch_projects_for_team_batch", side_effect=empty_batch,
-        ), patch.object(conn, "_update_team_project_sync_checkpoint", new=AsyncMock()):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_projects_for_teams([(rg, perms)])
+
+        mock_ds.projects.assert_awaited_once_with(first=10, after=None, filter={
+            "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
+            "updatedAt": {"gt": conn._linear_datetime_from_timestamp(1704067200000 - 60_000)},
+        })
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_process_issue_attachments_creates_record_with_indexing_off(self):
@@ -2739,13 +3147,13 @@ class TestCoverageBoostFinal:
         }
         parent = MagicMock()
         parent.id = "parent-node"
+        parent.external_record_group_id = "team-1"
+        parent.is_placeholder = False
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=_documents_resp([doc]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
@@ -2768,41 +3176,44 @@ class TestCoverageBoostFinal:
         mock_ds = MagicMock()
         mock_ds.documents = AsyncMock(return_value=_documents_resp([doc]))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
-            conn, "_get_documents_sync_checkpoint", new=AsyncMock(return_value=None),
-        ):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_documents([(rg, perms)])
 
         conn.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fetch_projects_batch_stops_without_end_cursor(self):
+    async def test_sync_projects_files_a_project_under_its_team(self) -> None:
         conn = _make_connector()
         conn.data_source = MagicMock()
+        conn._now = MagicMock(return_value=1704070000000)
+        conn.sync_filters = None
         conn.indexing_filters = None
         conn.organization_url_key = "org"
-
+        rg, perms = _make_team_rg()
         project_summary = {
             "id": "proj-1",
             "name": "Alpha",
             "url": "https://linear.app/org/project/alpha",
             "createdAt": "2024-01-01T00:00:00.000Z",
             "updatedAt": "2024-06-01T00:00:00.000Z",
+            "teams": {"nodes": [{"id": "team-1", "private": False}]},
         }
         mock_ds = MagicMock()
-        mock_ds.projects = AsyncMock(return_value=_projects_resp(
-            [project_summary], has_next=True, end_cursor=None,
-        ))
+        mock_ds.projects = AsyncMock(return_value=_projects_resp([project_summary], has_next=False))
         mock_ds.project = AsyncMock(return_value=MagicMock(success=True, data={"project": project_summary}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)), patch.object(
             conn, "_prepare_project_related_records", new=AsyncMock(return_value=[]),
         ), patch.object(conn, "_extract_files_from_markdown", new=AsyncMock(return_value=([], []))):
-            batches = []
-            async for batch in conn._fetch_projects_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
+            await conn._sync_projects_for_teams([(rg, perms)])
 
-        assert batches
+        mock_ds.projects.assert_awaited_once()
+        mock_ds.project.assert_awaited_once_with("proj-1")
+        (batch,), _ = conn.data_entities_processor.on_new_records.await_args
+        assert [(type(r).__name__, r.external_record_id, r.external_record_group_id) for r, _ in batch] == [
+            ("ProjectRecord", "proj-1", "team-1"),
+        ]
+        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_connection_inits_when_datasource_missing(self):
@@ -2810,7 +3221,7 @@ class TestCoverageBoostFinal:
         mock_ds = MagicMock()
         mock_ds.organization = AsyncMock(return_value=MagicMock(success=True, data={"organization": {}}))
 
-        async def set_ds():
+        async def set_ds() -> bool:
             conn.data_source = MagicMock()
             return True
 
