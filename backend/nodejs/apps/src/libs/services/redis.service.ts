@@ -251,8 +251,12 @@ export class InProcessCacheService implements ICacheService {
     const next = e === undefined ? 1 : Number(e.value) + 1;
     this.entries.set(k, {
       value: String(next),
+      // no ttl: no expiry, as RedisService.increment (INCR alone sets none)
       expiresAt:
-        e?.expiresAt ?? Date.now() + (options.ttl ?? this.defaultTTL) * 1000,
+        e?.expiresAt ??
+        (options.ttl === undefined
+          ? Number.POSITIVE_INFINITY
+          : Date.now() + options.ttl * 1000),
     });
     return Promise.resolve(next);
   }
