@@ -115,7 +115,7 @@ def safe_request_id(rid: str | None) -> str:
 
 @dataclass(frozen=True, slots=True)
 class OrgLimits:
-    """Per-org guardrails. They can lower the class defaults, never raise them."""
+    """Guardrails a caller can supply for a unit of work. They can lower the class defaults, never raise them."""
 
     statement_timeout_ms: int | None = None
     work_mem_kb: int | None = None
