@@ -35433,7 +35433,11 @@ paths:
         renewals failed for 15 minutes, or the Node replicas' clocks disagree by
         more than 12 minutes), it keeps the document and answers 409 `lost`:
         files may have been removed. The clocks of the replicas that serve this
-        route must agree to within 12 minutes.
+        route must agree to within 12 minutes. The `ifUnchangedSince` comparison
+        needs less than that to hold: the sweep lists only revisions whose stamp is
+        older than its retention grace (24 hours by default), so a rewrite stamped
+        by a replica whose clock is behind falls under that stamp only if the skew
+        is larger than the grace.
 
         Query keys other than `ifUnchangedSince` are refused with 400, so a
         misspelt key is not read as an unfenced delete. A listing from a server

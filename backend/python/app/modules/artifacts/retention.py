@@ -56,6 +56,14 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 DEFAULT_GRACE_MS = 24 * 3600 * 1000
+# Once per process: the recovery loop builds a new sweep every pass, so a per-sweep latch would log every minute.
+_unfenced_warned = False
+
+
+def reset_unfenced_warning() -> None:
+    global _unfenced_warned  # noqa: PLW0603 - a process-wide latch by design
+    _unfenced_warned = False
+
 DEFAULT_PAGE_SIZE = 200
 # Virtual records whose artifact sets are listed and deleted at once.
 RETENTION_CONCURRENCY = 8
@@ -162,7 +170,6 @@ class RevisionRetentionSweep:
         self.leases = leases
         self.list_timeout_seconds = list_timeout_seconds
         self.delete_timeout_seconds = delete_timeout_seconds
-        self._warned_unfenced = False
         self.max_consecutive_failures = max(1, max_consecutive_failures)
         self._now_ms = now_ms
 
@@ -452,8 +459,9 @@ class RevisionRetentionSweep:
             if revision.get("deleteFence") is not True:
                 # A storage service from before the delete fence ignores the stamp and
                 # would delete unfenced (Node must be upgraded before this service).
-                if not self._warned_unfenced:
-                    self._warned_unfenced = True
+                global _unfenced_warned  # noqa: PLW0603
+                if not _unfenced_warned:
+                    _unfenced_warned = True
                     self.logger.warning(
                         "Storage does not report the artifact delete fence; old revisions are "
                         "kept until the storage service is upgraded"

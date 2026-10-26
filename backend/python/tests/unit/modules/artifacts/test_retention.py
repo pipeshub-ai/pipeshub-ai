@@ -6,6 +6,7 @@ import logging
 import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -149,8 +150,10 @@ class FakeStore:
 @pytest.fixture(autouse=True)
 def _routes() -> Iterator[None]:
     ARTIFACT_ROUTES.reset()
+    retention_module.reset_unfenced_warning()
     yield
     ARTIFACT_ROUTES.reset()
+    retention_module.reset_unfenced_warning()
 
 
 @dataclass
@@ -662,6 +665,21 @@ async def test_storage_that_does_not_report_the_delete_fence_is_never_sent_a_del
     assert store.deleted == [] and store.delete_stamps == []
     assert (report.revisions_deleted, report.revisions_kept, report.failed) == (0, 2, 0)
     assert counted.count(("revision", "unfenced", 1)) == 2
+
+
+async def test_the_unfenced_storage_warning_is_given_once_per_process_not_once_per_sweep() -> None:
+    """The recovery loop builds a new sweep each pass; an old storage service must not log every minute."""
+    warned = MagicMock()
+    for _ in range(3):
+        graph, store = FakeGraph(), FakeStore()
+        graph.map("v", "r3", "r2")
+        _revs(store, "v", "r1")
+        for entry in store.revisions["v"]:
+            del entry["deleteFence"]
+        sweep = RevisionRetentionSweep(graph, store, warned, now_ms=lambda: NOW)  # type: ignore[arg-type]
+        await sweep.run_page(None)
+
+    assert warned.warning.call_count == 1
 
 
 class _RenewalFailsAfterTheFirstDelete(FakeLeases):
