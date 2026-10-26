@@ -13784,6 +13784,7 @@ class TestDeleteConnectorInstanceFull:
             ]
         )
         connected_provider._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
+        connected_provider.delete_nodes_and_edges = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is True
@@ -14046,6 +14047,7 @@ class TestDeleteConnectorInstanceFull:
             ]
         )
         connected_provider._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
+        connected_provider.delete_nodes_and_edges = AsyncMock()
         # Pass existing transaction
         result = await connected_provider.delete_connector_instance("c1", "org1", transaction="ext_txn")
         assert result["success"] is True

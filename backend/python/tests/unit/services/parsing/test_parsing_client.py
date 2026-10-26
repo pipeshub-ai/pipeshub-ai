@@ -281,6 +281,52 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
 
 
 @pytest.mark.asyncio
+async def test_a_password_required_answer_becomes_the_typed_error_and_is_not_retried() -> None:
+    from app.exceptions.indexing_exceptions import PasswordProtectedError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+    from app.utils.user_errors import (
+        PASSWORD_PROTECTED,
+        is_password_protected,
+        to_user_reason,
+    )
+
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(
+            422,
+            {"success": False, "error": {
+                "code": "PASSWORD_REQUIRED", "message": "needs a password", "details": {"format": "pdf"},
+            }},
+        )
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(PasswordProtectedError) as exc_info:
+            await client.parse(file_content=b"data", record_name="locked.pdf")
+
+    assert calls == 1
+    assert not client.circuit_breaker.is_open
+    assert client.circuit_breaker._consecutive_failures == 0
+    assert is_password_protected(exc_info.value)
+    assert to_user_reason(exc_info.value) == PASSWORD_PROTECTED
+    assert MessageErrorClassifier.classify_by_exception(exc_info.value) == MessageErrorType.TERMINAL
+
+
+@pytest.mark.asyncio
 async def test_an_unexpected_parser_failure_is_retried_and_stored_as_temporary() -> None:
     """The parsing service answers an unexpected exception with a 500 and a
     generic body. The client retries it as transient, and the record is told

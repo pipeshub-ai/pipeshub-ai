@@ -26,10 +26,10 @@ Do not open a Neo4j, Arango, Qdrant, or Kafka client from indexing/query/connect
 | --- | --- | --- | --- |
 | Graph | `DATA_STORE` | `neo4j` (what `install.sh`, Helm, and `backend/env.template` ship), `arangodb` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
 | Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis` | `IVectorDBService` / `VectorDBProviderFactory` |
-| KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
+| KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd`, `postgres` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
 | Document | — | MongoDB | Mongoose in the Node API (users, orgs, sessions). Not swapped today |
 | Blob | storage config | local, S3, Azure Blob | `StorageServiceInterface` (`backend/nodejs/apps/src/modules/storage/`) |
-| Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams) | `MessagingFactory` |
+| Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams), `postgres` (queue tables) | `MessagingFactory` |
 
 Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. PostgreSQL is a **connector** (a source to index), not PipesHub's document store.
 

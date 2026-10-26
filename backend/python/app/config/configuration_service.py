@@ -5,7 +5,7 @@ import os
 import threading
 
 import dotenv
-from cachetools import LRUCache
+from cachetools import LRUCache, TTLCache
 
 from app.config.constants.service import (
     RedisDefaults,
@@ -46,7 +46,12 @@ class ConfigurationService:
         self.logger.debug("🔐 Initialized EncryptionService")
 
         # Initialize LRU cache
-        self.cache = LRUCache(maxsize=1000)
+        # On the PostgreSQL key-value store a change made by another process arrives by NOTIFY. A notification can be lost (a dropped
+        # connection, a pooler with no direct address), so the cache also expires: a stale value lives at most this long.
+        if os.getenv("KV_STORE_TYPE", "").lower() == "postgres":
+            self.cache = TTLCache(maxsize=1000, ttl=float(os.getenv("CONFIG_CACHE_TTL_SECONDS", "60")))
+        else:
+            self.cache = LRUCache(maxsize=1000)
         # LRUCache is not thread-safe (even a read reorders it), and it is used from every
         # event loop's thread plus the watch thread. Never hold this across an await.
         self._cache_lock = threading.Lock()
@@ -543,11 +548,12 @@ class ConfigurationService:
     async def get_redis_config(self) -> RedisConfig:
         """Get typed Redis connection configuration."""
         raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        # A stored value of null (an install with no Redis writes its Redis entry from unset variables) reads as absent
         return RedisConfig(
-            host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
-            port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            host=raw.get("host") or os.getenv(RedisEnv.HOST, RedisDefaults.HOST),
+            port=int(raw.get("port") or os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
             password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
-            db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
+            db=int(raw.get("db") or os.getenv(RedisEnv.DB, RedisDefaults.DB)),
             tls=bool(raw.get("tls", False)),
         )
 

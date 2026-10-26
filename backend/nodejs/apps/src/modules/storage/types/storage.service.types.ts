@@ -178,6 +178,8 @@ export interface ArtifactSet {
   rev: string;
   /** Storage key prefix holding the revision's files. */
   root: string;
+  /** Epoch ms a delete claimed the revision; absent while it is writable. */
+  retiringAt?: number;
 }
 
 /**

@@ -20,7 +20,9 @@ export type IndexingStatus =
   | 'AUTO_INDEX_OFF'
   | 'EMPTY'
   | 'ENABLE_MULTIMODAL_MODELS'
-  | 'QUEUED';
+  | 'QUEUED'
+  | 'SKIPPED'
+  | 'PASSWORD_PROTECTED';
 
 // Interface for a generic record document.
 export interface IRecordDocument {

@@ -40,6 +40,208 @@ class TestJiraEnrichmentHelpers:
         assert is_jira_connector("not-a-connector") is False
 
 
+_BASE = "Record: PROJ-1\nTicket Information:\n* Status: Open\n"
+_ISSUE = {
+    "id": "10324",
+    "fields": {
+        "parent": {"id": "1", "key": "SEC-1", "fields": {"summary": "Acquire Foo Corp"}},
+        "issuelinks": [
+            {"type": {"outward": "blocks"}, "outwardIssue": {"id": "2", "key": "SEC-2"}},
+            {"type": {"outward": "relates to"}, "outwardIssue": {"id": "3", "key": "PUB-3"}},
+        ],
+        "subtasks": [{"id": "4", "key": "SEC-4"}, {"id": "5", "key": "PUB-5"}],
+    },
+}
+
+
+async def _enrich(readable, base: str = _BASE) -> str:
+    with patch(
+        "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
+        new=AsyncMock(return_value=MagicMock()),
+    ), patch(
+        "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
+        new=AsyncMock(return_value={}),
+    ), patch(
+        "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
+        new=AsyncMock(return_value={"10324": _ISSUE}),
+    ):
+        return await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), readable)
+
+
+class TestCrossIssueReferences:
+    """Another issue is named only if the viewer may read it."""
+
+    @pytest.mark.asyncio
+    async def test_unreadable_issues_are_not_named(self) -> None:
+        check = AsyncMock(return_value={"3", "5"})
+        merged = await _enrich(check)
+        check.assert_awaited_once_with("conn-jira-1", {"1", "2", "3", "4", "5"})
+        assert "SEC-1" not in merged and "Foo Corp" not in merged  # hidden parent
+        assert "SEC-2" not in merged  # hidden linked issue
+        assert "SEC-4" not in merged  # hidden subtask
+        assert "PUB-3" in merged and "PUB-5" in merged  # readable ones stay
+
+    @pytest.mark.asyncio
+    async def test_readable_parent_keeps_its_title(self) -> None:
+        merged = await _enrich(AsyncMock(return_value={"1", "2", "3", "4", "5"}))
+        assert "SEC-1 — Acquire Foo Corp" in merged
+        assert "SEC-2" in merged and "SEC-4" in merged
+
+    @pytest.mark.asyncio
+    async def test_hidden_parent_key_sharing_a_prefix_with_own_key_is_omitted(self) -> None:
+        # Own key PROJ-12 is in the base context; hidden parent PROJ-1 must not match inside it.
+        issue = {"id": "10324", "fields": {"parent": {"id": "1", "key": "PROJ-1", "fields": {"summary": "Secret"}}}}
+        base = "Record: PROJ-12\nTicket Information:\n* Status: Open\n"
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
+            new=AsyncMock(return_value=MagicMock()),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
+            new=AsyncMock(return_value={"10324": issue}),
+        ):
+            merged = await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), AsyncMock(return_value=set()))
+        assert "Parent" not in merged and "Secret" not in merged
+        assert merged.count("PROJ-1") == merged.count("PROJ-12")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("readable", ["raises", "absent"])
+    async def test_failed_or_missing_check_names_no_other_issue(self, readable: str) -> None:
+        check = AsyncMock(side_effect=RuntimeError("down")) if readable == "raises" else None
+        merged = await _enrich(check)
+        for hidden in ("SEC-1", "Foo Corp", "SEC-2", "PUB-3", "SEC-4", "PUB-5"):
+            assert hidden not in merged
+
+    async def _epic(self, lookup, readable, value: object = "PROJ-1") -> tuple[str, AsyncMock]:
+        """Enrich a ticket whose epic link is the key PROJ-1 (own key PROJ-12)."""
+        issue = {"id": "10324", "fields": {"customfield_9": value}}
+        base = "Record: PROJ-12\nTicket Information:\n* Status: Open\n"
+
+        async def fetch(*_a: object, by_key: bool = False, **_k: object) -> dict:
+            if by_key:
+                if isinstance(lookup, Exception):
+                    raise lookup
+                return lookup
+            return {"10324": issue}
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
+            new=AsyncMock(return_value=MagicMock()),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
+            new=AsyncMock(return_value={"epic_link": "customfield_9"}),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
+            new=AsyncMock(side_effect=fetch),
+        ) as batch:
+            merged = await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), readable)
+        return merged, batch
+
+    @pytest.mark.asyncio
+    async def test_readable_epic_link_is_shown_after_one_key_lookup_and_one_check(self) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, batch = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, check)
+        assert "* Epic Link: PROJ-1" in merged
+        check.assert_awaited_once_with("conn-jira-1", {"501"})
+        key_calls = [c for c in batch.await_args_list if c.kwargs.get("by_key")]
+        assert len(key_calls) == 1 and key_calls[0].kwargs["issue_ids"] == ["PROJ-1"]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_epic_link_is_dropped(self) -> None:
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, AsyncMock(return_value=set()))
+        assert "Epic Link" not in merged and "PROJ-1" not in merged.replace("PROJ-12", "")
+
+    @pytest.mark.asyncio
+    async def test_unresolved_epic_key_is_dropped(self) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, _ = await self._epic({}, check)
+        assert "Epic Link" not in merged
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["lookup_raises", "check_raises"])
+    async def test_failed_lookup_or_check_drops_epic_link(self, failure: str) -> None:
+        lookup = RuntimeError("down") if failure == "lookup_raises" else {"501": {"id": "501", "key": "PROJ-1"}}
+        check = AsyncMock(side_effect=RuntimeError("down")) if failure == "check_raises" else AsyncMock(return_value={"501"})
+        merged, _ = await self._epic(lookup, check)
+        assert "Epic Link" not in merged
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [
+        {"hasEpicLinkFieldDependency": False, "data": {"id": 7, "key": "PROJ-1", "summary": "Secret plan"}},
+        ["PROJ-1"],
+        {"value": "PROJ-1"},
+        {"name": "PROJ-1 Secret plan"},
+        {"key": 1},
+    ])
+    async def test_epic_link_of_any_other_shape_is_dropped(self, value: object) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, check, value)
+        assert "Epic Link" not in merged and "Secret" not in merged
+        assert "PROJ-1" not in merged.replace("PROJ-12", "")
+
+    @pytest.mark.asyncio
+    async def test_no_check_drops_epic_link(self) -> None:
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, None)
+        assert "Epic Link" not in merged
+
+
+class TestBaseContextParentId:
+    """The base context's ``External Parent ID`` line follows the same access rule."""
+
+    async def _run(self, readable, issue: dict | None = None) -> str:
+        ticket = _ticket_record(parent_external_record_id="777")
+        base = ticket.to_llm_context()
+        assert "External Parent ID: 777" in base
+        found = {"10324": {"id": "10324", "fields": {}}} if issue is None else {"10324": issue}
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
+            new=AsyncMock(return_value=MagicMock()),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
+            new=AsyncMock(return_value=found),
+        ):
+            return await enrich_ticket_llm_context(base, ticket, AsyncMock(), readable)
+
+    @pytest.mark.asyncio
+    async def test_readable_parent_id_stays(self) -> None:
+        check = AsyncMock(return_value={"777"})
+        assert "External Parent ID: 777" in await self._run(check)
+        check.assert_awaited_once_with("conn-jira-1", {"777"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["unreadable", "raises", "absent", "no_issue"])
+    async def test_unreadable_or_unchecked_parent_id_is_dropped(self, mode: str) -> None:
+        check = {
+            "unreadable": AsyncMock(return_value=set()),
+            "raises": AsyncMock(side_effect=RuntimeError("down")),
+            "absent": None,
+            "no_issue": AsyncMock(return_value={"777"}),
+        }[mode]
+        issue = {} if mode == "no_issue" else None  # empty issue: nothing fetched
+        merged = await self._run(check, issue)
+        assert "External Parent ID: 777" not in merged
+        assert "External Parent ID: N/A" in merged
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["_get_data_source", "_discover_custom_fields", "batch_fetch_issues"])
+    async def test_a_failed_live_fetch_keeps_the_parent_id_hidden(self, failing: str) -> None:
+        ticket = _ticket_record(parent_external_record_id="777")
+        with patch(
+            f"app.connectors.sources.atlassian.jira.enrichment.service.{failing}",
+            new=AsyncMock(side_effect=RuntimeError("down")),
+        ):
+            merged = await ticket.to_llm_context_with_live_fields(
+                config_service=AsyncMock(), readable_issue_ids=AsyncMock(return_value={"777"}),
+            )
+        assert "External Parent ID: 777" not in merged
+        assert "External Parent ID: N/A" in merged
+
 class TestEnrichTicketLlmContext:
     @pytest.mark.asyncio
     async def test_fetches_issue_and_merges(self):

@@ -9,6 +9,7 @@ import pdfplumber
 import pytest
 from pypdfium2 import PdfiumError
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_inspection import (
     detect_ocr,
@@ -141,7 +142,7 @@ class TestRepairPdf:
         assert detect_ocr(repaired, 30) is False
 
     def test_a_password_protected_file_is_refused_as_such(self) -> None:
-        with pytest.raises(PdfiumError, match="(?i)password"):
+        with pytest.raises(PasswordProtectedError):
             repair_pdf(password_protected_pdf())
 
     @pytest.mark.parametrize(
