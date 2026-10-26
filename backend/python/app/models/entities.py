@@ -1172,6 +1172,7 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
