@@ -50,7 +50,7 @@ class InMemoryKeyValueStore {
   async get<T>(key: string): Promise<T | null> {
     return (this.values.get(key) as T | undefined) ?? null
   }
-  async set<T>(key: string, value: T): Promise<void> {
+  async set(key: string, value: unknown): Promise<void> {
     this.values.set(key, String(value))
   }
   async delete(key: string): Promise<void> {
@@ -120,7 +120,9 @@ async function main(): Promise<void> {
   app.use(express.urlencoded({ extended: true }))
   app.use('/api/v1/document', createStorageRouter(container))
   app.use(ErrorMiddleware.handleError())
-  const server = http.createServer(app)
+  const server = http.createServer((req, res) => {
+    void app(req, res)
+  })
   await new Promise<void>((resolve) => server.listen(Number(process.env.PORT || 3000), '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: config.url }, storage: { endpoint: origin } }))
