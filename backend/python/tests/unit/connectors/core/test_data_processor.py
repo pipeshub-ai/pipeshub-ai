@@ -8,7 +8,6 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors as ConnectorsEnum,
-    EntityRelations,
     OriginTypes,
     ProgressStatus,
 )

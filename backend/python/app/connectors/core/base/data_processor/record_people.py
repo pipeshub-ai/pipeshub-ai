@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityRelations
