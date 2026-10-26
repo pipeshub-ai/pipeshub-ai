@@ -456,11 +456,7 @@ export class PgConversationRepository implements ConversationRepository {
         stripNul(fields.title ?? null, 'conversation', 'title'),
         new Date(fields.lastActivityAt),
         fields.status,
-        JSON.stringify(
-          storedModelInfo(
-            fields.modelInfo as Record<string, unknown> | undefined,
-          ),
-        ),
+        JSON.stringify(storedModelInfo(fields.modelInfo)),
         fields.agentKey ?? null,
         fields.conversationSource ?? null,
         fields.projectId ?? null,
@@ -1369,7 +1365,7 @@ export class PgConversationRepository implements ConversationRepository {
         seq,
         newObjectId(),
         m.messageType,
-        (m.content as string | undefined) ?? '', // the document schema defaulted a missing text to ''
+        m.content ?? '', // the document schema defaulted a missing text to ''
         m.contentFormat ?? 'MARKDOWN',
         m.status ?? null,
         m.confidence ?? null,
@@ -1438,7 +1434,7 @@ export class PgConversationRepository implements ConversationRepository {
           k.orgId,
           oid,
           stamped.messageType,
-          (stamped.content as string | undefined) ?? '',
+          stamped.content ?? '',
           stamped.contentFormat ?? 'MARKDOWN',
           stamped.status ?? null,
           stamped.confidence ?? null,

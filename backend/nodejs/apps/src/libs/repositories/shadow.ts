@@ -179,9 +179,7 @@ const isTx = (
 /** `_id`s of a result: of the object itself, or of the first elements of a list. Ids only, nothing else is read from the result. */
 export function idsOf(v: unknown, max = 20): string[] {
   const one = (x: unknown): string[] =>
-    x && typeof x === 'object' && '_id' in x
-      ? [String((x as { _id: unknown })._id)]
-      : [];
+    x && typeof x === 'object' && '_id' in x ? [String(x._id)] : [];
   return Array.isArray(v) ? v.slice(0, max).flatMap(one) : one(v);
 }
 
