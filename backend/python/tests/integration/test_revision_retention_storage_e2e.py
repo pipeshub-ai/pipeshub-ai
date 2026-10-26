@@ -15,7 +15,8 @@ Environment:
 - ``RETENTION_IT_LOCAL_ROOT`` (optional): the directory the ``local`` target files under,
   to check that deleted files left the disk
 - ``RETENTION_IT_SCALE`` (optional): number of mappings for the scale test (default 5000)
-- graph: as ``tests/integration/real_graph.py``
+- graph: ``NEO4J_IT_URI`` / ``NEO4J_IT_PASSWORD`` and ``ARANGO_IT_URL`` / ``ARANGO_IT_PASSWORD``,
+  as ``tests/integration/real_graph.py`` reads them
 
 Without ``RETENTION_IT_TARGETS``, ``ARTIFACTS_IT_STORAGE_URL`` (with ``ARTIFACTS_IT_SCOPED_SECRET`` and
 optionally ``ARTIFACTS_IT_STORAGE_TYPE``) names the one storage service to use.
@@ -564,7 +565,10 @@ async def _scale_world(life: _Lifecycle, n: int, with_sets: int) -> list[str]:
 
 async def test_scale_pages_stay_bounded(life: _Lifecycle, record_property: Any) -> None:  # noqa: ANN401
     if life.target.type != "local":
-        pytest.skip("scale is measured once, on the local target; the vendor does not change the call pattern")
+        pytest.skip(
+            f"not applicable on {life.target.type}: scale is measured once, on the local target;"
+            " the vendor does not change the call pattern"
+        )
     with_sets = 500
     vrids = await _scale_world(life, SCALE, with_sets)
     graph = _Counting(life.graph)
@@ -608,7 +612,7 @@ async def test_scale_pages_stay_bounded(life: _Lifecycle, record_property: Any) 
 
 async def test_stage_state_queries_use_indexes(life: _Lifecycle) -> None:
     if life.target.type != "local":
-        pytest.skip("graph-only; measured once")
+        pytest.skip(f"not applicable on {life.target.type}: graph-only, measured once on the local target")
     vrids = [life.vrid(f"q{i}") for i in range(3)]
     queries: list[tuple[str, dict[str, Any]]] = []
     g = life.graph

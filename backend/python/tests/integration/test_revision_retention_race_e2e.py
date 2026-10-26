@@ -1,7 +1,8 @@
 # ruff: noqa
 """Real storage: a guarded sweep delete racing a re-index's write of the same revision,
 many rounds with a fresh seed. Invariant: a write that returned a set has every file readable.
-Uses the fixtures of test_revision_retention_storage_e2e."""
+Uses the fixtures and environment of test_revision_retention_storage_e2e: a storage target, and the
+graph through NEO4J_IT_URI / ARANGO_IT_URL."""
 from __future__ import annotations
 
 import asyncio
