@@ -501,6 +501,45 @@ class TestUserUpdated:
         assert expected == {"isActive": None}
 
     @pytest.mark.asyncio
+    async def test_a_delete_that_lands_mid_handler_still_wins(self) -> None:
+        """The window the guard has to survive: the delete commits after the
+        read and before the upsert. Written against a store that merges the way
+        both providers do, rather than against the call arguments."""
+        store = {"user-key-1": {"id": "user-key-1", "isActive": True}}
+
+        async def read_then_delete(user_id: str) -> dict:
+            seen = dict(store["user-key-1"])
+            # `_handle_user_deleted` on the other replica, in the window.
+            store["user-key-1"]["isActive"] = False
+            return seen
+
+        async def merge(nodes: list[dict], collection: str, **_: object) -> bool:
+            for node in nodes:
+                store.setdefault(node["id"], {}).update(node)
+            return True
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=read_then_delete)
+        graph_provider.batch_upsert_nodes = AsyncMock(side_effect=merge)
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        result = await svc.process_event(
+            "userUpdated",
+            {
+                "userId": "u-1",
+                "orgId": "org-1",
+                "email": "alice@test.com",
+                "fullName": "Alice Smith Updated",
+            },
+        )
+
+        assert result is True
+        assert store["user-key-1"]["isActive"] is False
+        assert store["user-key-1"]["fullName"] == "Alice Smith Updated"
+        graph_provider.update_node_fields_if_match.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_an_active_user_is_not_restamped(self) -> None:
         """The read already saw the field, so there is nothing to backfill and
         no reason to spend a second write on every rename."""
