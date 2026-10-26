@@ -981,8 +981,7 @@ class TestSmbConnectorStreamAndFilters:
         assert updated.id == "upd"
         assert updated.external_revision_id != "old"
 
-    @patch("app.connectors.sources.smb.connector.NetworkShareEntitiesProcessor.initialize", new_callable=AsyncMock)
-    async def test_create_connector(self, mock_init, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
+    async def test_create_connector(self, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
         created = await SmbConnector.create_connector(
             mock_logger,
             mock_data_store_provider,
@@ -995,7 +994,8 @@ class TestSmbConnectorStreamAndFilters:
         )
         assert isinstance(created, SmbConnector)
         assert created.scope == ConnectorScope.TEAM.value
-        mock_init.assert_awaited()
+        # The factory's processor, not a second one with its own Redis connection.
+        assert created.data_entities_processor is mock_processor
 
 
 class TestSmbConnectorEditionSeams:
@@ -1009,12 +1009,11 @@ class TestSmbConnectorEditionSeams:
 
         assert SmbConnector.processor_cls is NetworkShareEntitiesProcessor
 
-    async def test_create_connector_builds_the_subclass_processor(
+    async def test_create_connector_keeps_the_factory_processor(
         self, mock_logger, mock_data_store_provider, mock_config_service, mock_processor
     ):
-        built = MagicMock()
-        built.initialize = AsyncMock()
-        processor_cls = MagicMock(return_value=built)
+        """The factory builds processor_cls; a second one here would leak its connection."""
+        processor_cls = MagicMock()
 
         class Edition(SmbConnector):
             pass
@@ -1025,9 +1024,8 @@ class TestSmbConnectorEditionSeams:
             org_id="org-1",
         )
 
-        processor_cls.assert_called_once_with(mock_logger, mock_data_store_provider, mock_config_service)
-        assert created.data_entities_processor is built
-        assert built.org_id == "org-1"
+        processor_cls.assert_not_called()
+        assert created.data_entities_processor is mock_processor
 
     @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
     async def test_default_data_source_wraps_the_smb_client(self, mock_build, smb_connector):

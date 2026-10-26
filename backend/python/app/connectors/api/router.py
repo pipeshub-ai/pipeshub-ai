@@ -110,6 +110,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
     ConnectorInitError,
+    dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
@@ -5526,8 +5527,7 @@ async def update_connector_instance_auth_config(
             logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
             existing_connector = container.connectors_map.pop(connector_id)
             try:
-                if hasattr(existing_connector, 'cleanup'):
-                    await existing_connector.cleanup()
+                await dispose_connector(existing_connector)
                 logger.info(f"Cleaned up existing connector instance {connector_id}")
             except Exception as e:
                 logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
@@ -6113,8 +6113,7 @@ async def update_connector_instance_config(
                 logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
                 existing_connector = container.connectors_map.pop(connector_id)
                 try:
-                    if hasattr(existing_connector, 'cleanup'):
-                        await existing_connector.cleanup()
+                    await dispose_connector(existing_connector)
                     logger.info(f"Cleaned up existing connector instance {connector_id}")
                 except Exception as e:
                     logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
@@ -7958,8 +7957,7 @@ async def _evict_cached_connector(
     logger.info(f"Removing connector {connector_id} from connectors_map")
     existing_connector = container.connectors_map.pop(connector_id)
     try:
-        if hasattr(existing_connector, "cleanup"):
-            await existing_connector.cleanup()
+        await dispose_connector(existing_connector)
         logger.info(f"Cleaned up connector instance {connector_id}")
     except Exception as cleanup_err:
         logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
@@ -8141,7 +8139,7 @@ async def _build_and_store_connector(
             error_msg = str(init_error)  # user-written message
             logger.error(f"❌ {error_msg}")
             with contextlib.suppress(Exception):
-                await connector.cleanup()
+                await dispose_connector(connector)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -8152,7 +8150,7 @@ async def _build_and_store_connector(
             logger.error(f"❌ {error_msg}")
             # Cleanup on failure
             with contextlib.suppress(Exception):
-                await connector.cleanup()
+                await dispose_connector(connector)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -8167,7 +8165,7 @@ async def _build_and_store_connector(
                 logger.error(f"❌ {error_msg}")
                 # Cleanup on failure
                 with contextlib.suppress(Exception):
-                    await connector.cleanup()
+                    await dispose_connector(connector)
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
@@ -8176,7 +8174,7 @@ async def _build_and_store_connector(
             error_msg = str(init_error)  # user-written message
             logger.error(f"❌ {error_msg}")
             with contextlib.suppress(Exception):
-                await connector.cleanup()
+                await dispose_connector(connector)
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -8189,7 +8187,7 @@ async def _build_and_store_connector(
             )
             # Cleanup on failure
             with contextlib.suppress(Exception):
-                await connector.cleanup()
+                await dispose_connector(connector)
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=action_failed("connect to this connector")

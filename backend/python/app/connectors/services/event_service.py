@@ -16,7 +16,10 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    dispose_connector,
+)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
@@ -268,7 +271,7 @@ class EventService:
 
         self.logger.warning(f"Replaced the live {connector_id} connector instance; cleaning up the previous one")
         try:
-            await previous.cleanup()
+            await dispose_connector(previous)
         except Exception as e:
             self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
@@ -291,9 +294,6 @@ class EventService:
 
     def _release_connector(self, connector_id: str, connector: BaseConnector) -> None:
         """Close an evicted connector rather than leaking its sessions instead."""
-        cleanup = getattr(connector, "cleanup", None)
-        if cleanup is None:
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -301,7 +301,7 @@ class EventService:
 
         async def _close() -> None:
             try:
-                await cleanup()
+                await dispose_connector(connector)
             except Exception as e:  # eviction must never fail a sync
                 self.logger.warning(
                     "Cleanup failed for evicted connector %s: %s", connector_id, e

@@ -21,6 +21,7 @@ from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
     connector_sync_lock,
+    dispose_connector,
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
@@ -273,9 +274,9 @@ async def _finalize(
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
-        # Built for this run only, so its HTTP sessions die with it.
+        # Built for this run only, so its HTTP sessions and producer die with it.
         try:
-            await connector.cleanup()
+            await dispose_connector(connector)
         except Exception as e:
             logger.warning(f"Connector cleanup failed for {connector_id}: {e}")
 

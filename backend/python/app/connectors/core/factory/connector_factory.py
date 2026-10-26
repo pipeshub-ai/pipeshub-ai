@@ -9,7 +9,10 @@ from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.config.configuration_service import ConfigurationService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    dispose_connector,
+)
 
 # from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -277,12 +280,19 @@ class ConnectorFactory:
             logger.error(f"Unknown connector type: {name} {connector_id}")
             return None
 
+        owned_processor = None
+        shared_processor = None
         try:
             notification_service = kwargs.pop("notification_service", None)
             connector_instance_name = kwargs.pop("connector_instance_name", None)
             last_synced_by = kwargs.pop("last_synced_by", None)
             from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
             processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
+            # A connector that needs its own processor subclass declares it here
+            # rather than building a second processor in create_connector().
+            connector_processor_cls = getattr(connector_class, "processor_cls", None)
+            if isinstance(connector_processor_cls, type):
+                processor_cls = connector_processor_cls
             # `is True`: a MagicMock connector class would otherwise opt in. A store
             # scoped to another org (or to none, "") must never back a shared
             # processor; OSS stores carry no org and are single-tenant.
@@ -295,10 +305,13 @@ class ConnectorFactory:
                 data_entities_processor = await cls._shared_org_processor(
                     processor_cls, org_id, logger, data_store_provider, config_service
                 )
+                shared_processor = data_entities_processor
             else:
                 data_entities_processor = processor_cls(logger, data_store_provider, config_service)
                 if org_id:
                     data_entities_processor.org_id = org_id
+                # Before initialize(): it opens the producer and can still raise after.
+                owned_processor = data_entities_processor
                 await data_entities_processor.initialize()
 
             thread_pool = kwargs.pop("thread_pool", None)
@@ -315,6 +328,14 @@ class ConnectorFactory:
                 **kwargs,
             )
             if connector is not None:
+                connector_processor = getattr(connector, "data_entities_processor", None)
+                if owned_processor is not None and connector_processor is not owned_processor:
+                    # The connector built its own processor; ours is unused.
+                    await cls._close_processor(owned_processor, logger)
+                connector._owns_entities_processor = (
+                    connector_processor is not None and connector_processor is not shared_processor
+                )
+                owned_processor = None
                 if notification_service is not None:
                     connector._notification_service = notification_service
                 # Must be set here rather than passed to create_connector: no
@@ -327,13 +348,26 @@ class ConnectorFactory:
                     connector.connector_instance_name = connector_instance_name
                 if last_synced_by:
                     connector.last_synced_by = last_synced_by
+            if connector is None and owned_processor is not None:
+                await cls._close_processor(owned_processor, logger)
+                return None
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
             logger.error(
                 f"❌ Failed to create {name} {connector_id} connector: {str(e)}"
             )
+            if owned_processor is not None:
+                await cls._close_processor(owned_processor, logger)
             return None
+
+    @staticmethod
+    async def _close_processor(processor: object, logger: logging.Logger) -> None:
+        """Close a processor nothing will use, so its producer's connection is not leaked."""
+        try:
+            await processor.cleanup()
+        except Exception as e:
+            logger.warning(f"Failed to close an unused entities processor: {e}")
 
     @classmethod
     async def initialize_connector(
@@ -367,6 +401,7 @@ class ConnectorFactory:
                         f"❌ Failed to initialize {name} {connector_id} connector"
                     )
                     await connector.on_background_init_failed(None)
+                    await cls._dispose_failed(connector, name, connector_id, logger)
                     return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
@@ -375,9 +410,21 @@ class ConnectorFactory:
                     f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
                 )
                 await connector.on_background_init_failed(e)
+                await cls._dispose_failed(connector, name, connector_id, logger)
                 return None
 
         return None
+
+    @staticmethod
+    async def _dispose_failed(
+        connector: BaseConnector, name: str, connector_id: str, logger: logging.Logger
+    ) -> None:
+        """Release a connector whose init() failed; the caller drops it. Every retry
+        of a failed auto-init builds a new one, so leaking here adds up fast."""
+        try:
+            await dispose_connector(connector)
+        except Exception as e:
+            logger.warning(f"Failed to clean up {name} {connector_id} after a failed init: {e}")
 
     @staticmethod
     async def is_manual_sync_strategy(

@@ -565,6 +565,16 @@ class DataSourceEntitiesProcessor:
                 vrid, actual, new_path, result,
             )
 
+    async def cleanup(self) -> None:
+        """Close the messaging producer initialize() opened. Safe to call twice.
+
+        Each producer holds its own broker connection, so a processor dropped
+        without this leaks one socket for the life of the process.
+        """
+        producer = getattr(self, "messaging_producer", None)
+        if producer is not None:
+            await producer.cleanup()
+
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"

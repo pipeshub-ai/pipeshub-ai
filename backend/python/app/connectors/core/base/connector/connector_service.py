@@ -91,6 +91,22 @@ def connector_sync_lock(connector_id: str) -> asyncio.Lock:
     return lock
 
 
+async def dispose_connector(connector: object) -> None:
+    """Tear down a connector that is being dropped: cleanup(), then close the
+    processor's messaging producer if the instance owns it.
+
+    cleanup() alone leaves that producer's broker connection open, one per
+    dropped instance, until the process runs out of file descriptors.
+    """
+    try:
+        cleanup = getattr(connector, "cleanup", None)
+        if cleanup is not None:
+            await cleanup()
+    finally:
+        if isinstance(connector, BaseConnector):
+            await connector.release_entities_processor()
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
@@ -113,6 +129,10 @@ class BaseConnector(ABC):
     # (and so one messaging producer), instead of building one per instance. Only
     # safe for connectors whose processor carries no per-instance state.
     shares_org_processor: bool = False
+    # Set by ConnectorFactory when it built this instance's processor for it
+    # alone, so dispose_connector() closes that processor's broker connection.
+    # Left False for a shared org processor, which other instances still use.
+    _owns_entities_processor: bool = False
 
     def __init__(
         self,
@@ -243,6 +263,16 @@ class BaseConnector(ABC):
     @abstractmethod
     async def init(self) -> bool:
         pass
+
+    async def release_entities_processor(self) -> None:
+        """Close the processor's producer if this instance owns it. Never raises."""
+        if not self._owns_entities_processor:
+            return
+        self._owns_entities_processor = False
+        try:
+            await self.data_entities_processor.cleanup()
+        except Exception as e:
+            self.logger.warning(f"Failed to close the entities processor of {self.connector_id}: {e}")
 
     async def on_background_init_failed(self, error: Optional[Exception]) -> None:
         """Called when ``init`` failed while starting a sync in the background, where no
