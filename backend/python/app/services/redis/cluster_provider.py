@@ -21,7 +21,11 @@ from redis.asyncio.retry import Retry
 from redis.backoff import default_backoff
 from redis.crc import key_slot
 
-from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.config import (
+    RESP_PROTOCOL,
+    ClientOptions,
+    RedisConnectionConfig,
+)
 from app.services.redis.connection_provider import IRedisConnectionProvider
 from app.utils.logger import create_logger
 
@@ -70,6 +74,7 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs: dict[str, Any] = {
             "startup_nodes": self._startup_nodes(),
             "decode_responses": options.decode_responses,
+            "protocol": RESP_PROTOCOL,
             "socket_timeout": options.socket_timeout_seconds,
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "read_from_replicas": self._config.scale_reads in ("slave", "all"),
@@ -185,7 +190,7 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         return startup.host, startup.port
 
     async def publish(self, channel: str, message: str) -> int:
-        # redis-py 5.x's async RedisCluster has no publish() and PUBLISH is
+        # redis-py 5.x's async RedisCluster has no publish() (6+ does) and PUBLISH is
         # keyless, so a bare execute_command has no slot to route by and
         # raises. Any node will do -- regular PUBLISH propagates cluster-wide.
         result = await self.get_client().execute_command(

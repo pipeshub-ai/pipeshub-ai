@@ -16,6 +16,10 @@ ScaleReads = Literal["master", "slave", "all"]
 # Redis password, and -- worse, because it defaults on --
 # `REDIS_TLS_REJECT_UNAUTHORIZED=yes` silently *disabled* certificate
 # verification. Both fail open with no error to notice.
+# redis-py 6+ defaults to RESP3, which turns FT.* / XREAD replies into maps.
+# The vector store, streams and Lua helpers parse the RESP2 array shapes.
+RESP_PROTOCOL = 2
+
 _TRUTHY = frozenset({"true", "1", "yes", "on"})
 _FALSY = frozenset({"false", "0", "no", "off"})
 
