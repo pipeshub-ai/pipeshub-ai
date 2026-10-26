@@ -13,17 +13,22 @@ stream out of step.
 """
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import os
 import pickle
 import signal
 import struct
 import sys
+import threading
+import time
 import traceback
 from typing import BinaryIO
 
 from app.utils.process_hardening import mark_process_non_dumpable
 
 _LENGTH = struct.Struct("!Q")
+_PARENT_POLL_SECONDS = 2.0
 
 
 def write_frame(stream: BinaryIO, obj: object) -> None:
@@ -68,14 +73,37 @@ def _answer(request: bytearray) -> tuple[bool, object, str]:
         return False, _portable(exc), traceback.format_exc()
 
 
+def _exit_with_parent(parent_pid: int) -> None:
+    """Exit once the parent is gone. A worker mid-parse never reads its pipe,
+    so it would not see an OOM-killed service go, and would keep parsing,
+    holding its memory, beside the restarted service's worker for the same record."""
+    while os.getppid() == parent_pid:
+        time.sleep(_PARENT_POLL_SECONDS)
+    os._exit(0)
+
+
+def _release_freed_memory() -> None:
+    """Hand the heap a job freed back to the OS.
+
+    glibc keeps it for reuse, and workers stay up between jobs: inspecting a
+    300 MB PDF left three of them holding 3.3 GB they no longer used while a
+    fourth parsed it, and the service was OOM-killed.
+    """
+    with contextlib.suppress(OSError, AttributeError):  # not glibc (macOS, musl)
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+
+
 def main(request_fd: int, reply_fd: int) -> None:
     # This process was handed the service's environment, secrets included, and
     # exec reset the non-dumpable mark the service set on itself. Without it a
     # same-uid process (a tool the service runs) can read /proc/<pid>/environ.
     mark_process_non_dumpable()
     # Ctrl-C in a terminal reaches the whole process group; the parent decides
-    # when a worker stops, and a worker whose parent is gone sees its pipe close.
+    # when a worker stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    threading.Thread(
+        target=_exit_with_parent, args=(os.getppid(),), name="exit-with-parent", daemon=True
+    ).start()
     requests = os.fdopen(request_fd, "rb")
     replies = os.fdopen(reply_fd, "wb")
     write_frame(replies, os.getpid())
@@ -92,6 +120,8 @@ def main(request_fd: int, reply_fd: int) -> None:
         except Exception as exc:  # a result that will not pickle
             failure = RuntimeError(f"The parse result could not be sent back: {exc}")
             write_frame(replies, (False, failure, traceback.format_exc()))
+        request = reply = None
+        _release_freed_memory()
 
 
 if __name__ == "__main__":
