@@ -394,13 +394,19 @@ export class MongoUserRepository implements UserRepository {
     return { rows: rows.map(dto), total };
   }
 
-  async listWithGroups(orgId: string): Promise<UserWithGroupsDto[]> {
+  async listWithGroups(
+    orgId: string,
+    opts: { includeServiceAccounts?: boolean } = {},
+  ): Promise<UserWithGroupsDto[]> {
     const orgIdObj = oid(orgId);
     const users = await Users.aggregate([
       {
         $match: {
           orgId: orgIdObj, // Only include users from the same org
           isDeleted: false, // Exclude deleted users
+          ...(opts.includeServiceAccounts === true
+            ? {}
+            : NOT_A_SERVICE_ACCOUNT),
         },
       },
       {
@@ -453,11 +459,17 @@ export class MongoUserRepository implements UserRepository {
 
   async listMembersPage(
     ids: string[],
-    q: { search?: string; skip: number; limit: number },
+    q: {
+      search?: string;
+      skip: number;
+      limit: number;
+      includeServiceAccounts?: boolean;
+    },
   ): Promise<{ rows: MemberSummaryDto[]; total: number }> {
     const userFilter: Record<string, unknown> = {
       _id: { $in: ids },
       isDeleted: { $ne: true },
+      ...(q.includeServiceAccounts === true ? {} : NOT_A_SERVICE_ACCOUNT),
     };
     if (q.search !== undefined && q.search !== '') {
       const escaped = escapeRegExp(q.search);
@@ -481,6 +493,24 @@ export class MongoUserRepository implements UserRepository {
   async listByEmails(orgId: string, emails: string[]): Promise<UserDto[]> {
     const rows = await Users.find({ email: { $in: emails }, orgId });
     return rows.map(dto);
+  }
+
+  async serviceAccountIdsAmong(
+    orgId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const rows = await Users.find({
+      orgId,
+      _id: { $in: ids },
+      kind: 'service',
+    })
+      .select('_id')
+      .lean()
+      .exec();
+    return (
+      rows as Array<{ _id?: { toString(): string } | null } | null>
+    ).flatMap((r) => (r?._id == null ? [] : [r._id.toString()]));
   }
 
   async listAdminIds(orgId: string): Promise<string[]> {

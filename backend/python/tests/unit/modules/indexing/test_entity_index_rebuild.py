@@ -95,6 +95,11 @@ class FakeGraph:
             rows = [r for r in rows if r["_key"] > after_key]
         return [dict(r) for r in rows[:limit]]
 
+    async def get_document(self, key: str, collection: str, transaction: str | None = None,
+                           *, raise_on_error: bool = False) -> dict | None:
+        doc = self.docs.get(collection, {}).get(key)
+        return dict(doc, _key=key) if doc else None
+
     async def update_node(self, key: str, collection: str, updates: dict[str, Any]) -> bool:
         self.updates.append((key, collection, dict(updates)))
         self.docs[collection][key].update(updates)

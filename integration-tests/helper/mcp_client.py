@@ -35,7 +35,9 @@ def _dump(model: Any) -> dict:
 
 
 async def _read_surface(url: str, token: str) -> dict:
-    async with Client(StreamableHttpTransport(url, auth=token)) as client:
+    # fastmcp 4 tries a server/discover handshake first by default; on a server that
+    # answers it, initialize_result is None. "legacy" sends only initialize, as 3.x did.
+    async with Client(StreamableHttpTransport(url, auth=token), mode="legacy") as client:
         init = client.initialize_result
         tools = await client.list_tools()
         prompts = await client.list_prompts()
@@ -90,7 +92,7 @@ class McpToolResult:
 
 
 async def _call_tool(url: str, token: str, name: str, arguments: dict) -> McpToolResult:
-    async with Client(StreamableHttpTransport(url, auth=token)) as client:
+    async with Client(StreamableHttpTransport(url, auth=token), mode="legacy") as client:
         result = await client.call_tool_mcp(name, arguments)
     return McpToolResult(bool(result.isError), [_dump(c) for c in result.content])
 
