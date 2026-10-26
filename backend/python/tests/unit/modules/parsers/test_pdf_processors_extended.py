@@ -325,8 +325,8 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 
         table_rects = []
         result = analyzer._detect_text_regions(binary, table_rects, page_w, page_h)
-        # Only the large one should pass
         assert isinstance(result, list)
+        assert len(result) == 1
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_detect_text_regions_in_table_excluded(self, mock_cv2):
