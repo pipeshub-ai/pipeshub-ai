@@ -11,12 +11,37 @@ Provides async wrapper methods for PostgreSQL operations:
 
 import asyncio
 import logging
-import re
 import time
 from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
+from app.connectors.core.sql.key_flags import (
+    KeyDefinition,
+    KeyFlags,
+    key_flags,
+    primary_key_columns,
+)
+from app.connectors.core.sql.profiling import (  # noqa: F401 (re-exported)
+    TOP_VALUE_MAX_CHARS,
+    TOP_VALUES_LIMIT,
+    ColumnKind,
+    ColumnProfile,
+    ColumnStats,
+    distinct_and_ratio_from_counts,
+    frequency,
+    looks_like_contact_value,
+    looks_personal,
+    parse_table_column_stats_row,
+    range_eligible,
+    screen_top_values,
+    set_top_values,
+    top_values_from_counts,
+    vocabulary_eligible,
+)
+from app.connectors.core.sql.profiling import (
+    detect_numeric_text as detect_kind_numeric_text,
+)
 from app.sources.client.postgres.postgres import PostgreSQLClient, PostgreSQLResponse
 
 logger = logging.getLogger(__name__)
@@ -132,58 +157,6 @@ def build_table_column_stats_sql(
         parts.append(f"COUNT(DISTINCT {col}) AS d{pos}")
         parts.append(f"SUM(CASE WHEN {col} IS NULL THEN 1 ELSE 0 END) AS n{pos}")
     return f"SELECT {', '.join(parts)} FROM {tbl}"
-
-
-def _first_present(row: dict[str, Any], *keys: str) -> Any:  # noqa: ANN401 - a row value of any column type
-    for key in keys:
-        if key in row:
-            return row[key]
-    return None
-
-
-def parse_table_column_stats_row(
-    stats_row: dict[str, Any],
-    column_names: list[str],
-    *,
-    fallback_total_rows: int = 0,
-) -> tuple[int, list[dict[str, Any]]]:
-    """Parse a row from :func:`build_table_column_stats_sql`."""
-    total_raw = stats_row.get("TOTAL_ROWS") or stats_row.get("total_rows") or 0
-    try:
-        total_rows = int(total_raw)
-    except (TypeError, ValueError):
-        total_rows = fallback_total_rows
-
-    column_stats: list[dict[str, Any]] = []
-    for pos, name in enumerate(column_names):
-        if not name:
-            continue
-        safe = name.replace('"', "")
-        distinct_raw = _first_present(
-            stats_row, f"d{pos}", f"D{pos}", f"DISTINCT_{safe.upper()}", f"distinct_{safe}",
-        )
-        null_raw = _first_present(
-            stats_row, f"n{pos}", f"N{pos}", f"NULLS_{safe.upper()}", f"nulls_{safe}",
-        )
-        try:
-            distinct_count = int(distinct_raw) if distinct_raw is not None else None
-        except (TypeError, ValueError):
-            distinct_count = None
-        try:
-            null_count = int(null_raw) if null_raw is not None else None
-        except (TypeError, ValueError):
-            null_count = None
-        ratio = None
-        if distinct_count is not None and total_rows > 0:
-            ratio = distinct_count / total_rows
-        column_stats.append({
-            "name": name,
-            "ordinal_position": pos,
-            "distinct_count": distinct_count,
-            "null_count": null_count,
-            "cardinality_ratio": ratio,
-        })
-    return total_rows, column_stats
 
 
 # ---------------------------------------------------------------------------
@@ -375,13 +348,14 @@ _TABLE_KEYS_QUERY = """
 """
 
 
-def _empty_column_key_flags() -> dict[str, bool]:
-    return {
-        "is_primary_key": False,
-        "is_unique": False,
-        "is_part_of_composite_primary_key": False,
-        "is_part_of_composite_unique": False,
-    }
+def _key_definitions(keys: list[_TableKeyRow]) -> list[KeyDefinition]:
+    """The keys whose column list came back whole; one listing fewer columns
+    than its width lost a dropped column and is left out."""
+    return [
+        KeyDefinition(kind=key["key_type"], columns=tuple(key["column_names"]))
+        for key in keys
+        if key.get("column_names") and len(key["column_names"]) == (key.get("key_width") or 0)
+    ]
 
 
 def apply_key_metadata_to_columns(
@@ -389,93 +363,28 @@ def apply_key_metadata_to_columns(
     keys: list[_TableKeyRow],
 ) -> None:
     """Set PK/unique flags on columns from pg_catalog key definitions."""
-    flags: dict[str, dict[str, bool]] = {
-        col.name: _empty_column_key_flags() for col in columns if col.name
-    }
-
-    for key in keys:
-        cols = key.get("column_names") or []
-        width = key.get("key_width") or 0
-        if not cols or len(cols) != width:
-            continue
-
-        composite = len(cols) >= 2
-        key_type = key.get("key_type")
-
-        if key_type == "primary":
-            for name in cols:
-                if name not in flags:
-                    continue
-                flags[name]["is_primary_key"] = True
-                if composite:
-                    flags[name]["is_part_of_composite_primary_key"] = True
-                else:
-                    flags[name]["is_unique"] = True
-        elif key_type == "unique":
-            if composite:
-                for name in cols:
-                    if name in flags:
-                        flags[name]["is_part_of_composite_unique"] = True
-            elif cols[0] in flags:
-                flags[cols[0]]["is_unique"] = True
-
+    flags = key_flags((col.name for col in columns), _key_definitions(keys))
     for col in columns:
         if not col.name:
             continue
-        col_flags = flags.get(col.name, _empty_column_key_flags())
-        col.is_primary_key = col_flags["is_primary_key"]
-        col.is_unique = col_flags["is_unique"]
-        col.is_part_of_composite_primary_key = col_flags["is_part_of_composite_primary_key"]
-        col.is_part_of_composite_unique = col_flags["is_part_of_composite_unique"]
+        col_flags = flags.get(col.name, KeyFlags())
+        col.is_primary_key = col_flags.is_primary_key
+        col.is_unique = col_flags.is_unique
+        col.is_part_of_composite_primary_key = col_flags.is_part_of_composite_primary_key
+        col.is_part_of_composite_unique = col_flags.is_part_of_composite_unique
 
 
 def primary_key_columns_from_key_defs(keys: list[_TableKeyRow]) -> list[str]:
     """Return ordered PK column names from pg_catalog key definitions."""
-    for key in keys:
-        if key.get("key_type") != "primary":
-            continue
-        cols = key.get("column_names") or []
-        width = key.get("key_width") or 0
-        if cols and len(cols) == width:
-            return list(cols)
-    return []
+    return primary_key_columns(_key_definitions(keys))
 
 
-TOP_VALUES_LIMIT = 20
-# Longer values are dropped, not cut: a stored value can be used verbatim as
-# an equality literal, and a cut one matches nothing.
-TOP_VALUE_MAX_CHARS = 80
 # Columns without usable pg_stats get their top values from a GROUP BY scan
 # each; past these limits they get none.
 TOP_VALUES_SCAN_MAX_ROWS = 1_000_000
 TOP_VALUES_MAX_SCANS_PER_TABLE = 10
 # MIN/MAX of every numeric and date/time column in one unsorted scan.
 MIN_MAX_SCAN_MAX_CELLS = 50_000_000
-
-# Top values are copied into the graph and into prompts, so only columns that
-# look like a vocabulary qualify: few distinct values, each repeated. The
-# ratio is over non-null rows, or a mostly-null column of unique emails passes.
-_SMALL_VOCABULARY = (50, 0.5)
-_LARGE_VOCABULARY = (1000, 0.2)
-# Second line of defence for columns that hold personal data yet pass the
-# vocabulary test, matched against the column name with non-alphanumerics as _.
-# [flm]name catches abbreviations like admfname2 (and the odd false positive).
-_PERSONAL_COLUMN_RE = re.compile(
-    r"e_?mail|phone|mobile|(?:^|_)fax(?:_|$)|(?:^|_)ssn(?:_|$)|social_?security|passw(?:or)?d"
-    r"|(?:first|last|middle|full|display|user|given|family|sur|fore|nick|maiden)_?name|[flm]name"
-    r"|(?:customer|contact|client|employee|patient|person|member|owner|author|recipient"
-    r"|sender|manager|assignee|reporter)_?name"
-    r"|(?:^|_)(?:owner|author|assignee|reporter|assigned_to|created_by|updated_by|modified_by)(?:_|$)"
-    r"|birth|(?:^|_)dob(?:_|$)"
-    r"|login|address|street|(?:^|_)ip(?:_|$)|ip_?addr"
-    r"|passport|national_?id|tax_?id|(?:^|_)iban(?:_|$)|(?:credit_?)?card_?(?:no|num|number)(?:_|$)"
-    r"|salary|(?:^|_)wage"
-)
-_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-_PHONE_RE = re.compile(r"\+\d[\d\s().-]{6,}|\(?\d{3}\)?[\s.-]?\d{3}[\s.-]\d{4}")
-# A column is free text when most of its common values are long or wordy.
-_FREE_TEXT_CHARS = 40
-_FREE_TEXT_WORDS = 5
 
 _NUMERIC_TYPES = frozenset({"smallint", "integer", "bigint", "numeric", "real", "double precision"})
 _TEMPORAL_TYPES = frozenset({
@@ -495,8 +404,6 @@ _NO_TOP_VALUE_TYPES = frozenset({
     # Network addresses identify machines and, through them, people.
     "inet", "cidr", "macaddr", "macaddr8",
 })
-
-_NUMBER_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 # Profiling reads the source's tables during sync: a scan must not wait
 # behind a DDL lock (and so block the application queued after it), run
@@ -549,16 +456,6 @@ class TableColumnStatistics(BaseModel):
     # pg_class.reltuples: -1 (or 0 before PostgreSQL 14) until first analyzed.
     reltuples: float | None = None
     columns: dict[str, PgColumnStatistics] = {}
-
-
-class ColumnProfile(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    top_values: list[str] | None = None
-    top_value_frequencies: list[float] | None = None
-    min_value: str | None = None
-    max_value: str | None = None
-    numeric_text: bool | None = None
-    profiled_at: int | None = None
 
 
 def parse_pg_array_literal(literal: str | None) -> list[str | None] | None:
@@ -631,7 +528,7 @@ def countable_column_names(columns: list[ColumnInfo]) -> list[str]:
     ]
 
 
-def _column_kind(column: ColumnInfo) -> str | None:
+def _column_kind(column: ColumnInfo) -> ColumnKind | None:
     data_type = column.data_type or ""
     if data_type in _NUMERIC_TYPES:
         return "numeric"
@@ -656,9 +553,8 @@ def estimate_distinct_and_ratio(
     if row_count is None or row_count <= 0:
         return None, None
     if exact and exact.get("distinct_count") is not None and exact.get("null_count") is not None:
-        distinct = float(exact["distinct_count"])
-        non_null = row_count - float(exact["null_count"])
-    elif pg is not None and pg.n_distinct:
+        return distinct_and_ratio_from_counts(exact["distinct_count"], exact["null_count"], row_count)
+    if pg is not None and pg.n_distinct:
         distinct = pg.n_distinct if pg.n_distinct > 0 else -pg.n_distinct * row_count
         non_null = row_count * (1.0 - (pg.null_frac or 0.0))
     else:
@@ -668,32 +564,20 @@ def estimate_distinct_and_ratio(
     return distinct, distinct / non_null
 
 
-def looks_personal(column_name: str) -> bool:
-    normalized = re.sub(r"[^0-9a-z]+", "_", column_name.lower())
-    return bool(_PERSONAL_COLUMN_RE.search(normalized))
-
-
 def top_values_eligible(
     column: ColumnInfo,
     distinct_count: float | None,
     non_null_ratio: float | None,
 ) -> bool:
-    if column.is_unique or (column.is_primary_key and not column.is_part_of_composite_primary_key):
-        return False
-    if (column.data_type or "") in _NO_TOP_VALUE_TYPES or looks_personal(column.name):
-        return False
-    if distinct_count is None or non_null_ratio is None or distinct_count <= 0:
-        return False
-    max_small, ratio_small = _SMALL_VOCABULARY
-    max_large, ratio_large = _LARGE_VOCABULARY
-    return (
-        (distinct_count <= max_small and non_null_ratio <= ratio_small)
-        or (distinct_count <= max_large and non_null_ratio <= ratio_large)
+    return vocabulary_eligible(
+        name=column.name,
+        is_unique=column.is_unique,
+        is_primary_key=column.is_primary_key,
+        is_part_of_composite_primary_key=column.is_part_of_composite_primary_key,
+        excluded_type=(column.data_type or "") in _NO_TOP_VALUE_TYPES,
+        distinct_count=distinct_count,
+        non_null_ratio=non_null_ratio,
     )
-
-
-def _frequency(value: float) -> float:
-    return round(min(max(float(value), 0.0), 1.0), 4)
 
 
 def top_values_from_pg_stats(pg: PgColumnStatistics) -> tuple[list[str], list[float]] | None:
@@ -707,62 +591,15 @@ def top_values_from_pg_stats(pg: PgColumnStatistics) -> tuple[list[str], list[fl
     non_null = 1.0 - (pg.null_frac or 0.0)
     if non_null <= 0:
         return None
-    pairs = [(v, _frequency(f / non_null)) for v, f in zip(values, freqs) if v is not None and f is not None]
+    pairs = [(v, frequency(f / non_null)) for v, f in zip(values, freqs) if v is not None and f is not None]
     if not pairs:
         return None
     return [v for v, _ in pairs], [s for _, s in pairs]
 
 
-def top_values_from_counts(rows: list[dict[str, Any]]) -> tuple[list[str], list[float]] | None:
-    """Values from rows of ``value``, ``n`` and ``total`` (all non-null rows), unscreened."""
-    top: list[str] = []
-    shares: list[float] = []
-    for row in rows:
-        value, count, total = row.get("value"), row.get("n"), row.get("total")
-        if value is None or not count or not total:
-            continue
-        top.append(str(value))
-        shares.append(_frequency(float(count) / float(total)))
-    return (top, shares) if top else None
-
-
-def looks_like_contact_value(value: str) -> bool:
-    """An e-mail address or phone number."""
-    return bool(_EMAIL_RE.search(value) or _PHONE_RE.fullmatch(value.strip()))
-
-
-def screen_top_values(values: list[str], shares: list[float]) -> tuple[list[str], list[float]] | None:
-    """The values fit to store: none for a column of free text or contact
-    details, and none longer than ``TOP_VALUE_MAX_CHARS``."""
-    wordy = sum(1 for v in values if len(v) > _FREE_TEXT_CHARS or len(v.split()) > _FREE_TEXT_WORDS)
-    if wordy * 2 > len(values):
-        return None
-    if any(looks_like_contact_value(v) for v in values):
-        return None
-    kept = [(v, s) for v, s in zip(values, shares) if len(v) <= TOP_VALUE_MAX_CHARS][:TOP_VALUES_LIMIT]
-    if not kept:
-        return None
-    return [v for v, _ in kept], [s for _, s in kept]
-
-
 def detect_numeric_text(column: ColumnInfo, observed: list[str | None]) -> bool | None:
     """Whether every observed value of a text column is a number."""
-    if _column_kind(column) != "text":
-        return None
-    values = [v.strip() for v in observed if v is not None]
-    if not values:
-        return None
-    # A leading zero (ZIP 02134, code 007) means the text is an identifier:
-    # casting it to a number would drop the zero and break equality filters.
-    if any(len(v) > 1 and v[0] == "0" and v[1].isdigit() for v in values):
-        return False
-    return all(_NUMBER_RE.fullmatch(v) for v in values)
-
-
-def _set_top_values(profile: ColumnProfile, candidates: tuple[list[str], list[float]]) -> None:
-    screened = screen_top_values(*candidates)
-    if screened is not None:
-        profile.top_values, profile.top_value_frequencies = screened
+    return detect_kind_numeric_text(_column_kind(column), observed)
 
 
 def _column_statistics_from_rows(rows: list[dict[str, Any]]) -> TableColumnStatistics:
@@ -1413,7 +1250,7 @@ class PostgreSQLDataSource:
                     if candidates is None:
                         to_count.append(column)
                     else:
-                        _set_top_values(profile, candidates)
+                        set_top_values(profile, candidates)
                 profile.numeric_text = detect_numeric_text(column, observed[column.name])
                 profiles[column.name] = profile
             except Exception as e:
@@ -1444,7 +1281,7 @@ class PostgreSQLDataSource:
                 continue
             candidates = top_values_from_counts(counted)
             if candidates is not None:
-                _set_top_values(profile, candidates)
+                set_top_values(profile, candidates)
             profile.numeric_text = detect_numeric_text(
                 column, observed[column.name] + [row.get("value") for row in counted]
             )
@@ -1460,12 +1297,7 @@ class PostgreSQLDataSource:
         """Exact MIN and MAX of the numeric and date/time columns, in one scan
         that needs no sort. Empty when the table's size is unknown or too big:
         pg_stats extremes come from a sample and miss the real ones."""
-        # An extreme is one row's value: a phone number stored as bigint or a
-        # birth date leaks as surely as a top value would.
-        ranged = [
-            c for c in columns
-            if _column_kind(c) in ("numeric", "temporal") and not looks_personal(c.name)
-        ]
+        ranged = [c for c in columns if range_eligible(_column_kind(c), c.name)]
         if not ranged or row_count is None or row_count * len(ranged) > MIN_MAX_SCAN_MAX_CELLS:
             return {}
         parts = ", ".join(

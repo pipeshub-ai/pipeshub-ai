@@ -17,9 +17,14 @@ it, so its record and its notes stay. A column is matched by
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
+
+from app.connectors.core.sql.catalog_diff import (  # noqa: F401 (re-exported)
+    CatalogDiff,
+    TableChange,
+    diff_catalog,
+)
 
 
 class PostgresTableState(BaseModel):
@@ -89,94 +94,20 @@ class PostgresTableState(BaseModel):
         key = f"{self.schema_name}.{self.table_name}:{self.column_hash}:{self.constraint_hash}"
         return hashlib.md5(key.encode()).hexdigest()
 
-
-@dataclass(frozen=True)
-class TableChange:
-    """How one table that exists in both snapshots differs."""
-
-    # Its name in the previous snapshot, when that was different.
-    previous_fqn: str | None = None
-    # Name, columns or constraints changed.
-    structure: bool = False
-    # Rows changed.
-    data: bool = False
-    # Previous column name -> current name.
-    column_renames: dict[str, str] = field(default_factory=dict)
-    # The structure changed only in names: of the table, its columns, its
-    # constraints or a table it references. What was extracted about it
-    # still holds, under the new names.
-    names_only: bool = False
-    # Its records moved to this name in a run whose sync of it then failed.
-    rename_pending: bool = False
-
-
-@dataclass
-class CatalogDiff:
-    added: list[str] = field(default_factory=list)
-    # Stored tables the catalog no longer shows under any name. Candidates
-    # only: the caller confirms each against a fresh table listing.
-    missing: list[str] = field(default_factory=list)
-    # Stored tables that are gone, whose name a renamed table took: dropped for
-    # certain, and to be removed before that table moves into the name.
-    replaced: list[str] = field(default_factory=list)
-    # Tables to sync again, by their current name.
-    changed: dict[str, TableChange] = field(default_factory=dict)
-    # Only ANALYZE ran: column profiles are stale, rows and structure are not.
-    reanalyzed: list[str] = field(default_factory=list)
-    # Matched by name and the same in every way that counts.
-    unchanged: list[str] = field(default_factory=list)
+    # The catalog-diff protocol (app.connectors.core.sql.catalog_diff).
 
     @property
-    def renamed(self) -> dict[str, str]:
-        """Previous name -> current name."""
-        return {
-            change.previous_fqn: fqn
-            for fqn, change in self.changed.items()
-            if change.previous_fqn
-        }
+    def identity(self) -> int | None:
+        return self.oid or None
 
+    def same_table_as(self, before: PostgresTableState) -> bool:
+        return _same_table(before, self)
 
-def diff_catalog(
-    stored: dict[str, PostgresTableState],
-    current: dict[str, PostgresTableState],
-    unreadable: set[str] | None = None,
-) -> CatalogDiff:
-    """Compare the saved table states with the ones just read.
+    def change_since(self, before: PostgresTableState, *, old_fqn: str, new_fqn: str) -> TableChange:
+        return _table_change(old_fqn, new_fqn, before, self)
 
-    ``unreadable`` are tables that could not be read this run: unknown, so
-    neither missing nor changed.
-    """
-    unreadable = unreadable or set()
-    diff = CatalogDiff()
-
-    current_by_oid = {state.oid: fqn for fqn, state in current.items() if state.oid}
-    renamed: dict[str, str] = {}
-    for old_fqn in sorted(stored.keys() - unreadable):
-        before = stored[old_fqn]
-        new_fqn = current_by_oid.get(before.oid) if before.oid else None
-        if new_fqn is not None and new_fqn != old_fqn and _same_table(before, current[new_fqn]):
-            renamed[old_fqn] = new_fqn
-    taken = set(renamed.values())
-
-    unmatched = stored.keys() - renamed.keys() - unreadable
-    same_name = (unmatched & current.keys()) - taken
-    diff.replaced = sorted(unmatched & taken)
-    diff.missing = sorted(unmatched - current.keys())
-    # Includes a table under a renamed table's old name: another table, created since.
-    diff.added = sorted(current.keys() - taken - same_name)
-
-    pairs = [(fqn, fqn) for fqn in same_name]
-    pairs.extend(renamed.items())
-    for old_fqn, new_fqn in sorted(pairs, key=lambda pair: pair[1]):
-        before, after = stored[old_fqn], current[new_fqn]
-        change = _table_change(old_fqn, new_fqn, before, after)
-        if change.structure or change.data:
-            diff.changed[new_fqn] = change
-        elif after.analyze_count != before.analyze_count:
-            diff.reanalyzed.append(new_fqn)
-        else:
-            diff.unchanged.append(new_fqn)
-    return diff
+    def reanalyzed_since(self, before: PostgresTableState) -> bool:
+        return self.analyze_count != before.analyze_count
 
 
 def _same_table(before: PostgresTableState, after: PostgresTableState) -> bool:
