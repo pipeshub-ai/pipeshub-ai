@@ -431,10 +431,35 @@ _FORK_GUARDS = {
     "github.event.pull_request.head.repo.full_name == github.repository",
     "github.repository == github.event.pull_request.head.repo.full_name",
 }
-# A conjunct that is false for every pull_request event.
-_EXCLUDES_PULL_REQUEST = re.compile(
-    r"^github\.event_name (?:!= 'pull_request'|== '(?!pull_request')[^']*')$"
-)
+# The events that run from the pull request merge commit and give a same-repo
+# head the repository's secrets. A fork is handed none of them, so what these
+# checks guard is the self-hosted runner and the intent: secrets only for a
+# head in this repository. `issue_comment` is not one of them — it runs the
+# workflow file from the default branch, so a pull request cannot change what
+# runs or what it is given.
+UNTRUSTED_PULL_REQUEST_EVENTS = frozenset({
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+})
+
+_EVENT_IS = re.compile(r"^github\.event_name == '([^']*)'$")
+_EVENT_IS_NOT = re.compile(r"^github\.event_name != '([^']*)'$")
+
+
+def _excludes_untrusted(term: str, untrusted: frozenset[str]) -> bool:
+    """Whether this conjunct is false for every untrusted event in ``untrusted``.
+
+    Naming one event rules out the rest, so `== 'issue_comment'` excludes them
+    all and `== 'pull_request_review'` excludes none of them once that event
+    counts. Ruling one out says nothing about the others, so `!=` only helps
+    when it is the only untrusted event the workflow is triggered by.
+    """
+    equals = _EVENT_IS.match(term)
+    if equals is not None:
+        return equals.group(1) not in untrusted
+    not_equals = _EVENT_IS_NOT.match(term)
+    return not_equals is not None and untrusted <= {not_equals.group(1)}
 
 
 def _text(path: Path) -> str:
@@ -513,17 +538,19 @@ def _normalize_condition(raw: str) -> str:
     return re.sub(r"\s*(==|!=)\s*", r" \1 ", expr).lower()
 
 
-def _admits_fork_pull_requests(expr: str) -> bool:
+def _admits_fork_pull_requests(
+    expr: str, untrusted: frozenset[str] = UNTRUSTED_PULL_REQUEST_EVENTS,
+) -> bool:
     """Fail closed: every top-level `||` branch must carry the fork guard as a top-level
-    `&&` term or rule out pull_request events; anything this can't read admits forks."""
+    `&&` term or rule out every untrusted event; anything this can't read admits forks."""
     for raw_branch in _split_top_level(_strip_outer_parens(expr), "||"):
         branch = _strip_outer_parens(raw_branch)
         if len(_split_top_level(branch, "||")) > 1:
-            if _admits_fork_pull_requests(branch):
+            if _admits_fork_pull_requests(branch, untrusted):
                 return True
             continue
         terms = [_strip_outer_parens(t) for t in _split_top_level(branch, "&&")]
-        if not any(t in _FORK_GUARDS or _EXCLUDES_PULL_REQUEST.match(t) for t in terms):
+        if not any(t in _FORK_GUARDS or _excludes_untrusted(t, untrusted) for t in terms):
             return True
     return False
 
@@ -591,7 +618,7 @@ def _secret_jobs(text: str) -> list[tuple[str, Any]]:
         return [(f"<does not parse: {type(e).__name__}>", None)]
     if not isinstance(workflow, dict):
         return [("<not a mapping>", None)]
-    if "pull_request" not in _triggers(workflow):
+    if not _triggers(workflow) & UNTRUSTED_PULL_REQUEST_EVENTS:
         return []
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
@@ -608,12 +635,28 @@ def _secret_jobs(text: str) -> list[tuple[str, Any]]:
     return found
 
 
+def _untrusted_triggers(text: str) -> frozenset[str]:
+    """The untrusted pull-request events a workflow is triggered by; none when it
+    does not parse, which `_secret_jobs` reports on its own."""
+    try:
+        workflow = yaml.load(text, Loader=_StrictLoader)
+    except yaml.YAMLError:
+        return frozenset()
+    if not isinstance(workflow, dict):
+        return frozenset()
+    return frozenset(_triggers(workflow)) & UNTRUSTED_PULL_REQUEST_EVENTS
+
+
 def _unguarded_secret_jobs(text: str) -> list[str]:
-    """Jobs of a pull_request workflow that can read secrets without their own fork guard."""
+    """Jobs of an untrusted pull-request workflow that read secrets without their own
+    fork guard."""
+    untrusted = _untrusted_triggers(text)
     offenders = []
     for job_id, job in _secret_jobs(text):
         condition = job.get("if") if isinstance(job, dict) else None
-        if condition is None or _admits_fork_pull_requests(_normalize_condition(str(condition))):
+        if condition is None or _admits_fork_pull_requests(
+            _normalize_condition(str(condition)), untrusted,
+        ):
             offenders.append(job_id)
     return offenders
 
@@ -680,6 +723,83 @@ class TestWorkflowTrust(unittest.TestCase):
         # whatever the job logged in with, so a secret needs an approval first.
         offenders = [f"{p.name}:{job}" for p in WORKFLOWS for job in _ungated_secret_jobs(_text(p))]
         self.assertEqual(offenders, [], "pull_request job reads secrets with no environment approval")
+
+
+class TestReviewEventsCountAsUntrusted(unittest.TestCase):
+    """`pull_request_review` and `pull_request_review_comment` run from the pull
+    request merge commit and hand a same-repo head the repository's secrets, so
+    they are checked exactly as `pull_request` is."""
+
+    SECRET_JOB = (
+        "jobs:\n"
+        "  build:\n"
+        "    steps:\n"
+        "      - run: echo ${{ secrets.API_KEY }}\n"
+    )
+
+    def test_an_unguarded_review_job_is_flagged(self) -> None:
+        for event in ("pull_request_review", "pull_request_review_comment"):
+            with self.subTest(event=event):
+                workflow = f"on:\n  {event}:\n    types: [submitted]\n" + self.SECRET_JOB
+                self.assertEqual(_unguarded_secret_jobs(workflow), ["build"])
+                self.assertEqual(_ungated_secret_jobs(workflow), ["build"])
+
+    def test_naming_the_review_event_is_not_a_guard(self) -> None:
+        # Before these events counted, `== '<anything but pull_request>'` ruled
+        # out the only untrusted event there was. It rules out nothing now.
+        workflow = (
+            "on:\n  pull_request_review:\n"
+            "jobs:\n"
+            "  build:\n"
+            "    if: github.event_name == 'pull_request_review'\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+        )
+        self.assertEqual(_unguarded_secret_jobs(workflow), ["build"])
+
+    def test_the_fork_guard_still_clears_a_review_job(self) -> None:
+        workflow = (
+            "on:\n  pull_request_review:\n"
+            "jobs:\n"
+            "  build:\n"
+            "    if: github.event.pull_request.head.repo.full_name == github.repository\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+        )
+        self.assertEqual(_unguarded_secret_jobs(workflow), [])
+
+    def test_issue_comment_is_left_out(self) -> None:
+        # It runs the workflow file from the default branch, so a pull request
+        # cannot change what runs or what it is handed.
+        workflow = "on:\n  issue_comment:\n    types: [created]\n" + self.SECRET_JOB
+        self.assertEqual(_unguarded_secret_jobs(workflow), [])
+        self.assertEqual(_ungated_secret_jobs(workflow), [])
+
+    def test_naming_an_untriggered_event_still_guards(self) -> None:
+        # `!= 'pull_request'` rules out the only untrusted event this workflow
+        # has, and `== 'issue_comment'` rules out all three.
+        for condition in ("github.event_name != 'pull_request'", "github.event_name == 'issue_comment'"):
+            with self.subTest(condition=condition):
+                workflow = (
+                    "on:\n  pull_request:\n  issue_comment:\n"
+                    "jobs:\n"
+                    "  build:\n"
+                    f"    if: {condition}\n"
+                    "    steps:\n"
+                    "      - run: echo ${{ secrets.API_KEY }}\n"
+                )
+                self.assertEqual(_unguarded_secret_jobs(workflow), [])
+
+    def test_ruling_out_one_event_does_not_rule_out_the_others(self) -> None:
+        workflow = (
+            "on:\n  pull_request:\n  pull_request_review:\n"
+            "jobs:\n"
+            "  build:\n"
+            "    if: github.event_name != 'pull_request'\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+        )
+        self.assertEqual(_unguarded_secret_jobs(workflow), ["build"])
 
 
 class TestUngatedSecretJobs(unittest.TestCase):
