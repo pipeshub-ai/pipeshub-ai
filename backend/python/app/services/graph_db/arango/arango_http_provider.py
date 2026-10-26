@@ -25716,6 +25716,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT @offset, @limit
             RETURN {{
                 "id": user._key,
+                "_key": user._key,
+                "_id": user._id,
                 "userId": user.userId,
                 "name": user.fullName,
                 "email": user.email,
