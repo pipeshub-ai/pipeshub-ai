@@ -60,7 +60,11 @@ async function until(cond: () => boolean, ms = 15000): Promise<void> {
     })
     await new Promise<void>((r) => relay.listen(0, '127.0.0.1', r))
     const port = (relay.address() as net.AddressInfo).port
-    const relayUrl = `postgresql://${u.username}@127.0.0.1:${port}${u.pathname}`
+    // everything but the address stays: the password and the query (sslmode ...) of the real URL
+    const relayed = new globalThis.URL(URL)
+    relayed.hostname = '127.0.0.1'
+    relayed.port = String(port)
+    const relayUrl = relayed.toString()
     const got: string[] = []
     let reconnects = 0
     const l = new PgListener(relayUrl, 'pipeshub_kv_changed', (p) => got.push(p), () => { reconnects++ })
