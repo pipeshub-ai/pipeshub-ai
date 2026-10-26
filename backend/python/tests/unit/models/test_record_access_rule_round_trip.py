@@ -1,8 +1,8 @@
 """Every typed record reads its stored access rule back.
 
-A converter that skipped ``accessRule`` loaded every stored record as OPEN. A placeholder
-upserted over that record then copied OPEN onto the node, and any re-save of the loaded
-record wrote OPEN, so an item restricted at its source became readable through its ancestors.
+A converter that skipped ``accessRule`` loaded every stored record as OPEN. Code that then
+compares the loaded rule, or saves the record back (``to_arango_base_record`` writes it),
+treats an item restricted at its source as open, as Confluence pages were.
 """
 
 from __future__ import annotations
