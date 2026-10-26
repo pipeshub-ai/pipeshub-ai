@@ -228,3 +228,23 @@ async def test_a_connector_that_still_exists_after_its_page_is_not_cleaned() -> 
     await rebuilder.tick()
 
     assert store.written() and store.cleanups == []
+
+
+async def test_a_failed_removal_for_a_deleted_connector_leaves_an_intent_for_the_reconcile_pass() -> None:
+    """The delete event already cleared its intent; a removal that fails here must not be the end of it."""
+    store = Store()
+    store.fail_cleanup = True
+    graph = _DeletedMidPage(store)
+    graph.docs[APPS]["app-1"] = {"_key": "app-1", "name": "Drive", "orgId": "org-1"}
+    graph.docs[ORGS]["org-1"] = _done_org()
+    graph.sources[(CollectionNames.RECORD_GROUPS.value, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+    config = FakeConfig()
+    rebuilder = EntityIndexRebuilder(
+        logger=logging.getLogger("t"), graph_provider=graph, store=store, lock=FakeLock(),
+        config_service=config, now_ms=lambda: NOW,
+    )
+
+    await rebuilder.tick()
+
+    intent = config.kv[f"{PENDING_DIRECTORY}app-1"]
+    assert (intent["orgId"], intent["connectorId"], intent["connectorName"]) == ("org-1", "app-1", "Drive")

@@ -36,6 +36,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
+    record_pending_entity_cleanup,
     reschedule_pending_entity_cleanup,
 )
 from app.models.entities import EntityRecord, EntityType
@@ -446,12 +447,26 @@ class EntityIndexRebuilder:
             run.key,
         )
         if org_id:
-            await self.store.delete_entities_by_connector(
-                org_id=org_id,
-                connector_id=run.key,
-                record_group_ids=None,
-                membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(refs, org),
-            )
+            try:
+                await self.store.delete_entities_by_connector(
+                    org_id=org_id,
+                    connector_id=run.key,
+                    record_group_ids=None,
+                    membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(refs, org),
+                )
+            except Exception:
+                # The delete event cleared its own intent and this app is not a candidate any more, so
+                # without an intent nothing would retry. The reconcile pass runs it, and keeps retrying.
+                if self.config_service is None:
+                    raise
+                self.logger.warning(
+                    "entity_index_rebuild: removal failed; leaving a cleanup intent | connector=%s", run.key,
+                    exc_info=True,
+                )
+                await record_pending_entity_cleanup(
+                    self.config_service, org_id=org_id, connector_id=run.key,
+                    connector_name=_text(run.doc.get("name")) or None, now_ms=self.now_ms(),
+                )
         return True
 
     async def _advance(
