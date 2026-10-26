@@ -24,7 +24,7 @@ async def test_returns_only_records_the_token_viewer_may_read() -> None:
     with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"a"})) as check:
         out = await check_viewer_record_access(_request({"recordIds": ["a", "b", "a"]}), graph, VIEWER)
     check.assert_awaited_once_with(graph, {"a", "b"}, "viewer", "org-1")
-    assert out == {"accessible": ["a"]}
+    assert out == {"accessible": ["a"], "accessibleUrls": []}
 
 
 @pytest.mark.asyncio
@@ -43,3 +43,32 @@ async def test_token_without_viewer_is_rejected() -> None:
     with pytest.raises(HTTPException) as err:
         await check_viewer_record_access(_request({"recordIds": ["a"]}), AsyncMock(), {"orgId": "org-1"})
     assert err.value.status_code == 400
+
+
+def _rows(*pairs: tuple[str, str]) -> list[dict]:
+    return [{"id": i, "webUrl": u} for i, u in pairs]
+
+
+@pytest.mark.asyncio
+async def test_urls_map_to_records_and_are_readable_only_when_every_record_is() -> None:
+    graph = AsyncMock()
+    graph.get_records_by_weburls = AsyncMock(
+        return_value=_rows(("r1", "u1"), ("r2", "u2"), ("r3", "u2"))
+    )
+    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"r1", "r2"})) as check:
+        out = await check_viewer_record_access(
+            _request({"recordIds": ["a"], "webUrls": ["u1", "u2", "gone", "u1"]}), graph, VIEWER
+        )
+    graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1")
+    check.assert_awaited_once_with(graph, {"a", "r1", "r2", "r3"}, "viewer", "org-1")
+    # u2 has an unreadable record at its address, "gone" resolves to nothing.
+    assert out == {"accessible": [], "accessibleUrls": ["u1"]}
+
+
+@pytest.mark.asyncio
+async def test_no_urls_means_no_url_lookup() -> None:
+    graph = AsyncMock()
+    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value={"a"})):
+        out = await check_viewer_record_access(_request({"recordIds": ["a"]}), graph, VIEWER)
+    graph.get_records_by_weburls.assert_not_awaited()
+    assert out == {"accessible": ["a"], "accessibleUrls": []}

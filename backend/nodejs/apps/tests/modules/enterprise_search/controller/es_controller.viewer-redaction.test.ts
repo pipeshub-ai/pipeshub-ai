@@ -137,11 +137,15 @@ const res = (): any => {
 }
 
 /** Stubs the access route: it names `readable` as readable; `null` makes it fail. Returns the calls seen. */
+const askedUrls: string[] = []
 const stubAccess = (readable: string[] | null) => {
+  askedUrls.length = 0
   const asked: string[][] = []
   sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
     if (this.uri.endsWith('/chat/records/access')) {
-      asked.push(this.body ? JSON.parse(this.body).recordIds : [])
+      const body = this.body ? JSON.parse(this.body) : {}
+      asked.push(body.recordIds ?? [])
+      askedUrls.push(...(body.webUrls ?? []))
       if (readable === null) throw new Error('access service down')
       return { statusCode: 200, data: { accessible: readable }, msg: '' } as any
     }
@@ -189,6 +193,24 @@ describe('shared chats: per-viewer citations', () => {
     stubAccess(['rec-ok', R_OK])
     stubConversation([richAnswer()])
     expectRecordsOnlyRedacted(await fetchConversation(VIEWER))
+  })
+
+  it('reference data with a vendor id is shown when the record at its address is readable', async () => {
+    stubAccess(['https://jira/PA-1'])
+    const rd = (id: string, webUrl?: string) => ({ name: `Ticket ${id}`, id, ...(webUrl && { webUrl }) })
+    stubConversation([{ ...answer(), referenceData: [rd('PA-1', 'https://jira/PA-1'), rd('PA-2', 'https://jira/PA-2'), rd('PA-3'), rd('PA-4', 'https://jira/unresolved')] }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.referenceData[0].name).to.equal('Ticket PA-1')
+    for (const i of [1, 2, 3]) expect(message.referenceData[i]).to.deep.equal({ redacted: true, reason: 'no_access', name: 'Restricted source' })
+    expect(askedUrls.sort()).to.deep.equal(['https://jira/PA-1', 'https://jira/PA-2', 'https://jira/unresolved'])
+  })
+
+  it('vendor-id reference data stays hidden when the access check fails', async () => {
+    stubAccess(null)
+    stubConversation([{ ...answer(), referenceData: [{ name: 'Ticket', id: 'PA-1', webUrl: 'https://jira/PA-1' }] }])
+    const message = await fetchConversation(VIEWER)
+    expect(message.referenceData[0].name).to.equal('Restricted source')
   })
 
   it('a failed access check hides every record reference but leaves the rest of the chat', async () => {

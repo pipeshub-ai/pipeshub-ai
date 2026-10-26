@@ -28,15 +28,20 @@ export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
   orgId: String(orgId),
 });
 
-/** Record ids the viewer may read, from the query service's `check_access`. Fails closed: an error means none. */
+/**
+ * Record ids (and record addresses, kept in the same set) the viewer may read,
+ * from the query service's `check_access`. Fails closed: an error means none.
+ */
 export const readableRecordIds = async (
   appConfig: AppConfig,
   viewer: Viewer,
   recordIds: string[],
+  webUrls: string[] = [],
 ): Promise<Set<string>> => {
   const ids = [...new Set(recordIds.filter(Boolean))];
+  const urls = [...new Set(webUrls.filter(Boolean))];
   const readable = new Set<string>();
-  if (ids.length === 0) return readable;
+  if (ids.length === 0 && urls.length === 0) return readable;
   try {
     const token = new AuthTokenService(
       appConfig.jwtSecret,
@@ -49,15 +54,25 @@ export const readableRecordIds = async (
       },
       '5m',
     );
-    for (let i = 0; i < ids.length; i += ACCESS_CHECK_BATCH) {
-      const response = await new AIServiceCommand<{ accessible?: string[] }>({
+    for (
+      let i = 0;
+      i < Math.max(ids.length, urls.length);
+      i += ACCESS_CHECK_BATCH
+    ) {
+      const response = await new AIServiceCommand<{
+        accessible?: string[];
+        accessibleUrls?: string[];
+      }>({
         uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
         method: HttpMethod.POST,
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: { recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH) },
+        body: {
+          recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH),
+          webUrls: urls.slice(i, i + ACCESS_CHECK_BATCH),
+        },
         timeoutMs: 15000,
       }).execute();
       if (response.statusCode !== 200) {
@@ -66,6 +81,7 @@ export const readableRecordIds = async (
         );
       }
       for (const id of response.data?.accessible ?? []) readable.add(id);
+      for (const u of response.data?.accessibleUrls ?? []) readable.add(u);
     }
     return readable;
   } catch (error: unknown) {
@@ -116,19 +132,23 @@ const restrictedRef = (): Record<string, unknown> => ({
 });
 const FILTER_LISTS = ['apps', 'kb', 'recordGroups', 'records', 'recordsExact'];
 
-const refId = (e: RefEntry): string | undefined => {
-  const meta =
-    e.metadata instanceof Map
-      ? e.metadata.get('recordId')
-      : e.metadata?.recordId;
-  return e.recordId ?? meta ?? e.id;
-};
+const refMeta = (e: RefEntry): string | undefined =>
+  e.metadata instanceof Map ? e.metadata.get('recordId') : e.metadata?.recordId;
+const refId = (e: RefEntry): string | undefined =>
+  e.recordId ?? refMeta(e) ?? e.id;
 /** Shown only if its record is readable; an entry naming something with no readable id is hidden. */
 const refVisible = (
   e: RefEntry | null,
   ok: (id?: string) => boolean,
+  byUrl = false,
 ): boolean => {
   if (!e) return true;
+  // Reference data names things by a vendor id: a PipesHub record id decides if
+  // it has one, otherwise the record stored at its address does.
+  if (byUrl && (e.recordId ?? refMeta(e) ?? '') === '') {
+    if ((e.webUrl ?? '') !== '') return ok(e.webUrl) || ok(e.id);
+    return (e.name ?? '') === '' && (e.id ?? '') === '';
+  }
   const id = refId(e);
   if (id !== undefined && id !== '') return ok(id);
   return (e.name ?? '') === '' && (e.webUrl ?? '') === '';
@@ -202,6 +222,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       ...(m.referenceData ?? []).flatMap(refIds),
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
     ]) as string[],
+    others.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
   );
   const ok = (id?: string): boolean => id !== undefined && readable.has(id);
   return messages.map((m) => {
@@ -216,7 +237,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       view.attachments = m.attachments.filter((a) => ok(a?.recordId));
     if (m.referenceData)
       view.referenceData = m.referenceData.map((e) =>
-        refVisible(e, ok) ? e : restrictedRef(),
+        refVisible(e, ok, true) ? e : restrictedRef(),
       );
     if (m.appliedFilters)
       view.appliedFilters = {
