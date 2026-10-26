@@ -45,7 +45,9 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.secret_scan import redact_secrets
+from app.utils.markdown_code import fenced_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import (
@@ -945,7 +947,10 @@ class CommentsHelper:
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full File Content:\n{file_content}")
+                # Fenced, like the diff, so the file is read as code, not markdown.
+                data_parts.append(
+                    f"Full File Content:\n{fenced_code(file_content, detect_language(filename) or '')}"
+                )
             # No diff and nothing fetched: say only what the listing shows.
             # GitHub counts a binary's lines as 0/0 even when its bytes
             # changed, so "no changes" is never claimed for a rename or copy.
@@ -956,7 +961,11 @@ class CommentsHelper:
                     f"Diff: omitted ({getattr(file, 'additions', 0) or 0} lines added, "
                     f"{getattr(file, 'deletions', 0) or 0} removed; {over_budget_note})"
                 )
-            elif diff or changed or status not in ("renamed", "copied"):
+            elif diff:
+                # Bare, a diff is read as markdown: removed lines become list
+                # items, and indented context lines code blocks or headings.
+                data_parts.append(f"Diff:\n{fenced_code(patch, 'diff')}")
+            elif changed or status not in ("renamed", "copied"):
                 data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
             if sections:
