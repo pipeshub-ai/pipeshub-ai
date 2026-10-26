@@ -228,6 +228,20 @@ class TestBaseContextParentId:
         assert "External Parent ID: N/A" in merged
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["_get_data_source", "_discover_custom_fields", "batch_fetch_issues"])
+    async def test_a_failed_live_fetch_keeps_the_parent_id_hidden(self, failing: str) -> None:
+        ticket = _ticket_record(parent_external_record_id="777")
+        with patch(
+            f"app.connectors.sources.atlassian.jira.enrichment.service.{failing}",
+            new=AsyncMock(side_effect=RuntimeError("down")),
+        ):
+            merged = await ticket.to_llm_context_with_live_fields(
+                config_service=AsyncMock(), readable_issue_ids=AsyncMock(return_value={"777"}),
+            )
+        assert "External Parent ID: 777" not in merged
+        assert "External Parent ID: N/A" in merged
+
 class TestEnrichTicketLlmContext:
     @pytest.mark.asyncio
     async def test_fetches_issue_and_merges(self):

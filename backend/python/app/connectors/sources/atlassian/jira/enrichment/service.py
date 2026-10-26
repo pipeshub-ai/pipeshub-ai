@@ -167,26 +167,27 @@ async def enrich_ticket_llm_context(
     if not ticket.connector_id or not ticket.external_record_id:
         return base_context
 
-    connector_id = str(ticket.connector_id)
-    ds = await _get_data_source(config_service, connector_id, ticket.connector_name)
-    if not ds:
-        return base_context
-
-    is_cloud = _is_cloud.get(connector_id, resolve_is_cloud_api(ticket.connector_name))
-    custom_ids = await _discover_custom_fields(
-        config_service, connector_id, ticket.connector_name, ds=ds,
-    )
-    issues_map = await batch_fetch_issues(
-        ds,
-        is_cloud=is_cloud,
-        issue_ids=[str(ticket.external_record_id)],
-        discovered_custom_ids=custom_ids,
-    )
-    issue = issues_map.get(str(ticket.external_record_id))
-    if not issue:
-        return base_context
-
+    # Any failure from here returns the redacted context, never the caller's unredacted one.
     try:
+        connector_id = str(ticket.connector_id)
+        ds = await _get_data_source(config_service, connector_id, ticket.connector_name)
+        if not ds:
+            return base_context
+
+        is_cloud = _is_cloud.get(connector_id, resolve_is_cloud_api(ticket.connector_name))
+        custom_ids = await _discover_custom_fields(
+            config_service, connector_id, ticket.connector_name, ds=ds,
+        )
+        issues_map = await batch_fetch_issues(
+            ds,
+            is_cloud=is_cloud,
+            issue_ids=[str(ticket.external_record_id)],
+            discovered_custom_ids=custom_ids,
+        )
+        issue = issues_map.get(str(ticket.external_record_id))
+        if not issue:
+            return base_context
+
         readable: set[str] = set()
         # Resolve key-only references (epic link, parent link) to ids in one lookup,
         # so one access check below covers every issue this ticket names.
@@ -217,7 +218,7 @@ async def enrich_ticket_llm_context(
         return enrich_from_issue(base_context, issue, custom_ids)
     except Exception as exc:
         logger.warning(
-            "Jira enrichment format failed for ticket %s: %s",
+            "Jira enrichment failed for ticket %s: %s",
             ticket.external_record_id,
             exc,
         )
