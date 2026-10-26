@@ -8,10 +8,12 @@ restorable by this role; they load through the vetted import functions. Sequence
 migrator from the restored data (the restore role cannot call setval), and ``close`` refuses until that happened.
 
 Credentials (environment): ``PG_ADMIN_URL`` (CREATEROLE: switches logins), ``PG_MIGRATE_URL`` (owns the window row),
-``PG_BACKUP_URL`` (reads every org, to prove emptiness and to find sequence maxima), ``PG_RESTORE_PASSWORD``
-(the restore login's password for this window). ``export --org <id> --dir <d>`` (migrate and backup credentials) writes one CSV per table with
-ONLY that org's rows; ``load --org <id> --dir <d>`` (``PG_RESTORE_URL``) inserts them in key order and refuses, loudly and before
+``PG_BACKUP_URL`` (reads all rows, to prove emptiness and to find sequence maxima), ``PG_RESTORE_PASSWORD``
+(the restore login's password for this window). ``export [--org <id>] --dir <d>`` (migrate and backup credentials) writes one CSV per table with
+ONLY that org's rows; ``load [--org <id>] --dir <d>`` (``PG_RESTORE_URL``) inserts them in key order and refuses, loudly and before
 inserting, a file holding another org's rows: a multi-row INSERT with one foreign row is rejected whole by the database.
+An install has one org, so ``export`` and ``load`` default to it: the only org with rows (``export``) or the only org in the
+files (``load``); with none or several, they refuse and ask for ``--org``. ``open`` always needs ``--org``: its target is empty.
 """
 import csv
 import os
@@ -159,6 +161,31 @@ def export_org(migrate: psycopg.Connection, backup: psycopg.Connection, org: str
     return ordered
 
 
+def sole_org(migrate: psycopg.Connection, backup: psycopg.Connection) -> str:
+    """The one org that has rows in any registered org-scoped table. Refuses when there is none or more than one."""
+    found: set[str] = set()
+    for (rel,) in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal') ORDER BY 1").fetchall():
+        found |= {r[0] for r in backup.execute(sql.SQL("SELECT DISTINCT org_id FROM {} LIMIT 2").format(sql.SQL(rel))).fetchall()}
+        if len(found) > 1:
+            raise Refused(f"more than one org has rows ({', '.join(sorted(found))}); pass --org")
+    if not found:
+        raise Refused("no org has rows; pass --org")
+    return next(iter(found))
+
+
+def org_in_files(directory: Path) -> str:
+    """The one org named by the exported files. Refuses when the files hold no rows or rows of several orgs."""
+    orgs: set[str] = set()
+    for table in (directory / "order.txt").read_text(encoding="utf-8").split():
+        with (directory / f"{table}.csv").open(newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            at = next(reader).index("org_id")
+            orgs |= {r[at] for r in reader}
+    if len(orgs) != 1:
+        raise Refused(f"the files hold rows of {len(orgs)} orgs; pass --org" if orgs else "the files hold no rows; pass --org")
+    return next(iter(orgs))
+
+
 def restore_rows(restore: psycopg.Connection, org: str, table: str, columns: list[str], rows: list[list[str | None]]) -> int:
     """Insert ``rows`` for the open window's org, one transaction per call. Rows of any other org are never sent (one such
     row would make the database reject its whole batch): they are refused up front with a count per org, and nothing is inserted."""
@@ -198,28 +225,42 @@ def load_org(restore: psycopg.Connection, org: str, directory: Path, registered:
         return {table: restore_rows(restore, org, table, columns, rows) for table, (columns, rows) in files.items()}
 
 
+def _options(args: list[str], allowed: set[str]) -> dict[str, str] | None:
+    """``--name value`` pairs only, each at most once; None when anything else is given."""
+    out: dict[str, str] = {}
+    if len(args) % 2:
+        return None
+    for name, value in zip(args[::2], args[1::2], strict=True):
+        if name not in allowed or name in out:
+            return None
+        out[name] = value
+    return out
+
+
 def main(argv: list[str]) -> int:
     cmd, args = (argv[0] if argv else ""), argv[1:]
     try:
-        if cmd in ("export", "load") and len(args) == 4 and args[0] == "--org" and args[2] == "--dir":
+        if cmd in ("export", "load") and (opts := _options(args, {"--org", "--dir"})) and "--dir" in opts:
+            directory = Path(opts["--dir"])
             if cmd == "export":
                 with _connect("PG_MIGRATE_URL") as migrate, _connect("PG_BACKUP_URL") as backup:
-                    print(f"exported {len(export_org(migrate, backup, args[1], Path(args[3])))} table(s) of {args[1]}")
+                    org = opts.get("--org") or sole_org(migrate, backup)
+                    print(f"exported {len(export_org(migrate, backup, org, directory))} table(s) of {org}")
             else:
+                org = opts.get("--org") or org_in_files(directory)
                 with _connect("PG_MIGRATE_URL") as migrate:
                     registered = {r[0] for r in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal')")}
                 with _connect("PG_RESTORE_URL") as restore:
-                    counts = load_org(restore, args[1], Path(args[3]), registered)
+                    counts = load_org(restore, org, directory, registered)
                 print("loaded " + ", ".join(f"{t}={n}" for t, n in counts.items()))
             return 0
         with _connect("PG_ADMIN_URL") as admin, _connect("PG_MIGRATE_URL") as migrate:
-            if cmd == "open" and args[:1] == ["--org"] and (len(args) == 2 or (len(args) == 4 and args[2] == "--hours")):
+            if cmd == "open" and (opts := _options(args, {"--org", "--hours"})) and "--org" in opts:
                 if not os.environ.get("PG_RESTORE_PASSWORD"):
                     raise Refused("PG_RESTORE_PASSWORD is not set")
                 with _connect("PG_BACKUP_URL") as backup:
-                    open_window(admin, migrate, backup, args[1], os.environ["PG_RESTORE_PASSWORD"],
-                                float(args[3]) if len(args) == 4 else 4)
-                print(f"restore window open for {args[1]}; application logins are off")
+                    open_window(admin, migrate, backup, opts["--org"], os.environ["PG_RESTORE_PASSWORD"], float(opts.get("--hours", 4)))
+                print(f"restore window open for {opts['--org']}; application logins are off")
             elif cmd == "sequences":
                 with _connect("PG_BACKUP_URL") as backup:
                     print("sequences set: " + (", ".join(restore_sequences(migrate, backup)) or "none"))
