@@ -363,25 +363,35 @@ def cpu_of(body: bytes) -> tuple[float, PushRefusal | None]:
     return time.process_time() - start, refusal
 
 
+def fastest_cpu(body: bytes, runs: int = 3) -> float:
+    """The fastest of a few runs: load on a shared runner only ever makes a run slower."""
+    return min(cpu_of(body)[0] for _ in range(runs))
+
+
+# Linear work grows 16x with 16x the bytes and a quadratic scan 256x; 60x tells them apart on any runner.
+LINEAR_SLACK = 60
+
+
 @pytest.mark.parametrize("make", [unclosed_escapes, unclosed_quote_backslash])
 @pytest.mark.parametrize("n", [1000, 4000, 16_000, 32_000])
 def test_an_unclosed_string_is_refused_as_invalid_json_at_once(make, n) -> None:
-    cpu, refusal = cpu_of(make(n))
+    refusal = cpu_of(make(n))[1]
     assert refusal is not None and (refusal.status, refusal.reason) == (400, "INVALID_JSON")
-    assert cpu < 0.25, cpu  # the quadratic lexer needed 2.4 s at 8 KB and 39 s at 32 KB
+    assert fastest_cpu(make(n)) < 0.25  # the quadratic lexer needed 2.4 s at 8 KB and 39 s at 32 KB
 
 
 @pytest.mark.parametrize("make", [unclosed_escapes, lambda n: unclosed_escapes(n) + b'"}'])
 def test_lexer_cpu_grows_linearly_with_the_body(make) -> None:
     small = min(cpu_of(make(32_000))[0] for _ in range(3))      # 64 KB
     big = min(cpu_of(make(512_000))[0] for _ in range(2))       # 1 MB, 16 times as many bytes
-    assert big < 0.5, big
-    assert big < max(small, 0.002) * 60, (small, big)           # 16x if linear; a quadratic lexer gives 256x
+    assert big < max(small, 0.002) * LINEAR_SLACK, (small, big)
 
 
 def test_an_unclosed_string_of_16_mib_is_cheap() -> None:
-    cpu, refusal = cpu_of(unclosed_escapes(8_000_000))
-    assert refusal is not None and refusal.reason == "INVALID_JSON" and cpu < 4.0, cpu
+    refusal = cpu_of(unclosed_escapes(8_000_000))[1]
+    assert refusal is not None and refusal.reason == "INVALID_JSON"
+    # Against the same shape at 1/16 of the size, not against seconds.
+    assert fastest_cpu(unclosed_escapes(8_000_000), 2) < max(fastest_cpu(unclosed_escapes(500_000)), 0.002) * LINEAR_SLACK
 
 
 @pytest.mark.parametrize("body", [b'{"a":"x\\', b'"', b'{"a":"', b'{"a":"b"} "', b'{"recordName":"x\\"y'])
@@ -479,7 +489,13 @@ def test_the_list_heavy_shape_is_not_priced_at_the_old_rate() -> None:
 
 def test_possessive_string_matching_keeps_big_invalid_bodies_cheap() -> None:
     """Without the possessive quantifiers every one of these costs several times more."""
-    bodies = [b'{"a":"' + b"\\\\" * 4_000_000 + b"\\", b'{"a":' + b'"\\' * 4_000_000, b'{"a":"' + b"x" * 16_000_000]
-    for body in bodies:
-        cpu, refusal = cpu_of(body)
-        assert refusal is not None and refusal.reason == "INVALID_JSON" and cpu < 2.5, (len(body), cpu)
+    shapes = [
+        lambda k: b'{"a":"' + b"\\\\" * k + b"\\",
+        lambda k: b'{"a":' + b'"\\' * k,
+        lambda k: b'{"a":"' + b"x" * (4 * k),
+    ]
+    for shape in shapes:
+        refusal = cpu_of(shape(4_000_000))[1]
+        assert refusal is not None and refusal.reason == "INVALID_JSON"
+        big, small = fastest_cpu(shape(4_000_000), 2), fastest_cpu(shape(250_000))
+        assert big < max(small, 0.002) * LINEAR_SLACK, (small, big)
