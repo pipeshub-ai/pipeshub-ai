@@ -44,9 +44,13 @@ def _make_calc_tool() -> PipesHubStructuredToolAdapter:
     return PipesHubStructuredToolAdapter(structured_tool, "calc", "add")
 
 
-def _build_agent(context, transport: ScriptedTransport, *, max_turns: int = 15) -> Agent:
+def _build_agent(
+    context, transport: ScriptedTransport, *, max_turns: int = 15, extra_tools: tuple = (),
+) -> Agent:
     registry = ToolRegistry()
     registry.register_tool(_make_calc_tool())
+    for extra in extra_tools:
+        registry.register_tool(extra)
 
     transport_registry = TransportRegistry()
     transport_registry.register("scripted", lambda: transport)
@@ -135,3 +139,66 @@ class TestScriptedToolCallLifecycle:
         tools: list[ToolSchema] | None = transport.calls[0]["tools"]
         assert tools is not None
         assert any(t.name == _CALC_TOOL_NAME for t in tools)
+
+
+class TestWrapUpNote:
+    """Two turns before `max_turns`, the model is told to answer. The note
+    must reach it as loop state on a tool result, never as a user message:
+    Azure OpenAI's content filter rejects an injected "stop and answer" user
+    message after tool output."""
+
+    async def test_the_wrap_up_call_sees_it_in_the_last_tool_footer(self) -> None:
+        from app.agent_loop_lib.core.messages import ToolMessage, UserMessage
+        from app.agent_loop_lib.core.types import Goal
+
+        context = make_context()
+        transport = ScriptedTransport()
+        for n in range(4):
+            transport.add_tool_call(ToolCall(id=f"call-{n}", name=_CALC_TOOL_NAME, arguments={"a": n, "b": 1}))
+        transport.add_text("The sums are 1, 2, 3 and 4.")
+
+        agent = _build_agent(context, transport, max_turns=6)
+        result = await agent.run(Goal(description="Add some numbers"))
+
+        assert result.success is True
+        wrap_up = transport.calls[4]["messages"]
+        assert isinstance(wrap_up[-1], ToolMessage)
+        assert "last tool round" in wrap_up[-1].step_footer
+        assert "plain text, without calling tools" in wrap_up[-1].step_footer
+        assert not any(
+            isinstance(m, UserMessage) and m.injected for m in wrap_up
+        ), "no injected user message"
+        earlier = transport.calls[3]["messages"]
+        assert "last tool round" not in earlier[-1].step_footer
+
+
+class TestAskingNothingDoesNotEndTheRun:
+    """`ask_user_question` ends the run so the user can answer. Called with
+    no question, it used to end it anyway, and the narration the model wrote
+    beside the call ("I'll verify ...") became the final answer."""
+
+    async def test_the_run_continues_to_a_real_answer(self) -> None:
+        from app.agent_loop_lib.core.types import Goal
+        from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
+        from app.agents.actions.internal_tools.intrim_tools import InternalTools
+
+        tools = InternalTools()
+        ask = BoundMethodTool(
+            tools.ask_user_question, getattr(InternalTools.ask_user_question, TOOL_META_ATTR),
+        )
+        context = make_context()
+        transport = ScriptedTransport()
+        transport.add_text_and_tool_call(
+            "I'll verify the details first.",
+            ToolCall(id="ask-1", name=ask.name, arguments={
+                "user_intent": "The question is clear.", "questions": [],
+            }),
+        )
+        transport.add_text("Revenue grew fastest in EMEA.")
+
+        agent = _build_agent(context, transport, extra_tools=(ask,))
+        result = await agent.run(Goal(description="Which region grew fastest?"))
+
+        assert result.success is True
+        assert result.output == "Revenue grew fastest in EMEA."
+        assert len(transport.calls) == 2

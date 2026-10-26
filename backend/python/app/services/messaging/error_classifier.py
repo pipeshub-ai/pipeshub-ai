@@ -21,10 +21,12 @@ from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
+    EntityLookupUnavailableError,
     ExtractionError,
     IndexingError,
     ProcessingError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 
 # Import aiohttp at module level for efficiency (cached in sys.modules)
 try:
@@ -278,6 +280,16 @@ class MessageErrorClassifier:
         root_exc = _get_root_cause(exc)
         chain = list(_iter_exception_chain(exc))
 
+        # 0a. A deliberate stop wins over the transport error it was raised from.
+        if any(isinstance(chain_exc, NonRetryableError) for chain_exc in chain):
+            return MessageErrorType.TERMINAL
+
+        # 0a2. An entity lookup that could not run says nothing about the
+        # document, whatever the store answered (a 4xx root would otherwise
+        # mark an already searchable record FAILED on its first delivery).
+        if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.
         # ClientPayloadError may wrap TransferEncodingError whose .code is not HTTP status.
         for chain_exc in chain:
@@ -293,6 +305,17 @@ class MessageErrorClassifier:
             from app.services.base_client import ServiceAuthRefusedError
 
             if any(isinstance(chain_exc, ServiceAuthRefusedError) for chain_exc in chain):
+                return MessageErrorType.TRANSIENT
+        except ImportError:
+            pass
+
+        # 0b3. A stored record that could not be read from its signed URL: an
+        # expired or skewed signature answers 403 like a retired document, and
+        # only the reader (which re-looks-up first) can tell them apart.
+        try:
+            from app.modules.transformers.blob_storage import SignedUrlReadError
+
+            if any(isinstance(chain_exc, SignedUrlReadError) for chain_exc in chain):
                 return MessageErrorType.TRANSIENT
         except ImportError:
             pass
@@ -335,6 +358,7 @@ class MessageErrorClassifier:
                     ExtractionError,
                     ProcessingError,
                     BlockContainerValidationError,
+                    NonRetryableError,
                     ImportError,
                     ModuleNotFoundError,
                     FileNotFoundError,

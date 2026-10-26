@@ -19,6 +19,7 @@ from app.modules.retrieval.result_merging import (
     merge_collection_results,
     merger_for,
     result_identity,
+    search_hit_identity,
 )
 from app.services.vector_db.models import ScoreSemantics
 
@@ -246,3 +247,48 @@ class TestSingleCollectionShortCircuit:
 
     def test_no_collections_at_all_is_an_empty_result(self):
         assert merge_collection_results([], limit=10, merger=ScoreOrderedMerger()) == []
+
+
+def _hit(vrid: str, block_id: str | None, score: float) -> dict[str, Any]:
+    return {"score": score, "metadata": {"virtualRecordId": vrid, "blockId": block_id}}
+
+
+class TestSearchHitFusion:
+    """Fusing formatted search hits, as the per-source fan-out does."""
+
+    def _fuse(self, *sources: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
+        merger = ReciprocalRankFusionMerger(identity=search_hit_identity)
+        return merger.fuse([
+            CollectionResults(collection_name=f"s{i}", results=hits)
+            for i, hits in enumerate(sources)
+        ])
+
+    def test_sources_interleave_by_rank_whatever_their_score_scale(self) -> None:
+        loud = [_hit("a", "a1", 0.9), _hit("a", "a2", 0.8), _hit("a", "a3", 0.7)]
+        quiet = [_hit("b", "b1", 0.02), _hit("b", "b2", 0.01)]
+
+        order = [hit["metadata"]["blockId"] for hit, _ in self._fuse(loud, quiet)]
+
+        assert order == ["a1", "b1", "a2", "b2", "a3"]
+
+    def test_fused_scores_fall_with_rank(self) -> None:
+        fused = self._fuse([_hit("a", "a1", 0.5), _hit("a", "a2", 0.4)])
+        assert fused[0][1] > fused[1][1] > 0
+
+    def test_the_same_block_from_two_sources_takes_its_best_rank(self) -> None:
+        fused = self._fuse(
+            [_hit("x", "b0", 0.9), _hit("shared", "blk", 0.8)],
+            [_hit("shared", "blk", 0.9)],
+        )
+        ids = [hit["metadata"]["blockId"] for hit, _ in fused]
+        # Both are rank 0 somewhere; the tie goes to first appearance.
+        assert ids == ["b0", "blk"]
+
+    def test_hits_without_a_block_id_are_never_collapsed(self) -> None:
+        summaries = [_hit("a", None, 0.9), _hit("a", None, 0.8)]
+        assert len(self._fuse(summaries)) == 2
+
+    def test_merge_keeps_its_behaviour(self) -> None:
+        merger = ReciprocalRankFusionMerger(identity=search_hit_identity)
+        sources = [CollectionResults("s0", [_hit("a", "a1", 0.9), _hit("a", "a2", 0.1)])]
+        assert merger.merge(sources, limit=1) == [sources[0].results[0]]

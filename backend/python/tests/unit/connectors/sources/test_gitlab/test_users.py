@@ -271,6 +271,30 @@ class TestEnrichMembersWithFullUser:
         # Enrichment should return dict with all members
         assert len(enriched) == 1
 
+    @pytest.mark.parametrize("listed", [None, ""])
+    async def test_a_member_listed_without_an_email_still_has_its_profile_read(self, listed) -> None:
+        """With an admin token the profile carries the private email the listing leaves out."""
+        c = make_mock_connector()
+        users = UsersSync(c)
+        member = SimpleNamespace(id=7, attributes={"public_email": listed})
+        profile = SimpleNamespace(id=7, public_email=None, email="private@example.com")
+        c.runtime.ds_call = AsyncMock(return_value=SimpleNamespace(success=True, data=profile))
+
+        enriched = await users._enrich_members_with_full_user({7: member})
+
+        assert enriched[7] is profile
+
+    async def test_a_member_listed_with_its_email_is_not_looked_up(self) -> None:
+        c = make_mock_connector()
+        users = UsersSync(c)
+        member = SimpleNamespace(id=8, attributes={"public_email": "dev@example.com"})
+        c.runtime.ds_call = AsyncMock()
+
+        enriched = await users._enrich_members_with_full_user({8: member})
+
+        assert enriched[8] is member
+        c.runtime.ds_call.assert_not_called()
+
     async def test_get_user_failure_uses_member_payload(self) -> None:
         """When get_user fails, the original member payload is kept."""
         c = make_mock_connector()

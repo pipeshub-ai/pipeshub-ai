@@ -140,6 +140,33 @@ class TestSlack:
         assert ref.kind == RefKind.SLACK_TS
         assert ref.channel_id == "C04ABCDE"
 
+    def test_reply_permalink_keeps_its_thread(self) -> None:
+        ref = resolve_canonical_ref(
+            "https://myworkspace.slack.com/archives/C04ABCDE/p1706786460123456"
+            "?thread_ts=1706786400.000100&cid=C04ABCDE"
+        )
+        assert ref is not None
+        assert ref.kind == RefKind.SLACK_TS
+        assert ref.value == "1706786460.123456"
+        assert ref.channel_id == "C04ABCDE"
+        assert ref.thread_ts == "1706786400.000100"
+
+    def test_channel_permalink_has_no_thread(self) -> None:
+        ref = resolve_canonical_ref(
+            "https://myworkspace.slack.com/archives/C04ABCDE/p1706786400123456"
+        )
+        assert ref is not None
+        assert ref.thread_ts is None
+
+    def test_malformed_thread_ts_is_ignored(self) -> None:
+        ref = resolve_canonical_ref(
+            "https://myworkspace.slack.com/archives/C04ABCDE/p1706786460123456"
+            "?thread_ts=abc&cid=C04ABCDE"
+        )
+        assert ref is not None
+        assert ref.kind == RefKind.SLACK_TS
+        assert ref.thread_ts is None
+
 
 class TestLinear:
     def test_issue_url(self):
@@ -220,3 +247,16 @@ class TestNormalizeWeburl:
 
     def test_empty_url_returns_input(self):
         assert normalize_weburl("not-a-url") == "not-a-url"
+
+
+class TestRecordId:
+    def test_bare_uuid_is_a_record_id(self) -> None:
+        ref = resolve_canonical_ref("62636daf-bfeb-4052-8222-71e72993810e")
+        assert ref is not None
+        assert ref.kind == RefKind.RECORD_ID
+        assert ref.value == "62636daf-bfeb-4052-8222-71e72993810e"
+
+    def test_drive_id_is_still_a_drive_file(self) -> None:
+        ref = resolve_canonical_ref("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms")
+        assert ref is not None
+        assert ref.kind == RefKind.DRIVE_FILE

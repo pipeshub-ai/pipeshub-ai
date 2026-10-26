@@ -37,6 +37,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     tokenize,
 )
 from app.utils.env_utils import env_int
+from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -210,7 +211,7 @@ class SemanticSkillIndex(SkillIndex):
         if embedder is None:
             return None
         try:
-            return await embedder.aembed_query(query)
+            return await embedder.aembed_query(instruct_query(embedder, query))
         except Exception:
             logger.exception("SemanticSkillIndex: failed to embed query, falling back to keyword search")
             return None

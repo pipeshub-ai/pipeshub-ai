@@ -99,12 +99,27 @@ class Intent(BaseModel):
 
 
 class Goal(BaseModel):
+    # The task as the agent works it: what planners, critics, sub-agent hand-offs and tool or
+    # skill search read. The intent step's interpretation when one ran, else the request.
     description: str
     requirements: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     clarifications: dict[str, str] = Field(default_factory=dict)
+    # The person's own words for this turn, verbatim. None for a goal no person typed (a
+    # sub-agent's task, a library caller): `description` is then the request.
+    user_message: str | None = None
+    # How an intent step read the request, when one ran. Context for the model, never sent as
+    # the person's words.
+    interpretation: str | None = None
+    # What the person attached, rendered as text; follows their words in the current message.
+    attachment_text: str = ""
+
+    def request_text(self) -> str:
+        """The current request as the run adds it to the conversation."""
+        words = self.user_message if self.user_message is not None else self.description
+        return f"{words}\n\n{self.attachment_text}" if self.attachment_text else words
 
 
 class TodoStatus(str, Enum):

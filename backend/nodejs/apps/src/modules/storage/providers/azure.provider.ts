@@ -12,6 +12,8 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -491,6 +493,48 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       }
       throw new PresignedUrlError(
         'Failed to generate direct upload URL for Azure Blob Storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  async signObjectUrl(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl> {
+    try {
+      await this.waitForContainer();
+      const blobClient = (
+        this.containerClient as ContainerClient
+      ).getBlockBlobClient(storageKey);
+      const url = await blobClient.generateSasUrl({
+        permissions: BlobSASPermissions.from(
+          options.method === 'PUT'
+            ? { create: true, write: true }
+            : { read: true },
+        ),
+        expiresOn: new Date(Date.now() + options.expiresInSeconds * 1000),
+      });
+      if (options.method === 'PUT') {
+        return {
+          url,
+          // Put Blob refuses a request that does not name the blob type.
+          headers: {
+            'x-ms-blob-type': 'BlockBlob',
+            'Content-Type': options.contentType ?? 'application/octet-stream',
+          },
+        };
+      }
+      return { url, headers: {} };
+    } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new PresignedUrlError(
+        'Failed to generate signed URL for Azure Blob Storage',
         {
           originalError:
             error instanceof Error ? error.message : 'Unknown error',

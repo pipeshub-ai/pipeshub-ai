@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.responses import JSONResponse
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -228,8 +233,10 @@ class TestLifespan:
             patch("app.docling_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
             patch("app.docling_main.DoclingService", return_value=mock_svc),
             patch("app.docling_main.set_docling_service") as mock_set_svc,
+            patch("app.docling_main.limit_malloc_arenas") as mock_limit_arenas,
         ):
             async with lifespan(mock_app):
+                mock_limit_arenas.assert_called_once_with(2)
                 # During lifespan, app.container should be set
                 assert mock_app.container is mock_container
                 # DoclingService should have been initialized
@@ -545,6 +552,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults(self):
@@ -561,6 +569,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_reload_with_multiple_workers_forces_single_worker(self):
@@ -580,6 +589,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_no_reload_with_multiple_workers_keeps_workers(self):
@@ -599,6 +609,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
 

@@ -8,8 +8,14 @@ import en from '@/lib/i18n/locales/en-US.json';
 /**
  * Disabling a service account stops every token it already holds, and
  * revoking a token cannot be undone. Both are one click away from a live
- * integration breaking, so neither may fire straight off the icon button.
+ * integration breaking, so neither may fire straight off the row menu.
  */
+
+/** Disable lives in the row's "More options" menu on every screen size. */
+async function clickDisable() {
+  fireEvent.click(await screen.findByRole('button', { name: en.common.moreOptions }));
+  fireEvent.click(await screen.findByText(en.workspace.serviceAccounts.disable));
+}
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/workspace/service-accounts',
@@ -51,7 +57,10 @@ vi.mock('react-i18next', () => {
       : cur;
   };
   const value = { i18n: { language: 'en-US' }, t };
-  return { useTranslation: () => value };
+  return {
+    initReactI18next: { type: '3rdParty', init: () => undefined },
+    useTranslation: () => value,
+  };
 });
 
 const listAccounts = vi.fn();
@@ -78,6 +87,18 @@ vi.mock('../api', () => ({
 
 import ServiceAccountsPage from '../page';
 import { ServiceAccountTokensPanel } from '../components/service-account-tokens-panel';
+
+// jsdom has no matchMedia; useIsMobile needs it to resolve the touch-target size.
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  writable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }),
+});
 
 const ACCOUNT = {
   id: '507f1f77bcf86cd799439012',
@@ -129,10 +150,7 @@ describe('disabling a service account', () => {
       </Theme>
     );
 
-    const disableButton = await screen.findByLabelText(
-      en.workspace.serviceAccounts.disable
-    );
-    fireEvent.click(disableButton);
+    await clickDisable();
 
     // The dialog is up and nothing has been sent.
     expect(
@@ -148,7 +166,7 @@ describe('disabling a service account', () => {
       </Theme>
     );
 
-    fireEvent.click(await screen.findByLabelText(en.workspace.serviceAccounts.disable));
+    await clickDisable();
     fireEvent.click(
       await screen.findByRole('button', {
         name: en.workspace.serviceAccounts.disableConfirm,

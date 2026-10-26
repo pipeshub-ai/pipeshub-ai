@@ -1185,3 +1185,44 @@ class TestParse:
 
         parser._process_single_blockgroup_html.assert_awaited_once()
         assert len(result.block_container.blocks) == 1
+
+
+class TestImagePayloadInConnectorMarkdown:
+    """A connector's markdown section (a GitHub pull request's file diff here)
+    whose code holds a data-URI image parses into blocks that pass validation."""
+
+    @pytest.mark.asyncio
+    async def test_a_file_diff_with_an_inline_icon_validates(self) -> None:
+        import base64
+
+        from app.modules.transformers.block_container_validator import (
+            BlockContainerValidator,
+        )
+
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        groups = [
+            BlockGroup(
+                index=0, type=GroupType.TEXT_SECTION, format=DataFormat.MARKDOWN,
+                requires_processing=True, data="Add the login icons\n\nBody of the pull request.",
+            ),
+            BlockGroup(
+                index=1, parent_index=0, type=GroupType.TEXT_SECTION, format=DataFormat.MARKDOWN,
+                requires_processing=True, name="File change: www/static/dist/icon.png.js",
+                data=(
+                    "[added file]\n\nDiff:\n@@ -0,0 +1 @@\n"
+                    f'+export default "data:image/png;base64,{png}"'
+                ),
+            ),
+        ]
+        payload = BlocksContainer(blocks=[], block_groups=groups).model_dump_json()
+        with patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ):
+            result = await _make_parser().parse(payload.encode("utf-8"), "record")
+
+        container = result.block_container
+        BlockContainerValidator().validate(container)
+        texts = [b.data for b in container.blocks if b.type == BlockType.TEXT]
+        assert any('+export default "data:image/png;base64,[image data omitted]"' in t for t in texts)
+        assert any("Body of the pull request." in t for t in texts)

@@ -1,11 +1,17 @@
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     ConnectorScopes,
     DeleteSource,
     OriginTypes,
     PermissionModel,
+    ProgressStatus,
 )
 from app.models.entities import RecordGroupType, RecordType
+
+# One list for every status field: the three used to drift apart, and a status
+# a writer can produce but a schema rejects fails the write at runtime.
+PROGRESS_STATUS_VALUES = [status.value for status in ProgressStatus]
 
 # User schema for ArangoDB
 orgs_schema = {
@@ -71,6 +77,24 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
+            # What sort of principal this is. Absent on nodes written before
+            # this field existed and on anything an older producer sends, so
+            # readers treat absence as "human" rather than as unknown.
+            #
+            # Always carried on the event, never worked out here. The user
+            # management service decides what is a service account, and a
+            # second rule in this process — reading the address, say — would
+            # be a copy of that one, free to drift. Nodes that predate the
+            # field are stamped by ServiceAccountKindMigrationService from a
+            # list that service stages, which writes this field and nothing
+            # else; replaying the creation event for them would do far more.
+            "kind": {"type": "string", "enum": ["human", "service"]},
+            # Whether an administrator has switched this service account off.
+            # Separate from `isActive`, which soft-delete owns and which a
+            # rename sets back to true — a disable stored there would not
+            # survive one. Absent means not disabled, so a node that predates
+            # this field, or a person, reads as usable.
+            "isDisabled": {"type": "boolean"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -175,7 +199,16 @@ app_schema = {
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
+            # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
+            "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncOutcome": {"type": ["string", "null"]},
+            "lastSyncSummary": {"type": ["string", "null"]},
+            # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
+            "actionItems": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
+            # Set when sync is turned on; see toggle_connector_instance.
+            "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -191,6 +224,25 @@ app_schema = {
             "entityIndexExhausted": {"type": ["boolean", "null"]},
             "entityIndexTarget": {"type": ["string", "null"]},
             "entityIndexErrors": {"type": ["integer", "null"]},
+            # app.modules.indexing.record_label_repair
+            "recordLabelRepairState": {"type": ["string", "null"]},
+            "recordLabelRepairAfterKey": {"type": ["string", "null"]},
+            "recordLabelRepairRepaired": {"type": ["integer", "null"]},
+            "recordLabelRepairSkipped": {"type": ["integer", "null"]},
+            "recordLabelRepairMissing": {"type": ["integer", "null"]},
+            "recordLabelRepairFailures": {"type": ["integer", "null"]},
+            "recordLabelRepairAttempts": {"type": ["integer", "null"]},
+            "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
+            # app.connectors.services.stored_content_heal
+            "storedContentHealState": {"type": ["string", "null"]},
+            "storedContentHealAfterKey": {"type": ["string", "null"]},
+            "storedContentHealChecked": {"type": ["integer", "null"]},
+            "storedContentHealMissing": {"type": ["integer", "null"]},
+            "storedContentHealHealed": {"type": ["integer", "null"]},
+            "storedContentHealOrphaned": {"type": ["integer", "null"]},
+            "storedContentHealFailures": {"type": ["integer", "null"]},
+            "storedContentHealAttempts": {"type": ["integer", "null"]},
+            "storedContentHealExhausted": {"type": ["boolean", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
@@ -267,6 +319,13 @@ record_schema = {
             "lastSyncTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Knowledge-base uploads: what set the two above (SourceTimestampOrigin).
+            # A pattern, so a new origin needs no schema release first.
+            "sourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
+            # What the upload had set, kept while dates the content states replace it.
+            "uploadSourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "uploadSourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
@@ -286,61 +345,43 @@ record_schema = {
             # When a restore brought the record back; see RESTORED_AT_FIELD.
             "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
-            # Clocks the stranded-record sweep in indexing_main ages rows on.
+            # Clocks the stranded-record sweep in indexing_main ages rows on,
+            # and how many times it has re-sent the record since it was queued.
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
-            "parsingStatus": {
-                "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY",
-                    "QUEUED",
-                ],
-            },
+            "republishCount": {"type": ["number", "null"]},
+            # A record whose source rate-limited its content fetch: when it may
+            # be sent again, and when this run of waits began (see
+            # app/modules/indexing/rate_limit_deferral.py).
+            "retryNotBefore": {"type": ["number", "null"]},
+            "rateLimitedSince": {"type": ["number", "null"]},
+            "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY",
-                    "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED",
-                    "CONNECTOR_DISABLED"   # deprecated, use AUTO_INDEX_OFF instead
-                ],
+                # CONNECTOR_DISABLED is deprecated (use AUTO_INDEX_OFF) but still on old records.
+                "enum": [*PROGRESS_STATUS_VALUES, "CONNECTOR_DISABLED"],
             },
-            "extractionStatus": {
-                "type": "string",
-                "enum": [
-                    "NOT_STARTED",
-                    "IN_PROGRESS",
-                    "PAUSED",
-                    "FAILED",
-                    "COMPLETED",
-                    "FILE_TYPE_NOT_SUPPORTED",
-                    "AUTO_INDEX_OFF",
-                    "EMPTY"
-                ],
-            },
+            "extractionStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Credentials redacted from the content before indexing (S-2).
+            "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
+            "uploadedBy": {"type": ["string", "null"]},  # uploader userId
             "lastIndexTimestamp": {"type": ["number", "null"]},
+            "hasIndexedCopy": {"type": "boolean"},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
+            # A pattern, not an enum: widening an enum on this strict schema is a
+            # release that must ship before any writer of the new value.
+            "entityExtractionStatus": {"type": "string", "pattern": "^[A-Z_]{1,32}$"},
+            "lastEntityExtractionTimestamp": {"type": ["number", "null"]},
+            "entityExtractionStrategy": {"type": ["string", "null"]},
+            "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
@@ -350,6 +391,15 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Permission traversal input, read per visited node. Per node and
+            # mixable within a connector; RESTRICTED applies to the node it is
+            # on and is never inherited by its children. Absent reads as OPEN,
+            # so it stays out of "required".
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "storageDocumentId": {"type": ["string", "null"]},
@@ -357,6 +407,8 @@ record_schema = {
             "definition": {"type": ["string", "null"]},
             "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},
             "rowCount": {"type": ["number", "null"]},
+            # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
+            "contentRev": {"type": ["string", "null"]},
         },
         "required": [
             "recordName",
@@ -370,6 +422,68 @@ record_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record schema.",
+}
+
+
+# Pipeline stage state: one document per (virtual record, content revision, stage).
+# ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
+STAGE_TIERS = ["heavy", "light"]
+STAGE_PRIORITIES = ["interactive", "bulk"]
+stage_state_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "virtualRecordId": {"type": "string"},
+            "rev": {"type": "string"},
+            "stage": {"type": "string"},
+            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "stageVersion": {"type": "integer", "minimum": 1},
+            "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "connectorId": {"type": "string"},
+            "tier": {"type": "string", "enum": STAGE_TIERS},
+            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "trigger": {"type": "string"},
+            "force": {"type": "boolean"},
+            "mimeType": {"type": ["string", "null"]},
+            "textDigest": {"type": "string"},
+            "blocksDigest": {"type": "string"},
+            "textChars": {"type": "integer", "minimum": 0},
+            "hasTables": {"type": "boolean"},
+            "hasImages": {"type": "boolean"},
+            "fingerprint": {"type": ["string", "null"]},
+            "attempt": {"type": "integer", "minimum": 0},
+            "startedAtMs": {"type": ["number", "null"]},
+            "finishedAtMs": {"type": ["number", "null"]},
+            "publishedAtMs": {"type": ["number", "null"]},
+            "updatedAtMs": {"type": "number"},
+            "workerId": {"type": ["string", "null"]},
+            "reason": {"type": ["string", "null"]},
+            "output": {"type": ["string", "null"]},
+        },
+        "required": [
+            "orgId",
+            "virtualRecordId",
+            "rev",
+            "stage",
+            "status",
+            "stageVersion",
+            "recordIds",
+            "connectorId",
+            "tier",
+            "priority",
+            "trigger",
+            "textDigest",
+            "blocksDigest",
+            "textChars",
+            "hasTables",
+            "hasImages",
+            "updatedAtMs",
+        ],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the stage state schema.",
 }
 
 # File Record schema for ArangoDB
@@ -534,6 +648,7 @@ ticket_record_schema = {
         "properties": {
             "orgId": {"type": "string"},
             "status": {"type": ["string", "null"]},
+            "sourceStatus": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
             "type": {"type": ["string", "null"]},
             "deliveryStatus": {"type": ["string", "null"]},
@@ -544,6 +659,7 @@ ticket_record_schema = {
             "creatorName": {"type": ["string", "null"]},
             "reporterName": {"type": ["string", "null"]},
             "dueDateTimestamp": {"type": ["number", "null"]},
+            "resolvedAtTimestamp": {"type": ["number", "null"]},
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
@@ -656,6 +772,8 @@ pull_request_record_schema = {
                 "default": [],
             },
             "lastCommitSha": {"type": ["string", "null"]},
+            "mergedAtTimestamp": {"type": ["number", "null"]},
+            "closedAtTimestamp": {"type": ["number", "null"]},
         },
     },
 }
@@ -673,7 +791,54 @@ code_file_record_schema={
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
             "fileRole": {"type": ["string", "null"]},
+            "commitSha": {"type": ["string", "null"]},
+            # Symbol names referenced by this file (calls, imports, type refs).
+            # Used by the edge builder to find files that need re-resolution
+            # when a touched file adds or removes a symbol definition.
+            "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # Names the file stopped defining in recent projections, and when the
+            # last was added; the next build re-resolves the files that use them.
+            "changedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            "changedNamesAt": {"type": ["number", "null"]},
         },
+    },
+}
+
+# Deliberately loose: no additionalProperties:false. (ArangoDB's `level`
+# already defaults to "strict"; it is the missing additionalProperties that
+# lets unknown fields through.) update_collection_schema re-applies this on
+# every boot, so a closed schema would hard-reject existing documents the
+# moment a field is added.
+block_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "recordGroupId": {"type": ["string", "null"]},
+            "connectorId": {"type": ["string", "null"]},
+            "filePath": {"type": ["string", "null"]},
+            "qualifiedName": {"type": ["string", "null"]},
+            "name": {"type": ["string", "null"]},
+            "nameFolded": {"type": ["string", "null"]},
+            "parserVersion": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "subType": {"type": ["string", "null"]},
+            "isBlockGroup": {"type": "boolean"},
+            "isExternal": {"type": "boolean"},
+            "index": {"type": ["number", "null"]},
+            "startLine": {"type": ["number", "null"]},
+            "endLine": {"type": ["number", "null"]},
+            "language": {"type": ["string", "null"]},
+            "contentHash": {"type": ["string", "null"]},
+            "parentBlockId": {"type": ["string", "null"]},
+            "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
+            "typeTable": {"type": ["object", "null"]},
+            "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            "createdAtTimestamp": {"type": ["number", "null"]},
+            "updatedAtTimestamp": {"type": ["number", "null"]},
+        },
+        "required": ["orgId", "recordId"],
     },
 }
 sql_table_record_schema = {
@@ -792,6 +957,13 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Permission traversal input, as on records: per node, and
+            # RESTRICTED never cascades to children.
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
             # Whether container-filtered search may trust this group's grant
             # instead of checking each record. Null means "verify" — the safe
             # state, and the only one until a connector proves otherwise.
@@ -828,6 +1000,118 @@ record_group_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record group schema.",
+}
+
+named_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "kind": {"type": "string"},
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "normKey": {"type": "string"},
+            "aliases": {"type": "array", "items": {"type": "string"}},
+            "normalizedAliases": {"type": "array", "items": {"type": "string"}},
+            "schemaVersion": {"type": "integer"},
+            # Reserved: a field added to this strict schema later would break rollback.
+            "keyScheme": {"type": ["integer", "null"]},
+            "mergedInto": {"type": ["string", "null"]},
+            "orphanedAt": {"type": ["number", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mergedAt": {"type": ["number", "null"]},
+            "types": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["orgId", "kind", "name", "normKey"],
+        # Open: a field a later release adds must not make this release's schema,
+        # reapplied on rollback, reject updates to the documents that carry it.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity schema.",
+}
+
+# One typed value (date, amount, quantity, percentage, duration, age) a record
+# mentions. Keyed by record, never shared between records: a shared value node
+# such as "2026" or "USD" becomes a hub every record write locks.
+value_mention_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "kind": {"type": "string"},
+            "normKey": {"type": "string"},
+            "name": {"type": "string"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "schemaVersion": {"type": "integer"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "kind", "normKey"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the value mention schema.",
+}
+
+# A record whose named-entity graph write failed after its retries. Keyed by the
+# record; the recovery pass writes the record's stored extraction again when due.
+named_entity_persist_retry_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            # AQL arithmetic yields a double, so a count it increments is a number.
+            "attempts": {"type": "number"},
+            "dueAt": {"type": "number"},
+            "lastError": {"type": ["string", "null"]},
+            # The job extracts again from the stored blocks instead of re-writing
+            # the stored extraction (app.modules.indexing.named_entity_completion).
+            "reextract": {"type": ["boolean", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "attempts", "dueAt"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity persist retry schema.",
 }
 
 department_schema = {
@@ -940,8 +1224,19 @@ agent_schema = {
                 "type": ["string", "null"],
                 "enum": ["none", "low", "medium", "high", "max", None],
             },
+            # API toolset operations the agent may call: "<instanceId>:<toolName>".
+            "apiToolsetTools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            # The service account this agent searches knowledge as, by user
+            # node key. Absent on agents made before binding existed, and on
+            # any agent that is not a service agent; those still search as
+            # their creator. See _enrich_user_info_for_service_account_agent_chat.
+            "serviceAccountUserId": {"type": ["string", "null"]},
             "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
@@ -1352,6 +1647,7 @@ mcp_server_schema = {
             "displayName": {"type": "string"},
             "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
             "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "allTools": {"type": "boolean"},  # every tool the server offers at chat time, not just the saved list
             "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},

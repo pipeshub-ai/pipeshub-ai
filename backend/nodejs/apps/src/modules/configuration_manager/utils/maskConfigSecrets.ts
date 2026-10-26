@@ -31,7 +31,62 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'modelFriendlyName',
   'dimensions',
   'defaultReasoningEffort',
+  // Settings only. The service API key stays out and shows up in `configuredFields`.
+  'identityForwardingEnabled',
+  'identityForwardingMode',
+  'identityForwardingPreset',
+  'identityForwardingHeaderTemplates',
+  'identityForwardingJwtAudience',
+  'identityForwardingServiceAuth',
 ] as const;
+
+const CREDENTIAL_HEADER_HINT =
+  /auth|cookie|(api|access|subscription|functions|private)[-_]?key|token|secret|password|credential|signature|assertion/i;
+
+/**
+ * A header template may carry a literal credential (e.g. a static bearer token
+ * on `Authorization`). The value is write-only: a response keeps the header
+ * name so the editor can show it, and the placeholder stands in for the value.
+ */
+export function redactCredentialTemplates(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [name, template] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    out[name] =
+      CREDENTIAL_HEADER_HINT.test(name) &&
+      typeof template === 'string' &&
+      template.length > 0
+        ? CONFIG_SECRET_PLACEHOLDER
+        : template;
+  }
+  return out;
+}
+
+/** Swap a redacted template back for the stored one. A placeholder with nothing to restore is dropped. */
+export function restoreCredentialTemplates(
+  incoming: Record<string, string>,
+  stored: unknown,
+): Record<string, string> {
+  const previous =
+    stored && typeof stored === 'object' && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  const out: Record<string, string> = {};
+  for (const [name, template] of Object.entries(incoming)) {
+    const storedTemplate = previous[name];
+    if (template !== CONFIG_SECRET_PLACEHOLDER) {
+      out[name] = template;
+    } else if (
+      typeof storedTemplate === 'string' &&
+      storedTemplate.length > 0
+    ) {
+      out[name] = storedTemplate;
+    }
+  }
+  return out;
+}
 
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
   const cfg = entry.configuration;
@@ -46,8 +101,25 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
       safeCfg[key] = src[key];
     }
   }
+  if ('identityForwardingHeaderTemplates' in safeCfg) {
+    safeCfg.identityForwardingHeaderTemplates = redactCredentialTemplates(
+      safeCfg.identityForwardingHeaderTemplates,
+    );
+  }
 
-  return { ...entry, configuration: safeCfg as AIModelConfiguration['configuration'] };
+  return {
+    ...entry,
+    configuration: safeCfg as AIModelConfiguration['configuration'],
+    configuredFields: configuredFieldNames(src),
+  };
+}
+
+/** Names of stored configuration keys that have a value. Never the values. */
+export function configuredFieldNames(configuration: Record<string, unknown>): string[] {
+  return Object.entries(configuration)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key]) => key)
+    .sort();
 }
 
 /**
@@ -56,7 +128,7 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
  * The stored shape is:
  *   { llm: [...entries], embedding: [...entries], ocr: [...], modelRoles: {…} }
  */
-export function stripAiModelsStoredConfig<T extends Record<string, unknown>>(
+export function stripAiModelsStoredConfig<T extends object>(
   config: T,
 ): T {
   if (!config || typeof config !== 'object') {
@@ -88,6 +160,39 @@ export function stripAiModelsStoredConfig<T extends Record<string, unknown>>(
  * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
  * alone.
  */
+/** Keys the identity forwarding route owns on a connection's entries. Flat, so the model dialog renders them. */
+export const IDENTITY_FORWARDING_KEYS = {
+  enabled: 'identityForwardingEnabled',
+  mode: 'identityForwardingMode',
+  preset: 'identityForwardingPreset',
+  headerTemplates: 'identityForwardingHeaderTemplates',
+  jwtAudience: 'identityForwardingJwtAudience',
+  serviceAuth: 'identityForwardingServiceAuth',
+  serviceApiKey: 'identityForwardingServiceApiKey',
+} as const;
+
+/** Fields a credential rotation may replace. Endpoints and model settings are not credentials. */
+export const AI_MODEL_CREDENTIAL_KEYS = [
+  'apiKey',
+  'awsAccessKeyId',
+  'awsAccessSecretKey',
+  'serviceAccountJson',
+] as const;
+
+/** Keep only credential keys. A present empty string is an explicit clear. */
+export function pickAiModelCredentials(
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of AI_MODEL_CREDENTIAL_KEYS) {
+    if (!(key in incoming)) continue;
+    const value = incoming[key];
+    if (typeof value !== 'string') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export function mergeAiModelCredentials<T extends Record<string, unknown>>(
   incoming: T,
   existing: Record<string, unknown> | null | undefined,
@@ -185,6 +290,30 @@ export const GITHUB_AUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
 
 export const WEB_SEARCH_SECRET_KEYS = ['apiKey'] as const;
 
+/**
+ * An edit form that never revealed a secret sends the placeholder back. Swap
+ * each placeholder for the stored value; returns the keys that had no stored
+ * value to restore, so the caller can refuse to save a literal placeholder.
+ */
+export function restoreSecretPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+  keys: readonly string[],
+): { config: T; unrestored: string[] } {
+  const out = { ...incoming } as Record<string, unknown>;
+  const unrestored: string[] = [];
+  for (const key of keys) {
+    if (out[key] !== CONFIG_SECRET_PLACEHOLDER) continue;
+    const stored = existing?.[key];
+    if (typeof stored === 'string' && stored.length > 0) {
+      out[key] = stored;
+    } else {
+      unrestored.push(key);
+    }
+  }
+  return { config: out as T, unrestored };
+}
+
 function maskKeys<T extends Record<string, unknown>>(config: T, keys: readonly string[]): T {
   if (!config || typeof config !== 'object') {
     return config;
@@ -217,6 +346,17 @@ export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: 
 
 export function maskWebSearchProvider<T extends Record<string, unknown>>(configuration: T): T {
   return maskKeys(configuration, WEB_SEARCH_SECRET_KEYS);
+}
+
+/**
+ * What a member who is not an admin sees of a provider: no API key, and no server address either,
+ * since a self-hosted server's URL names an internal host. Members only list providers (the agent
+ * builder does); every write is admin-only, so a masked address is never sent back to be saved.
+ */
+export function maskWebSearchProviderForMember<
+  T extends Record<string, unknown>,
+>(configuration: T): T {
+  return maskKeys(configuration, [...WEB_SEARCH_SECRET_KEYS, 'baseUrl']);
 }
 
 export function mergeWebSearchProviderPlaceholders<T extends Record<string, unknown>>(

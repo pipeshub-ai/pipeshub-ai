@@ -38,7 +38,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
-**Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
+**Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md) · [Čeština](docs/i18n/cs/README.md)
 
 </div>
 
@@ -53,6 +53,12 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 > ```bash
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
+
+<p align="center">
+  <a href="https://youtu.be/VgyND38QZ7w"><img src="https://img.youtube.com/vi/VgyND38QZ7w/maxresdefault.jpg" alt="Watch the PipesHub demo on YouTube" width="720"/></a>
+  <br/>
+  <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
+</p>
 
 ## What can you build with PipesHub?
 
@@ -100,9 +106,9 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 ## PipesHub Cloud
 
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+Prefer a fully managed PipesHub without running your own infrastructure? Sign up for **[PipesHub Cloud](https://app.pipeshub.com)**: the same connectors, permission-aware search, and APIs, with nothing to install.
 
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
 ## Connectors
 

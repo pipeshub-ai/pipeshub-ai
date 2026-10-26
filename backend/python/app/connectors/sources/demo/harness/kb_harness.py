@@ -399,12 +399,23 @@ def ask_body(question: str, chat_mode: str, kb_ids: list[str] | None = None) -> 
 
 
 def ask(
-    origin: str, jwt: str, question: str, chat_mode: str = "internal_search", kb_ids: list[str] | None = None
+    origin: str,
+    jwt: str,
+    question: str,
+    chat_mode: str = "internal_search",
+    kb_ids: list[str] | None = None,
+    transport: httpx.BaseTransport | None = None,
 ) -> tuple[str, list[str]]:
-    """Ask via the raw SSE endpoint; the generated SDK's stream parser mis-types `data` (spec bug)."""
-    answer, cited = [], []
+    """Ask via the raw SSE endpoint; the generated SDK's stream parser mis-types `data` (spec bug).
+
+    The answer scored is the one the conversation saved. The raw text stream also
+    carries each tool-calling turn's narration ("I'll search…"), which the chat
+    shows as a step, not as the answer; without a saved answer, the last turn's
+    text stands in."""
+    turn: list[str] = []
+    saved, cited = "", []
     # Agent mode can take a few minutes on a question it has to search around.
-    with httpx.Client(base_url=origin, timeout=300) as c, c.stream(
+    with httpx.Client(base_url=origin, timeout=300, transport=transport) as c, c.stream(
         "POST", "/api/v1/conversations/stream",
         json=ask_body(question, chat_mode, kb_ids),
         headers={"Authorization": f"Bearer {jwt}", "Accept": "text/event-stream"},
@@ -413,16 +424,20 @@ def ask(
         for event, raw in iter_sse(resp):
             try: payload = json.loads(raw) if raw else {}
             except json.JSONDecodeError: payload = {}
-            if event == "TEXT_MESSAGE_CONTENT":
-                answer.append(payload.get("delta", ""))
+            if event == "TEXT_MESSAGE_START":
+                turn = []
+            elif event == "TEXT_MESSAGE_CONTENT":
+                turn.append(payload.get("delta", ""))
             elif event == "RUN_FINISHED":
                 msgs = ((payload.get("result") or {}).get("conversation") or {}).get("messages") or []
+                if msgs and msgs[-1].get("messageType") == "bot_response":
+                    saved = msgs[-1].get("content") or ""
                 for c_ in (msgs[-1].get("citations") if msgs else None) or []:
                     meta = (c_.get("citationData") or {}).get("metadata") or c_.get("metadata") or {}
                     cited.append(meta.get("recordName") or "")
             elif event == "RUN_ERROR":
                 return f"ERROR: {payload.get('message')}", []
-    return "".join(answer), cited
+    return (saved if saved.strip() else "".join(turn)), cited
 
 
 def main() -> None:

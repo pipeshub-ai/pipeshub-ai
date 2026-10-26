@@ -3,6 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
+import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
+
+const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40) }
 
 describe('tokens_manager/routes/health.routes', () => {
   let mockRedis: any
@@ -10,6 +13,7 @@ describe('tokens_manager/routes/health.routes', () => {
   let mockMongo: any
   let mockKV: any
   let mockAppConfig: any
+  let mockAuthMiddleware: any
   let container: any
   let cmContainer: any
   let router: any
@@ -27,6 +31,7 @@ describe('tokens_manager/routes/health.routes', () => {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
     sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+    sinon.stub(buildInfoUtils, 'getBuildInfo').returns(NODE_BUILD)
 
     mockRedis = { get: sinon.stub().resolves(null) }
     mockKafka = { healthCheck: sinon.stub().resolves(true) }
@@ -46,8 +51,11 @@ describe('tokens_manager/routes/health.routes', () => {
       },
     }
 
+    mockAuthMiddleware = { authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()) }
+
     container = {
       get: sinon.stub().callsFake((key: string) => {
+        if (key === 'AuthMiddleware') return mockAuthMiddleware
         if (key === 'RedisService') return mockRedis
         if (key === 'KafkaService') return mockKafka
         if (key === 'MongoService') return mockMongo
@@ -120,6 +128,64 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.mongodb).to.equal('healthy')
       expect(jsonArg.services.KVStoreservice).to.equal('healthy')
       expect(jsonArg.timestamp).to.be.a('string')
+    })
+
+    describe('local blob storage with several app replicas', () => {
+      let savedReplicas: string | undefined
+      beforeEach(() => { savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      const run = async (storageConfig: string | null) => {
+        mockKV.get = sinon.stub().resolves(storageConfig)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        return res.json.firstCall.args[0]
+      }
+
+      it('warns (but stays healthy) when local storage runs on several replicas', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const body = await run(JSON.stringify({ storageType: 'local' }))
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('up to 6 app replicas')
+      })
+
+      it('warns for the default (no storage configured yet means local)', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '2'
+        const body = await run(null)
+        expect(body.warnings).to.have.length(1)
+      })
+
+      it('answers without the warning when the storage configuration read stalls', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().returns(new Promise(() => undefined))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+
+      it('does not warn for S3 or for a single replica', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        expect((await run(JSON.stringify({ storageType: 's3' }))).warnings).to.equal(undefined)
+        sinon.restore()
+        sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+        expect((await run(JSON.stringify({ storageType: 'local' }))).warnings).to.equal(undefined)
+      })
     })
 
     it('should include deployment info in response', async () => {
@@ -588,9 +654,47 @@ describe('tokens_manager/routes/health.routes', () => {
       )
       expect(graphDbCall).to.exist
       expect(graphDbCall!.args[0]).to.equal('http://localhost:8088/health/graph-db')
+      expect(graphDbCall!.args[1]).to.include({ timeout: 5000 })
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.services.graphDb).to.equal('healthy')
+    })
+
+    it('should log when graph-db health check times out', async () => {
+      mockAppConfig.deployment.dataStoreType = 'neo4j'
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const timeoutErr: any = new Error('timeout of 5000ms exceeded')
+      timeoutErr.code = 'ECONNABORTED'
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('graph-db')) {
+          return Promise.reject(timeoutErr)
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      const LoggerModule = require('../../../../src/libs/services/logger.service')
+      const errorStub = sinon.stub(
+        LoggerModule.Logger.getInstance({ service: 'HealthStatus' }),
+        'error',
+      )
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
+      expect(
+        errorStub.getCalls().some(
+          (c: any) => c.args[0] === 'graph-db health check timed out',
+        ),
+      ).to.equal(true)
     })
 
     it('should mark graphDb unhealthy when connector /health/graph-db returns non-200 (neo4j or arangodb)', async () => {
@@ -727,6 +831,18 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg).to.have.property('services')
       expect(jsonArg).to.have.property('serviceNames')
       expect(jsonArg).to.have.property('deployment')
+    })
+
+    it('should report the build of the Node.js process', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].build).to.deep.equal(NODE_BUILD)
     })
 
     it('should include all expected deployment keys', async () => {
@@ -1522,6 +1638,76 @@ describe('tokens_manager/routes/health.routes', () => {
         expect(jsonArg.services.parsing).to.equal('unknown')
         expect(jsonArg.services.extraction).to.equal('unknown')
       })
+    })
+  })
+
+  describe('GET /vector-db/memory', () => {
+    const report = {
+      status: 'insufficient',
+      neededBytes: 12 * 1024 ** 3,
+      indexBytes: 10 * 1024 ** 3,
+      baseBytes: 2 * 1024 ** 3,
+      availableBytes: 4 * 1024 ** 3,
+      availableSource: 'configured',
+      points: 5_000_000,
+      nodes: 1,
+    }
+
+    function memoryRoute() {
+      return router.stack.find(
+        (l: any) => l.route && l.route.path === '/vector-db/memory' && l.route.methods.get,
+      ).route
+    }
+
+    it('authenticates, checks scope and admin before the handler', () => {
+      const stack = memoryRoute().stack
+      expect(stack).to.have.length(4)
+      const next = sinon.stub()
+      stack[0].handle({}, {}, next)
+      expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(stack[2].handle.name).to.equal('userAdminCheck')
+    })
+
+    it('passes the report through and forwards only allowlisted headers', async () => {
+      const axiosModule = require('axios')
+      const get = sinon.stub(axiosModule, 'get').resolves({ status: 200, data: report })
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler(
+        { headers: { authorization: 'Bearer t', cookie: 'session=x' } },
+        res,
+        sinon.stub(),
+      )
+
+      expect(get.firstCall.args[0]).to.equal('http://localhost:8088/health/vector-db/memory')
+      expect(get.firstCall.args[1].headers).to.deep.equal({ authorization: 'Bearer t' })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal(report)
+    })
+
+    it('answers 502 unknown when the connector service fails', async () => {
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 503, data: { status: 'unknown' } })
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler({ headers: {} }, res, sinon.stub())
+
+      expect(res.status.calledWith(502)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ status: 'unknown' })
+    })
+
+    it('answers 502 unknown when the connector service is unreachable', async () => {
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').rejects(new Error('ECONNREFUSED'))
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler({ headers: {} }, res, sinon.stub())
+
+      expect(res.status.calledWith(502)).to.be.true
     })
   })
 })

@@ -116,6 +116,35 @@ export function mapReindexOptionsToMenuActions(
   }));
 }
 
+const CODE_REPO_CONNECTORS = new Set(['GITHUB', 'GITHUB TEAMS', 'GITLAB', 'GITLAB PERSONAL']);
+
+const CODE_REPO_CONNECTOR_URLS: Record<string, { scope: 'personal' | 'team'; type: string }> = {
+  GITHUB: { scope: 'personal', type: 'Github' },
+  'GITHUB TEAMS': { scope: 'team', type: 'GitHub Teams' },
+  GITLAB: { scope: 'team', type: 'GitLab' },
+  'GITLAB PERSONAL': { scope: 'personal', type: 'GitLab Personal' },
+};
+
+export function getCodeRepoConnectorsUrl(connector?: string): string {
+  const target = CODE_REPO_CONNECTOR_URLS[connector?.trim().toUpperCase() ?? ''];
+  if (!target) return '/workspace/connectors';
+
+  return `/workspace/connectors/${target.scope}/?connectorType=${encodeURIComponent(target.type)}`;
+}
+
+const CODE_REPO_PARTIAL_REINDEX_TYPES = new Set(['record', 'folder']);
+
+/**
+ * Code-repo files and folders share one graph, so a subset cannot be newer than
+ * the rest of the repo. Refresh them with a connector sync instead.
+ */
+export function isRecordReindexBlocked(node: ReindexNode): boolean {
+  return (
+    CODE_REPO_PARTIAL_REINDEX_TYPES.has(node.nodeType ?? '')
+    && CODE_REPO_CONNECTORS.has(node.connector?.trim().toUpperCase() ?? '')
+  );
+}
+
 /** folder / recordGroup — container rows are not indexed as entities. */
 export function isNonIndexableContainer(node: ReindexNode): boolean {
   return node.nodeType === 'folder' || node.nodeType === 'recordGroup';

@@ -19,8 +19,9 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
   refused, unchanged, while a live record holds it.
 - A sync that sees again an item the connector deleted restores it, and ends
   on the indexing status it always did. The restore's own write puts it in
-  line for indexing, so a sync that fails after it on Neo4j, where that write
-  has already committed, leaves a record the stranded sweep picks up.
+  line for indexing. A failure inside the write rolls the restore back; one
+  after it has committed, such as an event the broker refuses, leaves a record
+  the stranded sweep picks up.
 - ``restore_records`` touches only records still in the trash under the batch
   named, and brings back all of the items it is given or none of them, also
   when the graph refuses one of the writes.
@@ -188,7 +189,7 @@ async def _seed(w: _World) -> None:
         [_edge(w.ids["folder"], records, w.ids[c], records, relationshipType="PARENT_CHILD")
          for c in ("file_a", "file_b")]
         + [_edge(w.ids["file_b"], records, w.ids["attachment"], records, relationshipType="ATTACHMENT")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
 
@@ -217,7 +218,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value,
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
                   CollectionNames.INHERIT_PERMISSIONS.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -228,7 +229,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own and a rollback undoes nothing.
+    # The default: a Neo4j write block is one transaction, as on Arango.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     async with contextlib.AsyncExitStack() as cleanup:
         try:
@@ -408,7 +409,7 @@ async def test_a_sync_restore_does_not_wait_for_the_parent(world: _World) -> Non
     await world.graph.batch_create_edges(
         [_edge(world.ids["drive_folder"], CollectionNames.RECORDS.value, world.ids["drive_file"],
                CollectionNames.RECORDS.value, relationshipType="PARENT_CHILD")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     await world.processor.on_record_deleted(world.ids["drive_file"])
     await world.processor.on_record_deleted(world.ids["drive_folder"])
@@ -528,13 +529,16 @@ async def test_a_sync_restore_ends_on_the_indexing_status_it_always_did(
     assert bool(world.producer.of_type(EventTypes.NEW_RECORD.value)) is published
 
 
-# Neo4j only: Arango runs the sync in one stream transaction, so the failure rolls the
-# restore back with it, and the graph jobs fail on any skip.
-@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
-async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the_stranded_sweep(
+async def _content_update_sees_drive_file_again(world: _World) -> None:
+    seen_again = _file(world, "drive_file", kb=False, external_revision_id="rev-1")
+    seen_again.id = str(uuid.uuid4())
+    await world.processor.on_record_content_update(seen_again)
+
+
+async def test_a_batch_restore_that_fails_after_its_write_stays_in_the_trash(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The restore's write commits on its own; it used to leave the item live and COMPLETED with no vectors."""
+    """A batch of new records is one transaction on both backends: the failure takes the restore with it."""
     await world.processor.on_record_deleted(world.ids["drive_file"])
     world.producer.events.clear()
     original = world.processor._handle_parent_record
@@ -546,6 +550,65 @@ async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the
     with pytest.raises(RuntimeError, match="parent lookup failed"):
         await _sync_sees_drive_file_again(world)
     monkeypatch.setattr(world.processor, "_handle_parent_record", original)
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (True, ProgressStatus.COMPLETED.value)
+    assert world.producer.events == []
+
+    await _sync_sees_drive_file_again(world, indexing_status=ProgressStatus.QUEUED.value)
+    assert (await world.stored("drive_file"))["isDeleted"] is False
+    assert [e["payload"]["recordId"] for e in world.producer.of_type(EventTypes.NEW_RECORD.value)] == [
+        world.ids["drive_file"]
+    ]
+
+
+# Neo4j only: the graph jobs run Arango and fail on any skip.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_sync_restore_that_fails_inside_its_write_stays_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The single-record path is one transaction too: a failure inside it takes the restore with it."""
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    original = world.processor._handle_parent_record
+
+    async def parent_lookup_fails(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("parent lookup failed")
+
+    monkeypatch.setattr(world.processor, "_handle_parent_record", parent_lookup_fails)
+    with pytest.raises(RuntimeError, match="parent lookup failed"):
+        await _content_update_sees_drive_file_again(world)
+    monkeypatch.setattr(world.processor, "_handle_parent_record", original)
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (True, ProgressStatus.COMPLETED.value)
+    assert world.producer.events == []
+
+    await _sync_sees_drive_file_again(world, indexing_status=ProgressStatus.QUEUED.value)
+    assert (await world.stored("drive_file"))["isDeleted"] is False
+
+
+async def _content_update_whose_event_is_not_sent(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The restore's write commits, then the broker refuses the event that should follow it."""
+
+    async def broker_down(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("broker down")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(world.producer, "send_message", broker_down)
+        with pytest.raises(RuntimeError, match="broker down"):
+            await _content_update_sees_drive_file_again(world)
+
+
+# Neo4j only, as above.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the_stranded_sweep(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The restore's write has committed; it used to leave the item live and COMPLETED with no vectors."""
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    await _content_update_whose_event_is_not_sent(world, monkeypatch)
 
     doc = await world.stored("drive_file")
     assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
@@ -593,7 +656,7 @@ async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, gra
     return producer.sent
 
 
-# Neo4j only, for the same reason as the test above.
+# Neo4j only, as above.
 @pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_write(
     world: _World, monkeypatch: pytest.MonkeyPatch,
@@ -604,13 +667,7 @@ async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_wr
         world.ids["drive_file"], CollectionNames.RECORDS.value, {"md5Checksum": "md5-indexed-before"}
     )
     await world.processor.on_record_deleted(world.ids["drive_file"])
-
-    async def parent_lookup_fails(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("parent lookup failed")
-
-    monkeypatch.setattr(world.processor, "_handle_parent_record", parent_lookup_fails)
-    with pytest.raises(RuntimeError, match="parent lookup failed"):
-        await _sync_sees_drive_file_again(world)
+    await _content_update_whose_event_is_not_sent(world, monkeypatch)
 
     sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
 
@@ -900,6 +957,7 @@ async def test_a_restore_refused_by_a_later_item_leaves_the_other_records_extern
         "item was added again after this one was deleted. To restore this one, delete 'report.pdf' first, "
         "then try again."
     )
+    assert refused.value.details["blockedRecordId"] == world.ids["file_b"]
     assert refused.value.details["conflicting_record_id"] == world.ids["report"]
     await _assert_nothing_moved(world, old_id)
 

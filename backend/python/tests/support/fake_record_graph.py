@@ -1,0 +1,93 @@
+"""An in-memory graph holding only what the stranded-record sweep reads and writes.
+
+Records by key, read one at a time or a page at a time by equality filters in
+key order, and updated field by field; and whether a connector indexed
+anything since a time, which the record handler asks before failing a
+rate-limited record. Returns copies, as a real store does, so a caller that
+mutates what it read does not change what is stored. A null removes the
+property, as Neo4j's ``SET +=`` does. Every connector is live.
+"""
+from __future__ import annotations
+
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
+
+__all__ = ["FakeRecordGraph"]
+
+
+class FakeRecordGraph:
+    def __init__(self) -> None:
+        self.records: dict[str, dict] = {}
+        self.connector_names: dict[str, str] = {}
+
+    def add_queued(self, key: str, connector_id: str, queued_at_ms: int, **fields: object) -> None:
+        self.records[key] = {
+            "_key": key,
+            "connectorId": connector_id,
+            "origin": "CONNECTOR",
+            "recordName": key,
+            "orgId": "org-1",
+            "version": 0,
+            "indexingStatus": ProgressStatus.QUEUED.value,
+            "queuedAtTimestamp": queued_at_ms,
+            **fields,
+        }
+
+    def mark_indexed(self, key: str, *, at_ms: int | None = None) -> None:
+        self.records[key]["indexingStatus"] = ProgressStatus.COMPLETED.value
+        if at_ms is not None:
+            self.records[key]["lastIndexTimestamp"] = at_ms
+
+    async def has_records_indexed_since(self, connector_id: str, since_ms: int, **_kwargs: object) -> bool:
+        return any(
+            r["connectorId"] == connector_id
+            and r["indexingStatus"] == ProgressStatus.COMPLETED.value
+            and (r.get("lastIndexTimestamp") or 0) > since_ms
+            for r in self.records.values()
+        )
+
+    def still_queued(self) -> list[str]:
+        return sorted(
+            key for key, record in self.records.items()
+            if record["indexingStatus"] == ProgressStatus.QUEUED.value
+        )
+
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict | None = None,
+        sort_field: str | None = None,
+        raise_on_error: bool = False,
+        after_key: str | None = None,
+    ) -> list[dict]:
+        if collection == CollectionNames.APPS.value:
+            apps = [{"_key": c, "isActive": True} for c in sorted({r["connectorId"] for r in self.records.values()})]
+            return apps[skip:skip + limit]
+        assert collection == CollectionNames.RECORDS.value
+        matching = sorted(
+            (
+                r for r in self.records.values()
+                if all(r.get(field) == value for field, value in (filters or {}).items())
+                and (after_key is None or r["_key"] > after_key)
+            ),
+            key=lambda r: r["_key"],
+        )
+        return [dict(r) for r in matching[skip:skip + limit]]
+
+    async def get_document(self, key: str, collection: str, **_kwargs: object) -> dict | None:
+        if collection == CollectionNames.RECORDS.value:
+            record = self.records.get(key)
+            return dict(record) if record is not None else None
+        assert collection == CollectionNames.APPS.value
+        return {"_key": key, "isActive": True, "name": self.connector_names.get(key, key)}
+
+    async def update_node(self, key: str, collection: str, fields: dict) -> bool:
+        assert collection == CollectionNames.RECORDS.value
+        record = self.records[key]
+        for name, value in fields.items():
+            if value is None:
+                record.pop(name, None)
+            else:
+                record[name] = value
+        return True

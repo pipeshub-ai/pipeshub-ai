@@ -371,7 +371,7 @@ class TestReadOne:
 
 class TestFailures:
     @pytest.mark.parametrize(("response", "expected"), [
-        (google_error(401, "Invalid Credentials", "authError"), "Reconnect the Gmail toolset"),
+        (google_error(401, "Invalid Credentials", "authError"), "Reconnect Gmail under Your actions"),
         (google_error(403, "Request had insufficient authentication scopes.", "insufficientPermissions"),
          "allow Gmail access"),
         (google_error(404, "Requested entity was not found.", "notFound"), "search_emails"),
@@ -404,7 +404,7 @@ class TestFailures:
         ok, data = result(await gmail.get_user_profile())
 
         assert ok is False
-        assert "Reconnect the Gmail toolset" in assert_safe_error(data)
+        assert "Reconnect Gmail under Your actions" in assert_safe_error(data)
 
     async def test_a_draft_without_permission_says_how_to_allow_it(self, gmail, http) -> None:
         http.on("POST", DRAFTS, google_error(403, "Insufficient Permission", "insufficientPermissions"), base=GMAIL)

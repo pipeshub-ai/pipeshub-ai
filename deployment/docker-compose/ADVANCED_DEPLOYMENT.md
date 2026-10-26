@@ -105,6 +105,8 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
 | `APP_MEMORY_LIMIT` | memory ceiling for the app container | derived from the machine (see below) |
 | `APP_MEMSWAP_LIMIT` | combined memory+swap ceiling | `APP_MEMORY_LIMIT` + 6G |
+| `QDRANT_MEMORY_LIMIT` | memory ceiling for the Qdrant container; size it from [vector DB sizing](../../docs/deployment/vector-db-sizing.md) | `6G` |
+| `TELEMETRY_COLLECTION_FLAG` | `true` \| `false` — product metrics/event collection in every service; `false` turns all telemetry code off | empty: on |
 
 ### App container memory
 
@@ -389,6 +391,7 @@ not documented here.
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
 | `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |
+| `PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS` | characters, `0` removes the limit | `1000000` |
 
 `direct` calls model providers without the LangChain layer. A provider with no direct
 transport, or with credentials it cannot use, falls back to LangChain for that turn
@@ -398,6 +401,21 @@ rather than failing it; an unrecognised value logs a warning and falls back too.
 3600-second signing lifetime so a URL handed out at the end of its cached life still has
 time left to use. A value that is not a number falls back to the default rather than
 failing to start.
+
+`PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS` is a safety net for a model that never stops
+writing, most often one stuck repeating itself inside a tool call on a gateway or local
+server that sets no output limit of its own. It counts the characters a single agent turn
+streams (answer text, reasoning and tool-call arguments together). Past the limit the
+stream is closed. If the model was in the middle of a tool call, the call is not run and
+the model is asked for a shorter one, as with any reply a provider cuts off. If it was
+writing plain text, the user gets a short answer saying the reply grew too long and to
+ask again or ask for a shorter one; the overrun itself is not saved or sent back to the
+model. (With a limit set low enough that the text still fits in a prompt, the model is
+asked to carry on from where it stopped instead.) The default is about twice the longest
+reply any supported provider can produce, so normal answers never reach it; raise it only
+if you see the "streamed more than ... characters in one turn" warning in the
+query-service log for replies you expected. Blank or a value that is not a number falls
+back to the default.
 
 These are read from the container environment, so on an existing install add them to
 `.env` yourself — `install.sh --upgrade` reuses your current `.env` and does not append

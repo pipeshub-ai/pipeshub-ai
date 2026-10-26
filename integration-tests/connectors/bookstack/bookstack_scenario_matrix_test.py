@@ -56,10 +56,15 @@ class BookStackAdapter(ScenarioAdapter):
     async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
         book = self.books["filtered" if role is Role.FILTERED else "main"]
         name = f"{role.value}-{token}"
-        page_id = self.bookstack.create_page(name, text, book_id=book)
+        extra: dict[str, Any] = {}
+        if role is Role.FOLDER:
+            extra["chapter_id"] = self.bookstack.create_chapter(book, f"dir-{token}")
+            page_id = self.bookstack.create_page(name, text, chapter_id=extra["chapter_id"])
+        else:
+            page_id = self.bookstack.create_page(name, text, book_id=book)
         return SourceItem(
             role=role, key=str(page_id), record_name=name, text=text, token=token,
-            external_id=f"page/{page_id}",
+            external_id=f"page/{page_id}", extra=extra,
         )
 
     async def update_content(self, item: SourceItem, text: str, token: str) -> SourceItem:
@@ -75,6 +80,22 @@ class BookStackAdapter(ScenarioAdapter):
         return SourceItem(
             role=item.role, key=item.key, record_name=name, text=item.text,
             token=item.token, external_id=item.external_id,
+        )
+
+    async def move_item(self, item: SourceItem) -> SourceItem:
+        folder = f"moved-{item.token}"
+        self.bookstack.move_page(int(item.key), self.bookstack.create_chapter(self.books["main"], folder))
+        return SourceItem(
+            role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+            token=item.token, external_id=item.external_id, extra={**item.extra, "folder": folder},
+        )
+
+    async def rename_folder(self, item: SourceItem) -> SourceItem:
+        new = f"dir-{item.token}-renamed"
+        self.bookstack.rename_chapter(item.extra["chapter_id"], new)
+        return SourceItem(
+            role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+            token=item.token, external_id=item.external_id, extra={**item.extra, "folder": new},
         )
 
     async def change_permission(self, item: SourceItem, sharee: SecondUser, *, grant: bool) -> None:
@@ -164,3 +185,4 @@ async def scenario_adapter(
 @pytest.mark.bookstack
 class TestBookStackScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "BookStack"
+    TREE_MOVES = True

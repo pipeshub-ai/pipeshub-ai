@@ -39,7 +39,11 @@ export async function waitForEmailTo(email: string, timeoutMs = 60_000): Promise
       }
       await new Promise((r) => setTimeout(r, 2_000));
     }
-    throw new Error(`No email reached ${email} within ${timeoutMs / 1000}s (${lastError})`);
+    throw new Error(
+      `No email reached ${email} within ${timeoutMs / 1000}s (${lastError}). ` +
+        `Check that MAILPIT_URL (${MAILPIT_URL}) is this stack's Mailpit and that SMTP_HOST / SMTP_PORT ` +
+        `are reachable from the app server; the app logs "Mail send error" when they are not.`,
+    );
   } finally {
     await api.dispose();
   }

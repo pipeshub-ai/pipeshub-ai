@@ -1,0 +1,84 @@
+{
+ "block_groups": [
+  {
+   "index": 0,
+   "type": "list",
+   "parent_index": null,
+   "table": null
+  },
+  {
+   "index": 1,
+   "type": "table",
+   "parent_index": 0,
+   "table": {
+    "rows": 3,
+    "cols": 3
+   }
+  }
+ ],
+ "blocks": [
+  {
+   "index": 0,
+   "type": "text",
+   "parent_index": null,
+   "data": "Quarterly report"
+  },
+  {
+   "index": 1,
+   "type": "text",
+   "parent_index": null,
+   "data": "First paragraph of the report."
+  },
+  {
+   "index": 2,
+   "type": "text",
+   "parent_index": null,
+   "data": "Second paragraph with numbers 1,234 and 56.7%."
+  },
+  {
+   "index": 3,
+   "type": "text",
+   "parent_index": 0,
+   "data": "alpha"
+  },
+  {
+   "index": 4,
+   "type": "text",
+   "parent_index": 0,
+   "data": "beta"
+  },
+  {
+   "index": 5,
+   "type": "table_row",
+   "parent_index": 1,
+   "data": {
+    "row_natural_language_text": "Column_1: Region, Column_2: Q1, Column_3: Q2",
+    "row_number": 1
+   }
+  },
+  {
+   "index": 6,
+   "type": "table_row",
+   "parent_index": 1,
+   "data": {
+    "row_natural_language_text": "Column_1: North, Column_2: 1,200, Column_3: 1,350",
+    "row_number": 2
+   }
+  },
+  {
+   "index": 7,
+   "type": "table_row",
+   "parent_index": 1,
+   "data": {
+    "row_natural_language_text": "Column_1: 東京, Column_2: 2,000, Column_3: 2,100",
+    "row_number": 3
+   }
+  },
+  {
+   "index": 8,
+   "type": "text",
+   "parent_index": null,
+   "data": "End."
+  }
+ ]
+}

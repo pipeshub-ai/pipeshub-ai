@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from collections import Counter
 from collections.abc import Iterator
 
 import pytest
@@ -152,6 +153,11 @@ def _source_permission(entity_type: EntityType, **kw: str) -> Permission:
     return Permission(type=PermissionType.READ, entity_type=entity_type, **kw)
 
 
+def _grantee(edge: dict) -> str:
+    """Key of the node a permission edge starts from, in either backend's edge shape."""
+    return str(edge.get("_from") or edge.get("from_id") or "").split("/")[-1]
+
+
 @pytest.mark.asyncio(loop_scope="session")
 class TestSharesThatGrantNothing:
     async def test_domain_anyone_and_link_shares_reach_nobody(
@@ -187,14 +193,20 @@ class TestSharesThatGrantNothing:
             await processor._handle_record_permissions(record, shares, tx_store)
 
         after = await graph_provider.get_edges_to_node(record_node, CollectionNames.PERMISSION.value)
-        assert len(after) == len(before) + 1, (
-            f"Expected exactly one new permission edge (the control's), got "
-            f"{len(after) - len(before)}: domain, anyone and link shares must write none."
+        control = await graph_provider.get_user_by_email(people.control.email)
+        assert control is not None, f"the control {people.control.email} has no user in the graph"
+        added = Counter(map(_grantee, after)) - Counter(map(_grantee, before))
+        assert added == Counter([control.id]), (
+            f"Expected exactly one new permission edge, the control's, got {dict(added)}: "
+            "domain, anyone and link shares must write none."
         )
 
-        assert open_status(people.control, note.record_id) == 200, (
-            "The control, given a plain share in the same call, cannot open the note, so "
-            "the call proves nothing about the other shares."
+        # A grant on one record opens nothing to a person its knowledge base is not shared
+        # with, so the control proves the call by its edge, not by opening the note.
+        status = open_status(people.control, note.record_id)
+        assert status in NO_ACCESS_STATUSES, (
+            f"The control holds a grant on the note but none on its knowledge base, and "
+            f"opening the note returned HTTP {status}."
         )
         assert_cannot_reach(people.colleague, note, "after domain, anyone and link shares")
         assert_chat_does_not_cite(people.colleague, note, "after domain, anyone and link shares")

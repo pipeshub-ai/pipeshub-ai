@@ -56,6 +56,29 @@ class TestParseErrors:
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
 
 
+class TestJsonWithComments:
+    """Repository JSON often carries comments (Kafka's protocol schemas, tsconfig.json)."""
+
+    @pytest.mark.asyncio
+    async def test_line_and_block_comments_are_ignored(self, parser) -> None:
+        content = (
+            b"// Licensed to the Apache Software Foundation (ASF)\n"
+            b"/* the request schema */\n"
+            b'{"apiKey": 25, "name": "AddOffsetsToTxnRequest", // inline\n'
+            b' "url": "http://kafka.apache.org/x"}\n'
+        )
+        result = await parser.parse(content, "AddOffsetsToTxnRequest.json")
+        text = " ".join(str(b.data) for b in result.block_container.blocks)
+        assert "AddOffsetsToTxnRequest" in text
+        assert "http://kafka.apache.org/x" in text, "a // inside a string is not a comment"
+
+    @pytest.mark.asyncio
+    async def test_text_that_is_still_not_json_raises_as_before(self, parser) -> None:
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"// a comment\n{not json", "broken.json")
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+
+
 class TestFlatObject:
 
     @pytest.mark.asyncio
@@ -451,8 +474,12 @@ class TestParseMetadataAndHelpers:
         assert "top-level object with 2 entries" in parser._build_root_summary(
             {"a": 1, "b": 2}, "x.json"
         )
-        assert "top-level array with 1 entry" in parser._build_root_summary([1], "x.json")
-        assert "top-level scalar with 1 entry" in parser._build_root_summary("hi", "x.json")
+        assert "top-level array with 1 entry" in parser._build_root_summary(
+            [1], "x.json"
+        )
+        assert "top-level scalar with 1 entry" in parser._build_root_summary(
+            "hi", "x.json"
+        )
 
     def test_safe_dumps_fallback_on_error(self, parser):
         from unittest.mock import patch

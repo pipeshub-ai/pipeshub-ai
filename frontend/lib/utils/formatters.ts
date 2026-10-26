@@ -19,6 +19,15 @@ export function formatDate(dateString: string | number): string {
   return `${day} ${month} ${year}`;
 }
 
+export function formatDateTime(dateString: string | number): string {
+  const date = new Date(dateString);
+  const time = date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return `${formatDate(dateString)}, ${time}`;
+}
+
 /**
  * Format a conversation's date for display as a subtitle in the chat search view.
  *
@@ -94,7 +103,8 @@ export function formatChatMode(chatMode?: string): string {
           : strategy;
     return `Agent (${label})`;
   }
-  return formatSnakeCaseTitle(chatMode);
+  const words = chatMode.split('_').filter(Boolean).join(' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**

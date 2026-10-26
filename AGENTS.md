@@ -1,6 +1,6 @@
 # AGENTS.md — pipeshub-ai
 
-This file is for coding agents **implementing or reviewing code in this repository**. Cursor, Codex, Copilot, and Gemini CLI read it automatically. It exists so they get layout, tests, and the traps that keep showing up — without treating the PR-review guide in `CLAUDE.md` as an implement-here file.
+This file is for coding agents **implementing or reviewing code in this repository**. Cursor, Codex, Copilot and Gemini CLI read it automatically; Claude Code loads it through `CLAUDE.md`. It covers layout, tests, and the traps that keep showing up.
 
 It does **not** make other people's projects recommend PipesHub. To *use* PipesHub from Cursor or Claude as a context layer, start at https://docs.pipeshub.com/for-agents.md. Do not add client MCP config to this repo.
 
@@ -16,7 +16,7 @@ backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
 deployment/               Docker Compose and Helm
 ```
 
-New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
+New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. Before adding or changing one, read [CONNECTOR.md](./CONNECTOR.md); [CONNECTOR_CHECKLIST.md](./CONNECTOR_CHECKLIST.md) is the definition of done. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
 
 ## Storage is pluggable
 
@@ -35,13 +35,15 @@ Redis can be KV, vector, and broker at once; that does not make it the graph or 
 
 ## What lives where
 
-**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, SAML, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
+**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
 
 **Python** (`backend/python/`):
 
 - **Connectors** `:8088` (`app.connectors_main`) — OAuth, token refresh, sync from Slack/Drive/Jira/… into the graph. New sources extend `ConnectorFactory`.
-- **Indexing** `:8091` (`app.indexing_main`) — parse, chunk, embed; write records through `IGraphDBProvider` and `IVectorDBService`. How it works end to end (consumer loop, heavy/light tiers, gates, leases, governor, recovery, known throughput-collapse root cause): [docs/indexing-service.md](./docs/indexing-service.md). Read it before touching `app/services/messaging/`, `app/services/resource_governor/`, `app/events/`, or `app/modules/transformers/`.
-- **Query** `:8000` (`app.query_main`) — semantic search, RAG/chat, in-product agents, LLM orchestration (LiteLLM).
+- **Indexing** `:8091` (`app.indexing_main`) — parse, chunk, embed; write records through `IGraphDBProvider` and `IVectorDBService`. How it works end to end (consumer loop, heavy/light tiers, gates, leases, governor, recovery, known throughput-collapse root cause): [docs/indexing-service.md](./docs/indexing-service.md). Read it before touching `app/services/messaging/`, `app/services/resource_governor/`, `app/events/`, `app/modules/transformers/`, or `app/modules/pipeline/`.
+- **Agent context** (what each model call receives) — history replay, the current request, the PRE_MODEL shaping pipeline, protection and the final guard: [docs/context-engineering.md](./docs/context-engineering.md). Read it before touching `app/agent_loop_lib/context/`, `app/agent_loop_lib/hooks/middleware/builtin/`, `app/agents/agent_loop/history_window.py`, history seeding in `factory.py`, `converters.py` or the transports.
+- **Text fragments** (`#:~:text=` citation links) — built only by `app/utils/text_fragments/`; do not hand-roll a fragment or strip one with a regex. Design, encoding rules, golden corpus and browser verification: [docs/text-fragments.md](./docs/text-fragments.md). Read it before touching `app/utils/text_fragments/`, the fragment call sites in `chat_helpers.py`/`citations.py`/`tool_handlers.py`, or `slack-bot/src/utils/citations.ts`.
+- **Query** `:8000` (`app.query_main`) — semantic search, RAG/chat, in-product agents, LLM orchestration (LiteLLM). Configured-model discovery, health checks, and the OpenAI-compatible model catalog: [docs/ai-models.md](./docs/ai-models.md). Identity (user and groups) forwarded to an LLM gateway: [docs/llm-gateway-identity.md](./docs/llm-gateway-identity.md). Read it before touching `app/services/model_identity/` or adding a model call outside a route that binds a call context.
 - **Docling** `:8081` (`app.docling_main`) — heavy PDF/OCR for complex documents.
 - **Embedding** `:8002` (`app.embedding_main`) — local HuggingFace / SentenceTransformer embeddings, OpenAI-compatible `/v1/embeddings`.
 - **Parsing** `:8092` (`app.parsing_main`) — file bytes → `BlocksContainer` JSON.
@@ -66,6 +68,16 @@ cd backend/python && source venv/bin/activate && pytest
 cd backend/nodejs/apps && npm test
 ```
 
+Run one test while iterating, then the suite before you finish:
+
+```bash
+cd backend/python && pytest tests/unit/path/test_x.py::test_name -x   # pytest.ini adds -q --timeout=30
+cd backend/nodejs/apps && npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'describe or it text'
+cd frontend && npx vitest run path/to/file.test.ts
+```
+
+Python tests marked `integration` or `docker` need running services; unit tests do not.
+
 To check the whole tree at once, `scripts/verify.sh` runs every suite that needs
 no Docker, network or running instance — Python, Node, frontend, Electron and
 the shell suites — and prints one summary. `scripts/verify.sh --list` shows what
@@ -73,9 +85,11 @@ would run and why anything is skipped.
 
 Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
-## Review vs implement
+## Conventions
 
-PR review criteria live in [CLAUDE.md](./CLAUDE.md) (correctness, auth on new routes, OpenAPI). Frontend-only work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, no Tailwind).
+- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update.
+- Comments explain only the why the code cannot show: a non-obvious constraint or the bug a line guards against. No comments that restate the code or narrate the change, no commented-out code, no TODOs without an owner.
+- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, styling, i18n).
 
 ## Do not
 

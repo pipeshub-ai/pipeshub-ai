@@ -49,14 +49,10 @@ export const ACTIVE_GROUP_NAME_INDEX = {
   },
 } as const;
 
-userGroupsSchema.pre<UserGroup>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('UserGroup');
-    }
-    next();
-  } catch (error) {
-    next(error as Error); // Pass any errors to the next middleware
+userGroupsSchema.pre<UserGroup>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('UserGroup');
   }
 });
 

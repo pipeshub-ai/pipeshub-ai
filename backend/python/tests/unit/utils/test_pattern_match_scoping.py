@@ -10,12 +10,16 @@ import pytest
 from app.agents.actions.storage_search.storage_search import (
     StoragePatternMatch,
     _grep_search_regexes,
+    _listing_command_error,
     _rank_candidates,
     _run_subprocess,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
 from app.utils.pattern_match import (
     _MAX_GREP_OUTPUT_CHARS,
+    _fuse_ranked,
+    _merge_command_hits,
+    keyword_match_rank,
     _MAX_GREP_STDOUT_BYTES,
     _cap_grep_output,
     _ensure_null_delimited_pipeline,
@@ -80,6 +84,84 @@ class TestRanking:
         assert [r.pattern for r in regexes] == ["billion"]
 
 
+class TestRankFusion:
+    def test_a_record_two_commands_rank_beats_one_a_broad_command_ranks_first(self) -> None:
+        found: dict = {}
+        _fuse_ranked(found, [
+            {"virtual_record_id": "broad-only", "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "matched_terms": "2", "match_count": "3"},
+        ])
+        _fuse_ranked(found, [{"virtual_record_id": "both", "matched_terms": "2", "match_count": "2"}])
+
+        order = sorted(found.values(), key=keyword_match_rank, reverse=True)
+
+        assert [r["virtual_record_id"] for r in order] == ["both", "broad-only"]
+        assert found["both"]["match_count"] == "3"
+
+    def test_one_command_ranks_its_connectors_hits_together(self) -> None:
+        connector_a = [
+            {"virtual_record_id": "answer", "matched_terms": "5", "match_count": "9"},
+            {"virtual_record_id": "also", "matched_terms": "4", "match_count": "6"},
+        ]
+        connector_b = [
+            {"virtual_record_id": "noise", "matched_terms": "1", "match_count": "1"},
+            {"virtual_record_id": "answer", "matched_terms": "5", "match_count": "9"},
+        ]
+        found: dict = {}
+        _fuse_ranked(found, connector_a + connector_b)
+
+        order = sorted(found.values(), key=keyword_match_rank, reverse=True)
+
+        assert [r["virtual_record_id"] for r in order] == ["answer", "also", "noise"]
+        assert found["answer"]["fusion_score"] == pytest.approx(1 / 60)
+
+    def test_equal_match_counts_share_a_place(self) -> None:
+        found: dict = {}
+        _fuse_ranked(found, [
+            {"virtual_record_id": "a", "matched_terms": "2", "match_count": "3"},
+            {"virtual_record_id": "b", "matched_terms": "2", "match_count": "3"},
+            {"virtual_record_id": "c", "matched_terms": "1", "match_count": "1"},
+        ])
+
+        assert [found[v]["fusion_score"] for v in "abc"] == pytest.approx([1 / 60, 1 / 60, 1 / 62])
+
+    @staticmethod
+    def _merged_order(
+        monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str | None = None,
+    ) -> list[str]:
+        for name, value in (("HIGH_ACCURACY_MODE", mode), ("GREP_RANK_FUSION", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        found: dict = {}
+        _merge_command_hits(found, [
+            {"virtual_record_id": "broad-only", "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "matched_terms": "2", "match_count": "3"},
+        ])
+        _merge_command_hits(found, [{"virtual_record_id": "both", "matched_terms": "2", "match_count": "2"}])
+        return [r["virtual_record_id"] for r in sorted(found.values(), key=keyword_match_rank, reverse=True)]
+
+    def test_commands_are_fused_only_in_high_accuracy_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._merged_order(monkeypatch, "true") == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("mode", [None, "false", "1", ""])
+    def test_otherwise_the_best_match_counts_rank_first(self, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
+        assert self._merged_order(monkeypatch, mode) == ["broad-only", "both"]
+
+    @pytest.mark.parametrize(("mode", "feature"), [(None, "true"), ("false", "true"), ("true", "")])
+    def test_its_own_switch_or_high_accuracy_mode_turns_fusion_on(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, mode, feature) == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("feature", ["false", "0"])
+    def test_its_own_switch_turns_fusion_off_in_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, "true", feature) == ["broad-only", "both"]
+
+
 def test_hint_shows_matched_text():
     hint = render_pattern_match_hint(
         [{"virtual_record_id": "v1"}],
@@ -89,15 +171,21 @@ def test_hint_shows_matched_text():
 
 
 class TestCapGrepOutput:
-    def test_zero_counts_dropped_before_default_head(self):
-        assert _cap_grep_output('grep -rci "x" .') == (
-            "grep -rci \"x\" . | grep -v ':0$' | head -200"
+    def test_zero_counts_dropped(self) -> None:
+        assert _cap_grep_output('grep -rci "x" .') == "grep -rci \"x\" . | grep -v ':0$'"
+
+    def test_a_head_or_tail_cut_is_dropped(self) -> None:
+        assert _cap_grep_output('grep -rliZ "x" . | head -5 | xargs -0 grep -Hci "y" | tail -3') == (
+            "grep -rliZ \"x\" . | xargs -0 grep -Hci \"y\" | grep -v ':0$'"
         )
 
-    def test_existing_head_kept_after_filter(self):
-        assert _cap_grep_output('grep -rci "x" . | head -5') == (
-            "grep -rci \"x\" . | grep -v ':0$' | head -5"
-        )
+    @pytest.mark.parametrize("command", [
+        'grep -rci "x" .',
+        'grep -rliZ "x" . | xargs -0 grep -Hci "y" | head -50',
+    ])
+    def test_find_records_accepts_the_command(self, command: str) -> None:
+        # find_records refuses anything but a listing; a refused command finds nothing.
+        assert _listing_command_error(_cap_grep_output(command)) is None
 
 
 @pytest.mark.skipif(shutil.which("grep") is None or shutil.which("xargs") is None,
@@ -343,6 +431,29 @@ async def test_failed_scoped_grep_falls_back_to_full_grep(tmp_path):
     assert tool.find_records.await_args.kwargs["command"] == 'grep -rci "x" .'
 
 
+class TestConnectorsOfASelection:
+    @pytest.mark.asyncio
+    async def test_a_selection_greps_only_the_apps_it_touches(self) -> None:
+        from app.utils.pattern_match import resolve_connector_ids_for_search
+
+        graph = MagicMock()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "every-app"}])
+        connectors = await resolve_connector_ids_for_search(graph, "o", {
+            "apps": ["app-whole"], "kb": [], "records": ["folder-1"], "selectionApps": ["app-touched"],
+        })
+        assert connectors == ["app-whole", "app-touched"]
+        graph.get_org_apps.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_selection_that_touches_nothing_greps_nothing(self) -> None:
+        from app.utils.pattern_match import resolve_connector_ids_for_search
+
+        graph = MagicMock()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "every-app"}])
+        assert await resolve_connector_ids_for_search(graph, "o", {"records": ["gone"]}) == []
+        graph.get_org_apps.assert_not_awaited()
+
+
 class TestMergeAdjudication:
     """merge_pattern_match_results adjudicates exactly as semantic search does."""
 
@@ -367,6 +478,44 @@ class TestMergeAdjudication:
         )
 
     @pytest.mark.asyncio
+    async def test_a_selection_below_app_level_bounds_what_is_cited(self) -> None:
+        """Grep reads the whole app; only a hit inside the selection may be cited."""
+        from app.modules.retrieval import selection_scope
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        selection_scope._memo.clear()
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"folder-1"})))
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "r1", "vrid": "v1", "connectorId": "app-1"}],
+        })
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        await self._merge(
+            graph, [{"virtual_record_id": "v1"}, {"virtual_record_id": "v2"}],
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "allowedApps": ["app-1"]},
+        )
+
+        call = graph.filter_accessible_virtual_record_ids.await_args.kwargs
+        assert call["scope_connector_ids"] == frozenset({"app-1"})
+        selection, allowed = call["scopes"]
+        assert selection.admits({"id": "r1"}) and not selection.admits({"id": "r2", "connectorId": "app-1"})
+        assert allowed.admits({"id": "x", "connectorId": "app-1"})
+        selection_scope._memo.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_selection_without_a_resolvable_user_cites_nothing(self) -> None:
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        assert await self._merge(
+            graph, [{"virtual_record_id": "v1"}], filters={"records": ["folder-1"]},
+        ) == []
+        graph.filter_accessible_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_uses_trusted_containers_and_request_scope(self):
         graph = self._graph(trusted_apps={"app-1"}, trusted_groups={"rg-1"})
         graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
@@ -380,6 +529,7 @@ class TestMergeAdjudication:
             trusted_app_ids=frozenset({"app-1"}),
             trusted_group_ids=frozenset({"rg-1"}),
             scope_connector_ids=frozenset({"app-1"}),
+            scopes=[],
         )
         assert [r["virtual_record_id"] for r in results] == ["v1"]
 
@@ -393,6 +543,18 @@ class TestMergeAdjudication:
         assert graph.filter_accessible_virtual_record_ids.await_args.kwargs[
             "scope_connector_ids"
         ] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_strict_scope_keeps_no_hit(self) -> None:
+        graph = self._graph()
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        results = await self._merge(
+            graph, [{"virtual_record_id": "v1"}], filters={"apps": [], "kb": [], "strictScope": True},
+        )
+
+        assert results == []
+        graph.filter_accessible_virtual_record_ids.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_container_lookup_failure_means_full_adjudication(self):

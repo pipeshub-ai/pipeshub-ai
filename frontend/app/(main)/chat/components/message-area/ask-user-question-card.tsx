@@ -24,6 +24,8 @@ import type {
 
 const SOMETHING_ELSE_ID = '__something_else__';
 const NO_PREFERENCE_ID = '__no_preference__';
+const NO_PREFERENCE_LABEL = '[No preference]';
+const MAX_TYPED_ANSWER_CHARS = 1000;
 
 const SOMETHING_ELSE_OPTION: AskUserQuestionOption = {
   id: SOMETHING_ELSE_ID,
@@ -70,24 +72,41 @@ export function normalizeAskUserQuestionPayload(
         return { id: stableId('opt', opt, oi), label: opt, isUserInput: false };
       }
       const label = typeof opt.label === 'string' ? opt.label : String(opt.label ?? '');
+      const description = typeof opt.description === 'string' ? opt.description.trim() : '';
       return {
         id: opt.id || stableId('opt', label, oi),
         label,
         isUserInput: Boolean(opt.isUserInput),
+        ...(description ? { description } : {}),
       };
     });
+    const header = typeof q.header === 'string' ? q.header.trim() : '';
     return {
       uuid: q.uuid || stableId('q', question, qi),
       question,
       options,
       multiSelect: Boolean(q.multiSelect),
+      ...(header ? { header } : {}),
     };
   });
   return {
     name: 'ask_user_question',
     ...(raw.userIntent ? { userIntent: raw.userIntent } : {}),
+    ...(raw.expiresAt ? { expiresAt: raw.expiresAt } : {}),
+    ...(raw.repliedInChat ? { repliedInChat: true } : {}),
     questions,
   };
+}
+
+/** Past `expiresAt` the paused turn is gone: the card is read-only and the user replies in the chat. */
+export function isAskUserQuestionExpired(payload: AskUserQuestionPayload, now = Date.now()): boolean {
+  const expiresAt = payload.expiresAt ? Date.parse(payload.expiresAt) : NaN;
+  return Number.isFinite(expiresAt) && now >= expiresAt;
+}
+
+/** Two askings of one question differ in case, spacing or the closing mark. */
+export function normalizeQuestionText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').replace(/[\s?!.:]+$/, '').trim();
 }
 
 export function mergeAskUserQuestionPayloads(
@@ -96,11 +115,13 @@ export function mergeAskUserQuestionPayloads(
 ): AskUserQuestionPayload {
   const a = normalizeAskUserQuestionPayload(existing);
   const b = normalizeAskUserQuestionPayload(incoming);
-  const seen = new Set(a.questions.map((q) => q.question.trim().toLowerCase()));
-  const extra = b.questions.filter((q) => !seen.has(q.question.trim().toLowerCase()));
+  const seen = new Set(a.questions.map((q) => normalizeQuestionText(q.question)));
+  const extra = b.questions.filter((q) => !seen.has(normalizeQuestionText(q.question)));
+  const expiresAt = b.expiresAt ?? a.expiresAt;
   return {
     name: 'ask_user_question',
     userIntent: a.userIntent || b.userIntent,
+    ...(expiresAt ? { expiresAt } : {}),
     questions: [...a.questions, ...extra],
   };
 }
@@ -114,7 +135,7 @@ export function buildAnswerMessage(
     const a = answerForQuestion(q, answers, questions);
     const parts = (a?.selectedOptionIds ?? [])
       .map((optId) => {
-        if (optId === NO_PREFERENCE_ID) return '[No preference]';
+        if (optId === NO_PREFERENCE_ID) return NO_PREFERENCE_LABEL;
         if (optId === SOMETHING_ELSE_ID) {
           return a?.userInputs?.[optId]?.trim() ?? '';
         }
@@ -127,6 +148,39 @@ export function buildAnswerMessage(
     return `${i + 1}. "${q.question}" → ${parts}`;
   });
   return `User selections:\n${lines.join('\n')}`;
+}
+
+function sameAnswer(a: AskUserQuestionAnswer, b: AskUserQuestionAnswer): boolean {
+  const ids = (x: AskUserQuestionAnswer) => [...(x.selectedOptionIds ?? [])].sort();
+  const left = ids(a);
+  const right = ids(b);
+  return (
+    left.length === right.length &&
+    left.every((id, i) => id === right[i]) &&
+    left.every((id) => (a.userInputs?.[id] ?? '').trim() === (b.userInputs?.[id] ?? '').trim())
+  );
+}
+
+/** Resume text for a submit: only questions the model has not been answered yet,
+ *  or whose answer the user changed since. Everything is sent when nothing was sent before. */
+export function buildResumeMessage(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+  sentAnswers?: Record<string, AskUserQuestionAnswer>,
+): string {
+  const normalized = normalizeAskUserQuestionPayload(payload);
+  if (!sentAnswers || Object.keys(sentAnswers).length === 0) {
+    return buildAnswerMessage(normalized, answers);
+  }
+  const questions = normalized.questions.filter((q) => {
+    const sent = q.uuid ? sentAnswers[q.uuid] : undefined;
+    const current = answerForQuestion(q, answers, normalized.questions);
+    return !sent || !current || !sameAnswer(sent, current);
+  });
+  return buildAnswerMessage(
+    { ...normalized, questions: questions.length > 0 ? questions : normalized.questions },
+    answers,
+  );
 }
 
 /** True when `text` is the synthetic follow-up query built by `buildAnswerMessage`. */
@@ -159,6 +213,50 @@ function findOption(
   );
 }
 
+const LIST_SEPARATOR = ', ';
+
+/** `buildAnswerMessage` joins picks with ", ", and labels or typed text may hold
+ *  one too, so the line cannot simply be split. A single-select answer is one
+ *  piece; a multi-select one is read left to right, taking the longest option
+ *  label that fits and treating whatever lies between labels as typed text. */
+function splitSelections(raw: string, q: AskUserQuestionItem): string[] {
+  const text = raw.trim();
+  if (!text) return [];
+  if (!q.multiSelect) return [text];
+
+  const known = [NO_PREFERENCE_LABEL, ...q.options.map((o) => optionLabel(o))]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const lower = text.toLowerCase();
+  const labelAt = (i: number): string | undefined =>
+    known.find((label) => {
+      const end = i + label.length;
+      return (
+        lower.startsWith(label.toLowerCase(), i) &&
+        (end === text.length || text.startsWith(LIST_SEPARATOR, end))
+      );
+    });
+
+  const parts: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const label = labelAt(i);
+    if (label) {
+      parts.push(text.slice(i, i + label.length));
+      i += label.length + LIST_SEPARATOR.length;
+      continue;
+    }
+    let next = text.indexOf(LIST_SEPARATOR, i);
+    while (next >= 0 && !labelAt(next + LIST_SEPARATOR.length)) {
+      next = text.indexOf(LIST_SEPARATOR, next + 1);
+    }
+    const end = next >= 0 ? next : text.length;
+    parts.push(text.slice(i, end).trim());
+    i = end + LIST_SEPARATOR.length;
+  }
+  return parts.filter(Boolean);
+}
+
 /** Inverse of `buildAnswerMessage` — recover structured answers from the saved resume query. */
 export function parseAnswerMessage(
   text: string,
@@ -176,8 +274,8 @@ export function parseAnswerMessage(
     if (!q?.uuid) continue;
     const selectedOptionIds: string[] = [];
     const userInputs: Record<string, string> = {};
-    for (const label of rawParts.split(', ').map((s) => s.trim()).filter(Boolean)) {
-      if (label === '[No preference]') {
+    for (const label of splitSelections(rawParts, q)) {
+      if (label === NO_PREFERENCE_LABEL) {
         selectedOptionIds.push(NO_PREFERENCE_ID);
         continue;
       }
@@ -343,16 +441,21 @@ export interface AskUserQuestionCardProps {
   payload: AskUserQuestionPayload;
   initialAnswers: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
+  sentAnswers?: Record<string, AskUserQuestionAnswer>;
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /** Question to open on. Defaults to the first one without an answer. */
+  initialStep?: number;
 }
 
 export function AskUserQuestionCard({
   payload,
   initialAnswers,
   status,
+  sentAnswers,
   onAnswersChange,
   onSubmit,
+  initialStep,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
@@ -361,9 +464,22 @@ export function AskUserQuestionCard({
     ...initialAnswers,
   }));
   const [step, setStep] = useState(() =>
-    firstUnansweredStep(questions, initialAnswers),
+    initialStep ?? firstUnansweredStep(questions, initialAnswers),
   );
-  const [showAnswers, setShowAnswers] = useState(true);
+  const settled = status === 'submitted' || status === 'persisted';
+  const allAnswered = settled && !hasUnansweredQuestions(normalized, answers);
+  // A finished card opens the way "Show less" leaves it. Collapse once per
+  // completion, including a card that was just submitted, and leave a later
+  // "Show more" open until another question is still unanswered.
+  const [showAnswers, setShowAnswers] = useState(!allAnswered);
+  const [autoCollapsed, setAutoCollapsed] = useState(allAnswered);
+  if (allAnswered && !autoCollapsed) {
+    setAutoCollapsed(true);
+    setShowAnswers(false);
+  } else if (!allAnswered && autoCollapsed) {
+    setAutoCollapsed(false);
+    if (settled) setShowAnswers(true);
+  }
   const questionKey = questions.map((q) => q.uuid).join('|');
   const initialAnswersKey = JSON.stringify(initialAnswers);
 
@@ -386,7 +502,11 @@ export function AskUserQuestionCard({
       ) {
         return current;
       }
-      return firstUnansweredStep(questions, answers);
+      // Every question answered (a card opened to change its answers): stay where it opened.
+      const unanswered = questions.findIndex(
+        (q) => !validateQuestion(q, answerForQuestion(q, answers, questions), [SOMETHING_ELSE_OPTION]),
+      );
+      return unanswered >= 0 ? unanswered : current;
     });
   }, [questionKey, status]);
 
@@ -495,9 +615,9 @@ export function AskUserQuestionCard({
 
   const handleSubmit = useCallback(() => {
     if (!stepValid || status !== 'pending') return;
-    const msg = buildAnswerMessage(normalized, answers);
+    const msg = buildResumeMessage(normalized, answers, sentAnswers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, onSubmit]);
+  }, [stepValid, status, normalized, answers, sentAnswers, onSubmit]);
 
   const handleSkip = useCallback(() => {
     if (!currentQ || status !== 'pending') return;
@@ -511,14 +631,33 @@ export function AskUserQuestionCard({
     };
     syncAnswers(next);
     if (isLast) {
-      const msg = buildAnswerMessage(normalized, next);
+      const msg = buildResumeMessage(normalized, next, sentAnswers);
       onSubmit?.(msg, next);
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
+  }, [currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
 
-  if (status === 'submitted' || status === 'persisted') {
+  // Every question still without an answer gets "[No preference]", and the card is sent.
+  const handleSkipAll = useCallback(() => {
+    if (status !== 'pending') return;
+    const next = { ...answers };
+    for (const q of questions) {
+      if (validateQuestion(q, answerForQuestion(q, next, questions), [SOMETHING_ELSE_OPTION])) continue;
+      next[q.uuid] = { questionUuid: q.uuid, selectedOptionIds: [NO_PREFERENCE_ID], userInputs: {} };
+    }
+    syncAnswers(next);
+    onSubmit?.(buildResumeMessage(normalized, next, sentAnswers), next);
+  }, [status, answers, questions, syncAnswers, onSubmit, normalized, sentAnswers]);
+
+  const expired = status === 'pending' && isAskUserQuestionExpired(normalized);
+  const closedNote = normalized.repliedInChat
+    ? t('askUserQuestion.repliedInChat')
+    : expired
+      ? t('askUserQuestion.expired')
+      : null;
+
+  if (status === 'submitted' || status === 'persisted' || expired) {
     const heading =
       status === 'submitted'
         ? questions.length === 1
@@ -546,7 +685,7 @@ export function AskUserQuestionCard({
                 wrap="nowrap"
                 style={{ flexShrink: 0 }}
               >
-                {showAnswers && hasVisibleSelections(questions, answers) ? (
+                {showAnswers && !expired && hasVisibleSelections(questions, answers) ? (
                   <Badge color="jade" size="1">
                     {t('askUserQuestion.answered')}
                   </Badge>
@@ -569,6 +708,11 @@ export function AskUserQuestionCard({
               </Flex>
             </Flex>
           </Flex>
+          {closedNote ? (
+            <Text size="2" color="gray" role="status">
+              {closedNote}
+            </Text>
+          ) : null}
           {showAnswers ? (
             <Flex direction="column" gap="4">
               {questions.map((q, i) => {
@@ -631,6 +775,20 @@ export function AskUserQuestionCard({
   const somethingElseText =
     (currentAnswer?.userInputs?.[SOMETHING_ELSE_ID] ?? '').trim();
   const isSomethingElseSelected = somethingElseChosen && somethingElseText.length > 0;
+  const questionHeadingId = `ask-user-question-${currentQ.uuid}`;
+
+  const optionText = (opt: AskUserQuestionOption) => (
+    <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+      <Text weight="medium">
+        {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
+      </Text>
+      {opt.description ? (
+        <Text size="1" color="gray">
+          {opt.description}
+        </Text>
+      ) : null}
+    </Flex>
+  );
 
   return (
     <Card
@@ -645,11 +803,6 @@ export function AskUserQuestionCard({
       <Flex direction="column" gap="4" p="4">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {normalized.userIntent ? (
-              <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {normalized.userIntent}
-              </Text>
-            ) : null}
             <Heading size="4" style={{ margin: 0 }}>
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
@@ -659,17 +812,27 @@ export function AskUserQuestionCard({
               {t('askUserQuestion.stepOf', { step: step + 1, total })}
             </Badge>
           </Flex>
+          {normalized.userIntent ? (
+            <Text size="2" color="gray">
+              {normalized.userIntent}
+            </Text>
+          ) : null}
 
         </Flex>
 
         <Flex direction="column" gap="1">
-          <Heading as="h3" size="3" style={{ margin: 0 }}>
+          {currentQ.header ? (
+            <Badge size="1" variant="soft" color="gray" style={{ alignSelf: 'flex-start' }}>
+              {currentQ.header}
+            </Badge>
+          ) : null}
+          <Heading as="h3" size="3" id={questionHeadingId} style={{ margin: 0 }}>
             {step + 1}. {currentQ.question}
           </Heading>
           <Flex align="center" gap="2">
-            {/* <Text size="1" color="gray">
-              {currentQ.multiSelect ? 'Select all that apply' : 'Select one'}
-            </Text> */}
+            <Text size="1" color="gray">
+              {currentQ.multiSelect ? t('askUserQuestion.selectMany') : t('askUserQuestion.selectOne')}
+            </Text>
             {currentQ.multiSelect && selectedIds.length > 0 ? (
               <Badge size="1" color="jade" variant="soft">
                 {t('askUserQuestion.selectedCount', { count: selectedIds.length })}
@@ -679,8 +842,7 @@ export function AskUserQuestionCard({
         </Flex>
 
         {currentQ.multiSelect ? (
-          <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
-          <Flex direction="column" gap="3">
+          <Flex direction="column" gap="3" role="group" aria-labelledby={questionHeadingId}>
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
@@ -701,11 +863,7 @@ export function AskUserQuestionCard({
                           toggleMulti(currentQ, opt.id, v === true)
                         }
                       />
-                      <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                        <Text weight="medium">
-                          {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
-                        </Text>
-                      </Flex>
+                      {optionText(opt)}
                     </Flex>
                   </label>
                   {checked && opt.isUserInput ? (
@@ -715,6 +873,7 @@ export function AskUserQuestionCard({
                       onChange={(e) =>
                         setUserInput(currentQ, opt.id, e.target.value)
                       }
+                      maxLength={MAX_TYPED_ANSWER_CHARS}
                       rows={3}
                       style={{ marginLeft: '28px' }}
                     />
@@ -723,13 +882,12 @@ export function AskUserQuestionCard({
               );
             })}
           </Flex>
-          </div>
         ) : (
           <RadioGroup.Root
             value={singleValue}
             onValueChange={(v) => handleRadioChange(currentQ, v)}
+            aria-labelledby={questionHeadingId}
           >
-            <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
@@ -754,11 +912,7 @@ export function AskUserQuestionCard({
                           disabled={isDisabled}
                           style={{ marginTop: 2 }}
                         />
-                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                          <Text weight="medium">
-                            {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
-                          </Text>
-                        </Flex>
+                        {optionText(opt)}
                       </Flex>
                     </label>
                     {isSelected && opt.isUserInput ? (
@@ -768,6 +922,7 @@ export function AskUserQuestionCard({
                         onChange={(e) =>
                           setUserInput(currentQ, opt.id, e.target.value)
                         }
+                        maxLength={MAX_TYPED_ANSWER_CHARS}
                         rows={3}
                         style={{ marginLeft: '28px' }}
                       />
@@ -776,7 +931,6 @@ export function AskUserQuestionCard({
                 );
               })}
             </Flex>
-            </div>
           </RadioGroup.Root>
         )}
 
@@ -784,7 +938,12 @@ export function AskUserQuestionCard({
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
             {t('askUserQuestion.back')}
           </Button>
-          <Flex gap="2">
+          <Flex gap="2" wrap="wrap">
+            {total > 1 ? (
+              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll}>
+                {t('askUserQuestion.skipAll')}
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"

@@ -1,9 +1,11 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
+import asyncio
 import json
 import logging
 import sys
 import types
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,10 +15,46 @@ from fastapi.responses import JSONResponse
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_component_registry() -> Iterator[None]:
+    """start_kafka_consumers and the retries share module-level state with /health."""
+    import app.connectors_main as cm
+
+    yield
+    for task in cm._retry_tasks:
+        task.cancel()
+    cm._retry_tasks.clear()
+    cm._started_consumers.clear()
+    cm._component_status.clear()
+
+
+def _client_with_open_driver(run=None):
+    """A Neo4j client whose driver is already open. ``run`` is session.run."""
+    result = MagicMock()
+    result.consume = AsyncMock()
+    session = AsyncMock()
+    session.run = run if run is not None else AsyncMock(return_value=result)
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = session
+    ctx.__aexit__.return_value = False
+    driver = MagicMock()
+    driver.session.return_value = ctx
+    client = MagicMock()
+    client.driver = driver
+    client.database = "neo4j"
+    client.connect = MagicMock()
+    return client, session
+
 
 def _make_container():
     """Build a mock ConnectorAppContainer with common providers."""
@@ -412,8 +450,7 @@ class TestStartMessagingProducer:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
-    async def test_success_both_consumers(self):
-        """Both entity and sync consumers are started successfully."""
+    async def test_success_all_consumers(self) -> None:
         from app.connectors_main import start_kafka_consumers
 
         mock_container = _make_container()
@@ -423,6 +460,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -430,15 +469,84 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]),
+        ):
+            consumers = await start_kafka_consumers(mock_container, gp)
+
+        assert len(consumers) == 3
+        assert consumers[0] == ("entity", mock_entity_consumer)
+        assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
+
+    async def test_a_code_graph_consumer_failure_keeps_the_sync_consumers(self) -> None:
+        """The code graph is optional; it must not take entity and sync events down."""
+        from app.connectors_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        mock_entity_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+        mock_sync_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("redis down")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]),
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
-        assert len(consumers) == 2
-        assert consumers[0] == ("entity", mock_entity_consumer)
-        assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers == [("entity", mock_entity_consumer), ("sync", mock_sync_consumer)]
+        mock_entity_consumer.stop.assert_not_awaited()
+        mock_sync_consumer.stop.assert_not_awaited()
+
+    async def test_a_failed_code_graph_consumer_is_retried_until_it_runs(self) -> None:
+        """A boot-time broker hiccup used to leave the code graph without a
+        consumer until the next restart."""
+        import asyncio
+
+        import app.connectors_main as cm
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        entity = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+        sync = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+        code_graph = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+
+        with (
+            patch("app.connectors_main._RETRY_FIRST_DELAY_SECONDS", 0),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock,
+                  side_effect=[RuntimeError("redis down"), RuntimeError("still down"), {}]),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[entity, sync, code_graph]),
+        ):
+            try:
+                consumers = await cm.start_kafka_consumers(mock_container, gp)
+                assert cm.component_health()["code_graph"]["state"] == "retrying"
+                await asyncio.wait_for(asyncio.gather(*cm._retry_tasks), timeout=5)
+                health = cm.component_health()
+                started = list(consumers)
+            finally:
+                for task in cm._retry_tasks:
+                    task.cancel()
+
+        assert ("code_graph", code_graph) in started
+        assert health["code_graph"] == {"state": "running", "required": False}
 
     async def test_error_on_second_consumer_cleans_up_first(self):
         """If second consumer fails, first consumer is stopped for cleanup."""
@@ -498,6 +606,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
         mock_retry_manager = AsyncMock()
         mock_retry_manager.initialize = AsyncMock()
 
@@ -507,9 +617,11 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=mock_retry_manager) as mock_create_rm,
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]) as mock_create_consumer,
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]) as mock_create_consumer,
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
@@ -517,14 +629,14 @@ class TestStartKafkaConsumers:
         mock_create_rm.assert_called_once()
         mock_retry_manager.initialize.assert_awaited_once()
 
-        # Assert both consumers were created with retry_manager
-        assert mock_create_consumer.call_count == 2
+        assert mock_create_consumer.call_count == 3
         for call in mock_create_consumer.call_args_list:
             assert call.kwargs["retry_manager"] is mock_retry_manager
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0] == ("entity", mock_entity_consumer)
         assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +703,61 @@ class TestStopKafkaConsumers:
 # ---------------------------------------------------------------------------
 # stop_messaging_producer
 # ---------------------------------------------------------------------------
+class TestOptionalComponentRetry:
+    """The reconciler and code-graph consumer retry with backoff instead of
+    staying down until a restart."""
+
+    async def test_the_delay_doubles_and_status_clears_on_success(self) -> None:
+        import app.connectors_main as cm
+
+        attempt = AsyncMock(side_effect=[RuntimeError("a"), RuntimeError("b"), None])
+        sleeps = []
+
+        async def fake_sleep(delay) -> None:
+            sleeps.append(delay)
+
+        with patch("app.connectors_main.asyncio.sleep", side_effect=fake_sleep):
+            await cm._keep_trying("code_edge_reconciler", attempt, logging.getLogger("t"), RuntimeError("first"))
+
+        assert sleeps == [5.0, 10.0, 20.0]
+        assert attempt.await_count == 3
+        assert "code_edge_reconciler" not in cm._component_status
+
+    async def test_the_delay_is_capped(self) -> None:
+        import app.connectors_main as cm
+
+        attempt = AsyncMock(side_effect=[RuntimeError("x")] * 8 + [None])
+        sleeps = []
+
+        async def fake_sleep(delay) -> None:
+            sleeps.append(delay)
+
+        with patch("app.connectors_main.asyncio.sleep", side_effect=fake_sleep):
+            await cm._keep_trying("code_graph", attempt, logging.getLogger("t"), RuntimeError("first"))
+
+        assert max(sleeps) == cm._RETRY_MAX_DELAY_SECONDS
+
+    async def test_shutdown_cancels_a_pending_retry(self) -> None:
+        import asyncio
+
+        import app.connectors_main as cm
+        from app.connectors_main import stop_kafka_consumers
+
+        cm._start_retrying("code_graph", AsyncMock(side_effect=RuntimeError("down")),
+                           logging.getLogger("t"), RuntimeError("down"))
+        task = cm._retry_tasks[0]
+        container = _make_container()
+        container.kafka_consumers = []
+        try:
+            await stop_kafka_consumers(container)
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            cm._component_status.clear()
+
+        assert cm._retry_tasks == []
+
+
 class TestStopMessagingProducer:
     """Tests for stop_messaging_producer()."""
 
@@ -840,6 +1007,41 @@ class TestLifespan:
 
         assert calls == ["registry", "repair"]
         assert mock_repair.call_args.args[0] is mock_container.config_service.return_value
+
+    async def test_toolset_registry_is_loaded_before_token_refresh_starts(self) -> None:
+        """The first refresh scan runs in the background as soon as startup services start,
+        and a personal action's token URL comes only from the toolset registry."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store())
+        mock_app = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry._connectors = {}
+        calls: list[str] = []
+
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+        mock_toolset_registry.auto_discover_toolsets.side_effect = lambda: calls.append("toolsets")
+
+        async def _startup(*_args: object, **_kwargs: object) -> None:
+            calls.append("refresh services")
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.startup_service.initialize", side_effect=_startup),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
+        ):
+            async with lifespan(mock_app):
+                assert mock_app.state.toolset_registry is mock_toolset_registry
+
+        assert calls == ["toolsets", "refresh services"]
 
     async def test_startup_service_init_failure_continues(self):
         """Startup service init failure does not prevent startup."""
@@ -1237,6 +1439,54 @@ class TestConnectorHealthCheck:
 
         assert result.status_code == 500
 
+    @pytest.mark.parametrize(
+        "running, status_code, status",
+        [
+            ({"entity": True, "sync": True, "code_graph": True}, 200, "healthy"),
+            ({"entity": True, "sync": True, "code_graph": False}, 200, "degraded"),
+            ({"entity": True, "sync": False, "code_graph": True}, 503, "fail"),
+        ],
+    )
+    async def test_health_tells_required_from_optional_consumers(self, running, status_code, status) -> None:
+        import app.connectors_main as cm
+
+        cm._started_consumers[:] = [
+            (name, MagicMock(is_running=MagicMock(return_value=up))) for name, up in running.items()
+        ]
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._started_consumers.clear()
+
+        body = json.loads(result.body)
+        assert result.status_code == status_code
+        assert body["status"] == status
+
+    async def test_a_retrying_reconciler_is_degraded_not_down(self) -> None:
+        import app.connectors_main as cm
+
+        cm._component_status["code_edge_reconciler"] = {"state": "retrying", "attempts": 2, "error": "boom"}
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._component_status.clear()
+
+        body = json.loads(result.body)
+        assert result.status_code == 200
+        assert body["status"] == "degraded"
+        assert body["components"]["code_edge_reconciler"]["attempts"] == 2
+
+    async def test_consumers_that_failed_to_start_fail_health(self) -> None:
+        import app.connectors_main as cm
+
+        cm._component_status["message_consumers"] = {"state": "failed", "error": "kafka down"}
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._component_status.clear()
+
+        assert result.status_code == 503
+
     async def test_a_failed_startup_is_unhealthy(self):
         """Coordinator init failing in the background startup task used to leave
         the service answering 200 while it consumed no events at all."""
@@ -1294,6 +1544,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_custom_args(self):
@@ -1310,13 +1561,14 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults_to_the_edition_worker_count(self):
         """workers=None asks the edition seam, not the env var directly.
 
-        The open-source build pins to one worker whatever is set, because
-        multi-worker sync needs a cross-process lease it does not have.
+        The seam may pin the count at one whatever is set, because more than
+        one worker needs a cross-process lease the process may not have.
         """
         from app.connectors_main import run
         from app.edition_services import max_connector_workers
@@ -1326,6 +1578,10 @@ class TestRun:
             patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "3"}),
         ):
             run(reload=False)
+            # Asked inside the patch: the seam may read CONNECTOR_UVICORN_WORKERS,
+            # and reading it afterwards would see the restored environment
+            # instead of the value run() just used.
+            workers = max_connector_workers()
 
         mock_uvicorn.assert_called_once_with(
             "app.connectors_main:app",
@@ -1333,7 +1589,8 @@ class TestRun:
             port=8088,
             log_level="info",
             reload=False,
-            workers=max_connector_workers(),
+            workers=workers,
+            timeout_worker_healthcheck=60,
         )
 
     @staticmethod
@@ -1429,32 +1686,79 @@ class TestGraphDbHealthCheck:
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
-        """Neo4j health probe returns 200 when connectivity verifies."""
+        """Neo4j health probe returns 200 when the open driver answers RETURN 1."""
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock()
-        mock_driver.close = AsyncMock()
+        client, session = _client_with_open_driver()
+        request.app.state.graph_provider = MagicMock(client=client)
 
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
-
-        def _getenv(key, default=None):
-            values = {
-                "DATA_STORE": "neo4j",
-                "NEO4J_URI": "bolt://localhost:7687",
-                "NEO4J_USERNAME": "neo4j",
-                "NEO4J_PASSWORD": "pass",
-            }
-            return values.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 200
-        mock_driver.close.assert_awaited_once()
+        session.run.assert_awaited_once_with("RETURN 1 AS n")
+        client.connect.assert_not_called()
+        client.driver.session.assert_called_once_with(
+            database="neo4j",
+            connection_acquisition_timeout=2.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_no_client(self):
+        """Neo4j provider without a client returns 503."""
+        from app.connectors_main import graph_db_health_check
+
+        request, _records = _request_with_service_logger()
+        request.app.state.graph_provider = MagicMock(client=None)
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j unavailable"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_no_driver_does_not_connect(self):
+        """A client with no driver returns 503 and does not open a new one."""
+        from app.connectors_main import graph_db_health_check
+
+        request, _records = _request_with_service_logger()
+        client = MagicMock()
+        client.driver = None
+        client.connect = AsyncMock()
+        request.app.state.graph_provider = MagicMock(client=client)
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j unavailable"
+        client.connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_probe_timeout(self):
+        """A probe that exceeds the wait_for budget returns 503, not a hang."""
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        client, _session = _client_with_open_driver()
+        request.app.state.graph_provider = MagicMock(client=client)
+
+        def _expire(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError()
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"), \
+             patch("app.connectors_main.asyncio.wait_for", side_effect=_expire):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j health check timed out"
+        assert "timed out" in records[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_unknown_store(self):
@@ -1570,28 +1874,123 @@ class TestVectorDbHealthCheck:
         assert response.status_code == 200
 
 
+class TestVectorDbMemoryCheck:
+    """/health/vector-db/memory: advisory, authenticated, never fails the probe."""
+
+    def test_route_requires_authentication(self) -> None:
+        from app.connectors_main import EXCLUDE_PATHS
+
+        assert "/health/vector-db/memory" not in EXCLUDE_PATHS
+
+    @pytest.mark.asyncio
+    async def test_returns_the_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+        from app.services.vector_db.models import VectorDBMemoryReport
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=VectorDBMemoryReport(
+            status="insufficient",
+            needed_bytes=12 * 1024**3,
+            index_bytes=10 * 1024**3,
+            base_bytes=2 * 1024**3,
+            available_bytes=4 * 1024**3,
+            available_source="configured",
+            points=5_000_000,
+            nodes=1,
+        ))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["status"] == "insufficient"
+        assert body["neededBytes"] == 12 * 1024**3
+        assert body["availableBytes"] == 4 * 1024**3
+        assert body["availableSource"] == "configured"
+
+    @pytest.mark.asyncio
+    async def test_creates_and_caches_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+
+        with patch(
+            "app.services.vector_db.vector_db_provider_factory.VectorDBProviderFactory.create_provider",
+            new_callable=AsyncMock,
+            return_value=provider,
+        ):
+            response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        assert json.loads(response.body) == {"status": "unsupported"}
+        assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    async def test_failure_is_503_and_keeps_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["status"] == "unknown"
+        assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", [None, {}, {"role": "member"}, {"role": "Member"}])
+    async def test_non_admins_are_refused_before_the_report(self, user: dict | None) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user=user)
+        provider = MagicMock()
+        provider.memory_report = AsyncMock()
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
+        assert json.loads(response.body) == {"detail": "Admin access required"}
+        provider.memory_report.assert_not_awaited()
+
+
 class TestGraphDbHealthNeo4jUnhealthy:
     @pytest.mark.asyncio
     async def test_neo4j_connectivity_failure(self):
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock(side_effect=RuntimeError("neo4j down"))
-        mock_driver.close = AsyncMock()
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        client, _session = _client_with_open_driver(
+            AsyncMock(side_effect=RuntimeError("neo4j down"))
+        )
+        request.app.state.graph_provider = MagicMock(client=client)
 
-        def _getenv(key, default=None):
-            return {
-                "DATA_STORE": "neo4j",
-                "NEO4J_URI": "bolt://localhost:7687",
-                "NEO4J_USERNAME": "neo4j",
-                "NEO4J_PASSWORD": "pass",
-            }.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
@@ -1676,19 +2075,17 @@ class TestHealthProbesReturnFixedText:
         from app.connectors_main import graph_db_health_check
 
         request, records = _request_with_service_logger()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock(side_effect=error_type(SENTINEL))
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        client, _session = _client_with_open_driver(
+            AsyncMock(side_effect=error_type(SENTINEL))
+        )
+        driver = client.driver
+        request.app.state.graph_provider = MagicMock(client=client)
         neo4j_exceptions = types.ModuleType("neo4j.exceptions")
         neo4j_exceptions.AuthError = _FakeNeo4jAuthError
         neo4j_exceptions.ServiceUnavailable = _FakeNeo4jServiceUnavailable
 
-        def _getenv(key, default=None):
-            return {"DATA_STORE": "neo4j"}.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j, "neo4j.exceptions": neo4j_exceptions}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"), \
+             patch.dict("sys.modules", {"neo4j.exceptions": neo4j_exceptions}):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
@@ -1700,7 +2097,8 @@ class TestHealthProbesReturnFixedText:
             assert _traceback_text(records) == SENTINEL
         else:
             assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
-        mock_driver.close.assert_awaited_once()
+        assert client.driver is driver
+        client.connect.assert_not_called()
 
     async def test_vector_db_exception(self):
         from types import SimpleNamespace
@@ -1756,16 +2154,23 @@ class TestRefreshConnectorMetrics:
     @pytest.mark.asyncio
     async def test_refresh_connector_metrics_updates_gauge(self):
         """Metrics refresh counts only active connector apps by type."""
-        import asyncio
-
         from app.connectors_main import refresh_connector_metrics
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-        gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(return_value=[
+        apps = [
             {"isActive": True, "type": "KB"},
             {"isActive": False, "type": "KB"},
             {"isActive": True, "type": "DRIVE"},
-        ])
+        ]
+
+        async def nodes_by_filters(collection, filters, return_fields=None) -> list[dict]:
+            return [a for a in apps if all(a.get(k) == v for k, v in filters.items())]
+
+        # The count is the provider's: this one counts the way a backend without
+        # a query of its own does.
+        gp = AsyncMock()
+        gp.get_nodes_by_filters = AsyncMock(side_effect=nodes_by_filters)
+        gp.count_active_apps_by_type = lambda: IGraphDBProvider.count_active_apps_by_type(gp)
         logger = MagicMock()
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
@@ -1774,23 +2179,23 @@ class TestRefreshConnectorMetrics:
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         mock_set.assert_called_once_with({"KB": 1, "DRIVE": 1})
+        gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_logs_warning_when_gauge_refresh_fails(self):
-        import asyncio
-
         from app.connectors_main import refresh_connector_metrics
 
         gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(side_effect=RuntimeError("graph down"))
+        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
         logger = MagicMock()
 
-        with patch("app.connectors_main.set_connector_active"), \
+        with patch("app.connectors_main.set_connector_active") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         logger.warning.assert_called()
+        mock_set.assert_not_called()
 
 
 class TestCorsPolicy:

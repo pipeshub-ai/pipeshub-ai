@@ -123,6 +123,104 @@ describe('project-context', () => {
       expect(payload.filters).to.deep.equal({ apps: [], kb: ['hidden-kb-1'] })
     })
 
+    it('keeps apps/kb empty when the request selects below app level (never the whole project)', () => {
+      const payload: Record<string, unknown> = { filters: { records: ['folder-1'] } }
+      applyProjectScope(
+        payload,
+        makeProject({ knowledgeScope: { apps: ['app-1'], kb: ['kb-1'] } }),
+      )
+      expect(payload.filters).to.deep.equal({ records: ['folder-1'], apps: [], kb: [] })
+    })
+
+    it('sends the project sources as the allow-list for a selection below app level', () => {
+      const payload: Record<string, unknown> = {
+        filters: { apps: ['app-1', 'outside-app'], recordGroups: ['group-1'] },
+      }
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { apps: ['app-1'], kb: ['kb-1'] },
+          linkedKnowledgeBaseId: 'kb-linked',
+        }),
+      )
+      expect(payload.filters).to.deep.equal({
+        recordGroups: ['group-1'],
+        apps: ['app-1'],
+        kb: ['kb-linked'],
+      })
+      expect(payload.allowedFilters).to.deep.equal({
+        apps: ['app-1', 'kb-1', 'kb-linked'],
+        recordGroups: [],
+        records: [],
+      })
+    })
+
+    it('searches what the project lists below app level when the request selected nothing', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(
+        payload,
+        makeProject({
+          knowledgeScope: { apps: ['app-1'], kb: [], recordGroups: ['group-1'], records: ['folder-1'] },
+        }),
+      )
+      expect(payload.filters).to.deep.equal({
+        apps: ['app-1'],
+        kb: [],
+        recordGroups: ['group-1'],
+        records: ['folder-1'],
+      })
+      expect(payload.allowedFilters).to.deep.equal({
+        apps: ['app-1'],
+        recordGroups: ['group-1'],
+        records: ['folder-1'],
+      })
+    })
+
+    it('does not add back what the project lists below app level once the request narrowed the turn', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['app-1'] } }
+      applyProjectScope(
+        payload,
+        makeProject({ knowledgeScope: { apps: ['app-1'], records: ['folder-1'] } }),
+      )
+      expect(payload.filters).to.deep.equal({ apps: ['app-1'], kb: [] })
+      expect(payload).to.not.have.property('allowedFilters')
+    })
+
+    it('sends the whole project scope to check a selection made in the request against', () => {
+      const payload: Record<string, unknown> = { filters: { records: ['picked'] } }
+      applyProjectScope(
+        payload,
+        makeProject({ knowledgeScope: { apps: ['app-1'], records: ['folder-1'] } }),
+      )
+      expect(payload.filters).to.deep.equal({ records: ['picked'], apps: [], kb: [] })
+      expect(payload.allowedFilters).to.deep.equal({
+        apps: ['app-1'],
+        recordGroups: [],
+        records: ['folder-1'],
+      })
+    })
+
+    it('bounds a selection to nothing in a project that lists no source', () => {
+      const payload: Record<string, unknown> = { filters: { records: ['picked'] } }
+      applyProjectScope(payload, makeProject())
+      expect(payload.allowedFilters).to.deep.equal({ apps: [], recordGroups: [], records: [] })
+    })
+
+    it('sends no allow-list when the request selects whole apps only', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['app-1'] } }
+      applyProjectScope(payload, makeProject({ knowledgeScope: { apps: ['app-1'] } }))
+      expect(payload).to.not.have.property('allowedFilters')
+    })
+
+    it('treats a project collection sent under apps as a collection', () => {
+      const payload: Record<string, unknown> = { filters: { apps: ['app-1', 'kb-1'] } }
+      applyProjectScope(
+        payload,
+        makeProject({ knowledgeScope: { apps: ['app-1'], kb: ['kb-1', 'kb-2'] } }),
+      )
+      expect(payload.filters).to.deep.equal({ apps: ['app-1'], kb: ['kb-1'] })
+    })
+
     it('preserves non-apps/kb filter keys the request carried (e.g. metadata filters)', () => {
       const payload: Record<string, unknown> = { filters: { departments: ['eng'] } }
       applyProjectScope(payload, makeProject({ knowledgeScope: { apps: ['app-1'] } }))

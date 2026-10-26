@@ -8,9 +8,10 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import json
 import threading
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 import aiohttp
 
@@ -25,6 +26,28 @@ ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 # The client holds one session per loop, so its total is this times the
 # number of loops that use it.
 DEFAULT_POOL_LIMIT = 100
+
+
+# ArangoDB errorNum values a caller may treat as "another writer won" rather than as an outage.
+ARANGO_CONFLICT = 1200
+ARANGO_UNIQUE_CONSTRAINT_VIOLATED = 1210
+
+
+class ArangoQueryError(Exception):
+    """An AQL request the server rejected, with its HTTP status and ArangoDB errorNum."""
+
+    def __init__(self, operation: str, status: int, body: str) -> None:
+        super().__init__(f"{operation} (status={status}): {body}")
+        self.status = status
+        self.error_num: int | None = None
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return
+        if isinstance(parsed, dict):
+            error_num = cast(dict[str, object], parsed).get("errorNum")
+            if isinstance(error_num, int):
+                self.error_num = error_num
 
 
 class ArangoHTTPClient:
@@ -137,8 +160,8 @@ class ArangoHTTPClient:
                         # A session must be closed on the loop that owns it
                         future = asyncio.run_coroutine_threadsafe(session.close(), loop)
                         await asyncio.wait_for(asyncio.wrap_future(future), timeout=5)
-                except Exception:
-                    pass
+                except Exception as error:
+                    self.logger.warning("Error closing an ArangoDB HTTP session: %s", error)
             self.logger.info("✅ Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
@@ -503,12 +526,12 @@ class ArangoHTTPClient:
     async def execute_aql(
         self,
         query: str,
-        bind_vars: Optional[Dict] = None,
+        bind_vars: Optional[Dict[str, Any]] = None,
         txn_id: Optional[str] = None,
         batch_size: int = 1000,
         options: dict | None = None,
         max_runtime: float | None = None,
-    ) -> List[Dict]:
+    ) -> List[Any]:
         """
         Execute AQL query.
 
@@ -525,7 +548,9 @@ class ArangoHTTPClient:
             List[Dict]: Query results
 
         Raises:
-            Exception: If query execution fails
+            ArangoQueryError: The server rejected the query or a cursor fetch;
+                carries the HTTP status and ArangoDB errorNum.
+            Exception: Any other failure (connection, error flag in the body).
         """
         url = f"{self.base_url}/_db/{self.database}/_api/cursor"
 
@@ -548,7 +573,7 @@ class ArangoHTTPClient:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status not in [200, 201]:
                     error = await resp.text()
-                    raise Exception(f"Query failed (status={resp.status}): {error}")
+                    raise ArangoQueryError("Query failed", resp.status, error)
 
                 result = await resp.json()
                 self._check_response_for_errors(result, "Query execution")
@@ -562,7 +587,7 @@ class ArangoHTTPClient:
                     async with session.put(cursor_url, headers=headers) as cursor_resp:
                         if cursor_resp.status not in [200, 201]:
                             error = await cursor_resp.text()
-                            raise Exception(f"Cursor fetch failed (status={cursor_resp.status}): {error}")
+                            raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)
 
                         result = await cursor_resp.json()
                         self._check_response_for_errors(result, "Cursor fetch")
@@ -579,7 +604,7 @@ class ArangoHTTPClient:
     async def batch_insert_documents(
     self,
     collection: str,
-    documents: List[Dict],
+    documents: List[Dict[str, Any]],
     txn_id: Optional[str] = None,
     overwrite: bool = True,
     overwrite_mode: str = "update"  # New parameter: "replace", "update", "ignore", or "conflict"
@@ -1012,7 +1037,89 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error updating collection schema: {error_msg}")
             return False
 
+    async def rename_collection(self, name: str, new_name: str) -> bool:
+        """Rename a collection.
+
+        Safe for a collection inside a named graph: ArangoDB updates the graph's
+        edge definitions to the new name itself (verified on 3.12.4), so no
+        gharial repair is needed afterwards.
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}/rename"
+
+        try:
+            session = await self._get_session()
+            async with session.put(url, json={"name": new_name}) as resp:
+                if resp.status == HttpStatusCode.OK.value:
+                    self.logger.info(f"✅ Renamed collection '{name}' -> '{new_name}'")
+                    return True
+
+                self.logger.warning(
+                    f"Failed to rename collection '{name}' -> '{new_name}': "
+                    f"{resp.status} {await resp.text()}"
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Error renaming collection '{name}': {e}")
+            return False
+
+    async def delete_collection(self, name: str) -> bool:
+        """Drop a collection and everything in it."""
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}"
+
+        try:
+            session = await self._get_session()
+            async with session.delete(url) as resp:
+                if resp.status == HttpStatusCode.OK.value:
+                    self.logger.info(f"✅ Dropped collection '{name}'")
+                    return True
+
+                self.logger.warning(
+                    f"Failed to drop collection '{name}': "
+                    f"{resp.status} {await resp.text()}"
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Error dropping collection '{name}': {e}")
+            return False
+
+    async def remove_edge_definition(self, graph_name: str, edge_collection: str) -> bool:
+        """Take an edge collection out of a named graph, keeping the collection.
+        True when the graph no longer names it (including when it never did)."""
+        url = f"{self.base_url}/_db/{self.database}/_api/gharial/{graph_name}/edge/{edge_collection}"
+
+        try:
+            session = await self._get_session()
+            async with session.delete(url) as resp:
+                if resp.status in [
+                    HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value,
+                    HttpStatusCode.NOT_FOUND.value,
+                ]:
+                    return True
+
+                self.logger.warning(
+                    f"Failed to remove edge definition '{edge_collection}' from graph '{graph_name}': "
+                    f"{resp.status} {await resp.text()}"
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Error removing edge definition '{edge_collection}': {e}")
+            return False
+
     # ==================== Graph Operations ====================
+
+    async def get_collection_schema(self, name: str) -> dict | None:
+        """The validation schema a collection holds now, or None when it has none."""
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}/properties"
+        session = await self._get_session()
+        async with session.get(url) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise RuntimeError(
+                    f"Could not read the properties of collection '{name}' (HTTP {resp.status})"
+                )
+            return (await resp.json()).get("schema") or None
 
     async def has_collection(self, name: str) -> bool:
         """

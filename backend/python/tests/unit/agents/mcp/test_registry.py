@@ -1,9 +1,13 @@
 """Unit tests for app.agents.mcp.mcp_server_decorator, registry, and catalog."""
+import importlib
+import pkgutil
+import re
 from unittest.mock import patch
 
 import pytest
 
 import app.agents.mcp.mcp_server_decorator as decorator_module
+from app.agents.mcp import servers as servers_pkg
 from app.agents.mcp.catalog import paginate, search_templates
 from app.agents.mcp.mcp_server_decorator import get_registered_templates, mcp_server
 from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
@@ -105,6 +109,16 @@ class TestMCPRegistry:
             if template.default_auth_mode == MCPAuthMode.OAUTH:
                 assert template.authorization_url, f"{template.type_id}: OAuth template missing authorization_url"
                 assert template.token_url, f"{template.type_id}: OAuth template missing token_url"
+
+    def test_the_google_templates_say_how_their_client_secrets_start(self) -> None:
+        """A secret pasted without `GOCSPX-` failed every sign-in with `invalid_client`."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        for type_id in ("google_drive", "gmail", "google_calendar"):
+            template = registry.get_template(type_id)
+            assert template is not None and template.client_secret_prefix == "GOCSPX-"
+            assert template.model_dump(by_alias=True)["clientSecretPrefix"] == "GOCSPX-"
+        assert registry.get_template("linear").client_secret_prefix is None
 
     def test_auto_discover_is_idempotent(self) -> None:
         registry = MCPRegistry()
@@ -233,3 +247,24 @@ class TestPaginate:
         page_items, total = paginate(items, 5, 2)
         assert page_items == []
         assert total == 3
+
+
+class TestCatalogPackagesArePinned:
+    """`npx -y pkg` and `uvx pkg` run whatever was published last, so a compromised release
+    would reach every deployment on its next start."""
+
+    def test_every_stdio_template_names_an_exact_version(self) -> None:
+        # Read from the modules, not the registry, which other tests clear.
+        templates = [
+            value.mcp_template
+            for info in pkgutil.iter_modules(servers_pkg.__path__)
+            for value in vars(importlib.import_module(f"{servers_pkg.__name__}.{info.name}")).values()
+            if isinstance(getattr(value, "mcp_template", None), MCPServerTemplate)
+        ]
+        stdio = [t for t in templates if t.transport == MCPTransport.STDIO]
+        assert stdio, "expected at least one STDIO catalog server"
+        exact = {"npx": re.compile(r"^(@[^/]+/)?[^@]+@\d+(\.\d+)*$"), "uvx": re.compile(r"^[^=@]+(==|@)\d+(\.\d+)*$")}
+        for template in stdio:
+            pattern = exact[template.command]
+            package = next(arg for arg in template.args if not arg.startswith("-"))
+            assert pattern.match(package), f"{template.type_id} runs an unpinned package: {package}"

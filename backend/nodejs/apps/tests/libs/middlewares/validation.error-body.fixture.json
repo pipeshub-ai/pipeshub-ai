@@ -1,0 +1,316 @@
+{
+  "pat: missing required field": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name is required.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "pat: wrong type": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name must be text.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name must be text.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "pat: empty string / empty array": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name can't be empty.\nAdd at least 1 item to scopes.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name can't be empty.",
+        "code": "TOO_SMALL",
+        "value": ""
+      },
+      {
+        "field": "body.scopes",
+        "message": "Add at least 1 item to scopes.",
+        "code": "TOO_SMALL",
+        "value": ""
+      }
+    ]
+  },
+  "pat: too long string": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name must be at most 100 characters.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name must be at most 100 characters.",
+        "code": "TOO_BIG",
+        "value": ""
+      }
+    ]
+  },
+  "pat: bad union literal": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Expiry days isn't valid.",
+    "errors": [
+      {
+        "field": "body.expiryDays",
+        "message": "Expiry days isn't valid.",
+        "code": "INVALID_UNION",
+        "value": ""
+      }
+    ]
+  },
+  "pat: array element wrong type": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Scopes must be text.",
+    "errors": [
+      {
+        "field": "body.scopes.1",
+        "message": "Scopes must be text.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "pat: strict nested unknown key and bad uuid": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Apps isn't in the right format.\nThese fields aren't accepted here: bogus.",
+    "errors": [
+      {
+        "field": "body.knowledgeLimit.apps.0",
+        "message": "Apps isn't in the right format.",
+        "code": "INVALID_STRING",
+        "value": ""
+      },
+      {
+        "field": "body.knowledgeLimit",
+        "message": "These fields aren't accepted here: bogus.",
+        "code": "VALIDATION_ERROR",
+        "value": ""
+      }
+    ]
+  },
+  "pat: body missing entirely": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "The request is required.",
+    "errors": [
+      {
+        "field": "body",
+        "message": "The request is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "project: bad enum / bad id / missing name": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Invalid project ID format\nInvalid principal ID format\nRole must be one of: viewer, editor.",
+    "errors": [
+      {
+        "field": "params.projectId",
+        "message": "Invalid project ID format",
+        "code": "INVALID_STRING",
+        "value": ""
+      },
+      {
+        "field": "body.members.0.principalId",
+        "message": "Invalid principal ID format",
+        "code": "INVALID_STRING",
+        "value": ""
+      },
+      {
+        "field": "body.members.0.role",
+        "message": "Role must be one of: viewer, editor.",
+        "code": "INVALID_ENUM",
+        "value": ""
+      }
+    ]
+  },
+  "project: members empty": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "At least one member is required",
+    "errors": [
+      {
+        "field": "body.members",
+        "message": "At least one member is required",
+        "code": "TOO_SMALL",
+        "value": ""
+      }
+    ]
+  },
+  "project: create with custom min message": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Project name is required",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Project name is required",
+        "code": "TOO_SMALL",
+        "value": ""
+      }
+    ]
+  },
+  "project: create wrong types": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name must be text.\nDescription must be text.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name must be text.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      },
+      {
+        "field": "body.description",
+        "message": "Description must be text.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "oauth authorize: bad enum, bad url, missing": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Response type must be one of: code.\nClient id is required.\nRedirect uri must be a valid web address (URL).\nScope is required.\nState is required.",
+    "errors": [
+      {
+        "field": "query.response_type",
+        "message": "Response type must be one of: code.",
+        "code": "INVALID_ENUM",
+        "value": ""
+      },
+      {
+        "field": "query.client_id",
+        "message": "Client id is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      },
+      {
+        "field": "query.redirect_uri",
+        "message": "Redirect uri must be a valid web address (URL).",
+        "code": "INVALID_STRING",
+        "value": ""
+      },
+      {
+        "field": "query.scope",
+        "message": "Scope is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      },
+      {
+        "field": "query.state",
+        "message": "State is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "config: bad url": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Url must be a valid web address (URL).",
+    "errors": [
+      {
+        "field": "body.url",
+        "message": "Url must be a valid web address (URL).",
+        "code": "INVALID_STRING",
+        "value": ""
+      }
+    ]
+  },
+  "restore: array bounds (too many)": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Restore at most 100 items at a time.",
+    "errors": [
+      {
+        "field": "body.recordIds",
+        "message": "Restore at most 100 items at a time.",
+        "code": "TOO_BIG",
+        "value": ""
+      }
+    ]
+  },
+  "restore: array bounds (empty)": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Choose at least one item to restore.",
+    "errors": [
+      {
+        "field": "body.recordIds",
+        "message": "Choose at least one item to restore.",
+        "code": "TOO_SMALL",
+        "value": ""
+      }
+    ]
+  },
+  "restore: not an array": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Record ids must be a list.",
+    "errors": [
+      {
+        "field": "body.recordIds",
+        "message": "Record ids must be a list.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "team: preprocess + trim/min": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name is required",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name is required",
+        "code": "TOO_SMALL",
+        "value": ""
+      }
+    ]
+  },
+  "team: missing body field": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name is required.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name is required.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  },
+  "stripUnknown option, wrong type": {
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
+    "message": "Name must be text.",
+    "errors": [
+      {
+        "field": "body.name",
+        "message": "Name must be text.",
+        "code": "INVALID_TYPE",
+        "value": ""
+      }
+    ]
+  }
+}

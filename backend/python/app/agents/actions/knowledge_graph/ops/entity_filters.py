@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+from app.agents.actions.knowledge_graph.ops.scope import (
+    apps_usable_whole,
+    derive_scope,
+)
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
     ORGANIZATION_ENTITY_TYPE,
@@ -48,7 +51,7 @@ ENTITY_TYPE_TO_FILTER_KEY: dict[str, str] = {
 # subcategory entities carry no level while the per-level subcategory
 # filters do.
 RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset(
-    {RECORD_GROUP_ENTITY_TYPE, PERSON_ENTITY_TYPE, ORGANIZATION_ENTITY_TYPE, "subcategory"}
+    {RECORD_GROUP_ENTITY_TYPE, PERSON_ENTITY_TYPE, ORGANIZATION_ENTITY_TYPE, "subcategory", "named_entity"}
 )
 
 ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
@@ -66,7 +69,7 @@ async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
         state.get("graph_provider"),
         org_id=state.get("org_id", ""),
         user_id=state.get("user_id", ""),
-        source_ids=[*scope.app_ids, *scope.kb_ids],
+        source_ids=apps_usable_whole(state, [*scope.app_ids, *scope.kb_ids]),
         strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
         exclude_app_ids=excluded_app_ids(state),
     )
@@ -80,8 +83,11 @@ def is_filterable_entity(entity_type: str | None, entity_name: str | None) -> bo
 
 
 def remember_entities(state: dict[str, Any], entities: list[dict[str, Any]]) -> None:
-    """Cache ``{entityId, entityType, name}`` dicts returned by
-    ``search_entities`` for ``search(entity_ids)`` and ``find_records_by_entity``."""
+    """Cache ``{entityId, entityType, name[, filterName]}`` dicts returned by
+    ``search_entities`` for ``search(entity_ids)`` and ``find_records_by_entity``.
+
+    ``name`` is what the user was shown; ``filterName``, when given, is the
+    node's stored name, which the graph's name filters match."""
     id_to_key: dict[str, tuple[str, str]] = state.get(ENTITY_ID_FILTER_KEY_CACHE_KEY) or {}
     record_scoped: dict[str, str] = state.get(RECORD_SCOPED_ENTITY_CACHE_KEY) or {}
     index: dict[str, dict[str, str]] = state.get(ENTITY_INDEX_CACHE_KEY) or {}
@@ -96,8 +102,9 @@ def remember_entities(state: dict[str, Any], entities: list[dict[str, Any]]) -> 
             record_scoped[entity_id] = entity_type
             continue
         filter_key = ENTITY_TYPE_TO_FILTER_KEY.get(entity_type)
-        if filter_key and entity_name:
-            id_to_key[entity_id] = (filter_key, entity_name)
+        filter_name = entity.get("filterName") or entity_name
+        if filter_key and filter_name:
+            id_to_key[entity_id] = (filter_key, filter_name)
     state[ENTITY_ID_FILTER_KEY_CACHE_KEY] = id_to_key
     state[RECORD_SCOPED_ENTITY_CACHE_KEY] = record_scoped
     state[ENTITY_INDEX_CACHE_KEY] = index
@@ -108,9 +115,9 @@ def merge_filter_groups(
     extra: dict[str, list[str]] | None,
 ) -> dict[str, list[str]]:
     """Union *extra*'s lists into *base* (new dict; *base* not mutated)."""
-    if not extra:
-        return base
     merged = {k: list(v) for k, v in base.items()}
+    if not extra:
+        return merged
     for key, values in extra.items():
         if not values:
             continue

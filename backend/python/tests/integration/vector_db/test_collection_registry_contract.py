@@ -26,7 +26,8 @@ from tests.integration.vector_db.helpers import DIM, make_dense, sample_points, 
 # loop_scope matches the module-scoped provider fixtures in conftest.
 # Without it each test gets its own loop and the shared client raises
 # "Event loop is closed" on first use.
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
+# The OpenSearch search test waits up to 45s for an index refresh, past the 30s default.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module"), pytest.mark.timeout(120)]
 
 
 def _make_config_service():
@@ -67,15 +68,23 @@ class _CollectionRegistryContractTests:
         registry = _make_registry(vector_service)
         col = make_collection(f"{vector_service.get_service_name()}_reg")
         ctx = RecordContext(org_id="org-registry-contract")
+        # Resolved without I/O, so cleanup runs even if the first create fails part way.
+        name = registry.resolve_write_collection(ctx)
         try:
-            name = await registry.ensure_collection(ctx, embedding_size=DIM)
+            assert await registry.ensure_collection(ctx, embedding_size=DIM) == name
             assert await vector_service.collection_exists(name)
 
             # create-again is a no-op: same name, no error, dimension re-verified
             name_again = await registry.ensure_collection(ctx, embedding_size=DIM)
             assert name_again == name
-        finally:
-            await vector_service.delete_collection(name)
+        except BaseException as failure:
+            # A cleanup error must not replace the failure that matters.
+            try:
+                await registry.delete_collection(name)
+            except Exception as cleanup_error:
+                failure.add_note(f"cleanup also failed: {cleanup_error!r}")
+            raise
+        await registry.delete_collection(name)
 
     async def test_upsert_and_search_through_resolved_name(self, vector_service):
         registry = _make_registry(vector_service)

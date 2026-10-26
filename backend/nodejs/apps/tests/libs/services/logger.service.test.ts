@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { Types } from 'mongoose';
 import { Logger, LogLevel, getLogLevel } from '../../../src/libs/services/logger.service';
 import { envGuard } from '../../helpers/env-guard';
 
@@ -173,6 +174,55 @@ describe('Logger', () => {
       };
       logger.logRequest(mockReq as any);
       expect(logStub.calledOnce).to.be.true;
+      const logged = JSON.stringify(logStub.firstCall.args);
+      expect(logged).to.not.contain('Bearer token');
+      expect(logged).to.not.contain('session=abc');
+    });
+
+    it('should redact OAuth codes from the query and the referer', () => {
+      const logger = new Logger({ service: 'test' });
+      const logStub = sinon.stub((logger as any).logger, 'log');
+      logger.logRequest({
+        method: 'GET',
+        path: '/api/v1/connectors/oauth/callback',
+        query: { code: 'fake-code-value', page: '1' },
+        params: {},
+        headers: { referer: 'http://localhost:3001/cb?code=fake-code-value', 'x-session-token': 'fake-session' },
+      } as any);
+      const logged = JSON.stringify(logStub.firstCall.args);
+      expect(logged).to.not.contain('fake-code-value');
+      expect(logged).to.not.contain('fake-session');
+    });
+  });
+
+  describe('metadata redaction format', () => {
+    it('redacts URL-valued fields before any transport formats the line', () => {
+      const logger = new Logger({ service: 'test' });
+      const format = (logger as any).logger.format;
+      const info = format.transform(
+        {
+          level: 'error',
+          message: 'Application error',
+          metadata: {
+            context: {
+              request: {
+                path: '/api/v1/connectors/oauth/callback',
+                headers: {
+                  referer: 'http://localhost:3001/connectors/oauth/callback/Drive?state=fake-state-value&code=fake-code-value',
+                  authorization: 'Bearer fake-bearer-value',
+                },
+              },
+            },
+            redirectUrl: '/oauth/authorize?state=fake-state-value',
+          },
+        },
+        {},
+      );
+      const rendered = String(info[Symbol.for('message')]) + JSON.stringify(info.metadata);
+      for (const secret of ['fake-code-value', 'fake-state-value', 'fake-bearer-value']) {
+        expect(rendered).to.not.contain(secret);
+      }
+      expect(rendered).to.contain('/connectors/oauth/callback/Drive');
     });
   });
 
@@ -215,6 +265,92 @@ describe('Logger', () => {
       expect(result).to.not.have.property('parent');
       expect(result).to.not.have.property('_readableState');
       expect(result).to.not.have.property('pipes');
+    });
+
+    it('should redact credential-bearing keys regardless of separator or case', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({
+        Authorization: 'Bearer abc.def.ghi',
+        'api-key': 'sk-live-1',
+        api_key: 'sk-live-2',
+        apiKey: 'sk-live-3',
+        cookie: 'session=1',
+        refreshToken: 'rt-1',
+        clientSecret: 'cs-1',
+        'x-slack-signature': 'v0=deadbeef',
+        url: 'https://example.test/v1/chat',
+      });
+
+      expect(result.Authorization).to.equal('[REDACTED]');
+      expect(result['api-key']).to.equal('[REDACTED]');
+      expect(result.api_key).to.equal('[REDACTED]');
+      expect(result.apiKey).to.equal('[REDACTED]');
+      expect(result.cookie).to.equal('[REDACTED]');
+      expect(result.refreshToken).to.equal('[REDACTED]');
+      expect(result.clientSecret).to.equal('[REDACTED]');
+      expect(result['x-slack-signature']).to.equal('[REDACTED]');
+      expect(result.url).to.equal('https://example.test/v1/chat');
+    });
+
+    it('should redact credentials nested inside request options', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({
+        requestOptions: {
+          headers: { authorization: 'Bearer leaked' },
+          body: { password: 'hunter2', query: 'who owns the roadmap?' },
+        },
+      });
+
+      expect(result.requestOptions.headers.authorization).to.equal('[REDACTED]');
+      expect(result.requestOptions.body.password).to.equal('[REDACTED]');
+      expect(result.requestOptions.body.query).to.equal('who owns the roadmap?');
+    });
+
+    it('should keep dates, Mongo ids and errors as their logged values', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+      const orgId = new Types.ObjectId('64b7f0c2a1b2c3d4e5f60718');
+
+      const result = sanitize({
+        orgId,
+        at: new Date('2026-10-13T10:00:00.000Z'),
+        error: new Error('mongo down'),
+      });
+
+      expect(result.orgId).to.equal('64b7f0c2a1b2c3d4e5f60718');
+      expect(result.at).to.equal('2026-10-13T10:00:00.000Z');
+      expect(result.error.message).to.equal('mongo down');
+      expect(result.error.stack).to.be.a('string');
+    });
+
+    it('should redact secrets carried in an error message and stack', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({
+        callback: new Error('exchange failed for https://idp.example/cb?code=SECRETCODE&page=2'),
+        login: new Error('login failed password=hunter2'),
+        upstream: new Error('401 for header Authorization: Bearer eyJhbGciOi.secretjwt'),
+      });
+
+      const logged = JSON.stringify(result);
+      expect(logged).to.not.include('SECRETCODE');
+      expect(logged).to.not.include('hunter2');
+      expect(logged).to.not.include('secretjwt');
+      expect(result.callback.message).to.include('https://idp.example/cb');
+    });
+
+    it('should keep numeric token counters readable', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({ totalTokens: 1234, tokenScopes: ['kb:write'] });
+      expect(result.totalTokens).to.equal(1234);
+      expect(result.tokenScopes).to.deep.equal(['kb:write']);
     });
 
     it('should handle arrays inside objects', () => {

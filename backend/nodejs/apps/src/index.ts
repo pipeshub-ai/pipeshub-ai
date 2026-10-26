@@ -5,20 +5,12 @@ import { Logger } from './libs/services/logger.service';
 // Loads environment variables
 config();
 import { Application } from './app';
+import { createGracefulShutdown } from './shutdown';
 
 const app = new Application();
 const logger = Logger.getInstance();
 
-const gracefulShutdown = async (signal: string) => {
-  logger.info(`Received ${signal}. Starting graceful shutdown...`);
-  try {
-    await app.stop();
-    process.exit(0);
-  } catch (error) {
-    Logger.getInstance().error('Error during shutdown:', error);
-    process.exit(1);
-  }
-};
+const gracefulShutdown = createGracefulShutdown(app, logger);
 
 // Global error handlers to prevent app crashes
 process.on('uncaughtException', (error) => {
@@ -28,8 +20,9 @@ process.on('uncaughtException', (error) => {
       message: error.message,
     }
   });
-  // let the app try to recover for now until we have a better solution: to restart the app in a new process
-  gracefulShutdown('uncaughtException'); // TODO: add this once we have a better solution
+  // Process state is undefined after an uncaught exception, so drain and
+  // exit; the process monitor restarts Node.
+  gracefulShutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {

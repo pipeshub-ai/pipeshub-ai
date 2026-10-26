@@ -1,5 +1,6 @@
 'use client';
 
+import { asRecord } from '@/lib/utils/safe';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Flex, Select, Switch, Tabs, Text, TextArea, TextField } from '@radix-ui/themes';
@@ -68,7 +69,6 @@ const CONTENT_TAB_STYLE: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflow: 'hidden',
-  display: 'flex',
   flexDirection: 'column',
 };
 
@@ -270,7 +270,10 @@ export function SkillEditorPanel() {
               <Tabs.Trigger value="versions" disabled={!isEditMode}>{t('workspace.skills.tabs.versions')}</Tabs.Trigger>
             </Tabs.List>
 
-            <Tabs.Content value="content" style={CONTENT_TAB_STYLE}>
+            <Tabs.Content
+              value="content"
+              style={{ ...CONTENT_TAB_STYLE, display: editorTab === 'content' ? 'flex' : 'none' }}
+            >
               <Flex direction="column" gap="1" style={{ flex: 1, minHeight: 0 }}>
                 <Text size="1" style={{ color: 'var(--gray-9)', marginBottom: 4, flexShrink: 0 }}>
                   {t('workspace.skills.editorPanel.bodyHint')}
@@ -680,7 +683,7 @@ function ResourcesTab({
   const [newPath, setNewPath] = useState('');
   const [newContent, setNewContent] = useState('');
   const [busy, setBusy] = useState(false);
-  const allPaths = Object.values(resources).flat();
+  const allPaths = Object.values(asRecord(resources)).flat();
 
   const handleAdd = useCallback(async () => {
     if (!newPath.trim() || busy) return;

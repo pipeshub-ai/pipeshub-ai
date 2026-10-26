@@ -6,27 +6,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
-    IndexingFilterKey,
     SyncFilterKey,
 )
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    MailRecord,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +353,7 @@ class TestProcessGmailMessage:
         )
         assert result is not None
         # Sender gets OWNER permission
-        assert any(p.type == PermissionType.OWNER for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_message_without_id(self, connector):
@@ -409,7 +400,7 @@ class TestProcessGmailMessage:
             "user@test.com", msg, "thread-1", None
         )
         assert result is not None
-        assert any(p.type == PermissionType.READ for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_no_subject_defaults(self, connector):
@@ -448,10 +439,11 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["isDriveFile"] is True
         assert infos[0]["driveFileId"] == "drive-file-1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:drive-file-1"
 
     def test_no_attachments(self, connector):
         msg = {
@@ -476,32 +468,17 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
-        assert any(info.get("driveFileId") == "FILEID123" for info in infos)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
+        assert any(
+            info.get("driveFileId") == "FILEID123"
+            and info["stableAttachmentId"] == "gdrive:g-1:FILEID123"
+            for info in infos
+        )
 
 
 # ===========================================================================
 # _merge_history_changes
 # ===========================================================================
-class TestMergeHistoryChanges:
-    def test_deduplicates_by_id(self, connector):
-        inbox = {"history": [{"id": "1"}, {"id": "2"}]}
-        sent = {"history": [{"id": "2"}, {"id": "3"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        assert len(result["history"]) == 3
-
-    def test_sorts_by_id(self, connector):
-        inbox = {"history": [{"id": "3"}, {"id": "1"}]}
-        sent = {"history": [{"id": "2"}]}
-        result = connector._merge_history_changes(inbox, sent)
-        ids = [h["id"] for h in result["history"]]
-        assert ids == ["1", "2", "3"]
-
-    def test_empty_inputs(self, connector):
-        result = connector._merge_history_changes({"history": []}, {"history": []})
-        assert result == {"history": []}
-
-
 # ===========================================================================
 # _get_existing_record
 # ===========================================================================
@@ -646,7 +623,9 @@ class TestGmailProcessGroup:
             {"type": "GROUP", "email": "subgroup@test.com"},
         ])
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_called()
+        # A group with no user members is written empty, so people who left lose it.
+        written = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert len(written) == 1 and written[0][1] == []
 
 
 # ===========================================================================

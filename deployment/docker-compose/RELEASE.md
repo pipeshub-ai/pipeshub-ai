@@ -37,8 +37,12 @@ A prerelease tag (`v0.8.0-beta.1`) publishes `0.8.0-beta.1` and
 ### Rehearsing without publishing
 
 Run the workflow manually with **promote** unchecked. It builds and verifies,
-and moves no published tag. Useful before a risky release, and for checking the
-pipeline itself after changing it.
+and never replaces a tag that already exists. A stable version (`1.2.3`)
+publishes nothing at all. A prerelease version (`1.2.3-rc.1`) publishes its
+`<version>` and `<version>-slim` tags for the app and the sandbox if they are
+not on Docker Hub yet, and leaves `latest` and `slim` alone, so one run is
+enough to give someone a build to try. Useful before a risky release, and for
+checking the pipeline itself after changing it.
 
 ## What the gates actually check
 

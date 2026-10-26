@@ -67,6 +67,7 @@ function buildQueryString(query: Record<string, unknown>): string {
     dateTo: 'date_to',
     sortBy: 'sort_by',
     sortOrder: 'sort_order',
+    ownership: 'ownership',
   };
   for (const [from, to] of Object.entries(mapping)) {
     const value = query[from];
@@ -208,5 +209,77 @@ export const listArtifactVersions =
     } catch (error: unknown) {
       logger.error('Error listing artifact versions', { error });
       next(handleBackendError(error, 'list artifact versions'));
+    }
+  };
+
+// Sharing is decided in the connectors service: only the owner may share, and
+// only with users of the same org. This layer forwards the caller's identity.
+const proxyArtifactPermissions =
+  (method: HttpMethod, operation: string) =>
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      requireIdentity(req);
+      const { artifactId } = req.params as { artifactId: string };
+      const userIds = (req.body as { userIds?: string[] } | undefined)?.userIds;
+      const connectorResponse = await executeConnectorCommand(
+        artifactUri(appConfig.connectorBackend, artifactId, '/permissions'),
+        method,
+        req.headers as Record<string, string>,
+        method === HttpMethod.GET ? undefined : { userIds },
+      );
+      const statusCode = connectorResponse.statusCode;
+      if (statusCode < 200 || statusCode >= 300) {
+        throw handleBackendError(connectorResponse, operation);
+      }
+      res
+        .status(statusCode)
+        .json(requirePayload(connectorResponse.data, `Failed to ${operation}`));
+    } catch (error: unknown) {
+      logger.error(`Error during ${operation}`, { error });
+      next(handleBackendError(error, operation));
+    }
+  };
+
+export const listArtifactMembers = proxyArtifactPermissions(
+  HttpMethod.GET,
+  'list artifact members',
+);
+export const shareArtifact = proxyArtifactPermissions(
+  HttpMethod.POST,
+  'share artifact',
+);
+export const unshareArtifact = proxyArtifactPermissions(
+  HttpMethod.DELETE,
+  'unshare artifact',
+);
+
+export const deleteArtifact =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      requireIdentity(req);
+      const { artifactId } = req.params as { artifactId: string };
+      const connectorResponse = await executeConnectorCommand(
+        artifactUri(appConfig.connectorBackend, artifactId),
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>,
+      );
+      const statusCode = connectorResponse.statusCode;
+      if (statusCode < 200 || statusCode >= 300) {
+        throw handleBackendError(connectorResponse, 'delete artifact');
+      }
+      res.status(204).end();
+    } catch (error: unknown) {
+      logger.error('Error deleting artifact', { error });
+      next(handleBackendError(error, 'delete artifact'));
     }
   };

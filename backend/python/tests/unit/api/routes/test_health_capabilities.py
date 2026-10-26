@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from fastapi.responses import JSONResponse
 
@@ -142,6 +142,75 @@ class TestToolCallingProbe:
             resp = await perform_llm_health_check(_llm_config(isMultimodal=False), MagicMock())
 
         assert '"tool_calling":true' in resp.body.decode().replace(" ", "")
+
+
+_AZURE_TOOLS_REFUSAL = (
+    "Function tools with reasoning_effort are not supported for this model in "
+    "/v1/chat/completions. To use function tools, use /v1/responses or set "
+    "reasoning_effort to 'none'."
+)
+
+
+class _ApiShapeModel:
+    """An OpenAI-family model that refuses tools on Chat Completions the way
+    Azure does for gpt-6 models, and accepts them on the Responses API unless
+    `refuse_responses` is set."""
+
+    def __init__(self, use_responses_api=None, reasoning=None, reasoning_effort=None,
+                 refuse_responses: bool = False) -> None:
+        self.use_responses_api = use_responses_api
+        self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
+        self.refuse_responses = refuse_responses
+        self.copies: list[_ApiShapeModel] = []
+
+    def bind_tools(self, tools: list) -> _ApiShapeModel:
+        return self
+
+    async def ainvoke(self, messages: list, config: object = None) -> str:
+        if not self.use_responses_api or self.refuse_responses:
+            raise _error(_AZURE_TOOLS_REFUSAL, 400)
+        return "ok"
+
+    def model_copy(self, update: dict) -> _ApiShapeModel:
+        copy = _ApiShapeModel(
+            use_responses_api=update.get("use_responses_api", self.use_responses_api),
+            reasoning=update.get("reasoning", self.reasoning),
+            reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+            refuse_responses=self.refuse_responses,
+        )
+        self.copies.append(copy)
+        return copy
+
+
+class TestToolCallingProbeTriesResponsesApi:
+    """Azure refuses tools for gpt-6 models on Chat Completions, even with no
+    reasoning setting, and accepts them on the Responses API. The agent loop
+    switches on that refusal, so the setup check must not report "cannot be
+    used for agents" for a model the agent loop can use."""
+
+    async def test_refused_on_chat_completions_accepted_on_responses(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel()
+
+        assert await _check_tool_calling(model, MagicMock()) is True
+        assert len(model.copies) == 1
+        assert model.copies[0].use_responses_api is True
+        assert model.copies[0].reasoning is None
+
+    async def test_refused_on_both_is_reported(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+
+    async def test_a_model_already_on_responses_is_not_retried(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(use_responses_api=True, reasoning={"effort": "high"},
+                               refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+        assert model.copies == []
 
 
 class TestVisionVerdict:
@@ -631,3 +700,84 @@ class TestStreamingProbe:
         body = _body(await _run_llm_check(_llm_config(), model=model))
 
         assert body["capabilities"]["streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_follow_up_probes_run_together_after_the_text_probe() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    started: set[str] = set()
+    all_started = asyncio.Event()
+
+    def probe(name: str, result: object) -> Callable[..., Awaitable[object]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            started.add(name)
+            if len(started) == 3:
+                all_started.set()
+            # Run one at a time and this never returns.
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            return result
+
+        return run
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=probe("vision", None)),
+        patch(f"{MODULE}._check_tool_calling", new=probe("tools", True)),
+        patch(f"{MODULE}._check_streaming", new=probe("streaming", False)),
+    ):
+        result = await _check_one_llm(
+            {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+            "m",
+            MagicMock(),
+        )
+
+    assert result == {
+        "model": "m",
+        "sample": "ok",
+        "tool_calling": True,
+        "streaming": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_raising_probe_cancels_the_others_and_keeps_its_exception() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    cancelled: list[str] = []
+
+    def slow(name: str) -> Callable[..., Awaitable[None]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+
+        return run
+
+    async def vision_fails(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(0)
+        raise asyncio.TimeoutError
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=vision_fails),
+        patch(f"{MODULE}._check_tool_calling", new=slow("tools")),
+        patch(f"{MODULE}._check_streaming", new=slow("streaming")),
+    ):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                _check_one_llm(
+                    {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+                    "m",
+                    MagicMock(),
+                ),
+                timeout=5,
+            )
+
+    assert sorted(cancelled) == ["streaming", "tools"]

@@ -19,6 +19,7 @@ export function LanguageSwitcher() {
     { value: 'zh-TW', label: 'Chinese (Taiwan)', nativeLabel: '中文（台灣）' },
     { value: 'zh-SG', label: 'Chinese (Singapore)', nativeLabel: '中文（新加坡）' },
     { value: 'zh-CN', label: 'Chinese (Mandarin, Simplified)', nativeLabel: '中文（简体）' },
+    { value: 'cs-CZ', label: 'Czech', nativeLabel: 'Čeština' },
   ];
 
   const currentLanguage = languages.find((lang) => lang.value === language);

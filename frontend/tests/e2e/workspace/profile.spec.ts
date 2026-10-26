@@ -12,12 +12,12 @@ test.describe('Workspace Profile Settings', () => {
   });
 
   test('displays full name field', async ({ page }) => {
-    const nameInput = page.locator('input[placeholder="eg: John Doe"]');
+    const nameInput = page.locator('input[placeholder="e.g. John Doe"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
   });
 
   test('can edit and save name', async ({ page }) => {
-    const nameInput = page.locator('input[placeholder="eg: John Doe"]');
+    const nameInput = page.locator('input[placeholder="e.g. John Doe"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     const originalValue = await nameInput.inputValue();
 

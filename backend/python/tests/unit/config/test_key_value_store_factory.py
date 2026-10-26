@@ -85,6 +85,15 @@ class TestKeyValueStoreFactoryCreateStore:
         result = KeyValueStoreFactory.create_store(StoreType.IN_MEMORY, config=config)
         assert result == mock_store
 
+    def test_create_in_memory_store_real_class(self) -> None:
+        """The unmocked path: the store needs the logger the factory passes."""
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        store = KeyValueStoreFactory.create_store(
+            StoreType.IN_MEMORY, config=StoreConfig(host="localhost", port=0)
+        )
+        assert isinstance(store, InMemoryKeyValueStore)
+
     @patch("app.config.key_value_store_factory.RedisDistributedKeyValueStore")
     def test_create_redis_store(self, mock_redis_cls):
         mock_store = MagicMock()

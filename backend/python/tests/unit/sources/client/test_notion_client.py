@@ -31,6 +31,12 @@ def mock_config_service():
     return AsyncMock()
 
 
+@pytest.fixture(autouse=True)
+def _default_notion_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests expect Notion's own host; a shell that exported NOTION_API_BASE_URL must not change that."""
+    monkeypatch.delenv("NOTION_API_BASE_URL", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # NotionResponse
 # ---------------------------------------------------------------------------
@@ -74,6 +80,18 @@ class TestNotionResponse:
         assert wrapped.success is False
         assert wrapped.error is not None
         assert "404" in wrapped.error
+
+    def test_from_http_keeps_notions_error_code(self) -> None:
+        import httpx
+
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(400, json={"object": "error", "status": 400, "code": "validation_error",
+                                        "message": "The start_cursor provided is invalid: x"})
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.code == "validation_error"
+        assert "start_cursor provided is invalid" in (wrapped.error or "")
+        assert NotionResponse.from_http(HTTPResponse(httpx.Response(502, text="<html>"))).code is None
 
     def test_from_http_rate_limited(self):
         import httpx
@@ -166,37 +184,6 @@ class TestNotionRESTClientViaOAuth:
         mock_response.json.return_value = {"token_type": "bearer"}
         with patch.object(client, "execute", new_callable=AsyncMock, return_value=mock_response):
             result = await client._exchange_code_for_token("code")
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_refresh_token_success(self):
-        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
-        mock_response = MagicMock()
-        mock_response.json = AsyncMock(return_value={"access_token": "refreshed-at"})
-
-        mock_http = AsyncMock()
-        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http.__aexit__ = AsyncMock(return_value=False)
-        mock_http.execute = AsyncMock(return_value=mock_response)
-
-        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
-            result = await client.refresh_token("rt")
-            assert result == "refreshed-at"
-            assert client.access_token == "refreshed-at"
-
-    @pytest.mark.asyncio
-    async def test_refresh_token_no_token_returned(self):
-        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
-        mock_response = MagicMock()
-        mock_response.json = AsyncMock(return_value={"error": "invalid"})
-
-        mock_http = AsyncMock()
-        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_http.__aexit__ = AsyncMock(return_value=False)
-        mock_http.execute = AsyncMock(return_value=mock_response)
-
-        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
-            result = await client.refresh_token("rt")
             assert result is None
 
     @pytest.mark.asyncio

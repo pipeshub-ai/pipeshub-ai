@@ -6,7 +6,7 @@ request's reviewers. This module turns them into ``entityRelations`` edges
 from the record to the matching ``users`` node, so a person can be reached
 from the records they appear in.
 
-Only existing members are linked (decision D-31): an address or source id
+Only existing members are linked: an address or source id
 with no matching user gets no edge and creates no node. Bcc recipients are
 never linked, since they are hidden from the other recipients.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
 from app.models.entities import (
@@ -147,7 +147,12 @@ def person_links(record: Record) -> list[PersonLink]:
     return []
 
 
-async def link_record_people(record: Record, store: PeopleStore, logger: Logger) -> int:
+async def link_record_people(
+    record: Record,
+    store: PeopleStore,
+    logger: Logger,
+    must_propagate: Callable[[Exception], bool] | None = None,
+) -> int:
     """Replace ``record``'s person edges with the members it names now.
 
     Idempotent: the record's existing edges to members are removed and the
@@ -155,8 +160,11 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
     edge. Its other ``entityRelations`` edges (organisations) are left to
     their own writers. Returns the number of edges written. A lookup failure skips
     that person (logged by record id, never by address); the others are
-    still linked.
+    still linked. ``must_propagate`` names the failures a caller has to see
+    (a conflict it retries, a failure that ended its transaction); those are
+    raised instead of logged.
     """
+    propagate = must_propagate or (lambda _exc: False)
     if not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     try:
@@ -165,6 +173,8 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
             CollectionNames.ENTITY_RELATIONS.value, CollectionNames.USERS.value,
         )
     except Exception as exc:  # stale edges are rewritten below
+        if propagate(exc):
+            raise
         logger.warning("Could not clear person edges of record %s: %s", record.id, exc)
 
     users_by_identity: dict[tuple[str, str], User | None] = {}
@@ -188,7 +198,9 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
                     await store.get_user_by_email(identity[1]) if identity[0] == "email"
                     else await store.get_user_by_source_id(identity[1], record.connector_id)
                 )
-            except Exception:  # one unresolved person must not drop the others
+            except Exception as exc:  # one unresolved person must not drop the others
+                if propagate(exc):
+                    raise
                 failed += 1
                 users_by_identity[identity] = None
         user = users_by_identity[identity]
@@ -223,6 +235,8 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
         try:
             await store.batch_create_entity_relations(added)
         except Exception as exc:  # see _NEW_EDGE_TYPES
+            if propagate(exc):
+                raise
             logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
             return len(established)
     return len(edges)

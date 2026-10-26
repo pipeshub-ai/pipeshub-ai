@@ -41,6 +41,9 @@ secretManagement:
       neo4jPassword: ""
       arangoPassword: ""
       qdrantApiKey: ""
+    # More keys for the same secret, by name: { <secret key>: <remote path> }.
+    # Empty paths are skipped. Pair with extraSecretData.
+    extraRemoteRefs: {}
 
   # Existing Kubernetes secret references
   # Use this if you pre-create secrets manually or via another tool
@@ -56,7 +59,7 @@ secretManagement:
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
-  tag: "latest"  # v0.3.0 is not available on Docker Hub
+  tag: "latest"  # or pin a release, e.g. "0.10.0"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -94,30 +97,12 @@ securityContext:
 service:
   type: ClusterIP
 
-# Metrics configuration for Prometheus
-metrics:
-  enabled: true
-  port: 9090  # Port for exposing application metrics
-
-# Monitoring configuration
-monitoring:
-  serviceMonitor:
-    enabled: false  # Requires Prometheus Operator CRDs
-    labels: {}  # Labels to match Prometheus selector
-    annotations: {}
-    path: /metrics
-    interval: 30s
-    scrapeTimeout: 10s
-
-# Telemetry configuration (OpenTelemetry)
+# Telemetry configuration
 telemetry:
-  enabled: false
-  otlp:
-    endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
-    headers: {}  # Custom headers for OTLP exporter
-    tls:
-      enabled: false
-      insecure: false
+  # Product metrics/event collection (TELEMETRY_COLLECTION_FLAG). Empty keeps the
+  # services' default, on; false turns all telemetry code off.
+  collection:
+    enabled: ""
 
 # Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
 # may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
@@ -176,8 +161,14 @@ extraVolumes: []
 #     mountPath: /app/public/branding
 extraVolumeMounts: []
 
+# Extra keys for the app secret this chart creates: { <secret key>: <value> }.
+# Empty values are skipped. Read them back with extraEnv and a secretKeyRef to
+# {{ include "pipeshub-ai.secretName" . }}.
+extraSecretData: {}
+
 # Extra env entries for the app container. Use a secretKeyRef for values that
-# must not sit in the release, such as E2B_API_KEY.
+# must not sit in the release, such as E2B_API_KEY. Entries are rendered as
+# templates, so a secretKeyRef can name {{ include "pipeshub-ai.secretName" . }}.
 # extraEnv:
 #   - name: E2B_API_KEY
 #     valueFrom:
@@ -187,8 +178,9 @@ extraVolumeMounts: []
 extraEnv: []
 extraEnvFrom: []
 
-# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
-# URLs. Images that set signatureVersion on the S3 client do not need this.
+# Obsolete. AWS SDK v3 always signs with Signature V4, so SSE-KMS buckets
+# no longer need a preload. Left in place so a values file that still sets
+# it does not fail the render; the mounted script is a no-op.
 s3SignatureV4Preload: false
 
 volumes: {}
@@ -200,6 +192,10 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Prefer one app replica per node, matching this release's own pods. Ignored
+# when affinity is set.
+spreadAcrossNodes: false
 
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
@@ -233,6 +229,9 @@ networkPolicy:
       - podSelector: {}
       ports:
         - protocol: TCP
+  # Appended after egress. Use this for a database outside the namespace,
+  # such as ElastiCache on 6379, without replacing the rules above.
+  extraEgress: []
 
 # Health check configuration
 healthCheck:
@@ -297,6 +296,9 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
+  # Mask stored secrets in admin config API responses (HIDE_SECRET_CONFIG).
+  # false matches the docker-compose default: one org's admins see what they stored.
+  hideSecretConfig: false
   # NOTE: with the Kafka broker, per-partition ordering means only one
   # message per partition is processed at a time — actual concurrency is
   # also capped by the record-events topic's partition count, regardless
@@ -322,6 +324,52 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Most characters one agent turn may stream (text, reasoning and tool-call
+  # arguments together) before it is stopped as a runaway. "" keeps the
+  # built-in 1000000; 0 removes the limit.
+  agentMaxTurnOutputChars: ""
+  # true: features that trade some compute or tokens per question for better
+  # answers (keyword hits merged by rank fusion, search results with the
+  # most relevant record first, search hits fused deeper and cut by record,
+  # answer composition and multi-step rules, reading an answer's records in
+  # full). Off by default. To override one feature, set its switch
+  # (GREP_RANK_FUSION, RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT,
+  # ANSWER_COMPOSITION_RULES, MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to
+  # "true" or "false" through extraEnv. KEYWORD_SEARCH_QUERIES is opt-in only:
+  # the mode does not turn it on. So is CONTENT_DOCUMENT_DATES ("true" or
+  # "all" through extraEnv): knowledge-base uploads take the dates their
+  # content states instead of upload times (see backend/env.template).
+  # It also turns on named-entity extraction while indexing, and the entity
+  # tools that read it (search_entities, find_records_by_entity,
+  # find_records_by_value), whatever the Labs flag
+  # ENABLE_NAMED_ENTITY_EXTRACTION says.
+  # ENTITY_SEARCH_TOOL="true" (through extraEnv) also offers the agent
+  # search_by_entities, which links named people, organizations, products or
+  # places to extracted entities and searches the records that mention them.
+  # It stays off under this mode unless set, and needs named-entity extraction.
+  # TIMELINE_SUMMARIES is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, the agent has search_timeline, which
+  # searches a span of time period by period and returns the matches in date
+  # order, and questions about a span ("between March and May", "how did X
+  # evolve") are pointed to it. A search bounded on one date over more than
+  # 31 days runs period by period too.
+  # DATE_FILTER_SAFETY_NET is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, a search with a date filter also
+  # runs once without dates and names its best 3 matches written outside the
+  # dates, such as release notes written after the period, apart from the
+  # results.
+  # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, fetch_record reads as much of each
+  # record as fits a share of the context window instead of a block count.
+  # TARGETED_RETRIEVAL is not part of this mode either: it is on unless set to
+  # "false" through extraEnv. With it on, a search returns fewer passages per
+  # record and fetch_record takes a query that reads the part of a record it
+  # names.
+  # SEARCH_SOURCE_DIVERSITY is not part of this mode: it is off unless set to
+  # "true" through extraEnv. With it on, no one connector type holds more than
+  # 4 of the first 10 records of a search API result; the records it pushes
+  # down come back after the first page.
+  highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
   # and service-account token. Leave false unless every org admin is trusted
@@ -386,6 +434,15 @@ config:
   governorHeavyParseSlotsPerCpu: ""   # (1.0) heavy parse slots per CPU
   governorLightParseSlotsPerCpu: ""   # (10.0) light parse slots per CPU
   governorLightParseMax: ""           # (256) absolute cap on the light ceiling
+  parseMaxOrgShare: ""                # (0.5) share of a parse pool one org may hold while another org waits
+  codeEdgeBuildReconcileIntervalSeconds: ""  # (600)
+  codeEdgeFullRebuildIntervalSeconds: ""  # (604800)
+  codeEdgeBuildMaxConcurrent: ""  # (2)
+  codeEdgeBuildMaxPerOrg: ""  # (1)
+  codeEdgeBuildMaxBlocks: ""  # (300000)
+  codeEdgeBuildMaxFailures: ""  # (6)
+  codeGraphEnabled: "true"  # false: code indexed for search, no blocks or edges
+  codeGraphBackfill: "false"  # true: re-index repos of an older code-graph version on start
   governorIndexHeadroom: ""           # (2.0) in-flight records per parse slot
   governorIndexMax: ""                # (512) absolute cap per index tier
   governorIndexHeavyWorkingSetGb: ""  # (0.15) RAM assumed per in-flight heavy record
@@ -415,6 +472,9 @@ config:
   # and cloud metadata addresses are refused either way; OLLAMA_API_URL stays allowed.
   # Model traffic sent through HTTP(S)_PROXY is not address-checked: filter it on the proxy.
   blockPrivateAddresses: ""
+  # "true" lets the Nextcloud connector use an http:// server URL; its app password is sent with
+  # every request, so leave empty (https only) unless the network is trusted.
+  nextcloudAllowInsecureHttp: ""
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
@@ -426,6 +486,9 @@ config:
   samlSpEntityId: "pipeshub"
 
 # --- Coding sandbox execution ------------------------------------------------
+# Slim images download Chromium on first browser use into the /data/pipeshub
+# volume (PLAYWRIGHT_BROWSERS_PATH). Set PIPESHUB_PREFETCH_BROWSERS=true on the
+# app container to do that at startup. The full image already contains Chromium.
 sandbox:
   # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
   # pod, including the privileged DinD sidecar, so an escape lands in the
@@ -613,7 +676,12 @@ redis:
   # or the app fails fast at startup naming the unregistered mode.
   providerModule: ""
   external:
-    enabled: false     # true: do not deploy the Bitnami subchart; use clusterEndpoints/host below
+    enabled: false     # true: do not deploy in-cluster Redis; use host or clusterEndpoints below
+    # Standalone endpoint (ElastiCache with cluster mode disabled, or any
+    # single primary). The primary DNS name follows a failover. Requires
+    # redis.mode=standalone. Do not set this together with clusterEndpoints.
+    host: ""
+    port: 6379
     clusterEndpoints: "" # comma-separated host:port list, REDIS_MODE=cluster only
     # Remaps a cluster node's advertised CLUSTER SLOTS/SHARDS address to the
     # address it is actually reachable at from inside this cluster (or from
@@ -630,7 +698,8 @@ redis:
   # reserved key consumed by the Bitnami subchart itself (in-cluster
   # server-side TLS, requiring mounted certs). This block configures the
   # app's client connection to redis.external.clusterEndpoints instead and
-  # must not collide with the subchart's own schema.
+  # must not collide with the subchart's own schema. Also applies to
+  # redis.external.host.
   clientTls:
     enabled: false
     rejectUnauthorized: true
@@ -707,7 +776,16 @@ etcd:
 # Message broker: "kafka" or "redis" (uses Redis Streams, default)
 messageBroker:
   type: redis
+  # Caps streams that have no consumer group yet. With redisStreamsRetentionMode "maxlen" (legacy) it caps
+  # every stream and drops unconsumed events; the default retention trims other streams only behind their consumers.
   redisStreamsMaxLen: "500000"
+  # "after_ack" (default) or "maxlen" (legacy cap using redisStreamsMaxLen)
+  redisStreamsRetentionMode: "after_ack"
+  # Indexing lanes on Redis Streams: how many, and how a connector is given
+  # one -- "assigned" (the least busy lane, recorded once) or "hash" (as
+  # before), which switches assigned lanes off.
+  laneCount: "8"
+  laneAssignment: assigned
 
 # Celery (backend/python/app/core/celery_app.py) has no Redis Cluster
 # transport. Required when redis.mode is not "standalone" -- the app fails
@@ -809,6 +887,9 @@ qdrant:
       - ReadWriteOnce
     size: 10Gi
     storageClass: "" # Fill
+  # Per pod. Search slows sharply once the index outgrows the memory limit; size
+  # it from docs/deployment/vector-db-sizing.md. The chart passes the limit to
+  # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     limits:
       cpu: 2000m
@@ -839,6 +920,8 @@ qdrant:
   securityContext: {}
   nodeSelector: {}
   tolerations: []
+  # soft prefers one replica per node; hard requires it. Ignored when affinity is set.
+  antiAffinity: soft
   affinity: {}
   topologySpreadConstraints: []
   apiKey: "api_key"

@@ -11,6 +11,7 @@ organisation carries its tenant as ``parentOrgId``.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
@@ -33,18 +34,28 @@ class OrganizationStore(Protocol):
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
 
 
-async def link_record_organization(record: Record, store: OrganizationStore, logger: Logger) -> int:
+async def link_record_organization(
+    record: Record,
+    store: OrganizationStore,
+    logger: Logger,
+    must_propagate: Callable[[Exception], bool] | None = None,
+) -> int:
     """Replace ``record``'s account edge with the account its group belongs
     to now. Returns the number of edges written (0 or 1).
 
     A failed lookup leaves the existing edge alone; a failed write is logged,
     not raised, since ``FOR_ACCOUNT`` is a new edge type an older pod's schema
-    can reject during a rolling deploy (as in ``record_people``)."""
+    can reject during a rolling deploy (as in ``record_people``). Failures
+    ``must_propagate`` names (a conflict the caller retries, a failure that
+    ended its transaction) are raised instead."""
+    propagate = must_propagate or (lambda _exc: False)
     if record.record_type not in ACCOUNT_RECORD_TYPES or not record.record_group_id:
         return 0
     try:
         organization_id = await store.get_record_group_organization(record.record_group_id, record.org_id)
     except Exception as exc:
+        if propagate(exc):
+            raise
         logger.warning("Account lookup failed for record %s: %s", record.id, exc)
         return 0
     try:
@@ -54,6 +65,8 @@ async def link_record_organization(record: Record, store: OrganizationStore, log
             record.id, CollectionNames.ORGS.value, EntityOrigin.INFERRED.value,
         )
     except Exception as exc:  # the edge below replaces a stale one anyway
+        if propagate(exc):
+            raise
         logger.warning("Could not clear account edges of record %s: %s", record.id, exc)
     if not organization_id:
         return 0
@@ -70,6 +83,8 @@ async def link_record_organization(record: Record, store: OrganizationStore, log
     try:
         await store.batch_create_entity_relations([edge])
     except Exception as exc:
+        if propagate(exc):
+            raise
         logger.warning("Record %s: account edge not written: %s", record.id, exc)
         return 0
     return 1

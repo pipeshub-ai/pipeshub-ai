@@ -10,3 +10,5 @@ export { BulkDeleteConfirmationDialog } from './bulk-delete-confirmation-dialog'
 export { FolderDetailsSidebar } from './folder-details-sidebar';
 export { ReindexScopeDialog } from './reindex-scope-dialog';
 export type { ReindexScopeDialogProps } from './reindex-scope-dialog';
+export { ReindexBlockedDialog } from './reindex-blocked-dialog';
+export type { ReindexBlockedDialogProps } from './reindex-blocked-dialog';

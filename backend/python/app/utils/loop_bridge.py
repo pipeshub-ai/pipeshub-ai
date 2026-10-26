@@ -49,6 +49,14 @@ async def run_on_loop(
     wrapped = asyncio.wrap_future(future)
     try:
         return await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
+    except TimeoutError:
+        # A frozen caller loop wakes with the timer and the reply both due;
+        # the timer can win even though the reply is already here.
+        if future.done() and not future.cancelled():
+            return future.result()
+        wrapped.add_done_callback(_consume_orphaned_result)
+        name = getattr(coro, "__qualname__", type(coro).__name__)
+        raise TimeoutError(f"{name} got no reply from its owning loop within {timeout}s") from None
     except BaseException:
         wrapped.add_done_callback(_consume_orphaned_result)
         raise

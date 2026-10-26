@@ -40,6 +40,7 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import upload_bytes_artifact
+from app.services.artifact_registry.models import artifact_owner_id
 from app.utils.conversation_tasks import register_task
 from app.utils.llm import get_image_generation_config
 
@@ -241,7 +242,8 @@ class ImageGenerator:
         config_service = self.chat_state.get("config_service")
         conversation_id = self.chat_state.get("conversation_id")
         org_id = self.chat_state.get("org_id")
-        user_id = self.chat_state.get("user_id")
+        # Only artifacts are read and written below, so they are those of the chat's owner.
+        user_id = artifact_owner_id(self.chat_state)
         blob_store = self.chat_state.get("blob_store")
         graph_provider = self.chat_state.get("graph_provider")
 

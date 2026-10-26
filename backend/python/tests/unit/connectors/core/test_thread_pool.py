@@ -177,3 +177,18 @@ def test_no_injection_falls_back_to_shared_thread_pool() -> None:
     lease = acquire_connector_lease(MagicMock(), 2, label="fallback")
     assert lease.submit(lambda: "ok").result(timeout=20) == "ok"
     assert lease._pool is get_shared_connector_thread_pool()
+
+
+def test_blank_worker_env_falls_back_to_default() -> None:
+    """env.template ships CONNECTOR_THREAD_POOL_MAX_WORKERS blank; that must mean unset."""
+    import os
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "from app.connectors.core.thread_pool import CONNECTOR_THREAD_POOL_MAX_WORKERS as n; print(n)"],
+        env={**os.environ, "CONNECTOR_THREAD_POOL_MAX_WORKERS": ""},
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip().splitlines()[-1] == "4"

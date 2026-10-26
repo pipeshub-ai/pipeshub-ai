@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Avatar, IconButton, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -37,6 +38,7 @@ export function AvatarUploadWidget({
   onDeleteClick,
   triggerAriaLabel,
 }: AvatarUploadWidgetProps) {
+  const { t } = useTranslation();
   const showDropdown = !!src && !!onDeleteClick;
 
   return (
@@ -56,6 +58,7 @@ export function AvatarUploadWidget({
               variant="soft"
               color="gray"
               size="2"
+              className="touch-hit"
               disabled={uploading}
               aria-label={triggerAriaLabel}
               style={{ cursor: uploading ? 'wait' : 'pointer' }}
@@ -67,13 +70,13 @@ export function AvatarUploadWidget({
             <DropdownMenu.Item onClick={onEditClick}>
               <Flex align="center" gap="2">
                 <MaterialIcon name="upload" size={14} color="var(--gray-11)" />
-                Upload
+                {t('action.upload')}
               </Flex>
             </DropdownMenu.Item>
             <DropdownMenu.Item color="red" onClick={onDeleteClick}>
               <Flex align="center" gap="2">
                 <MaterialIcon name="delete" size={14} color="var(--red-11)" />
-                Remove
+                {t('action.remove')}
               </Flex>
             </DropdownMenu.Item>
           </DropdownMenu.Content>
@@ -83,6 +86,7 @@ export function AvatarUploadWidget({
           variant="soft"
           color="gray"
           size="2"
+          className="touch-hit"
           onClick={onEditClick}
           disabled={uploading}
           aria-label={triggerAriaLabel}

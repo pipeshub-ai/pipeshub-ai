@@ -22,7 +22,7 @@ class TestRestoreRecordRoute:
             "success": True, "message": "Restored 1 item(s).", "batchId": "b-1",
             "restoredRecords": [{"recordId": "r1", "name": "a (restored).pdf", "renamedFrom": "a.pdf"}],
         }
-        kb.restore_record.assert_awaited_once_with(record_id="r1", user_id="user1", org_id="org1")
+        kb.restore_record.assert_awaited_once_with(record_id="r1", user_id="user1", org_id="org1", outside=None)
 
     def test_a_refusal_keeps_its_status_and_words(self) -> None:
         app, kb, _ = _make_app()
@@ -51,7 +51,9 @@ class TestRestoreRecordsRoute:
         response = TestClient(app).post("/api/v1/kb/records/restore", json={"recordIds": ["r1", "r2"]})
         assert response.status_code == 200
         assert response.json()["failedCount"] == 1
-        kb.restore_records.assert_awaited_once_with(record_ids=["r1", "r2"], user_id="user1", org_id="org1")
+        kb.restore_records.assert_awaited_once_with(
+            record_ids=["r1", "r2"], user_id="user1", org_id="org1", outside=None,
+        )
 
     def test_a_malformed_body_says_what_to_send(self) -> None:
         app, kb, _ = _make_app()

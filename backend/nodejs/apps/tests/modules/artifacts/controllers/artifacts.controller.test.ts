@@ -3,16 +3,26 @@ import { NextFunction, Response } from 'express';
 import { Types } from 'mongoose';
 import sinon from 'sinon';
 import {
+  deleteArtifact,
   getArtifact,
+  listArtifactMembers,
   listArtifactVersions,
   listArtifacts,
+  shareArtifact,
+  unshareArtifact,
 } from '../../../../src/modules/artifacts/controllers/artifacts.controller';
 import { ConversationTitleService } from '../../../../src/modules/artifacts/services/conversation-title.service';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
-import { UnauthorizedError } from '../../../../src/libs/errors/http.errors';
+import {
+  ForbiddenError,
+  NotFoundError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+} from '../../../../src/libs/errors/http.errors';
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum';
 import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types';
 
 function createMockAppConfig(): AppConfig {
@@ -202,6 +212,113 @@ describe('Artifacts Controller', () => {
       expect(res.json.firstCall.args[0].versions).to.have.length(1);
     });
   });
+
+  describe('artifact sharing', () => {
+    const USER_IDS = ['507f1f77bcf86cd799439021'];
+
+    it('forwards the ownership tab to the gallery query', async () => {
+      const execStub = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { items: [] } });
+
+      const req = createMockRequest({ query: { ownership: 'shared' } });
+      await invoke(
+        listArtifacts(createMockAppConfig()),
+        req,
+        createMockResponse(),
+        createMockNext(),
+      );
+
+      expect(execStub.firstCall.args[0]).to.include('ownership=shared');
+    });
+
+    it('lists members without a body', async () => {
+      const execStub = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { members: [] } });
+
+      const res = createMockResponse();
+      await invoke(
+        listArtifactMembers(createMockAppConfig()),
+        createMockRequest({ params: { artifactId: 'art-1' } }),
+        res,
+        createMockNext(),
+      );
+
+      const [uri, method, , body] = execStub.firstCall.args;
+      expect(uri).to.equal(
+        'http://connector.local/api/v1/artifacts/art-1/permissions',
+      );
+      expect(method).to.equal(HttpMethod.GET);
+      expect(body).to.equal(undefined);
+      expect(res.json.firstCall.args[0]).to.deep.equal({ members: [] });
+    });
+
+    it('shares and unshares with only the validated user IDs', async () => {
+      const execStub = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { shared: 1 } });
+
+      for (const [handler, method] of [
+        [shareArtifact, HttpMethod.POST],
+        [unshareArtifact, HttpMethod.DELETE],
+      ] as const) {
+        await invoke(
+          handler(createMockAppConfig()),
+          createMockRequest({
+            params: { artifactId: 'art-1' },
+            body: { userIds: USER_IDS, orgId: 'spoofed' },
+          }),
+          createMockResponse(),
+          createMockNext(),
+        );
+        const [uri, sentMethod, headers, body] = execStub.lastCall.args;
+        expect(uri).to.equal(
+          'http://connector.local/api/v1/artifacts/art-1/permissions',
+        );
+        expect(sentMethod).to.equal(method);
+        expect(headers.authorization).to.equal('Bearer test-token');
+        expect(body).to.deep.equal({ userIds: USER_IDS });
+      }
+    });
+
+    it('passes a 403 from the connectors service through', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 403,
+        data: { detail: "Only the artifact's owner can manage its sharing" },
+      });
+
+      const next = createMockNext();
+      await invoke(
+        shareArtifact(createMockAppConfig()),
+        createMockRequest({
+          params: { artifactId: 'art-1' },
+          body: { userIds: USER_IDS },
+        }),
+        createMockResponse(),
+        next,
+      );
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ForbiddenError);
+      expect(error.message).to.include('owner');
+    });
+
+    it('rejects unauthenticated callers before calling the service', async () => {
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand');
+      const next = createMockNext();
+
+      await invoke(
+        shareArtifact(createMockAppConfig()),
+        createMockRequest({ user: undefined, params: { artifactId: 'art-1' } }),
+        createMockResponse(),
+        next,
+      );
+
+      expect(execStub.called).to.equal(false);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+    });
+  });
 });
 
 const CALLER_ID = '507f1f77bcf86cd799439011';
@@ -384,5 +501,79 @@ describe('ConversationTitleService', () => {
     );
 
     expect(titles.get(CONVERSATION_ID)).to.equal('Project chat');
+  });
+});
+
+describe('Artifacts Controller deleteArtifact', () => {
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  function createDeleteResponse(): JsonResponseDouble & { end: sinon.SinonStub } {
+    const res = { ...createMockResponse(), end: sinon.stub() };
+    res.status.returns(res);
+    return res;
+  }
+
+  it('sends DELETE for the encoded id with the caller headers and answers 204 with no body', async () => {
+    const execStub = sinon
+      .stub(connectorUtils, 'executeConnectorCommand')
+      .resolves({ statusCode: 204, data: undefined });
+    const req = createMockRequest({ params: { artifactId: 'art_1-x' } });
+    const res = createDeleteResponse();
+    const next = createMockNext();
+
+    await invoke(deleteArtifact(createMockAppConfig()), req, res, next);
+
+    expect(execStub.calledOnce).to.equal(true);
+    const [uri, method, headers] = execStub.firstCall.args;
+    expect(uri).to.equal('http://connector.local/api/v1/artifacts/art_1-x');
+    expect(method).to.equal('DELETE');
+    expect(headers).to.have.property('authorization', 'Bearer test-token');
+    expect(res.status.calledWith(204)).to.equal(true);
+    expect(res.end.calledOnce).to.equal(true);
+    expect(res.json.called).to.equal(false);
+    expect(next.called).to.equal(false);
+  });
+
+  for (const [statusCode, errorType] of [
+    [403, ForbiddenError],
+    [404, NotFoundError],
+    [503, ServiceUnavailableError],
+  ] as const) {
+    it(`passes a ${statusCode} from the connectors service on as ${errorType.name}`, async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode,
+        data: { detail: 'from python' },
+      });
+      const res = createDeleteResponse();
+      const next = createMockNext();
+
+      await invoke(
+        deleteArtifact(createMockAppConfig()),
+        createMockRequest({ params: { artifactId: 'art-1' } }),
+        res,
+        next,
+      );
+
+      expect(next.calledOnce).to.equal(true);
+      expect(next.firstCall.args[0]).to.be.instanceOf(errorType);
+      expect(res.status.called).to.equal(false);
+    });
+  }
+
+  it('refuses an unauthenticated caller without calling the connectors service', async () => {
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand');
+    const next = createMockNext();
+
+    await invoke(
+      deleteArtifact(createMockAppConfig()),
+      createMockRequest({ user: undefined, params: { artifactId: 'art-1' } }),
+      createDeleteResponse(),
+      next,
+    );
+
+    expect(execStub.called).to.equal(false);
+    expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
   });
 });
