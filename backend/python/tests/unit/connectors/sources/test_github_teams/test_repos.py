@@ -148,11 +148,11 @@ class TestTimestampBackfill:
         c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
-        sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (100, 200)})
+        sync.timestamps._fetch_commit_dates = AsyncMock(return_value=({"src/main.py": (100, 200)}, None))
 
         await sync.timestamps.backfill_repo(repo)
 
-        sync.timestamps.fetch_commit_dates.assert_awaited_once_with(
+        sync.timestamps._fetch_commit_dates.assert_awaited_once_with(
             repo.owner.login, repo.name, ["src/main.py"],
         )
         [patches] = _patch_calls(c, "records")
@@ -172,7 +172,7 @@ class TestTimestampBackfill:
         c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
-        sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (None, 200)})
+        sync.timestamps._fetch_commit_dates = AsyncMock(return_value=({"src/main.py": (None, 200)}, None))
 
         await sync.timestamps.backfill_repo(repo)
 
@@ -294,6 +294,224 @@ class TestFetchCommitDates:
         dates = await sync.timestamps.fetch_commit_dates("acme", "widgets", ["src/a.py"])
 
         assert dates == {"src/a.py": (1704412800000, 1704412800000)}
+
+
+def _graphql_paths(query: str) -> list[str]:
+    import re
+
+    return re.findall(r'history\(first: 1, path: "([^"]+)"', query)
+
+
+def _one_commit_each(query: str) -> object:
+    return _graphql_response({
+        f"p{i}": {
+            "totalCount": 1,
+            "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+            "pageInfo": {"endCursor": "abc 0"},
+        }
+        for i in range(len(_graphql_paths(query)))
+    })
+
+
+class TestCommitDateFailures:
+    """GraphQL failures are told apart instead of all falling back to REST, which
+    costs two core requests per path. On a large repository 151 batches failed
+    in half an hour (117 rate-limited, 34 too heavy), and each fallback spent up
+    to 200 requests from the quota content indexing was waiting on."""
+
+    @staticmethod
+    def _connector(graphql) -> tuple[object, list[str], list[list[str]]]:
+        c = make_mock_connector()
+        rest_paths: list[str] = []
+        graphql_batches: list[list[str]] = []
+        commit = SimpleNamespace(commit=SimpleNamespace(author=SimpleNamespace(
+            date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+        )))
+
+        async def fake_ds_call(method, *args, **kwargs) -> object:
+            if method is c.data_source.graphql_query:
+                graphql_batches.append(_graphql_paths(args[0]))
+                return graphql(args[0])
+            assert method is c.data_source.list_commits_first_and_last
+            rest_paths.append(args[2])
+            return ok_response((commit, commit))
+
+        c.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
+        return c, rest_paths, graphql_batches
+
+    async def test_a_batch_too_heavy_to_answer_is_split_and_asked_again(self) -> None:
+        def graphql(query: str) -> object:
+            if len(_graphql_paths(query)) > 20:
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _one_commit_each(query)
+
+        c, rest_paths, batches = self._connector(graphql)
+        paths = [f"src/f{i}.py" for i in range(40)]
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
+
+        assert set(dates) == set(paths)
+        assert rest_paths == []
+        # The smaller size sticks: the second half isn't tried at 40 again.
+        assert [len(b) for b in batches] == [40, 20, 20]
+
+    @pytest.mark.parametrize("failure", [
+        failed_response("HTTP 403: secondary rate limit", status_code=429),
+        failed_response("[{'type': 'RATE_LIMITED', 'message': 'API rate limit exceeded'}]"),
+    ])
+    async def test_a_rate_limit_stops_without_falling_back_to_rest(self, failure: object) -> None:
+        c, rest_paths, batches = self._connector(lambda query: failure)
+        paths = [f"src/f{i}.py" for i in range(25)]
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
+
+        assert dates == {}
+        assert rest_paths == []
+        assert len(batches) == 1
+
+    async def test_only_a_batch_failing_at_the_floor_falls_back_to_rest(self) -> None:
+        def graphql(query: str) -> object:
+            if "src/bad.py" in _graphql_paths(query):
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _one_commit_each(query)
+
+        c, rest_paths, batches = self._connector(graphql)
+        paths = ["src/bad.py", *(f"src/f{i}.py" for i in range(19))]
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
+
+        assert set(dates) == set(paths)
+        assert [len(b) for b in batches] == [20, 10, 10]
+        assert sorted(rest_paths) == sorted(paths[:10])
+
+    async def test_a_rate_limit_on_the_oldest_commit_leaves_the_path_undated(self) -> None:
+        """Taking the newest commit as created would stamp a wrong date for good:
+        the backfill only revisits records missing both dates."""
+        def graphql(query: str) -> object:
+            if "after:" in query:
+                return failed_response("HTTP 429", status_code=429)
+            return _graphql_response({
+                "p0": {"totalCount": 3, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+                "p1": {"totalCount": 1, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+            })
+
+        c, rest_paths, _batches = self._connector(graphql)
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", ["src/a.py", "src/b.py"])
+
+        assert dates == {"src/b.py": (1704412800000, 1704412800000)}
+        assert rest_paths == []
+
+    async def test_a_failed_oldest_commit_query_leaves_the_path_undated(self) -> None:
+        """A 502 that outlasts ds_call's retries at the smallest batch is a failed
+        read, not an empty one: no created date is taken from the newest commit."""
+        def graphql(query: str) -> object:
+            if "after:" in query:
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _graphql_response({
+                "p0": {"totalCount": 3, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+                "p1": {"totalCount": 1, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+            })
+
+        c, rest_paths, _batches = self._connector(graphql)
+
+        # The backfill's read: the path is left out, so it stays undated and is asked again.
+        dates, failure = await ReposSync(c).timestamps._fetch_commit_dates(
+            "acme", "widgets", ["src/a.py", "src/b.py"],
+        )
+
+        assert dates == {"src/b.py": (1704412800000, 1704412800000)}
+        assert failure is None
+        assert rest_paths == []
+
+    async def test_the_sync_dates_a_path_whose_oldest_commit_query_failed_over_rest(self) -> None:
+        """The incremental sync keeps stored dates for a missing path, and the
+        backfill never revisits a dated record, so the sync's read fills it in."""
+        def graphql(query: str) -> object:
+            if "after:" in query:
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _graphql_response({
+                "p0": {"totalCount": 3, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+                "p1": {"totalCount": 1, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+            })
+
+        c, rest_paths, _batches = self._connector(graphql)
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", ["src/a.py", "src/b.py"])
+
+        assert set(dates) == {"src/a.py", "src/b.py"}
+        assert dates["src/a.py"] == (1704412800000, 1704412800000)
+        assert rest_paths == ["src/a.py"]
+
+    def test_failure_detail_redacts_urls(self) -> None:
+        from app.connectors.sources.github_teams.timestamps import _classify_failure
+
+        res = failed_response("upstream https://user:hunter2@example.com/x?token=abc failed")
+        detail = _classify_failure(res).detail
+        assert "hunter2" not in detail and "token=abc" not in detail
+
+    async def test_a_rate_limited_rest_fallback_stops_the_fetch(self) -> None:
+        """A secondary limit can leave the core quota above the reserve, so a
+        rate-limited REST answer has to stop the fetch, not read as no history."""
+        c = make_mock_connector()
+        graphql_batches: list[list[str]] = []
+        rest_paths: list[str] = []
+
+        async def fake_ds_call(method, *args, **kwargs) -> object:
+            if method is c.data_source.graphql_query:
+                paths = _graphql_paths(args[0])
+                graphql_batches.append(paths)
+                if len(paths) > 10 or paths[0] == "src/f0.py":
+                    return failed_response("HTTP 502: <html>", status_code=502)
+                return _one_commit_each(args[0])
+            rest_paths.append(args[2])
+            limited = failed_response("API rate limit exceeded", status_code=429)
+            limited.retry_after_seconds = 60
+            return limited
+
+        c.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
+        paths = [f"src/f{i}.py" for i in range(20)]
+
+        dates, failure = await ReposSync(c).timestamps._fetch_commit_dates("acme", "widgets", paths)
+
+        assert failure is not None and failure.rate_limited
+        assert dates == {}
+        assert all(p in {f"src/f{i}.py" for i in range(10)} for p in rest_paths)
+        # The 20, then the first 10 at the floor; nothing for the second 10 once REST is rate-limited.
+        assert [len(b) for b in graphql_batches] == [20, 10]
+        assert len(rest_paths) <= 10
+
+    async def test_a_rate_limited_backfill_pauses_until_the_next_sync(self) -> None:
+        from app.connectors.sources.github_teams.timestamps import _GraphqlFailure
+
+        c = make_mock_connector()
+        c.runtime.refresh_token_if_needed = AsyncMock()
+        first, second = make_repo(repo_id=1), make_repo(repo_id=2)
+        c.projects._resolve_repos_with_filters = AsyncMock(return_value=[first, second])
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
+            side_effect=[[_code_node(1, "src/a.py"), _code_node(1, "src/b.py")], [], []],
+        )
+        sync = ReposSync(c)
+        sync.timestamps._fetch_commit_dates = AsyncMock(return_value=(
+            {"src/a.py": (100, 200)}, _GraphqlFailure(True, False, 1800, "HTTP 429"),
+        ))
+
+        await sync.timestamps._run()
+
+        # What was dated before the limit is kept, the folders are stamped from
+        # it, and the second repository waits for the next run.
+        [patches] = _patch_calls(c, "records")
+        assert [p["id"] for p in patches] == ["node-blob-src/a.py"]
+        assert c.data_entities_processor.get_nodes_by_filters.await_count == 3
+        c.logger.error.assert_not_called()
+        assert any("paused" in str(call.args[0]) for call in c.logger.info.call_args_list)
+        assert sync.timestamps._task is None
 
 
 class TestIncrementalTimestampStamping:

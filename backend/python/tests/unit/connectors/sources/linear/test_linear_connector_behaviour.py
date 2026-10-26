@@ -21,6 +21,7 @@ from app.connectors.sources.linear.api_gateway import (
 )
 from app.connectors.sources.linear.connector import (
     MAX_INLINE_IMAGE_BYTES,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
     file_record_id,
     link_destination,
@@ -1161,7 +1162,7 @@ class TestRunSync:
         for sync_point, key in (
             (connector.attachments_sync_point, "attachments"),
             (connector.documents_sync_point, "documents"),
-            (connector.projects_sync_point, "projects"),
+            (connector.projects_sync_point, PROJECTS_CHECKPOINT_KEY),
         ):
             sync_point.store[key] = {"last_sync_time": NOW - 1000, "resume_cursor": "cursor-1",
                                      "resume_since": 1, "resume_started_at": NOW - 500}
@@ -1170,7 +1171,7 @@ class TestRunSync:
         async def sync_attachments(_teams) -> None:
             seen["attachments"] = dict(connector.attachments_sync_point.store["attachments"])
             seen["documents"] = dict(connector.documents_sync_point.store["documents"])
-            seen["projects"] = dict(connector.projects_sync_point.store["projects"])
+            seen["projects"] = dict(connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY])
 
         connector._sync_attachments = AsyncMock(side_effect=sync_attachments)
 

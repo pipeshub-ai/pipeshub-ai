@@ -24,6 +24,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
 from app.models.entities import (
@@ -859,7 +860,7 @@ class TestSyncProjects:
 
         connector._project_to_records.assert_awaited_once_with("proj-1", {"team-1"})
         dep.on_new_records.assert_awaited_once_with([(mock_project, [])])
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1_705_400_000_000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1_705_400_000_000
 
     @pytest.mark.asyncio
     async def test_sync_projects_empty_teams(self):

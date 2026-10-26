@@ -29,6 +29,7 @@ on:
             - bookstack
             - minio
             - sharepoint
+            - sharepoint_sim
             - confluence
             - jira
             - zendesk
@@ -281,7 +282,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
@@ -319,16 +320,30 @@ jobs:
       # notion_sim.env, loaded by the "Use the connector simulators" step.
       # CONNSIM_REF pins the simulator commit the image is built from and
       # CONNSIM_PACK_* the content pack it serves; together they fix every fixture
-      # value in those env files.
-      CONNSIM_REF: d31bd5189fe24903ab5933e4b18f5e0da0557b56
+      # value in those env files. The same image serves the Gmail simulator. The
+      # pinned commit is connectors-simulator's integration/notion-gmail branch:
+      # d31bd51 (Confluence hardening, with the Notion simulator, #6) plus the
+      # Gmail simulator (#5); none of them merged into its main yet.
+      CONNSIM_REF: 7b4ec0f83c717f9d5e81178303c884924ad6bfed
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
       CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
-      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 4, with the Drive suites'
-      # Google credentials; connectors/gmail_sim.env points the Gmail connectors at it.
-      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
+      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 2, next to Jira's.
+      # connectors/gmail_sim.env points the Gmail connectors at it and holds every value they need: no secrets.
+      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
       NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
       NEEDS_NOTION_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'true' || 'false' }}
+      # The sharepoint_sim suite runs against the SharePoint simulator on shard 3. It is not a profile: the
+      # connector calls Microsoft's fixed host names over HTTPS, so docker-compose.integration.sharepoint-sim.yml
+      # answers them through a TLS front under those names and has the app trust its CA. The "Use the SharePoint
+      # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE, so no suite on that
+      # shard may reach the real Microsoft 365: the live sharepoint suite (shard 1) and outlook (shard 2) stay off it.
+      # Its own pin and image: CONNSIM_SHAREPOINT_REF is connectors-simulator's main with the SharePoint
+      # simulator (#7), while CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence
+      # changes main lacks. One pin will do once that branch is on main.
+      CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
+      SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
+      NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -405,12 +420,14 @@ jobs:
       # and shard 3 zammad (zammad-source). The two Google Drive suites have
       # shard 4: together they pushed shard 2 past the job timeout.
       # A new connector suite goes on the lightest shard (outlook went on
-      # shard 2, which was lightest); check with scripts/shard_balance.py.
+      # shard 2, which was lightest); check with scripts/shard_balance.py. The
+      # Gmail suites are on shard 2 too: they need the simulator image Jira's
+      # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or gmail_workspace or gmail_individual"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
+      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -523,7 +540,8 @@ jobs:
             grep -Ev '^\s*(#|$)' integration-tests/connectors/notion_sim.env >> "$GITHUB_ENV"
           fi
 
-      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes.
+      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes. Its
+      # settings set GMAIL_GOOGLE_API_BASE_URL, so the Gmail suites fail rather than skip if it is not up.
       - name: Use the Gmail simulator
         if: env.NEEDS_GMAIL_SIM == 'true'
         run: |
@@ -531,6 +549,27 @@ jobs:
             docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
           fi
           grep -Ev '^\s*(#|$)' integration-tests/connectors/gmail_sim.env >> "$GITHUB_ENV"
+
+      - name: Check out the SharePoint simulator
+        if: env.NEEDS_SHAREPOINT_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_SHAREPOINT_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-sharepoint
+          persist-credentials: false
+
+      # No dataset: each test loads its own tenant. make-certs.sh makes a CA for this run only (its key is
+      # deleted, both certificates expire in two days).
+      - name: Use the SharePoint simulator
+        if: env.NEEDS_SHAREPOINT_SIM == 'true'
+        run: |
+          docker build -q -t "$SHAREPOINT_SIM_IMAGE" connectors-simulator-sharepoint
+          deployment/docker-compose/sharepoint-sim/make-certs.sh "$RUNNER_TEMP/sharepoint-sim-tls"
+          echo "SHAREPOINT_SIM_TLS_DIR=$RUNNER_TEMP/sharepoint-sim-tls" >> "$GITHUB_ENV"
+          echo "SHAREPOINT_SIM_COMPOSE=-f docker-compose.integration.sharepoint-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/sharepoint_sim.env >> "$GITHUB_ENV"
 
       - name: Pull pre-built base images
         run: |
@@ -602,7 +641,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -771,10 +810,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -794,13 +833,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -944,10 +983,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
-            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -967,7 +1006,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'
