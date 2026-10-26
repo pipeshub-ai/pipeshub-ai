@@ -1162,6 +1162,62 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('password setup for users without a password', () => {
+    // userValidator sets req.user and nothing else, so the handlers must not need a bound context.
+    const authedReq: any = {
+      user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+    };
+
+    it('getPasswordStatus reports hasPassword false when no credentials are stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: false })).to.be.true;
+    });
+
+    it('getPasswordStatus reports hasPassword true when a hashed password is stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: true })).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail mails a reset link to a user with no password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'T' },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall?.args[0]?.usersMails).to.deep.equal(['test@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail refuses a request with no authenticated user', async () => {
+      await controller.sendPasswordSetupEmail({} as any, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('sendPasswordSetupEmail refuses a user who already has a password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+  });
+
   describe('resetPasswordViaEmailLink', () => {
     it('should call next(error) when password is missing', async () => {
       const req: any = {

@@ -174,6 +174,16 @@
 {"id":"createUserAccountRouter POST /login/otp/generate #0 query-empty","derive":"query-empty","expected":{"ok":"c863e4094e5c7ab4"}},
 {"id":"createUserAccountRouter POST /login/otp/generate #0 params-empty","derive":"params-empty","expected":{"ok":"c863e4094e5c7ab4"}}
 ]},
+{"key":"createUserAccountRouter POST /password/setup/email #0","cases":[
+{"id":"createUserAccountRouter POST /password/setup/email #0 empty-all","payload":{},"expected":{"ok":"28ad986f48906dd6"}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 body={}","payload":{"body":{}},"expected":{"ok":"edb3004c29793865"}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 body=[]","payload":{"body":[]},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request must be a group of fields.","errors":[["INVALID_TYPE","body","The request must be a group of fields."]]}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 body=\"s\"","payload":{"body":"s"},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request must be a group of fields.","errors":[["INVALID_TYPE","body","The request must be a group of fields."]]}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 body-absent","derive":"body-absent","expected":{"ok":"28ad986f48906dd6"}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 body-empty","derive":"body-empty","expected":{"ok":"edb3004c29793865"}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 query-empty","derive":"query-empty","expected":{"ok":"28ad986f48906dd6"}},
+{"id":"createUserAccountRouter POST /password/setup/email #0 params-empty","derive":"params-empty","expected":{"ok":"28ad986f48906dd6"}}
+]},
 {"key":"createUserAccountRouter POST /password/reset #0","cases":[
 {"id":"createUserAccountRouter POST /password/reset #0 valid","payload":{"body":{"currentPassword":"test","newPassword":"test","cf-turnstile-response":"test"}},"expected":{"ok":"dbcf6bc30aa8bdfa"}},
 {"id":"createUserAccountRouter POST /password/reset #0 minimal","payload":{"body":{"newPassword":"test"}},"expected":{"ok":"806a457a5b84a35f"}},

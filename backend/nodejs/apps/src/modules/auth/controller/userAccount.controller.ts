@@ -477,6 +477,72 @@ export class UserAccountController {
 
     return userCredentials;
   }
+  // userValidator verifies the JWT and sets req.user; it does not bind an org context.
+  private callerIdentity(req: AuthSessionRequest): {
+    userId: string;
+    orgId: string;
+  } {
+    const userId = String(req.user?.userId ?? '');
+    const orgId = String(req.user?.orgId ?? '');
+    if (!userId || !orgId) {
+      throw new UnauthorizedError(SESSION_NO_LONGER_VALID);
+    }
+    return { userId, orgId };
+  }
+
+  async getPasswordStatus(
+    req: AuthSessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { userId, orgId } = this.callerIdentity(req);
+      const userCredentialData = await UserCredentials.findOne({
+        userId,
+        orgId,
+        isDeleted: false,
+      });
+      res.json({ hasPassword: !!userCredentialData?.hashedPassword });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Users who signed in only through SSO have no password. They set one through the
+  // same emailed single-use link as a forgotten password, so the inbox is the proof.
+  async sendPasswordSetupEmail(
+    req: AuthSessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { userId, orgId } = this.callerIdentity(req);
+      const userCredentialData = await UserCredentials.findOne({
+        userId,
+        orgId,
+        isDeleted: false,
+      });
+      if (userCredentialData?.hashedPassword) {
+        throw new BadRequestError(
+          'A password is already set. Use change password instead.',
+        );
+      }
+      const userFindResult = await this.iamService.getUserById(
+        userId,
+        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+      );
+      if (userFindResult.statusCode !== 200) {
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
+      }
+      await this.sendForgotPasswordEmail(
+        userFindResult.data as Record<string, unknown>,
+      );
+      res.status(200).send({ data: 'mail sent' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async hasPasswordMethod(
     req: AuthenticatedServiceRequest,
     res: Response,
