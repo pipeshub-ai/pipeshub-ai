@@ -70,7 +70,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@pipeshub-ai/mcp": "4.5.0",
     "@qdrant/js-client-rest": "^1.20.0",
-    "@slack/bolt": "^4.6.0",
+    "@slack/bolt": "^5.1.0",
     "arangojs": "^10.6.0",
     "async-mutex": "^0.5.0",
     "axios": "^1.20.0",
