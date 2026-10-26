@@ -1,7 +1,6 @@
 /**
- * What only PostgreSQL has to prove for the conversation stores: the author-only columns are projected per row inside
- * SQL, the content search keeps its budget, no row crosses an organisation under concurrency through PgBouncer, the
- * row policies hold, and the plans use the intended indexes and touch one org partition.
+ * What only PostgreSQL has to prove for the conversation stores: no row crosses an organisation under concurrency through
+ * PgBouncer, the row policies hold, the content search is scoped to the organisation, and the plans use the intended indexes.
  */
 import 'reflect-metadata';
 import { EventEmitter } from 'node:events';
@@ -426,7 +425,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         ).to.equal(true);
       });
 
-      it('refuses a write that names another organisation, and a direct read of a partition', async () => {
+      it('refuses a write that names another organisation', async () => {
         const a = newId(),
           b = newId();
         const e = await inOrg(a, () =>
@@ -439,14 +438,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           ),
         ).catch((x) => x);
         expect(e).to.be.instanceOf(PermissionDenied);
-        const p = await inOrg(a, () =>
-          stack.rt.withUow({}, (tx) =>
-            tx.query(
-              '/* pipeshub:test.leaf */ SELECT 1 FROM conversation.chat_sessions_h00',
-            ),
-          ),
-        ).catch((x) => x);
-        expect(p).to.be.instanceOf(PermissionDenied);
       });
 
       it('the content search answers only from the caller’s org, and finds a term in any message of the chat', async () => {
@@ -487,7 +478,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     });
 
     describe('plans', () => {
-      it('use the owner and members indexes, the message primary key, and one org partition', async () => {
+      it('use the owner and members indexes and the primary keys', async () => {
         // an org with many chats among a few thousand rows of others, statistics fresh
         const org = newId(),
           me = newId();
@@ -520,42 +511,34 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
                 .join('\n'),
             ),
           );
-        const leaves = (p: string, table: string) =>
-          new Set(p.match(new RegExp(`${table}_h\\d\\d`, 'g')) ?? []);
-
         const owner = await plan(
           `SELECT s.id FROM conversation.chat_sessions s WHERE s.org_id = $1 AND NOT s.is_deleted AND NOT s.is_archived AND s.session_type = 'chat' AND s.user_id = $2::text
             ORDER BY s.last_activity_at DESC NULLS LAST, s.id DESC LIMIT 20`,
           [org, me],
         );
         expect(owner).to.match(
-          /chat_sessions_h\d\d_org_id_user_id_session_type_last_activity_/,
+          /chat_sessions_owner_list/,
         );
-        expect(leaves(owner, 'chat_sessions').size).to.equal(1);
         expect(owner).to.not.match(/Sort/);
 
         const messages = await plan(
           'SELECT m.seq FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq OFFSET 0 LIMIT 50',
           [org, (2000001).toString(16).padStart(24, '0')],
         );
-        expect(messages).to.match(/chat_messages_h\d\d_pkey/);
-        expect(leaves(messages, 'chat_messages').size).to.equal(1);
+        expect(messages).to.match(/chat_messages_pkey/);
 
         const shared = await plan(
           `SELECT s.id FROM conversation.chat_session_members w JOIN conversation.chat_sessions s ON s.org_id = $1 AND s.id = w.session_id
             WHERE w.org_id = $1 AND w.user_id = $2::text AND s.is_shared AND NOT s.is_deleted`,
           [org, me],
         );
-        expect(shared).to.match(/chat_session_members_h\d\d_org_id_user_id_/);
-        expect(leaves(shared, 'chat_sessions').size).to.equal(1);
-        expect(leaves(shared, 'chat_session_members').size).to.equal(1);
+        expect(shared).to.match(/chat_session_members_(org_id_user_id|by_user)/);
 
         const byId = await plan(
           'SELECT s.id FROM conversation.chat_sessions s WHERE s.org_id = $1 AND s.id = $2::text',
           [org, '000000000000000000000001'],
         );
-        expect(byId).to.match(/chat_sessions_h\d\d_pkey/);
-        expect(leaves(byId, 'chat_sessions').size).to.equal(1);
+        expect(byId).to.match(/chat_sessions_pkey/);
       });
     });
   });

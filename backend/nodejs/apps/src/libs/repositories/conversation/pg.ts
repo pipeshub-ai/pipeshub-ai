@@ -1,8 +1,8 @@
 /**
  * PostgreSQL implementation of the conversation repository (`DOC_STORE=postgres`).
  *
- * Every statement names the org as `$1` in every reference to a partitioned table (explicit pruning; the row policy
- * is the second line of defence, not the first). The org comes from the unit of work (the ambient org context); an
+ * Every statement names the org as `$1` in every reference to a table (the row policy is the second line of defence,
+ * not the first; an extension that partitions by org prunes on it). The org comes from the unit of work (the ambient org context); an
  * `orgId` argument must equal it. Methods given a `tx` use it; methods that are not, join the unit already open in
  * the async context or open their own. The run lease always opens its own: it must never share a transaction with
  * a turn.

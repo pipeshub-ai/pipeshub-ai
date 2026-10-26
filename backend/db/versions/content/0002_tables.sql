@@ -2,7 +2,7 @@
 -- plain text (the kernel's format check). Optional fields are nullable columns: a NULL column is a key the row mapper leaves out.
 CREATE DOMAIN content.oid24 AS text COLLATE "C" CHECK (VALUE ~ '^[0-9a-f]{24}$');
 
--- LH = LIST(org_id) with a HASH(org_id) DEFAULT partition; a large org can later get a LIST partition of its own.
+-- Plain tables: org_id leads every key and index, so a deployment that serves many orgs can partition them by org later.
 CREATE TABLE content.documents (
   org_id text NOT NULL,
   id content.oid24 NOT NULL,
@@ -38,16 +38,7 @@ CREATE TABLE content.documents (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   PRIMARY KEY (org_id, id)
-) PARTITION BY LIST (org_id);
-
-DO $$
-DECLARE i int;
-BEGIN
-  CREATE TABLE content.documents_def PARTITION OF content.documents DEFAULT PARTITION BY HASH (org_id);
-  FOR i IN 0..63 LOOP
-    EXECUTE format('CREATE TABLE content.documents_h%2$s PARTITION OF content.documents_def FOR VALUES WITH (MODULUS 64, REMAINDER %1$s)', i, lpad(i::text, 2, '0'));
-  END LOOP;
-END $$;
+);
 
 -- Two presigns of one revision racing each other settle on one row; the first column also serves listing and purging a record's revisions.
 CREATE UNIQUE INDEX documents_artifact_set ON content.documents (org_id, (artifact_set->>'virtualRecordId'), (artifact_set->>'rev'))

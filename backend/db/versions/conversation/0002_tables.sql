@@ -1,6 +1,6 @@
 -- Tables of the conversation aggregate. Every id column is a 24-hex ObjectId string (the migrated rows keep their Mongo _id);
 -- C collation keeps ObjectId time order for keyset cursors. org_id stays plain text (the kernel's format check).
--- LH = LIST(org_id) with a HASH(org_id) DEFAULT partition; a large org can later get its own LIST partition.
+-- Plain tables: org_id leads every key and index, so a deployment that serves many orgs can partition them by org later.
 CREATE DOMAIN conversation.oid24 AS text COLLATE "C" CHECK (VALUE ~ '^[0-9a-f]{24}$');
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ext;
 CREATE EXTENSION IF NOT EXISTS btree_gin WITH SCHEMA ext;
@@ -39,7 +39,7 @@ CREATE TABLE conversation.chat_sessions (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   PRIMARY KEY (org_id, id)
-) PARTITION BY LIST (org_id);
+);
 
 CREATE TABLE conversation.chat_session_members (
   org_id text NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE conversation.chat_session_members (
   entry_id conversation.oid24 NOT NULL,  -- the _id the document store gave each sharedWith entry (the API serves it)
   PRIMARY KEY (org_id, session_id, user_id),
   FOREIGN KEY (org_id, session_id) REFERENCES conversation.chat_sessions (org_id, id) ON DELETE CASCADE
-) PARTITION BY LIST (org_id);
+);
 
 CREATE TABLE conversation.chat_messages (
   org_id text NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE conversation.chat_messages (
   PRIMARY KEY (org_id, session_id, seq),
   UNIQUE (org_id, id),
   FOREIGN KEY (org_id, session_id) REFERENCES conversation.chat_sessions (org_id, id) ON DELETE CASCADE
-) PARTITION BY LIST (org_id);
+);
 
 CREATE TABLE conversation.citations (
   org_id text NOT NULL,
@@ -93,19 +93,7 @@ CREATE TABLE conversation.citations (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   PRIMARY KEY (org_id, id)
-) PARTITION BY LIST (org_id);
-
-DO $$
-DECLARE t text; i int;
-BEGIN
-  FOREACH t IN ARRAY ARRAY['chat_sessions', 'chat_session_members', 'chat_messages', 'citations'] LOOP
-    EXECUTE format('CREATE TABLE conversation.%1$s_def PARTITION OF conversation.%1$s DEFAULT PARTITION BY HASH (org_id)', t);
-    FOR i IN 0..63 LOOP
-      EXECUTE format('CREATE TABLE conversation.%1$s_h%2$s PARTITION OF conversation.%1$s_def FOR VALUES WITH (MODULUS 64, REMAINDER %2$s)',
-                     t, lpad(i::text, 2, '0'));
-    END LOOP;
-  END LOOP;
-END $$;
+);
 
 CREATE INDEX chat_sessions_owner_list ON conversation.chat_sessions (org_id, user_id, session_type, last_activity_at DESC NULLS LAST, id DESC)
   WHERE NOT is_deleted AND NOT is_archived;
