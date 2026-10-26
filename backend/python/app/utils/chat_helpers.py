@@ -61,6 +61,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
 from app.services.vector_db.strategy import QueryContext
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
@@ -1527,7 +1528,8 @@ async def _relations_per_record(
         for relation_type in relation_types
         for outgoing in (True, False)
     ]
-    results = await asyncio.gather(
+    results = await gather_with_concurrency(
+        GRAPH_FANOUT_CONCURRENCY,
         *[one(rid, rel, outgoing=out) for rid, rel, out in jobs],
         return_exceptions=True,
     )
@@ -1732,7 +1734,8 @@ async def _resolve_target_metadata(
         # Anything the batch did not account for is retried individually.
         missing = [rid for rid in ids_needing_docs if rid not in resolved]
         if missing:
-            per_id = await asyncio.gather(
+            per_id = await gather_with_concurrency(
+                GRAPH_FANOUT_CONCURRENCY,
                 *[graph_provider.get_document(rid, collection) for rid in missing],
                 return_exceptions=True,
             )
@@ -1795,7 +1798,8 @@ async def _resolve_target_metadata(
             graph_provider, out_of_context_ids, doc_index
         )
 
-        ctx_results = await asyncio.gather(
+        ctx_results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[
                 _build_linked_record_context_metadata(
                     rid, graph_provider, doc_index, frontend_url,

@@ -27,6 +27,7 @@ from app.services.graph_db.common.record_visibility import (
     is_searchable_record,
 )
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1853,7 +1854,8 @@ class IGraphDBProvider(ABC):
         Those queries are issued concurrently. Awaiting them in place would make
         an unspecialised provider slower than the per-record code this replaced,
         which gathered the same calls; a caller must not lose latency by moving
-        to the batch API.
+        to the batch API. At most ``GRAPH_FANOUT_CONCURRENCY`` run at once, so a
+        page of hits does not open a burst of new database connections.
         """
         jobs = [
             (record_id, relation_type, outgoing)
@@ -1870,7 +1872,8 @@ class IGraphDBProvider(ABC):
             )
             return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
-        results = await asyncio.gather(
+        results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
             return_exceptions=True,
         )

@@ -7554,6 +7554,34 @@ class TestRenderBlocksWithImagesBudgetAccounting:
         assert any("conversation image limit" in item["text"] for item in content)
 
 
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_caps_queries_in_flight() -> None:
+    """Every query in flight can open a new database connection; a page of hits
+    fanned out at once timed connects out ("Connection timeout to host")."""
+    import asyncio
+
+    from app.utils.chat_helpers import _relations_per_record
+    from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY
+
+    in_flight = peak = 0
+
+    async def query(*_args, **_kwargs) -> list:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        return []
+
+    gp = MagicMock()
+    gp.get_child_record_ids_by_relation_type = query
+    gp.get_parent_record_ids_by_relation_type = query
+    record_ids = [f"r{i}" for i in range(GRAPH_FANOUT_CONCURRENCY * 2)]
+    out = await _relations_per_record(gp, record_ids, ["PARENT_CHILD", "ATTACHMENT"])
+    assert set(out) == set(record_ids)
+    assert peak == GRAPH_FANOUT_CONCURRENCY
+
+
 class TestAccessibleNodeIds:
     """A user who does not exist reaches nothing; a lookup that failed is not
     an answer, and must not read as one."""
