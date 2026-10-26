@@ -8,3 +8,4 @@ class StoreType(Enum):
     IN_MEMORY = auto()
     ENVIRONMENT = auto()
     REDIS = auto()
+    POSTGRES = auto()

@@ -239,6 +239,8 @@ def promoted_duplicate_extraction_status(
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
+    if new_indexing_status == ProgressStatus.PASSWORD_PROTECTED.value:
+        return ProgressStatus.SKIPPED.value
     return ProgressStatus.FAILED.value
 
 
@@ -6583,7 +6585,9 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -6594,6 +6598,11 @@ class IGraphDBProvider(ABC):
                 when it belongs to this org
             user_key (str): Current user's key (for permission checking)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with members and permissions, None if not found
@@ -6610,7 +6619,9 @@ class IGraphDBProvider(ABC):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
@@ -6624,6 +6635,11 @@ class IGraphDBProvider(ABC):
             created_after (Optional[int]): Filter teams created after this timestamp (ms)
             created_before (Optional[int]): Filter teams created before this timestamp (ms)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
@@ -6639,7 +6655,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -6652,6 +6670,11 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found
@@ -6772,7 +6795,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -6783,6 +6808,10 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                in the answer. Off by default, because this is the directory of
+                people and a service account's id is what binds an agent to it.
+                Only an organisation administrator may turn it on.
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)

@@ -3368,7 +3368,10 @@ export function findQuestionBehindCard(
   let hasCard = false;
   for (const [i, row] of older.entries()) {
     if (row.messageType === 'user_query') {
-      if (isAskUserQuestionAnswer(row.content) && answersCardBefore(older, i)) {
+      if (
+        isAskUserQuestionAnswer(row.content) &&
+        (answersCardBefore(older, i) || repeatsCardAnswers(older, i))
+      ) {
         intermediateIds.push(row._id);
         hasCard = true;
         continue;
@@ -3395,6 +3398,50 @@ function answersCardBefore(
     if (row.messageType !== 'tool_call') return false;
   }
   return false;
+}
+
+/**
+ * The questions a row of card answers quotes, when the whole row is written the way the app
+ * writes them (`User selections:` then `1. "question" → answer`, one line per question); empty
+ * when any line is something else, so text typed around answers is never read as answers.
+ */
+function quotedCardQuestions(content: string | undefined | null): Set<string> {
+  const questions = new Set<string>();
+  const body = (content ?? '').trimStart().replace(/^User selections:\s*/, '');
+  const lines = body.split('\n').filter((line) => line.trim() !== '');
+  for (const [index, line] of lines.entries()) {
+    const match = /^(\d+)\.\s+"(.+?)"\s+→/.exec(line.trim());
+    const question = match?.[2]?.trim();
+    if (!question || Number(match?.[1]) !== index + 1) return new Set<string>();
+    questions.add(question);
+  }
+  return questions;
+}
+
+/**
+ * Whether the row of answers at `older[i]` answers again a card the same turn already answered:
+ * a card can be sent twice, and the second send follows a reply with no card next to it. No row
+ * records which send made it, so the text decides: written as the app writes answers, and every
+ * question it quotes answered earlier in the turn by answers that do follow a card. A question
+ * the reader typed with the same first words, or that asks anything else, stays its own.
+ */
+function repeatsCardAnswers(
+  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+  i: number,
+): boolean {
+  const quoted = quotedCardQuestions(older[i]?.content);
+  if (quoted.size === 0) return false;
+  const answeredInTurn = new Set<string>();
+  for (let j = i + 1; j < older.length; j += 1) {
+    const row = older[j];
+    if (row?.messageType !== 'user_query') continue;
+    if (!isAskUserQuestionAnswer(row.content) || !answersCardBefore(older, j))
+      break;
+    for (const question of quotedCardQuestions(row.content)) {
+      answeredInTurn.add(question);
+    }
+  }
+  return [...quoted].every((question) => answeredInTurn.has(question));
 }
 
 /** Whether two lists name the same files, whatever their order. */
@@ -3674,6 +3721,12 @@ async function regenerateAnswersInternal(
       );
     }
     const editedQuery = isEdit ? requestedQuery || shownQuestion.content : null;
+    // A card turn is asked again from its first question, edited or not: redoing only the reply to
+    // the stored answers would keep the old card and its answers, with no way to choose again.
+    // Changed answers (`replacementAnswers`) redo the reply to the card instead, so they keep the turn.
+    const turnQuery =
+      editedQuery ??
+      (cardEdit && !replacementAnswers ? shownQuestion.content : null);
     const editedAttachments = attachmentsChanged
       ? requestedAttachments
       : undefined;
@@ -3702,7 +3755,7 @@ async function regenerateAnswersInternal(
     ) {
       regenUserIdx -= 1;
     }
-    if (editedQuery && cardEdit) {
+    if (turnQuery !== null && cardEdit) {
       const questionIdx = allMessagesForRegen.findIndex(
         (msg) => msg._id?.toString() === cardEdit.question._id.toString(),
       );
@@ -3719,15 +3772,21 @@ async function regenerateAnswersInternal(
     const titleFollowsEdit =
       regenUserIdx === 0 &&
       existingConversation.title === shownQuestion.content.slice(0, 100);
-    // The rows an edited card turn leaves behind: its card, the card's answers, earlier replies.
+    // The rows a card turn asked again leaves behind: its card, the card's answers, earlier replies.
     // They go only after the new answer is saved, so a failed save loses nothing but the old answer.
     const replacedTurnIds =
-      editedQuery && cardEdit ? cardEdit.intermediateIds : [];
+      turnQuery !== null && cardEdit ? cardEdit.intermediateIds : [];
     const originalTitle = existingConversation.title;
     let editedQuestionSaved = false;
     let answersReplaced = false;
+    /** Set once the new answer stands for the turn, so the rows it replaced may go. */
+    let turnAnswered = false;
     const saveEditedQuestion = async (): Promise<void> => {
-      if (!editedQuery || !existingConversation) return;
+      if (!existingConversation) return;
+      if (!editedQuery) {
+        turnAnswered = true;
+        return;
+      }
       const editedRow = await updateUserQueryContent(
         (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
         editedQuery,
@@ -3738,7 +3797,9 @@ async function regenerateAnswersInternal(
       if (!editedRow) {
         throw new InternalServerError('Failed to save the edited question');
       }
+      // Only now: a failed save keeps the old card rows, as the question kept its old text.
       editedQuestionSaved = true;
+      turnAnswered = true;
       if (titleFollowsEdit) {
         existingConversation.title = editedQuery.slice(0, 100);
       }
@@ -3746,6 +3807,7 @@ async function regenerateAnswersInternal(
     // A save that failed after the question was rewritten leaves the question as the reader had it,
     // not edited and without an answer.
     const restoreOriginalQuestion = async (): Promise<void> => {
+      turnAnswered = false;
       if (answersReplaced && existingConversation) {
         answersReplaced = false;
         try {
@@ -3782,7 +3844,7 @@ async function regenerateAnswersInternal(
     };
     // The rows the new answer replaced go once it is saved, and never fail it.
     const dropReplacedTurn = async (): Promise<boolean> => {
-      if (!editedQuestionSaved || !existingConversation) return false;
+      if (!turnAnswered || !existingConversation) return false;
       if (replacedTurnIds.length === 0) return false;
       try {
         await deleteMessagesById(
@@ -3808,13 +3870,13 @@ async function regenerateAnswersInternal(
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
-      query: editedQuery ?? replacementAnswers ?? userQuery.content,
+      query: turnQuery ?? replacementAnswers ?? userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
       // The files of the question being asked: the edit's, else those stored with it.
       attachments:
         editedAttachments ??
-        (editedQuery !== null ? shownQuestion : userQuery).attachments ??
+        (turnQuery !== null ? shownQuestion : userQuery).attachments ??
         [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,

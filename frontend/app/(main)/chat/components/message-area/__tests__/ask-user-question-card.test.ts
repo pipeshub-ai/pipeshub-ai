@@ -9,6 +9,7 @@ import {
   mergeAskUserQuestionPayloads,
   normalizeAskUserQuestionPayload,
   parseAnswerMessage,
+  showsStoppedMarker,
 } from '../ask-user-question-card';
 import type { AskUserQuestionPayload, PendingAskUserQuestion } from '../../../types';
 
@@ -663,5 +664,39 @@ describe('what a submit sends when earlier answers already went', () => {
     const full = payloadOf(1, 2, 3);
 
     expect(parseAnswerMessage(buildResumeMessage(full, answers, sent), full)).toEqual(pick(3, 'b'));
+  });
+});
+describe('showsStoppedMarker', () => {
+  const stopped = {
+    status: 'stopped',
+    isStreaming: false,
+    hasQuestionCard: false,
+    hasAnswerText: true,
+    repliedInChat: false,
+  };
+
+  it('marks a settled reply that Stop cut short', () => {
+    expect(showsStoppedMarker(stopped)).toBe(true);
+  });
+
+  it('leaves out a stopped ask turn whose card is its whole output, waiting or answered', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, hasAnswerText: false })).toBe(false);
+  });
+
+  it('leaves out an ask turn closed by chatting, whatever text came before the card', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, repliedInChat: true })).toBe(false);
+  });
+
+  it('marks a stopped resume merged onto the card row with its partial answer', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true })).toBe(true);
+  });
+
+  it('waits until the reply has settled', () => {
+    expect(showsStoppedMarker({ ...stopped, isStreaming: true })).toBe(false);
+  });
+
+  it('leaves out a reply that was not stopped', () => {
+    expect(showsStoppedMarker({ ...stopped, status: 'complete' })).toBe(false);
+    expect(showsStoppedMarker({ ...stopped, status: undefined })).toBe(false);
   });
 });

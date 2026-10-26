@@ -64,6 +64,7 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -9793,7 +9794,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_id, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_id, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -11439,6 +11446,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
                 if not stages_success:
                     raise Exception("CRITICAL: Failed to delete pipeline stage states.")
+
+                # An agent names its sources by connectorId, not by a relationship, so
+                # nothing above reaches them; left behind they show as a raw id.
+                _, knowledge_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.AGENT_KNOWLEDGE.value
+                )
+                if not knowledge_success:
+                    raise Exception("CRITICAL: Failed to remove the connector from agents.")
 
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
@@ -23494,12 +23511,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
         """
         try:
+            # Every account joins the organisation's All team when it is
+            # created, service accounts included, and each member row carries
+            # the `userId` that binds an agent to one. In the member match
+            # rather than around the team, so `memberCount` counts what the
+            # caller was given.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -23508,7 +23535,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -23567,13 +23594,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
         """
         try:
             offset = (page - 1) * limit
+            # The same member list as get_team_with_users, embedded per team.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -23597,7 +23630,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
             WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team, properties(p) AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
@@ -23687,7 +23720,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -23702,11 +23737,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(member_user.fullName) CONTAINS toLower($search) OR toLower(member_user.email) CONTAINS toLower($search))"
 
+            # Before the page is cut and before the count is taken, so the two
+            # agree and neither says how many rows were withheld.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
+
             team_users_query = f"""
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true {search_where}
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where} {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -24019,7 +24060,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -24035,10 +24078,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(u.fullName) CONTAINS toLower($search) OR toLower(u.email) CONTAINS toLower($search))"
 
+            # The row carries `userId`, which is the id an agent stores when
+            # it is bound to a service account, so this listing decides who
+            # learns that a machine identity exists.
+            kind_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('u')}"
+            )
+
             # Query to get users with their team memberships
             users_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             ORDER BY u.fullName ASC
             SKIP $offset
             LIMIT $limit
@@ -24056,7 +24106,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Count total users for pagination
             count_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             RETURN count(DISTINCT u) AS total_count
             """
 

@@ -20,16 +20,10 @@ from app.services.messaging.fail_safe_retry_tracker import FailSafeRetryTracker
 from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.messaging.kafka.admin import KafkaAdmin
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
-from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
-from app.services.messaging.kafka.consumer.indexing_consumer import (
-    IndexingKafkaConsumer,
-)
-from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
 from app.services.messaging.lanes.assignment import (
     AssignedRedisLaneRouter,
     shared_lane_assignments,
@@ -37,6 +31,9 @@ from app.services.messaging.lanes.assignment import (
 from app.services.messaging.lanes.hash_router import build_lane_router
 from app.services.messaging.lanes.interface import LaneAssignmentMode, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
+from app.services.messaging.postgres.admin import PgMessageAdmin
+from app.services.messaging.postgres.consumer import PgMessagingConsumer
+from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.redis_streams.admin import RedisStreamsAdmin
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
@@ -50,8 +47,12 @@ from app.services.messaging.scheduling.interface import (
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.pg_state import PgLeaseManager, PgRetryTracker
 from app.services.redis.config import RedisConnectionConfig
-from app.services.redis.connection_provider_factory import get_redis_provider
+from app.services.redis.connection_provider_factory import (
+    get_redis_provider,
+    uses_pg_state,
+)
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -109,7 +110,7 @@ def _build_producer_lane_router(
     """
     topic = Topic.RECORD_EVENTS.value
     if (
-        broker_type == MessageBrokerType.KAFKA
+        broker_type != MessageBrokerType.REDIS
         or lane_config.assignment is not LaneAssignmentMode.ASSIGNED
         or topic not in lane_config.laned_topics
     ):
@@ -195,6 +196,8 @@ class MessagingFactory:
         Returns:
             The tracker (must call initialize() before use)
         """
+        if uses_pg_state():      # counters shared by every worker process, in PostgreSQL
+            return PgRetryTracker(ttl_seconds=ttl_seconds)
         return FailSafeRetryTracker(
             RetryManager(
                 logger=logger,
@@ -203,6 +206,23 @@ class MessagingFactory:
             ),
             logger,
             ttl_seconds=ttl_seconds,
+        )
+
+    @staticmethod
+    def create_lease_manager(logger: Logger, redis_config: RedisConfig) -> IDistributedLeaseManager:
+        """Cluster-wide capacity leases: Redis ZSETs, or rows in PostgreSQL when ``REDIS_MODE=postgres``."""
+        if uses_pg_state():
+            return PgLeaseManager()
+        from app.services.messaging.distributed_concurrency import (
+            DistributedConcurrencyManager,
+        )
+
+        return DistributedConcurrencyManager(
+            logger,
+            redis_config,
+            key_prefix=messaging_env.concurrency_key_prefix,
+            operation_timeout_seconds=messaging_env.concurrency_redis_timeout_seconds,
+            max_connections=messaging_env.concurrency_redis_max_connections,
         )
 
     @staticmethod
@@ -224,13 +244,19 @@ class MessagingFactory:
         producer: IMessagingProducer
         if broker_type == MessageBrokerType.REDIS:
             _reject_namespaced_redis_streams()
-        if broker_type == MessageBrokerType.KAFKA:
+        if broker_type == MessageBrokerType.POSTGRES:
+            producer = PgMessagingProducer(logger, config if isinstance(config, RedisStreamsConfig) else None)
+        elif broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka producer config is required")
             if not isinstance(config, KafkaProducerConfig):
                 raise TypeError(
                     f"Expected KafkaProducerConfig, got {type(config).__name__}"
                 )
+            from app.services.messaging.kafka.producer.producer import (
+                KafkaMessagingProducer,  # aiokafka: only when Kafka is the broker
+            )
+
             producer = KafkaMessagingProducer(logger, config)
         else:
             if config is None:
@@ -264,9 +290,13 @@ class MessagingFactory:
         """Topic administration for the configured broker (creates missing topics)."""
         if broker_type is None:
             broker_type = get_message_broker_type()
+        if broker_type == MessageBrokerType.POSTGRES:
+            return PgMessageAdmin(logger)
         if broker_type == MessageBrokerType.KAFKA:
             if not isinstance(config, KafkaProducerConfig):
                 raise TypeError(f"Expected KafkaProducerConfig, got {type(config).__name__}")
+            from app.services.messaging.kafka.admin import KafkaAdmin
+
             return KafkaAdmin(logger, config)
         if not isinstance(config, RedisStreamsConfig):
             raise TypeError(f"Expected RedisStreamsConfig, got {type(config).__name__}")
@@ -344,6 +374,18 @@ class MessagingFactory:
 
         if broker_type == MessageBrokerType.REDIS:
             _reject_namespaced_redis_streams()
+        if broker_type == MessageBrokerType.POSTGRES:
+            if not isinstance(config, RedisStreamsConfig):
+                raise TypeError(f"Expected RedisStreamsConfig, got {type(config).__name__}")
+            return PgMessagingConsumer(
+                logger,
+                config,
+                indexing=consumer_type == ConsumerType.INDEXING,
+                disposition_sink=disposition_sink,
+                concurrency_manager=concurrency_manager,
+                stage_admission=stage_admission,
+                worker=worker if consumer_type == ConsumerType.INDEXING else None,
+            )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka consumer config is required")
@@ -351,6 +393,13 @@ class MessagingFactory:
                 raise TypeError(
                     f"Expected KafkaConsumerConfig, got {type(config).__name__}"
                 )
+            from app.services.messaging.kafka.consumer.consumer import (
+                KafkaMessagingConsumer,
+            )
+            from app.services.messaging.kafka.consumer.indexing_consumer import (
+                IndexingKafkaConsumer,
+            )
+
             if consumer_type == ConsumerType.INDEXING:
                 return IndexingKafkaConsumer(
                     logger,
