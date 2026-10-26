@@ -62,6 +62,8 @@ const ArtifactSetSchema = new Schema<ArtifactSet>(
     virtualRecordId: { type: String, required: true },
     rev: { type: String, required: true },
     root: { type: String, required: true },
+    // Set when a delete claims the revision; presign refuses it from then on.
+    retiringAt: { type: Number },
   },
   { _id: false },
 );

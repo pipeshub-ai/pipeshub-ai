@@ -219,6 +219,7 @@ services:
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
 
       # Next.js frontend dev (browser calls Node API on host port 3000)
       - DOCKER_DEV=true

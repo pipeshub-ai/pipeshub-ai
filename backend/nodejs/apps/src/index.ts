@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { config } from 'dotenv';
+import { applyStoreUmbrella } from './libs/config/storeUmbrella';
 import { Logger } from './libs/services/logger.service';
 
 // Loads environment variables
 config();
+applyStoreUmbrella();
 import { Application } from './app';
 import { createGracefulShutdown } from './shutdown';
 

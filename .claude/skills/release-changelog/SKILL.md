@@ -76,6 +76,22 @@ without any `v` prefix (`0.5.0.md`, `0.4.0-beta.2.md`). Create the directory if 
 operator/developer gets by upgrading. Concrete, plain language, no hype.
 Mention scale honestly (e.g. "120+ merged PRs").>
 
+## Breaking changes & upgrade notes
+
+<ONLY if PR titles clearly imply breaking/behavioral changes, port/config changes,
+removals, or migrations. Otherwise omit the section entirely. It comes first, before
+Highlights, because an operator deciding whether to upgrade reads it first.>
+
+## Defaults & new settings
+
+| Setting | Change | Default |
+|---|---|---|
+| `ENV_VAR_NAME` | <new / default changed from X / removed / now required: what it controls> | `<value>` |
+
+<ONLY when the release adds, removes or changes the default of an env var, flag, Labs
+setting, scope or config key. One row per setting, taken from the PRs' text; write "—"
+for an unknown default rather than guessing. Escape `|` inside cells.>
+
 ## Highlights
 
 ### <Major feature/theme 1>
@@ -87,34 +103,46 @@ Cite PRs inline: ([#2223](https://github.com/pipeshub-ai/pipeshub-ai/pull/2223) 
 …
 (3–7 highlights for large releases; 1–3 for small patch releases)
 
-## Breaking changes & upgrade notes
+## New features
 
-<ONLY if PR titles clearly imply breaking/behavioral changes, port/config changes,
-removals, or migrations. Otherwise omit the section entirely.>
+- **<Area>** — <a capability that did not exist before> ([#N](link) — @author)
 
-## Connectors
+## Improvements
 
-- **<Connector name>** — <merged description of all its PRs this release> ([#N](link), [#M](link))
+- **<Area>** — <an existing feature made better or changed> ([#N](link))
 
-## Agents & AI
+## Bug fixes
 
-- <RAG, agents, tools, LLM, embedding, indexing, citations, prompts…> ([#N](link))
+- **<Area>** — <what was broken and now works> ([#N](link), [#M](link))
 
-## Fixes
+## Security fixes
 
-- <bug fixes not already covered above; merge duplicate/follow-up-fix PRs into one bullet> ([#N](link), [#M](link))
+- **<Area>** — <the hole that is closed or the hardening added> ([#N](link))
 
 ## Performance & reliability
 
-- <perf, memory leaks, DB indexes, deadlocks, race conditions, rate limits> ([#N](link))
+- **<Area>** — <what is faster, lighter or more resilient> ([#N](link))
 
-## Security & authentication
+## Deprecations & removals
 
-- <auth, SAML, JWT, OAuth, encryption, input validation> ([#N](link))
+- **<Area>** — <what was deprecated or removed, and what replaces it> ([#N](link))
+
+## Documentation
+
+- **<Area>** — <docs, README, guides> ([#N](link))
 
 ## Developer experience & infrastructure
 
-- <CI, tests, docker, builds, SDK/OpenAPI spec, logging, docs> ([#N](link))
+- **<Area>** — <CI, tests, builds, Docker, dependencies, refactors, logging> ([#N](link))
+
+## Contributors
+
+Thank you to the <N> people who contributed to this release: @a, @b, @c.
+
+<Every author of a PR in the release, most PRs first, then alphabetical; bots left out.
+Take the authors from GitHub, not from the credits above:
+`gh api graphql -f query='{repository(owner:"pipeshub-ai",name:"pipeshub-ai"){p1:pullRequest(number:N){author{login}} …}}'`
+(up to 100 aliased PRs per query). If you cannot run that, leave the section out.>
 
 ## New contributors
 
@@ -125,6 +153,53 @@ removals, or migrations. Otherwise omit the section entirely.>
 
 *Full commit-level detail: [GitHub release](<release url>) · [Compare view](<compare url from raw notes, if present>)*
 ```
+
+### Categories
+
+Every section below Highlights groups changes by **what kind of change** they are, not
+by which part of the product they touch. Put each change in exactly one category, the
+first one in this list that fits:
+
+| Category | Put a change here when… | Examples |
+|---|---|---|
+| Breaking changes & upgrade notes | an operator or API client must act on upgrade: a removed or renamed env var, route, field or scope; a changed default; a migration, reindex or re-issued token | `CODE_GRAPH_BACKFILL`, routes now need a scope, a port moved |
+| Security fixes | it closes a vulnerability or hardens a trust boundary: authn/authz, permission or org-isolation leaks, injection, path traversal, SSRF, secret exposure, CSP/CORS, dependency CVE bumps | PKCE enforced, cross-org model leak, `npm audit` batch |
+| Bug fixes | something that was meant to work did not, and now does | sync stops on a 403, wrong citation, UI crash |
+| Performance & reliability | the same behaviour, now faster, lighter or more resilient: latency, memory, DB indexes, timeouts, retries, deadlocks, race conditions, rate limits, backpressure | new ArangoDB indexes, Redis deadlock, circuit breaker |
+| New features | a capability that did not exist: a connector, a tool, an API route, a setting, a page, a model provider | Slack connector, `fetch_url` tool, PATs |
+| Improvements | an existing feature works better or differently, without being broken before: UX polish, richer output, new options on an existing thing, behaviour changes that need no action | access option becomes a select, better markdown in chat |
+| Deprecations & removals | a feature, filter, API or option is deprecated or removed (and, when users must act, also listed under Breaking) | index-videos filter removed |
+| Documentation | README, guides, API docs, contributor docs | README badges, i18n README |
+| Developer experience & infrastructure | it does not change product behaviour: CI, tests, builds, Docker images, dependency bumps without a CVE, refactors, logging, OpenAPI tooling | unit tests, CI Slack reporting, Zod layers |
+
+**Highlights are listed in their category too.** Each `### ` highlight gets a one-line
+bullet in the category it belongs to (several bullets when it spans categories, e.g. a
+feature plus its security fix), so a reader who opens New features or Security fixes
+sees the release's biggest items there. The bullet cites the highlight's main 1–3 PRs
+and ends with ` See [the highlight](#<anchor>).`, where `<anchor>` is GitHub's slug of
+the highlight heading (lowercase, punctuation other than `-` removed, spaces become
+hyphens: `### AI models: discovery, multi-model add` → `#ai-models-discovery-multi-model-add`).
+
+A breaking change keeps its normal bullet too (a new feature that changes a default is
+listed under New features *and* explained under Breaking). Every other change appears
+in one category only. When one PR mixes a fix and a feature, file it by its main
+purpose. When one connector or area has PRs of several kinds, split them across
+categories rather than keeping one merged bullet per connector.
+
+**Area labels.** Every category bullet starts with a bold area label naming the part of
+the product, so readers can still scan by component: a connector by its name
+(`**Jira connector**`, `**Confluence Data Center connector**`), or one of `**Connectors**`
+(the connector framework, or several connectors at once), `**Agents**`,
+`**Search & chat**`, `**Indexing**`, `**Knowledge base**`, `**Models**`,
+`**MCP**`, `**API**`, `**SDKs**`, `**Auth**`, `**Admin & settings**`, `**UI**`,
+`**Desktop app**`, `**Storage & data layer**`, `**Deployment**`, `**Observability**`,
+`**CI**`, `**Tests**`, `**Dependencies**`, `**Docs**`. Inside a category, keep bullets for
+the same area together and order areas by user impact. A bullet may cover several PRs
+of the same area and kind.
+
+Companion releases (for example SDKs published for this release) may get their own
+`## <Name> — <version>` section after Breaking changes, when the release body or PRs
+describe them in detail.
 
 ### Rules
 
@@ -207,18 +282,28 @@ Changes merged to `main` since the last release: [`<tag>...HEAD`](https://github
 
 <One- or two-sentence narrative: scale ("~195 PRs since 0.5.0") and theme.>
 
-### Added
+### Breaking changes & upgrade notes
+- <what an operator or client must do> ([#N](link))
+
+### New features
 - <condensed bullet, citing only the 1–3 anchor PRs> ([#N](link))
 
-### Changed
-### Fixed
-### Security
-### Breaking changes & upgrade notes
+### Improvements
+### Bug fixes
+### Security fixes
+### Performance & reliability
+### Deprecations & removals
 ```
 
-Use only the sections that apply; 3–10 bullets total, distilled from the detailed
-file's Highlights and Breaking sections — do not re-enumerate every PR. Always keep
-the Breaking section when the detailed file has one.
+Use only the sections that apply, in this order; 3–10 bullets total, distilled from the
+detailed file's Highlights and Breaking sections — do not re-enumerate every PR. Always
+keep the Breaking section when the detailed file has one. File each bullet by the same
+[category rules](#categories) as the detailed file. As in the detailed file, a breaking
+change also gets a one-line bullet in its normal category, pointing to the upgrade note
+when the note carries the details. Documentation and developer-only
+changes stay in the detailed file.
+
+The `## Unreleased` section uses the same headings and category rules.
 
 - **Pre-releases:** append `· *Finalized as [<stable>](#<anchor>)*` to the metadata
   line once the stable ships; when writing the *stable* entry for a cycle that had a

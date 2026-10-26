@@ -2,6 +2,7 @@ export enum StoreType {
   Etcd3 = 'etcd3',
   InMemory = 'inmemory',
   Redis = 'redis',
+  Postgres = 'postgres',
   // Add other backend types as needed
 }
 
@@ -14,6 +15,8 @@ export class KeyValueStoreType {
         return StoreType.InMemory;
       case 'redis':
         return StoreType.Redis;
+      case 'postgres':
+        return StoreType.Postgres;
       default:
         throw new Error(`Unsupported store type: ${storeType}`);
     }
