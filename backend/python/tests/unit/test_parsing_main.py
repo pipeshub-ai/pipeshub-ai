@@ -72,3 +72,38 @@ class TestHealthCheck:
             body = json.loads((await health_check()).body)
 
         assert body["cpu"]["pdf_raster_workers"] == 2
+
+
+class TestPdfParserWiring:
+    """The default PDF parser sends long text PDFs to PdfPlumber unless PdfPlumber takes every PDF."""
+
+    @staticmethod
+    def _default_pdf_parser(monkeypatch, flag: str | None) -> tuple[object, type, type]:
+        from unittest.mock import MagicMock
+
+        from app.parsing_main import _build_registry
+        from app.services.parsing.interface import ParserProvider
+        from app.services.parsing.providers.docling_service_parser import (
+            DoclingServiceParser,
+        )
+        from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
+
+        if flag is None:
+            monkeypatch.delenv("ENABLE_PDFPLUMBER_PROCESSOR", raising=False)
+        else:
+            monkeypatch.setenv("ENABLE_PDFPLUMBER_PROCESSOR", flag)
+        registry = _build_registry(MagicMock(), MagicMock())
+        parser = registry.resolve("application/pdf", "pdf", ParserProvider.DEFAULT)
+        return parser, DoclingServiceParser, PdfPlumberParser
+
+    def test_docling_first_with_pdfplumber_for_long_pdfs(self, monkeypatch) -> None:
+        parser, docling_cls, plumber_cls = self._default_pdf_parser(monkeypatch, None)
+
+        assert isinstance(parser._primary, docling_cls)
+        assert isinstance(parser._large, plumber_cls)
+
+    def test_the_opt_in_flag_still_sends_every_pdf_to_pdfplumber(self, monkeypatch) -> None:
+        parser, _, plumber_cls = self._default_pdf_parser(monkeypatch, "true")
+
+        assert isinstance(parser._primary, plumber_cls)
+        assert parser._large is None
