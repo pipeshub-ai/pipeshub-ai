@@ -1,7 +1,7 @@
 """Tests for app.utils.fetch_full_record — record fetching tools."""
 
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -377,7 +377,55 @@ class TestApplyLiveTicketContextMetadata:
         ticket.to_llm_context_with_live_fields.assert_awaited_once_with(
             frontend_url="http://frontend",
             config_service=config_service,
+            readable_issue_ids=ANY,
         )
+
+    @pytest.mark.asyncio
+    async def test_readable_issue_ids_checks_the_viewer_in_one_batch(self) -> None:
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
+
+        record = {"id": "ticket-1", "record_type": "TICKET"}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={})
+        graph_provider.get_record_key_by_external_id = AsyncMock(
+            side_effect=lambda ext, conn: {"1": "k1", "2": "k2"}.get(ext)
+        )
+        ticket = MagicMock(spec=TicketRecord)
+        ticket.to_llm_context_with_live_fields = AsyncMock(return_value="x")
+
+        with patch(
+            "app.utils.fetch_full_record.create_record_instance_from_dict", return_value=ticket,
+        ), patch(
+            "app.utils.fetch_full_record.accessible_node_ids_for_enrichment",
+            new=AsyncMock(return_value={"k1"}),
+        ) as check:
+            await _apply_live_ticket_context_metadata(
+                record, config_service=MagicMock(), graph_provider=graph_provider,
+                frontend_url=None, org_id="org", user_id="u1",
+            )
+            fn = ticket.to_llm_context_with_live_fields.await_args.kwargs["readable_issue_ids"]
+            assert await fn("conn", {"1", "2", "3"}) == {"1"}
+
+        check.assert_awaited_once_with(graph_provider, {"k1", "k2"}, "u1", "org")
+
+
+class TestResolverPassesViewerToLiveTicketCheck:
+    @pytest.mark.asyncio
+    async def test_resolver_enrich_passes_org_and_user(self) -> None:
+        from app.utils.fetch_full_record import _RecordResolver
+
+        resolver = _RecordResolver.__new__(_RecordResolver)
+        resolver._config_service = MagicMock()
+        resolver._graph_provider = AsyncMock()
+        resolver._frontend_url = "http://f"
+        resolver._org_id = "org-9"
+        resolver._user_id = "user-9"
+        resolver._connection_sources = None
+        record = {"id": "r", "record_type": "FILE"}
+        with patch("app.utils.fetch_full_record._apply_live_ticket_context_metadata", new=AsyncMock()) as apply:
+            await resolver._enrich(record)
+        assert apply.await_args.kwargs["org_id"] == "org-9"
+        assert apply.await_args.kwargs["user_id"] == "user-9"
 
 
 # ===========================================================================

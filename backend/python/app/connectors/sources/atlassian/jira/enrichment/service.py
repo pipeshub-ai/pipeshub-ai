@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
@@ -13,11 +13,18 @@ from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import (
     batch_fetch_issues,
     resolve_is_cloud_api,
 )
-from app.connectors.sources.atlassian.jira.enrichment.value_formatter import enrich_from_issue
+from app.connectors.sources.atlassian.jira.enrichment.value_formatter import (
+    enrich_from_issue,
+    referenced_issue_ids,
+    restrict_cross_issue_refs,
+)
 from app.models.entities import RecordType, TicketRecord
 from app.sources.client.jira.jira import JiraClient, JiraConfigUnavailableError
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = create_logger("jira_ticket_enrichment")
 
@@ -137,11 +144,15 @@ async def enrich_ticket_llm_context(
     base_context: str,
     ticket: TicketRecord,
     config_service: ConfigurationService,
+    readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
 ) -> str:
     """Fetch curated live Jira fields and merge into ticket LLM context.
 
-    Uses connector service credentials (not the querying user) — may expose
-    fields the user cannot see in the Jira UI.
+    Uses connector service credentials, not the querying user. Jira already
+    leaves out fields hidden by the issue's field configuration, but other
+    issues named in the response (parent, links, sub-tasks) may not be readable
+    by the viewer: ``readable_issue_ids(connector_id, issue_ids)`` says which
+    are. Without it, or if it fails, no other issue is named.
     """
     if not ticket.connector_id or not ticket.external_record_id:
         return base_context
@@ -168,6 +179,14 @@ async def enrich_ticket_llm_context(
         return base_context
 
     try:
+        readable: set[str] = set()
+        refs = referenced_issue_ids(issue)
+        if refs and readable_issue_ids is not None:
+            try:
+                readable = set(await readable_issue_ids(connector_id, refs))
+            except Exception as exc:
+                logger.warning("Jira issue access check failed; naming no other issues: %s", exc)
+        issue = restrict_cross_issue_refs(issue, readable, custom_ids)
         return enrich_from_issue(base_context, issue, custom_ids)
     except Exception as exc:
         logger.warning(

@@ -1,5 +1,6 @@
 """Tests for Jira custom field discovery."""
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -128,7 +129,7 @@ class TestDiscoverCustomFieldIds:
 
     @pytest.mark.asyncio
     async def test_returns_cached_result_without_api_call(self):
-        field_discovery._discovery_cache["conn-cached"] = {"sprint": "customfield_999"}
+        field_discovery._discovery_cache["conn-cached"] = (time.monotonic(), {"sprint": "customfield_999"})
         data_source = MagicMock()
         data_source.get_fields = AsyncMock()
 
@@ -140,6 +141,24 @@ class TestDiscoverCustomFieldIds:
 
         assert result == {"sprint": "customfield_999"}
         data_source.get_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_refreshes_after_ttl(self) -> None:
+        field_discovery._discovery_cache["conn-old"] = (
+            time.monotonic() - field_discovery.DISCOVERY_TTL_S - 1,
+            {"sprint": "customfield_old"},
+        )
+        data_source = MagicMock()
+        data_source.get_fields = AsyncMock(
+            return_value=_fields_response([
+                {"id": "customfield_new", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-sprint"}},
+            ]),
+        )
+
+        result = await discover_custom_field_ids(data_source, is_cloud=True, connector_id="conn-old")
+
+        assert result == {"sprint": "customfield_new"}
+        data_source.get_fields.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_ok_response_returns_empty(self):

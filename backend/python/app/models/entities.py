@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 import builtins
 import logging
 import os
@@ -1514,8 +1515,12 @@ class TicketRecord(Record):
         self,
         frontend_url: str | None = None,
         config_service: Any = None,
+        readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
     ) -> str:
-        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC."""
+        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC.
+
+        ``readable_issue_ids(connector_id, issue_ids)`` gives the issues the viewer may read.
+        """
         base = self.to_llm_context(frontend_url=frontend_url)
         if not config_service:
             return base
@@ -1526,7 +1531,7 @@ class TicketRecord(Record):
             )
             if not is_jira_connector(self.connector_name):
                 return base
-            return await enrich_ticket_llm_context(base, self, config_service)
+            return await enrich_ticket_llm_context(base, self, config_service, readable_issue_ids)
         except Exception:
             return base
 
