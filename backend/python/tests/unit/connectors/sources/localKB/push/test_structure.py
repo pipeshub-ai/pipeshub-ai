@@ -1,6 +1,8 @@
 """The structural pre-parse pass."""
 
+import re
 import time
+from collections.abc import Iterator
 from typing import Never
 
 import pytest
@@ -224,7 +226,7 @@ def test_empty_object_flood_is_refused_early(monkeypatch) -> None:
     real = S._TOKEN
 
     class Counting:
-        def finditer(self, text):
+        def finditer(self, text: bytes) -> Iterator[re.Match[bytes]]:
             nonlocal visited
             for m in real.finditer(text):
                 visited += 1

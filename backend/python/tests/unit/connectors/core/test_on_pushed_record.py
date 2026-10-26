@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +14,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,7 +36,7 @@ def _record(**over) -> FileRecord:
 
 def _processor(store: AsyncMock) -> DataSourceEntitiesProcessor:
     @asynccontextmanager
-    async def transaction(**_):
+    async def transaction(**_: object) -> AsyncIterator[AsyncMock]:
         yield store
 
     provider = MagicMock()

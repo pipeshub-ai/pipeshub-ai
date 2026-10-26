@@ -48,7 +48,7 @@ def test_lost_transactions_are_recognised(error: Exception) -> None:
 @pytest.mark.parametrize("error", [
     FakeArangoError(1210), FakeArangoError(1501, 400), FakeArangoError(None, 500), CodedNeo4jError("Neo.ClientError.Schema.ConstraintValidationFailed"),
     RuntimeError("x"), Exception("Item 0: [1210] unique constraint violated"), TimeoutError(),
-    # a bracketed number that is not an ArangoDB error code: 
+    # a bracketed number that is not an ArangoDB error code:
     ValueError("blocks[0].citation_metadata.page_number [18] invalid"), RuntimeError("budget [29] exceeded"),
     CodedNeo4jError("Neo.ClientError.Schema.ConstraintValidationFailed: value 'Q3 [1200] report' already exists"),
     Exception("Item 0: [1200] timeout waiting to lock key"),  # right number, not the provider's batch wording
