@@ -2532,6 +2532,32 @@ class TestChecklistAudit:
 
         assert [n["type"] for n in await notifications()] == [NotificationType.CONNECTOR_AUTH_ERROR]
 
+    async def test_a_401_seen_while_a_sync_runs_is_reported_as_the_rejected_password(self, server, db, store) -> None:
+        """Nextcloud throttles an address after failed sign-ins and answers 429 to everything from it.
+
+        A preview or indexing fetch that meets the 401 while the sync runs marks the password
+        rejected (as ``stream_record`` does); the sync then sees only 429s.
+        """
+        connector = await synced(server, db, store)
+        kept = set(db.records)
+        server.app_password = "revoked"
+
+        def throttled() -> httpx.Response:
+            connector.app_password_rejected = True
+            return httpx.Response(429, content=b'{"message":"Reached maximum delay"}')
+
+        for method in ("GET", "PROPFIND", "SEARCH", "REPORT"):
+            server.outage(method, lambda p: True, throttled)
+        notifications = listen_for_notifications(connector)
+
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
+
+        sent = await notifications()
+        assert [n["type"] for n in sent] == [NotificationType.CONNECTOR_AUTH_ERROR], "one notice, naming the password"
+        assert "app password rejected" in sent[0]["title"]
+        assert set(db.records) == kept, "nothing is removed"
+
     async def test_an_unfinished_remote_wipe_is_asked_again_by_the_next_sync(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.wipe_requested = True

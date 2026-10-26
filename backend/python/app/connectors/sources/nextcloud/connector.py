@@ -1603,6 +1603,10 @@ class NextcloudConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error in Nextcloud Smart Sync: {ex}", exc_info=True)
+            if self.app_password_rejected and not isinstance(ex, ALREADY_NOTIFIED_ERRORS):
+                # A preview or indexing fetch met the 401 while this sync ran. Nextcloud then throttles
+                # the address (429), so the sync's own requests never see a 401 to report.
+                await self._app_password_rejected()
             if not isinstance(ex, ALREADY_NOTIFIED_ERRORS):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
