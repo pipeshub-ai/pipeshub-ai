@@ -30,6 +30,7 @@ from app.config.constants.service import config_node_constants
 from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import (
     BlobStorage,
+    SignedUrlReadError,
     StorageDocumentNotFoundError,
 )
 from app.services.messaging.error_classifier import (
@@ -288,11 +289,10 @@ async def test_attack_named_entity_retry_is_not_gone_on_a_real_403(world: World)
     sink = MagicMock()
     sink.blob_storage = world.blob
     sink.reproject_named_entities = AsyncMock(return_value="written")
-    outcome = None
-    with pytest.raises(Exception) as raised:
-        outcome = await nep._retry_one(graph, sink, "r1", ORG_ID, due=0)
-    assert outcome != "gone"
-    assert not isinstance(raised.value, StorageDocumentNotFoundError)
+    with pytest.raises(SignedUrlReadError) as raised:
+        await nep._retry_one(graph, sink, "r1", ORG_ID, due=0)
+    kind = MessageErrorClassifier.classify_by_exception(raised.value)
+    assert kind == MessageErrorType.TRANSIENT, f"{STORAGE_TYPE} 403 classified {kind}"
 
 
 # ---------------------------------------------------------------- heal on real graph + storage
