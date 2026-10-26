@@ -409,6 +409,61 @@ describe('ConnectorPanel: editing saved credentials', () => {
     await waitFor(() => expect(nextButton().hasAttribute('disabled')).toBe(false));
     expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
   });
+  describe('on an enabled connector', () => {
+    const savedJira = () =>
+      api.getConnectorConfig.mockResolvedValue(
+        makeConfig({
+          config: {
+            auth: { values: { baseUrl: 'https://acme.atlassian.net', email: 'a@b.co', apiToken: 'old' } },
+            sync: {},
+            filters: {},
+          },
+        })
+      );
+
+    it('offers to disable it, then saves what was entered', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+
+      fireEvent.click(nextButton());
+
+      expect(
+        await screen.findByText(
+          '"Jira (Engineering)" is currently enabled. To save the new credentials, it will be automatically disabled first. Do you want to proceed?'
+        )
+      ).toBeTruthy();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
+
+      await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledTimes(1));
+      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
+      expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
+        api.saveAuthConfig.mock.invocationCallOrder[0]
+      );
+      expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', {
+        auth: expect.objectContaining({ apiToken: 'new-token' }),
+        baseUrl: window.location.origin,
+      });
+    });
+
+    it('keeps what was entered when the admin cancels', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+      fireEvent.click(nextButton());
+      await screen.findByText('Connector is currently enabled');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => expect(screen.queryByText('Connector is currently enabled')).toBeNull());
+      expect(api.toggleConnector).not.toHaveBeenCalled();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+      expect((inputByLabel('API token') as HTMLInputElement).value).toBe('new-token');
+      expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    });
+  });
 });
 
 describe('ConnectorPanel: saving the sync configuration', () => {

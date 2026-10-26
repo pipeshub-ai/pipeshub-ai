@@ -2796,7 +2796,8 @@
         "errorFallback": "Failed to disable connector. Please try again.",
         "actions": {
           "removeInstance": "remove this connector instance",
-          "saveConfig": "save configuration changes"
+          "saveConfig": "save configuration changes",
+          "saveAuth": "save the new credentials"
         }
       },
       "adminAccessDialog": {
@@ -3032,7 +3033,9 @@
           "ready": "Complete",
           "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync."
+          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync.",
+          "actionNeeded": "Action needed",
+          "actionNeededTooltip": "Needs your attention: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3279,6 +3282,12 @@
           "wholeSite": "Whole site",
           "onePage": "One page"
         }
+      },
+      "actionItems": {
+        "badge": "Action needed",
+        "title": "Action needed",
+        "openAuthentication": "Update authentication",
+        "viewSteps": "View setup steps"
       }
     },
     "mcpServers": {

@@ -321,4 +321,20 @@ describe('OverviewTab: actions', () => {
 
     await waitFor(() => expect(toastTitles()).toContain('Failed to refresh record status'));
   });
+
+  it('opens the settings on Authenticate, not Configure, to fix what the connector asks', () => {
+    const instance = makeInstance({
+      isAuthenticated: true,
+      isConfigured: true,
+      actionItems: [{ code: 'certificate_sign_in', severity: 'warning', title: 'Switch', message: 'Upload', action: 'authenticate' }],
+    });
+    renderInTheme(<OverviewTab instance={instance} stats={stats({ COMPLETED: 1 })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update authentication' }));
+
+    const s = useConnectorsStore.getState();
+    expect(s.isPanelOpen).toBe(true);
+    expect(s.panelConnectorId).toBe(instance._key);
+    expect(s.panelActiveTab).toBe('authenticate');
+  });
 });

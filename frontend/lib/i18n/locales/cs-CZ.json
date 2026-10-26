@@ -2882,7 +2882,8 @@
         "errorFallback": "Konektor se nepodařilo zakázat. Zkuste to prosím znovu.",
         "actions": {
           "removeInstance": "odebrat tuto instanci konektoru",
-          "saveConfig": "uložit změny konfigurace"
+          "saveConfig": "uložit změny konfigurace",
+          "saveAuth": "uložit nové přihlašovací údaje"
         }
       },
       "adminAccessDialog": {
@@ -3120,7 +3121,9 @@
           "ready": "Dokončeno",
           "readyTooltip": "Konfigurace je dokončena a ověřena. Po povolení může synchronizace běžet.",
           "desktopOffline": "Desktop je offline",
-          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači."
+          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači.",
+          "actionNeeded": "Vyžaduje akci",
+          "actionNeededTooltip": "Vyžaduje vaši pozornost: {{items}}"
         },
         "sync": {
           "kind": "Synchronizace",
@@ -3367,6 +3370,12 @@
           "wholeSite": "Celý web",
           "onePage": "Jedna stránka"
         }
+      },
+      "actionItems": {
+        "badge": "Vyžaduje akci",
+        "title": "Vyžaduje akci",
+        "openAuthentication": "Aktualizovat ověření",
+        "viewSteps": "Zobrazit postup nastavení"
       }
     },
     "mcpServers": {

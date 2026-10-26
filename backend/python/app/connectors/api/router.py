@@ -4677,6 +4677,8 @@ async def create_connector_instance(
 
         if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
             _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
+        # Before the instance exists, so a refused save leaves nothing behind.
+        _reject_auth_the_connector_refuses(connector_type, _auth_section(config) or None, None)
 
         # ============================================================
         # 8. Create Connector Instance in Database
@@ -4768,6 +4770,7 @@ async def create_connector_instance(
 
             await config_service.set_config(config_path, prepared_config)
             logger.info(f"Stored initial config for instance {connector_id}")
+            await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
 
         # ============================================================
         # 10. Return Success Response
@@ -5303,6 +5306,7 @@ async def update_connector_instance_auth_config(
         auth_config_raw = _without_masked_secrets(
             _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {})), secret_auth_fields
         )
+        _reject_auth_the_connector_refuses(connector_type, auth_config_raw, _auth_section(cast(object, existing_config)))
 
         # Auto-create or update OAuth config if OAuth fields are provided and user is admin
         # This happens when admin updates connector auth with OAuth credentials directly
@@ -5519,6 +5523,7 @@ async def update_connector_instance_auth_config(
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated auth config for instance {connector_id}")
+        await _store_config_action_items(request, connector_type, connector_id, _auth_section(cast(object, new_config)), logger)
 
         # Cleanup existing connector instance if it exists (auth config changed)
         # User will need to toggle/enable again to re-initialize with new auth config
@@ -5871,6 +5876,8 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        if auth_updated:
+            _reject_auth_the_connector_refuses(connector_type, _auth_section(cast(object, body)), _auth_section(cast(object, existing_config)))
         await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
@@ -6103,6 +6110,8 @@ async def update_connector_instance_config(
                 detail=action_failed("save this connector's settings")
             )
         logger.info(f"Updated config for instance {connector_id}")
+        if auth_updated:
+            await _store_config_action_items(request, connector_type, connector_id, _auth_section(cast(object, new_config)), logger)
 
         # Only cleanup and disable connector if the credentials actually changed.
         # Filters and sync updates don't require re-authentication, so connector can stay active
@@ -8812,6 +8821,55 @@ async def get_connector_schema(
         ) from e
 
 
+def _auth_section(config: object) -> dict[str, Any]:
+    """The auth settings in a connector config; {} when there are none."""
+    auth = cast(dict[str, Any], config).get(OAuthConfigKeys.AUTH) if isinstance(config, dict) else None
+    return cast(dict[str, Any], auth) if isinstance(auth, dict) else {}
+
+
+def _auth_save_problem(
+    connector_type: str, auth: object, stored_auth: dict[str, Any] | None
+) -> str | None:
+    """What the connector has against saving ``auth`` over ``stored_auth`` (None while creating)."""
+    if not isinstance(auth, dict):
+        return None
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None:
+        return None
+    return connector_cls.auth_save_problem({**(stored_auth or {}), **cast(dict[str, Any], auth)}, stored_auth)
+
+
+async def _store_config_action_items(
+    request: Request, connector_type: str, connector_id: str, auth: object, logger: logging.Logger
+) -> None:
+    """Refresh what the admin has to do about these saved auth settings, which the instance card shows.
+
+    Right after the save, so fixing the settings clears the card without waiting for a sync.
+    Never fails the save: a stale item is corrected by the next sync."""
+    if not isinstance(auth, dict):
+        return
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    items = connector_cls.config_action_items(cast(dict[str, Any], auth)) if connector_cls is not None else None
+    if items is None:
+        return
+    try:
+        await request.app.state.graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {ConnectorStateKeys.ACTION_ITEMS: json.dumps([item.model_dump(by_alias=True) for item in items]) if items else None},
+        )
+    except Exception as e:
+        logger.warning("Could not refresh the action items of connector %s: %s", connector_id, e)
+
+
+def _reject_auth_the_connector_refuses(
+    connector_type: str, auth: object, stored_auth: dict[str, Any] | None
+) -> None:
+    problem = _auth_save_problem(connector_type, auth, stored_auth)
+    if problem:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problem)
+
+
 def _connection_check_class(connector_type: str) -> type[BaseConnector] | None:
     connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
     if connector_cls is None or not connector_cls.supports_connection_check():
@@ -8869,6 +8927,7 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     )
 
     connector_id = body.get("connectorId")
+    stored_auth: dict[str, Any] | None = None
     if connector_id:
         instance = await get_validated_connector_instance(connector_id, request)
         if instance.get("type", "").replace(" ", "").lower() != connector_type.replace(" ", "").lower():
@@ -8878,7 +8937,12 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
             )
         config_service = resolve_config_service(container, org_id)
         saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
-        auth = {**(saved.get(OAuthConfigKeys.AUTH) or {}), **auth}
+        stored_auth = _auth_section(cast(object, saved))
+    # The save would refuse these settings anyway; the form says why before it tries.
+    problem = _auth_save_problem(connector_type, auth, stored_auth)
+    if problem:
+        return ConnectionCheckResult(success=False, message=problem).model_dump()
+    auth = {**(stored_auth or {}), **auth}
 
     try:
         result = await connector_cls.check_connection(auth, logger)

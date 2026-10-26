@@ -51,6 +51,10 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
     }
     if field.options:
         result["options"] = field.options
+    if field.saved_only:
+        result["savedOnly"] = True
+    if field.required_unless_saved:
+        result["requiredUnlessSaved"] = field.required_unless_saved
     return result
 
 

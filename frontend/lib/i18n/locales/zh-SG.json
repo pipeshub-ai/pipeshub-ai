@@ -2783,7 +2783,8 @@
         "errorFallback": "禁用连接器失败。请重试。",
         "actions": {
           "removeInstance": "移除此连接器实例",
-          "saveConfig": "保存配置更改"
+          "saveConfig": "保存配置更改",
+          "saveAuth": "保存新的凭据"
         }
       },
       "adminAccessDialog": {
@@ -3019,7 +3020,9 @@
           "ready": "已完成",
           "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
           "desktopOffline": "桌面端离线",
-          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。",
+          "actionNeeded": "需要处理",
+          "actionNeededTooltip": "需要您处理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -3266,6 +3269,12 @@
           "wholeSite": "整个网站",
           "onePage": "单个页面"
         }
+      },
+      "actionItems": {
+        "badge": "需要处理",
+        "title": "需要处理",
+        "openAuthentication": "更新身份验证",
+        "viewSteps": "查看设置步骤"
       }
     },
     "mcpServers": {

@@ -30,7 +30,10 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from app.connectors.core.base.connector.connector_service import BaseConnector
+    from app.connectors.core.base.connector.connector_service import (
+        ActionItem,
+        BaseConnector,
+    )
     from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher, SyncSpec
 
 # Strong refs to detached cleanup tasks; the loop holds only weak ones.
@@ -190,6 +193,7 @@ async def _finalize(
     stamp_scopes: bool = False,
     outcome: SyncRunOutcome | None = None,
     summary: dict[str, object] | None = None,
+    action_items: "list[ActionItem] | None" = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -238,6 +242,11 @@ async def _finalize(
         }
         if outcome is not None else {}
     )
+    if isinstance(action_items, list):
+        # Text, as the summary is; None when nothing is left to do, which clears the card's badge.
+        ended[ConnectorStateKeys.ACTION_ITEMS] = (
+            json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
+        )
     if full_sync_cut_short:
         logger.warning(
             f"Full sync for connector {connector_id} did not finish or skipped part of the source; the next sync "
@@ -726,6 +735,7 @@ async def run_sync_task(
         # A cached connector still holds the last run's summary until run_sync starts;
         # a stop before then must not file it under this run.
         connector.last_sync_summary = None
+        connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
         await write_app_status(graph_provider, logger, connector_id, start_status, run_started=True)
@@ -822,6 +832,7 @@ async def run_sync_task(
                 ),
                 outcome=_run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished),
                 summary=getattr(connector, "last_sync_summary", None),
+                action_items=getattr(connector, "last_action_items", None),
                 # A stop or a lost lease returns from _run_until_aborted without
                 # raising, so `finished` alone would call that run complete.
                 # A failed unlink owes one too: what the sync did not see is

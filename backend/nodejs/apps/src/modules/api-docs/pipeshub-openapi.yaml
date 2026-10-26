@@ -15809,6 +15809,30 @@ components:
             What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
             pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
             deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
+        actionItems:
+          type: array
+          description: >-
+            What the connector's admin has to do, shown as an action-needed badge on the instance card. Written by
+            the connector at the end of each sync and when its auth settings are saved; empty when nothing is needed.
+          items:
+            type: object
+            required: [code, severity, title, message]
+            properties:
+              code:
+                type: string
+                description: Identifies the item for the connector, e.g. certificate_sign_in
+              severity:
+                type: string
+                enum: [warning, error]
+              title:
+                type: string
+              message:
+                type: string
+              action:
+                type: string
+                nullable: true
+                enum: [authenticate]
+                description: Where in the connector panel it is done; authenticate opens the Authenticate tab
         config:
           $ref: '#/components/schemas/ConnectorSchema'
 
