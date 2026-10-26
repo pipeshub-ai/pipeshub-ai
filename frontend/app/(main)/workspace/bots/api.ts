@@ -40,8 +40,8 @@ export const BotsApi = {
 
   // ── Agents ──
 
-  /** Every agent the caller can see. The endpoint pages at 20 by default, which would hide a linked agent from the picker. */
-  async getAgents(): Promise<AgentOption[]> {
+  /** Every agent the caller can see (`complete` says the whole list arrived). The endpoint pages at 20 by default, which would hide a linked agent from the picker. */
+  async getAgents(): Promise<{ agents: AgentOption[]; complete: boolean }> {
     const options: AgentOption[] = [];
     for (let page = 1; page <= MAX_AGENT_PAGES; page += 1) {
       const { data } = await apiClient.get('/api/v1/agents', {
@@ -51,8 +51,9 @@ export const BotsApi = {
       options.push(
         ...agents.map((agent) => ({ id: agent._key, name: agent.name || agent._key })),
       );
-      if (!data?.pagination?.hasNext) break;
+      if (!data?.pagination?.hasNext) return { agents: options, complete: true };
     }
-    return options;
+    // Stopped at the cap with more pages left: a bot's agent missing from this list is not known to be deleted.
+    return { agents: options, complete: false };
   },
 };

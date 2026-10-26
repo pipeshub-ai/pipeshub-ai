@@ -396,6 +396,13 @@
     "filterOnlyUnread": "읽지 않음",
     "filterArchived": "보관됨",
     "filterTooltip": "필터: {{filter}}",
+    "chatShared": {
+      "title": "{{name}}님이 채팅을 공유했습니다",
+      "titleAgent": "{{name}}님이 에이전트 채팅을 공유했습니다",
+      "body": "이제 \"{{chat}}\"을(를) 열 수 있습니다.",
+      "bodyNoTitle": "이제 \"{{place}}\"에서 열 수 있습니다.",
+      "someone": "동료"
+    },
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
     "removeFailed": "알림을 제거할 수 없습니다"

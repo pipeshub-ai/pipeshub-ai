@@ -892,6 +892,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
   const hasComposer = composer != null;
+  // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
+  // the last lines of the transcript unblurred until the effect below ran.
+  useLayoutEffect(() => {
+    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+  }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;

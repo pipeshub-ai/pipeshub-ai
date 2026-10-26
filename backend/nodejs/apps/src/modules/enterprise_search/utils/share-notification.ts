@@ -65,7 +65,8 @@ export const notifyChatShared = async ({
       .select('fullName firstName lastName email')
       .lean()
       .exec();
-    const sharer = (owner && displayName(owner)) || 'A colleague';
+    const sharerName = (owner && displayName(owner)) || undefined;
+    const sharer = sharerName || 'A colleague';
     const kind = agentKey ? 'an agent chat' : 'a chat';
     const title = `${sharer} shared ${kind} with you`;
     const message = chatTitle?.trim()
@@ -86,9 +87,12 @@ export const notifyChatShared = async ({
             status: 'unread',
             originService: 'AI Service',
             redirectLink,
+            // The inbox shows these in the viewer's language; title and message above are the English fallback.
             payload: {
               conversationId,
               sharedBy: ownerId,
+              ...(sharerName ? { sharerName } : {}),
+              ...(chatTitle?.trim() ? { chatTitle: chatTitle.trim() } : {}),
               ...(agentKey ? { agentKey } : {}),
             },
             isDeleted: false,

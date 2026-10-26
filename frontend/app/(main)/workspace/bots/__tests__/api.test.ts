@@ -22,10 +22,16 @@ describe('BotsApi.getAgents', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/agents', { params: { page: 1, limit: 200 } });
   });
 
+  it('says the list is complete once the last page has arrived', async () => {
+    get.mockResolvedValueOnce(page(['a'], false));
+
+    expect((await BotsApi.getAgents()).complete).toBe(true);
+  });
+
   it('follows the pages until the last one and returns every agent', async () => {
     get.mockResolvedValueOnce(page(['a', 'b'], true)).mockResolvedValueOnce(page(['c'], false));
 
-    const agents = await BotsApi.getAgents();
+    const { agents } = await BotsApi.getAgents();
 
     expect(get).toHaveBeenCalledTimes(2);
     expect(get.mock.calls[1]?.[1]).toEqual({ params: { page: 2, limit: 200 } });
@@ -39,20 +45,21 @@ describe('BotsApi.getAgents', () => {
   it('names an agent by its key when it has no name', async () => {
     get.mockResolvedValueOnce({ data: { agents: [{ _key: 'k1' }], pagination: { hasNext: false } } });
 
-    expect(await BotsApi.getAgents()).toEqual([{ id: 'k1', name: 'k1' }]);
+    expect((await BotsApi.getAgents()).agents).toEqual([{ id: 'k1', name: 'k1' }]);
   });
 
   it('stops at the page cap if the server keeps saying there is more', async () => {
     get.mockResolvedValue(page(['a'], true));
 
-    await BotsApi.getAgents();
+    const result = await BotsApi.getAgents();
 
     expect(get).toHaveBeenCalledTimes(25);
+    expect(result.complete).toBe(false);
   });
 
   it('returns nothing for an empty or malformed response', async () => {
     get.mockResolvedValueOnce({ data: {} });
 
-    expect(await BotsApi.getAgents()).toEqual([]);
+    expect((await BotsApi.getAgents()).agents).toEqual([]);
   });
 });

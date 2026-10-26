@@ -432,6 +432,13 @@
     "filterOnlyUnread": "Nepřečtená",
     "filterArchived": "Archivovaná",
     "filterTooltip": "Filtr: {{filter}}",
+    "chatShared": {
+      "title": "Chat s vámi sdílí {{name}}",
+      "titleAgent": "Chat agenta s vámi sdílí {{name}}",
+      "body": "Nyní můžete otevřít „{{chat}}“.",
+      "bodyNoTitle": "Nyní jej můžete otevřít v části „{{place}}“.",
+      "someone": "Kolega"
+    },
     "loadFailed": "Nepodařilo se načíst oznámení",
     "updateFailed": "Oznámení se nepodařilo aktualizovat",
     "removeFailed": "Oznámení se nepodařilo odebrat"

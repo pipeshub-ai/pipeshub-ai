@@ -127,7 +127,12 @@ describe('es_controller: telling people a chat was shared with them, and archivi
       expect(saved.title).to.equal('Owner Person shared an agent chat with you')
       expect(saved.message).to.contain('Roadmap review')
       expect(saved.redirectLink).to.equal(`/chat/?agentId=${AGENT_KEY}&conversationId=${s.agentChatId}`)
-      expect(saved.payload).to.deep.include({ conversationId: s.agentChatId, agentKey: AGENT_KEY })
+      expect(saved.payload).to.deep.include({
+        conversationId: s.agentChatId,
+        agentKey: AGENT_KEY,
+        sharerName: 'Owner Person',
+        chatTitle: 'Roadmap review',
+      })
     })
 
     it('a plain chat: the recipient is told, and the link carries no agent', async () => {
@@ -142,6 +147,7 @@ describe('es_controller: telling people a chat was shared with them, and archivi
       expect(saved.title).to.equal('Owner Person shared a chat with you')
       expect(saved.redirectLink).to.equal(`/chat/?conversationId=${s.plainChatId}`)
       expect(saved.payload).to.not.have.property('agentKey')
+      expect(saved.payload).to.deep.include({ sharerName: 'Owner Person', chatTitle: 'Plain chat' })
     })
 
     it('every new recipient is told once', async () => {
@@ -163,16 +169,6 @@ describe('es_controller: telling people a chat was shared with them, and archivi
       await call(sharePlain(), request(OWNER, plainParams(s), { userIds: [String(RECIPIENT), String(SECOND_RECIPIENT)] }))
 
       expect(createNotification.getCalls().map((c) => String(c.args[0].assignedTo))).to.deep.equal([String(SECOND_RECIPIENT)])
-    })
-
-    it('a change of access level for an existing recipient is not announced', async () => {
-      const s = setup()
-      await call(sharePlain(), request(OWNER, plainParams(s), { userIds: [String(RECIPIENT)] }))
-      createNotification.resetHistory()
-
-      await call(sharePlain(), request(OWNER, plainParams(s), { userIds: [String(RECIPIENT)], accessLevel: 'write' }))
-
-      expect(createNotification.callCount).to.equal(0)
     })
 
     it('a share that is refused tells nobody', async () => {

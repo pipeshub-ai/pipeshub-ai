@@ -312,6 +312,13 @@
     "filterOnlyUnread": "अपठित",
     "filterArchived": "संग्रहित",
     "filterTooltip": "फ़िल्टर: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} ने आपके साथ एक चैट साझा की",
+      "titleAgent": "{{name}} ने आपके साथ एक एजेंट चैट साझा की",
+      "body": "अब आप \"{{chat}}\" खोल सकते हैं।",
+      "bodyNoTitle": "अब आप इसे \"{{place}}\" से खोल सकते हैं।",
+      "someone": "एक सहकर्मी"
+    },
     "loadFailed": "सूचनाएँ लोड करने में विफल",
     "updateFailed": "सूचना अपडेट नहीं हो सकी",
     "removeFailed": "सूचना हटाने में विफल"

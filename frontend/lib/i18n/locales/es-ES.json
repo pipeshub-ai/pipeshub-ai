@@ -319,6 +319,13 @@
     "filterOnlyUnread": "No leídas",
     "filterArchived": "Archivadas",
     "filterTooltip": "Filtro: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} ha compartido un chat contigo",
+      "titleAgent": "{{name}} ha compartido un chat de agente contigo",
+      "body": "Ahora puedes abrir «{{chat}}».",
+      "bodyNoTitle": "Ahora puedes abrirlo desde «{{place}}».",
+      "someone": "Un compañero"
+    },
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
     "removeFailed": "No se pudo eliminar la notificación"

@@ -312,6 +312,13 @@
     "filterOnlyUnread": "Ungelesen",
     "filterArchived": "Archiviert",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} hat einen Chat mit Ihnen geteilt",
+      "titleAgent": "{{name}} hat einen Agenten-Chat mit Ihnen geteilt",
+      "body": "Sie können „{{chat}}“ jetzt öffnen.",
+      "bodyNoTitle": "Sie können ihn jetzt unter „{{place}}“ öffnen.",
+      "someone": "Ein Kollege"
+    },
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
     "removeFailed": "Benachrichtigung konnte nicht entfernt werden"

@@ -396,6 +396,13 @@
     "filterOnlyUnread": "未读",
     "filterArchived": "已归档",
     "filterTooltip": "筛选：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 与你共享了一个聊天",
+      "titleAgent": "{{name}} 与你共享了一个智能体聊天",
+      "body": "你现在可以打开“{{chat}}”。",
+      "bodyNoTitle": "你现在可以在“{{place}}”中打开它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
     "removeFailed": "无法移除通知"

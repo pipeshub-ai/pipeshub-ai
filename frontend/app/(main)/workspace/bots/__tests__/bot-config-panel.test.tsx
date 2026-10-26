@@ -37,10 +37,10 @@ const config = (agentId: string | null) => ({
   agentId: agentId as string | undefined,
 });
 
-function openEditing(agentId: string | null, agents: { id: string; name: string }[]) {
+function openEditing(agentId: string | null, agents: { id: string; name: string }[], complete = true) {
   const store = useBotsStore.getState();
   store.setConfigs([config(agentId)]);
-  store.setAgents(agents);
+  store.setAgents(agents, complete);
   store.openPanel();
   store.setPanelView('slack-form');
   store.setEditingBot('bot-1');
@@ -81,6 +81,18 @@ describe('BotConfigPanel — the agent a saved bot is linked to', () => {
     const text = screen.getByRole('combobox').textContent;
     expect(text).toContain('Default assistant');
     expect(text).not.toContain('agent-deleted');
+  });
+
+  it('keeps the linked agent selected while the list is incomplete: it is not known to be deleted', () => {
+    openEditing('agent-7', [{ id: 'agent-1', name: 'Other agent' }], false);
+
+    expect(screen.getByRole('combobox').textContent).toContain('agent-7');
+  });
+
+  it('keeps the linked agent selected before any list has arrived', () => {
+    openEditing('agent-7', [], false);
+
+    expect(screen.getByRole('combobox').textContent).toContain('agent-7');
   });
 
   it('shows the default assistant for a bot with no agent', () => {

@@ -312,6 +312,13 @@
     "filterOnlyUnread": "Unread",
     "filterArchived": "Archived",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} shared a chat with you",
+      "titleAgent": "{{name}} shared an agent chat with you",
+      "body": "You can now open \"{{chat}}\".",
+      "bodyNoTitle": "You can now open it from \"{{place}}\".",
+      "someone": "A colleague"
+    },
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
     "removeFailed": "Could not remove notification"

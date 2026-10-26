@@ -396,6 +396,13 @@
     "filterOnlyUnread": "未讀",
     "filterArchived": "已封存",
     "filterTooltip": "篩選：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 與你共用了一個聊天",
+      "titleAgent": "{{name}} 與你共用了一個代理程式聊天",
+      "body": "你現在可以開啟「{{chat}}」。",
+      "bodyNoTitle": "你現在可以在「{{place}}」中開啟它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
     "removeFailed": "無法移除通知"

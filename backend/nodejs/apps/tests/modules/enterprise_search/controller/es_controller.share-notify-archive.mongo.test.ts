@@ -117,6 +117,7 @@ describeIfMongo('sharing a chat on a real MongoDB: the recipient is notified, an
         expect(String(row.orgId)).to.equal(String(orgId))
         expect(row.status).to.equal('unread')
         expect(row.isDeleted).to.equal(false)
+        expect(row.payload).to.deep.include({ sharerName: 'Olivia Owner' })
         expect(row.title).to.equal(kind === 'agent' ? 'Olivia Owner shared an agent chat with you' : 'Olivia Owner shared a chat with you')
         expect(row.redirectLink).to.equal(kind === 'agent' ? `/chat/?agentId=${AGENT_KEY}&conversationId=${id}` : `/chat/?conversationId=${id}`)
         expect(await Notifications.countDocuments({ assignedTo: owner })).to.equal(0)
