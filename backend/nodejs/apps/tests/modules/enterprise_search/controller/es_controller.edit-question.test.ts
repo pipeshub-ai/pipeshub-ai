@@ -425,6 +425,7 @@ describe('es_controller editing the last question', () => {
       for (const [why, typed] of [
         ['it also quotes a question the card never asked', 'User selections:\n1. "What do you enjoy?" → Pop\n2. "And what next?" → Jazz'],
         ['it is not written the way the app writes answers', 'User selections: is "What do you enjoy?" → Pop the right pick?'],
+        ['it asks something on a line of its own', 'User selections:\n1. "What do you enjoy?" → Pop\nWhy was this recommended?'],
       ] as const) {
         it(`keeps a typed question and the card turn when ${why}`, async () => {
           const run = await startStream(editFlow({ turn: 'card', answersSentTwice: typed }), controllerModule, undefined, { wait: false })

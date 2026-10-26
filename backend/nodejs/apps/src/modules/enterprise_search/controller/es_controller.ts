@@ -3402,15 +3402,19 @@ function answersCardBefore(
 }
 
 /**
- * The questions a row of card answers quotes, when it is written the way the app writes them
- * (`User selections:` then `1. "question" → answer`, one per question); empty otherwise.
+ * The questions a row of card answers quotes, when the whole row is written the way the app
+ * writes them (`User selections:` then `1. "question" → answer`, one line per question); empty
+ * when any line is something else, so text typed around answers is never read as answers.
  */
 function quotedCardQuestions(content: string | undefined | null): Set<string> {
   const questions = new Set<string>();
   const body = (content ?? '').trimStart().replace(/^User selections:\s*/, '');
-  if (!/^1\.\s+"/.test(body)) return questions;
-  for (const match of body.matchAll(/^\d+\.\s+"(.+)"\s+→/gm)) {
-    if (match[1]) questions.add(match[1].trim());
+  const lines = body.split('\n').filter((line) => line.trim() !== '');
+  for (const [index, line] of lines.entries()) {
+    const match = /^(\d+)\.\s+"(.+)"\s+→/.exec(line.trim());
+    const question = match?.[2]?.trim();
+    if (!question || Number(match?.[1]) !== index + 1) return new Set<string>();
+    questions.add(question);
   }
   return questions;
 }
