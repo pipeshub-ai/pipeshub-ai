@@ -1203,7 +1203,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             pointerEvents: 'none',
           }}
         >
-          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          {/* Capped at the dock: a viewer with no input has only the footer links here, and a
+              taller blur would sit over the last lines of the transcript, which cannot scroll
+              clear of it. */}
+          <ProgressiveBlur height={Math.min(COMPOSER_BLUR_HEIGHT_PX, composerDockHeight)} />
           <Flex
             direction="column"
             align="center"

@@ -105,10 +105,13 @@ export function BotPageLayout({
           style={{ width: '100%' }}
         >
           {configs.map((config) => {
-            const isDefault = !config.agentId || config.agentId === DEFAULT_ASSISTANT_ID;
+            const isDefault =
+              !config.agentId ||
+              config.agentId === DEFAULT_ASSISTANT_ID ||
+              !agentMap.has(config.agentId);
             const agentName = isDefault
               ? t('workspace.bots.defaultAssistant')
-              : agentMap.get(config.agentId!) ?? config.agentId;
+              : agentMap.get(config.agentId!);
             return (
               <BotCard
                 key={config.id}

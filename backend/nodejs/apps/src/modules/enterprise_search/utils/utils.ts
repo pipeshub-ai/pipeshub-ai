@@ -2282,6 +2282,8 @@ export const buildAgentConversationFilter = (
                 { isShared: true },
                 { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
               ],
+              // The owner archiving a chat takes it away from the people it was shared with.
+              isArchived: { $ne: true },
             },
           ]
         : []),
@@ -2290,6 +2292,7 @@ export const buildAgentConversationFilter = (
             {
               projectId: { $in: accessibleProjectIds },
               projectVisibility: 'project',
+              isArchived: { $ne: true },
             },
           ]
         : []),
@@ -2418,6 +2421,7 @@ export const validateAgentConversationAccess = async (
         { userId }, // Owner
         {
           isShared: true,
+          isArchived: { $ne: true },
           // One entry must carry both the user and the level (separate dotted paths match across entries).
           sharedWith: {
             $elemMatch: {

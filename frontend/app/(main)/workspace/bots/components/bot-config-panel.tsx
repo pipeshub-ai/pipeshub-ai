@@ -264,14 +264,16 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
       setName(editingConfig.name);
       setBotToken(editingConfig.botToken);
       setSigningSecret(editingConfig.signingSecret);
-      setAgentId(editingConfig.agentId || DEFAULT_ASSISTANT_ID);
+      // A linked agent that no longer exists (deleted) is not offered: the bot shows the default assistant.
+      const linked = editingConfig.agentId;
+      setAgentId(linked && agents.some((agent) => agent.id === linked) ? linked : DEFAULT_ASSISTANT_ID);
     } else {
       setName('');
       setBotToken('');
       setSigningSecret('');
       setAgentId(DEFAULT_ASSISTANT_ID);
     }
-  }, [editingConfig]);
+  }, [editingConfig, agents]);
 
   const isValid = name.trim().length > 0 && botToken.trim().length > 0 && signingSecret.trim().length > 0;
 

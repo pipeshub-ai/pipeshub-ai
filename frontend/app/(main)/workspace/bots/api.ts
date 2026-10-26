@@ -3,6 +3,8 @@ import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { SlackBotConfig, SlackBotConfigPayload, AgentOption } from './types';
 
 const SLACK_BOT_BASE_URL = '/api/v1/configurationManager/slack-bot';
+const AGENTS_PAGE_SIZE = 200;
+const MAX_AGENT_PAGES = 25;
 
 export const BotsApi = {
   // ── Slack Bot CRUD ──
@@ -38,12 +40,19 @@ export const BotsApi = {
 
   // ── Agents ──
 
+  /** Every agent the caller can see. The endpoint pages at 20 by default, which would hide a linked agent from the picker. */
   async getAgents(): Promise<AgentOption[]> {
-    const { data } = await apiClient.get('/api/v1/agents');
-    const agents = data?.agents || [];
-    return agents.map((agent: { _key: string; name?: string }) => ({
-      id: agent._key,
-      name: agent.name || agent._key,
-    }));
+    const options: AgentOption[] = [];
+    for (let page = 1; page <= MAX_AGENT_PAGES; page += 1) {
+      const { data } = await apiClient.get('/api/v1/agents', {
+        params: { page, limit: AGENTS_PAGE_SIZE },
+      });
+      const agents: { _key: string; name?: string }[] = data?.agents || [];
+      options.push(
+        ...agents.map((agent) => ({ id: agent._key, name: agent.name || agent._key })),
+      );
+      if (!data?.pagination?.hasNext) break;
+    }
+    return options;
   },
 };
