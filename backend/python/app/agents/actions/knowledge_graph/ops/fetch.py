@@ -393,11 +393,9 @@ async def execute_fetch_record(
         budget.charge_framing(entity_note)
         focus_note = _focused_read_note(focus) if focus else ""
         budget.charge_framing(focus_note)
-        occurrence_note = _occurrence_count_note(
-            context.tool_state.get("query") or "",
-            records,
-        )
-        budget.charge_framing(occurrence_note)
+        # occurrence_note is built after the render loop (below) so that
+        # we can exclude records that ended up in `unread` and therefore
+        # have no rendered refN blocks for the model to cite.
         budget.charge_framing_chars(
             len(_CITATION_RULE)
             + len(_unavailable_note(
@@ -510,6 +508,19 @@ async def execute_fetch_record(
                     budget.charge_framing(note)
                     rendered += note
             parts.append(rendered)
+
+        # Build the occurrence note now that `unread` is final: only include
+        # records that were actually rendered (have refN blocks the model can
+        # cite).  Filtering here prevents dangling citation instructions.
+        cited_records = [
+            r for r in records
+            if str(r.get("id") or r.get("virtual_record_id") or "") not in unread
+        ]
+        occurrence_note = _occurrence_count_note(
+            context.tool_state.get("query") or "",
+            cited_records,
+        )
+        budget.charge_framing(occurrence_note)
 
         text = "\n".join(parts)
         if focus and selected_now:
