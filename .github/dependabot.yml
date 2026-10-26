@@ -67,9 +67,9 @@ updates:
       # 2.9+ change compare_commits, which the GitHub source calls.
       - dependency-name: "PyGithub"
         versions: [">=2.9"]
-      # 1.2+ count cached tokens inside input tokens, so Bedrock usage would be counted twice.
+      # 1.1.1+ need langchain-core<1.2.5 (we pin 1.7.0); 1.2+ also double-count cached Bedrock tokens.
       - dependency-name: "langchain-aws"
-        versions: [">=1.2"]
+        versions: [">=1.1.1"]
       # 1.6+ move ChatAnthropic's HTTP clients, so the model egress guard is not installed.
       - dependency-name: "langchain-anthropic"
         versions: [">=1.6"]
