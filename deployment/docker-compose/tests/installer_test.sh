@@ -653,11 +653,12 @@ PATH="$_shim_dir:$PATH"
 IS_WINDOWS=true
 USERNAME=alice
 printf 'explicit bob:R\ninherited Users:R\nexplicit alice:R\n' > "$_shim_dir/acl"
+_msys_before="${MSYS_NO_PATHCONV:-unset}"
 if restrict_env_file "C:/pipeshub/.env"; then pass "Git Bash .env ACL replaced"; else fail "Git Bash .env ACL replaced"; fi
 check "Git Bash resets, drops inherited ACEs and grants only the user" "$(cat "$_shim_dir/icacls.args")" "C:/pipeshub/.env|/reset|C:/pipeshub/.env|/inheritance:r|/grant:r|alice:F|"
 if [[ "$(cat "$_shim_dir/acl")" == "explicit alice:F" ]]; then pass "Git Bash leaves only the owner on .env, even with an explicit ACE for another account"; else fail "Git Bash leaves only the owner on .env, even with an explicit ACE for another account (got: $(tr '\n' ',' < "$_shim_dir/acl"))"; fi
 check "icacls switches are not path-converted" "$(cat "$_shim_dir/icacls.msys")" "11"
-check "the installer's own environment keeps path conversion" "${MSYS_NO_PATHCONV:-unset}" "unset"
+check "the installer's own environment keeps path conversion" "${MSYS_NO_PATHCONV:-unset}" "$_msys_before"
 if ICACLS_EXIT=5 restrict_env_file "C:/pipeshub/.env"; then fail "failed icacls is reported"; else pass "failed icacls is reported"; fi
 _empty_dir="$(mktemp -d)"
 PATH="$_empty_dir"
