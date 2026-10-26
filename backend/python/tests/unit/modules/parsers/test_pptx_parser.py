@@ -151,13 +151,17 @@ class TestParseFile:
         assert exc_info.value.details == {"status": "error"}
 
     def test_file_not_found_propagates(self):
+        converter_error = FileNotFoundError("No such file")
         mock_converter = MagicMock()
-        mock_converter.convert.side_effect = FileNotFoundError("No such file")
+        mock_converter.convert.side_effect = converter_error
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
-            with pytest.raises(FileNotFoundError, match="No such file"):
+            with pytest.raises(FileNotFoundError) as exc_info:
                 parser.parse_file("/nonexistent/file.pptx")
+
+        assert exc_info.value is converter_error
+        mock_converter.convert.assert_called_once_with("/nonexistent/file.pptx")
 
     def test_passes_file_path_directly(self):
         mock_converter = MagicMock()
