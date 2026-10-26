@@ -554,3 +554,15 @@ async def test_schema_routes_refuse_a_request_with_no_bound_org(h, route: str) -
 
     assert response.status_code == 400
     assert json.loads(response.body)["error"]["reason"] == "ENVELOPE_INVALID"
+
+
+def test_a_schema_body_over_the_limit_is_refused_before_it_is_parsed(client, h, monkeypatch) -> None:
+    h.user = "owner"
+    monkeypatch.setattr(A, "MAX_SCHEMA_BYTES", 100)
+    body = json.dumps({"properties": [{"name": "p", "type": "string", "displayLabel": "x" * 200}]})
+
+    declared = client.put("/api/v1/kb/kb1/schema", content=body, headers=JSON)
+    streamed = client.put("/api/v1/kb/kb1/schema", content=iter([body[:60].encode(), body[60:].encode()]), headers=JSON)
+
+    for r in (declared, streamed):
+        assert r.status_code == 413 and error(r)["reason"] == "PAYLOAD_TOO_LARGE"

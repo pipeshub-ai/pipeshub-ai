@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
 MAX_BODY_BYTES = 16 << 20
+#: A schema is at most 256 properties of short names and labels.
+MAX_SCHEMA_BYTES = 1 << 20
 READ_SLOTS = 4
 SLOT_WAIT_S = 5.0
 MIN_RATE_BPS = 64 * 1024
@@ -121,3 +123,20 @@ class Admission:
 
 def _too_large() -> PushRefusal:
     return PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is larger than 16 MiB.", extra={"limit": "body", "limitBytes": MAX_BODY_BYTES})
+
+
+async def read_bounded(headers: Mapping[str, str], stream: AsyncIterator[bytes], limit: int) -> bytes:
+    """A small body read chunk by chunk: refused with 413 as soon as it passes ``limit``."""
+    declared = headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise _too_large_for(limit)
+    buf = bytearray()
+    async for chunk in stream:
+        buf += chunk
+        if len(buf) > limit:
+            raise _too_large_for(limit)
+    return bytes(buf)
+
+
+def _too_large_for(limit: int) -> PushRefusal:
+    return PushRefusal(413, "PAYLOAD_TOO_LARGE", f"The body is larger than {limit >> 10} KiB.", extra={"limit": "body", "limitBytes": limit})

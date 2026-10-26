@@ -50,6 +50,7 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     ConnectionCheck,
     KnowledgeBaseService,
 )
+from app.connectors.sources.localKB.push import admission
 from app.connectors.sources.localKB.push import api as push_api
 from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.gate import GatedRoute, KbPushFlagMiddleware
@@ -1931,7 +1932,9 @@ async def put_kb_schema(
         service = _push_service(request, kb_service, kafka_service)
         await service.authorize(kb_id, user.get("userId"), ["OWNER"])
         try:
-            body = push_api.SchemaIn.model_validate_json(await request.body())
+            body = push_api.SchemaIn.model_validate_json(
+                await admission.read_bounded(request.headers, request.stream(), admission.MAX_SCHEMA_BYTES)
+            )
         except ValidationError as e:
             first = e.errors()[0]
             raise PushRefusal(400, "ENVELOPE_INVALID", "The schema body is invalid.", ".".join(str(x) for x in first["loc"])) from None
