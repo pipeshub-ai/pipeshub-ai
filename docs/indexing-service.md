@@ -80,11 +80,14 @@ stateDiagram-v2
     IN_PROGRESS --> EMPTY: parser produced no blocks
     IN_PROGRESS --> QUEUED: transient failure, retry scheduled (record.py finally)
     IN_PROGRESS --> FAILED: terminal error, or retries exhausted / dead-lettered
+    IN_PROGRESS --> PASSWORD_PROTECTED: the file needs a password to open (terminal, never retried)
     IN_PROGRESS --> QUEUED: stale (lease interval with leases, else max record timeout + parse admission wait + lease) → recovery republishes
     NOT_STARTED --> FILE_TYPE_NOT_SUPPORTED
     NOT_STARTED --> AUTO_INDEX_OFF: connector deleted / inactive
     IN_PROGRESS --> ENABLE_MULTIMODAL_MODELS: image with no multimodal LLM/embedding
 ```
+
+A file that needs a password to open ends `PASSWORD_PROTECTED`, not `FAILED`: it is its own bucket in the stats, its `extractionStatus` is `SKIPPED` (the classify stage does not apply), its `parsingStatus` carries the same status as `indexingStatus` like every terminal status, "Reindex failed" leaves it alone, and nothing retries it. The status follows evidence in the file, never the wording of an error: a PDF that pdfium refuses with its password status (a PDF with only an owner password opens without one and indexes normally), and a DOCX, XLSX or PPTX whose OLE compound container holds an `EncryptedPackage` stream. The OOXML check reads only the 512-byte header, the FAT entries the directory chain walks and the directory itself (bounded at 64 directory sectors), so its cost does not grow with the file (about 0.01 ms); the same check covers the macro-enabled `.docm`, `.xlsm` and `.pptm`; a damaged container is not called encrypted and ends as an unreadable file. The PDF verdict is one more pdfium open of the bytes: about 5 ms on a 56 MB file, paid only after another reader has already failed to open it, never on the happy path. The in-process pipeline raises `PasswordProtectedError` (a `DocumentProcessingError`, so terminal); the parsing service answers it `422` with code `PASSWORD_REQUIRED`, and `ParsingClient` raises the same typed error from that answer. The record handler picks the status from the error's type at the terminal write, and queued md5 duplicates take the same status. Legacy `.doc`, `.xls` and `.ppt` are not detected: their encryption flags sit inside streams, so they still end as an unreadable file. A connector re-sync that finds the same revision of a `PASSWORD_PROTECTED` record leaves it alone, as for `COMPLETED`; a changed revision is indexed again. A reindex with `statusFilters: ["PASSWORD_PROTECTED"]` tries it again, for when the source file has lost its password.
 
 `extractionStatus` belongs to the `classify` stage (§2.3) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`. It moves to `QUEUED` when the stage job is claimed and published, then to `COMPLETED`, `SKIPPED` (classification off, nothing to classify, or no LLM configured; `reason` says which) or `FAILED`. A retrying or paused job leaves it `QUEUED`.
 
@@ -268,23 +271,24 @@ Every indexing-time model call (classification, named-entity extraction and enti
 
 **Records from the old inline classification.** Before the classify stage, classification ran inside the record's indexing attempt. A record it left with `extractionStatus` `IN_PROGRESS` (its pod stopped mid-classification) or `NOT_STARTED` (`DEFER_EXTRACTION=true`) has no stage state, so no sweep revisits it. `POST /api/v1/connectors/{id}/reindex` with `stages: ["classify"]` and `statusFilters: ["IN_PROGRESS", "NOT_STARTED"]` classifies them again; with no stage state for the record's revision, that is a full reindex.
 
-**Rolling back to 0.10.0 on ArangoDB.** 0.10.0's connector service re-applies its strict `records` schema, which does not declare `contentRev`, and does not accept `SKIPPED` in any status field, `PAUSED` or `ENABLE_MULTIMODAL_MODELS` in `parsingStatus`, or `QUEUED` or `ENABLE_MULTIMODAL_MODELS` in `extractionStatus`. ArangoDB then rejects every later update to a record carrying one of them, so status writes to those records fail. Stop the new services and run this first; it is accepted under either schema, and `stageStates` can stay (0.10.0 does not read it):
+**Rolling back to 0.10.0 on ArangoDB.** 0.10.0's connector service re-applies its strict `records` schema, which does not declare `contentRev`, and does not accept `SKIPPED` in any status field, `PASSWORD_PROTECTED` in any of the three status fields (the handler also copies a record's final indexing status onto `parsingStatus`), `PAUSED` or `ENABLE_MULTIMODAL_MODELS` in `parsingStatus`, or `QUEUED` or `ENABLE_MULTIMODAL_MODELS` in `extractionStatus`. ArangoDB then rejects every later update to a record carrying one of them, so status writes to those records fail. Stop the new services and run this first; it is accepted under either schema, and `stageStates` can stay (0.10.0 does not read it):
 
 ```aql
-LET parsing = ["ENABLE_MULTIMODAL_MODELS", "PAUSED", "SKIPPED"]
-LET extraction = ["ENABLE_MULTIMODAL_MODELS", "QUEUED", "SKIPPED"]
+LET gone = ["PASSWORD_PROTECTED", "SKIPPED"]
+LET parsing = ["ENABLE_MULTIMODAL_MODELS", "PAUSED", "PASSWORD_PROTECTED", "SKIPPED"]
+LET extraction = ["ENABLE_MULTIMODAL_MODELS", "PASSWORD_PROTECTED", "QUEUED", "SKIPPED"]
 FOR r IN records
   FILTER HAS(r, "contentRev")
-    OR r.parsingStatus IN parsing OR r.indexingStatus == "SKIPPED" OR r.extractionStatus IN extraction
+    OR r.parsingStatus IN parsing OR r.indexingStatus IN gone OR r.extractionStatus IN extraction
   UPDATE r WITH {
     contentRev: null,
-    parsingStatus: r.parsingStatus == "SKIPPED" ? "FAILED" : (r.parsingStatus IN parsing ? "NOT_STARTED" : r.parsingStatus),
-    indexingStatus: r.indexingStatus == "SKIPPED" ? "FAILED" : r.indexingStatus,
-    extractionStatus: r.extractionStatus == "SKIPPED" ? "FAILED" : (r.extractionStatus IN extraction ? "NOT_STARTED" : r.extractionStatus)
+    parsingStatus: r.parsingStatus IN gone ? "FAILED" : (r.parsingStatus IN parsing ? "NOT_STARTED" : r.parsingStatus),
+    indexingStatus: r.indexingStatus IN gone ? "FAILED" : r.indexingStatus,
+    extractionStatus: r.extractionStatus IN gone ? "FAILED" : (r.extractionStatus IN extraction ? "NOT_STARTED" : r.extractionStatus)
   } IN records OPTIONS { keepNull: false }
 ```
 
-Neo4j has no schema for these fields and needs no cleanup.
+Rolling back to a version before `hasIndexedCopy` existed (0.10.0's schema allows no extra properties) needs that field removed from every record first, or the statement above is rejected on the first record that carries it; a rollback to the schema this change started from is not affected. Neo4j has no schema for these fields and needs no cleanup.
 
 ## 3. Light and heavy documents
 

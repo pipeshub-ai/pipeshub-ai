@@ -734,6 +734,7 @@
       "empty": "비어 있음",
       "paused": "일시 중지됨",
       "needsMultimodalModel": "멀티모달 모델 필요",
+      "passwordProtected": "비밀번호로 보호됨",
       "skipped": "건너뜀",
       "pending": "보류 중"
     },
@@ -2900,6 +2901,8 @@
         "statFailedSub": "오류(API/권한 문제)",
         "statUnsupported": "미지원",
         "statUnsupportedSub": "처리할 수 없음",
+        "statPasswordProtected": "비밀번호로 보호됨",
+        "statPasswordProtectedSub": "비밀번호 없이는 읽을 수 없음",
         "statInProgressSub": "인덱싱 진행 중",
         "statQueued": "대기 중",
         "statQueuedSub": "인덱싱 대기 중",
