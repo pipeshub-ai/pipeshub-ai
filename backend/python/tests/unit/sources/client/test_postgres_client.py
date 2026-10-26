@@ -15,6 +15,7 @@ if "asyncpg" not in sys.modules:
     sys.modules["asyncpg"] = _asyncpg_stub
 
 import app.sources.client.postgres.postgres as _pg_mod  # noqa: E402
+
 # Ensure the module uses the stub
 _pg_mod.asyncpg = sys.modules["asyncpg"]
 
@@ -26,7 +27,6 @@ from app.sources.client.postgres.postgres import (  # noqa: E402
     PostgreSQLConnectorConfig,
     PostgreSQLResponse,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -123,18 +123,18 @@ def asyncpg_module():
 
 
 class TestPostgreSQLResponse:
-    def test_success(self):
+    def test_success(self) -> None:
         resp = PostgreSQLResponse(success=True, data={"key": "val"})
         assert resp.success is True
         assert resp.data == {"key": "val"}
 
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         resp = PostgreSQLResponse(success=True)
         assert resp.data is None
         assert resp.error is None
         assert resp.message is None
 
-    def test_to_dict_excludes_none(self):
+    def test_to_dict_excludes_none(self) -> None:
         resp = PostgreSQLResponse(success=True, data={"key": "val"})
         d = resp.to_dict()
         assert d["success"] is True
@@ -142,21 +142,21 @@ class TestPostgreSQLResponse:
         assert "error" not in d
         assert "message" not in d
 
-    def test_to_json(self):
+    def test_to_json(self) -> None:
         resp = PostgreSQLResponse(success=False, error="oops")
         j = resp.to_json()
         parsed = json.loads(j)
         assert parsed["success"] is False
         assert parsed["error"] == "oops"
 
-    def test_to_json_excludes_none(self):
+    def test_to_json_excludes_none(self) -> None:
         resp = PostgreSQLResponse(success=True, message="OK")
         j = resp.to_json()
         assert '"success":true' in j
         assert '"message":"OK"' in j
         assert "data" not in j
 
-    def test_extra_allowed(self):
+    def test_extra_allowed(self) -> None:
         resp = PostgreSQLResponse(success=True, extra_field="x")
         d = resp.to_dict()
         assert d.get("extra_field") == "x"
@@ -168,7 +168,7 @@ class TestPostgreSQLResponse:
 
 
 class TestPostgreSQLClientInit:
-    def test_init_defaults(self):
+    def test_init_defaults(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="mydb", user="root", password="pass"
         )
@@ -183,7 +183,7 @@ class TestPostgreSQLClientInit:
         assert client.min_pool_size == 1
         assert client.max_pool_size == 10
 
-    def test_init_custom_values(self):
+    def test_init_custom_values(self) -> None:
         client = PostgreSQLClient(
             host="db.example.com",
             database="mydb",
@@ -203,27 +203,27 @@ class TestPostgreSQLClientInit:
         assert client.max_pool_size == 8
         assert client.pool_acquire_timeout == 15.0
 
-    def test_init_missing_asyncpg_raises(self):
+    def test_init_missing_asyncpg_raises(self) -> None:
         with patch("app.sources.client.postgres.postgres.asyncpg", None):
             with pytest.raises(ImportError, match="asyncpg is required"):
                 PostgreSQLClient(
                     host="localhost", database="db", user="u", password="p"
                 )
 
-    def test_init_invalid_min_pool_size(self):
+    def test_init_invalid_min_pool_size(self) -> None:
         with pytest.raises(ValueError, match="min_pool_size"):
             PostgreSQLClient(
                 host="h", database="d", user="u", password="p", min_pool_size=0
             )
 
-    def test_init_max_below_min(self):
+    def test_init_max_below_min(self) -> None:
         with pytest.raises(ValueError, match="max_pool_size"):
             PostgreSQLClient(
                 host="h", database="d", user="u", password="p",
                 min_pool_size=5, max_pool_size=2,
             )
 
-    def test_init_invalid_acquire_timeout(self):
+    def test_init_invalid_acquire_timeout(self) -> None:
         with pytest.raises(ValueError, match="pool_acquire_timeout"):
             PostgreSQLClient(
                 host="h", database="d", user="u", password="p",
@@ -238,7 +238,7 @@ class TestPostgreSQLClientInit:
 
 class TestPostgreSQLClientConnection:
     @pytest.mark.asyncio
-    async def test_connect_success(self, asyncpg_module):
+    async def test_connect_success(self, asyncpg_module) -> None:
         mock_pool = _make_pool_mock()
         asyncpg_module.create_pool.return_value = mock_pool
 
@@ -262,7 +262,7 @@ class TestPostgreSQLClientConnection:
         assert call_kwargs["max_size"] == 10
 
     @pytest.mark.asyncio
-    async def test_connect_with_custom_sslmode(self, asyncpg_module):
+    async def test_connect_with_custom_sslmode(self, asyncpg_module) -> None:
         mock_pool = _make_pool_mock()
         asyncpg_module.create_pool.return_value = mock_pool
 
@@ -276,7 +276,7 @@ class TestPostgreSQLClientConnection:
         assert call_kwargs["ssl"] == "require"
 
     @pytest.mark.asyncio
-    async def test_pool_disables_statement_cache(self, asyncpg_module):
+    async def test_pool_disables_statement_cache(self, asyncpg_module) -> None:
         # Cached statements are named; behind a transaction-mode pooler a name
         # can resolve to nothing, or to another client's statement.
         asyncpg_module.create_pool.return_value = _make_pool_mock()
@@ -288,7 +288,7 @@ class TestPostgreSQLClientConnection:
         assert asyncpg_module.create_pool.call_args.kwargs["statement_cache_size"] == 0
 
     @pytest.mark.asyncio
-    async def test_connect_already_connected_returns_self(self, asyncpg_module):
+    async def test_connect_already_connected_returns_self(self, asyncpg_module) -> None:
         with patch.object(_pg_mod, "asyncpg", asyncpg_module):
             client = PostgreSQLClient(
                 host="localhost", database="db", user="u", password="p"
@@ -302,7 +302,7 @@ class TestPostgreSQLClientConnection:
         asyncpg_module.create_pool.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_connect_reconnects_when_pool_closed(self, asyncpg_module):
+    async def test_connect_reconnects_when_pool_closed(self, asyncpg_module) -> None:
         mock_new_pool = _make_pool_mock()
         asyncpg_module.create_pool.return_value = mock_new_pool
 
@@ -320,7 +320,7 @@ class TestPostgreSQLClientConnection:
         asyncpg_module.create_pool.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_connect_failure_raises_connection_error(self, asyncpg_module):
+    async def test_connect_failure_raises_connection_error(self, asyncpg_module) -> None:
         asyncpg_module.create_pool.side_effect = Exception("connection refused")
 
         with patch.object(_pg_mod, "asyncpg", asyncpg_module):
@@ -331,7 +331,7 @@ class TestPostgreSQLClientConnection:
                 await client.connect()
 
     @pytest.mark.asyncio
-    async def test_close(self):
+    async def test_close(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
@@ -344,7 +344,7 @@ class TestPostgreSQLClientConnection:
         assert client._pool is None
 
     @pytest.mark.asyncio
-    async def test_close_no_pool_is_noop(self):
+    async def test_close_no_pool_is_noop(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
@@ -352,7 +352,7 @@ class TestPostgreSQLClientConnection:
         assert client._pool is None
 
     @pytest.mark.asyncio
-    async def test_close_error_is_swallowed(self):
+    async def test_close_error_is_swallowed(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
@@ -364,20 +364,20 @@ class TestPostgreSQLClientConnection:
         mock_pool.terminate.assert_called_once()
         assert client._pool is None
 
-    def test_is_connected_true(self):
+    def test_is_connected_true(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         client._pool = _make_pool_mock()
         assert client.is_connected() is True
 
-    def test_is_connected_false_when_no_pool(self):
+    def test_is_connected_false_when_no_pool(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
         assert client.is_connected() is False
 
-    def test_is_connected_false_when_pool_closed(self):
+    def test_is_connected_false_when_pool_closed(self) -> None:
         client = PostgreSQLClient(
             host="localhost", database="db", user="u", password="p"
         )
@@ -387,7 +387,7 @@ class TestPostgreSQLClientConnection:
         assert client.is_connected() is False
 
     @pytest.mark.asyncio
-    async def test_context_manager_connects_and_closes(self, asyncpg_module):
+    async def test_context_manager_connects_and_closes(self, asyncpg_module) -> None:
         mock_pool = _make_pool_mock()
         asyncpg_module.create_pool.return_value = mock_pool
 
@@ -409,7 +409,7 @@ class TestPostgreSQLClientConnection:
 
 
 class TestPostgreSQLClientResizePool:
-    def test_resize_pool_updates_sizes(self):
+    def test_resize_pool_updates_sizes(self) -> None:
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="p"
         )
@@ -418,7 +418,7 @@ class TestPostgreSQLClientResizePool:
         assert client.min_pool_size == 1
         assert client.max_pool_size == 1
 
-    def test_resize_after_connect_raises(self):
+    def test_resize_after_connect_raises(self) -> None:
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="p"
         )
@@ -426,14 +426,14 @@ class TestPostgreSQLClientResizePool:
         with pytest.raises(RuntimeError, match="Cannot resize"):
             client.resize_pool(min_pool_size=1, max_pool_size=1)
 
-    def test_resize_invalid_min(self):
+    def test_resize_invalid_min(self) -> None:
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="p"
         )
         with pytest.raises(ValueError, match="min_pool_size"):
             client.resize_pool(min_pool_size=0, max_pool_size=1)
 
-    def test_resize_max_below_min(self):
+    def test_resize_max_below_min(self) -> None:
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="p"
         )
@@ -460,7 +460,7 @@ class TestPostgreSQLClientExecuteQuery:
         return client, mock_pool, mock_conn
 
     @pytest.mark.asyncio
-    async def test_execute_query_with_results(self):
+    async def test_execute_query_with_results(self) -> None:
         statement = _make_statement_mock(
             attributes=[_make_attribute("id"), _make_attribute("name")],
             rows=[_FakeRecord({"id": 1, "name": "test"})],
@@ -475,7 +475,25 @@ class TestPostgreSQLClientExecuteQuery:
         pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
     @pytest.mark.asyncio
-    async def test_prepare_and_fetch_share_one_transaction(self):
+    async def test_queries_run_in_a_read_only_transaction_by_default(self) -> None:
+        statement = _make_statement_mock(attributes=[_make_attribute("id")], rows=[])
+        client, _, conn = self._make_pooled_client(statement=statement)
+
+        await client.execute_query("SELECT id FROM t", local_settings={"statement_timeout": "30s"})
+        await client.execute_query_raw("SELECT id FROM t")
+
+        assert [c.kwargs for c in conn.transaction.call_args_list] == [{"readonly": True}] * 2
+
+    @pytest.mark.asyncio
+    async def test_a_write_needs_an_explicit_opt_out(self) -> None:
+        client, _, conn = self._make_pooled_client(statement=_make_statement_mock(attributes=[]))
+
+        await client.execute_query("DELETE FROM t", read_only=False)
+
+        conn.transaction.assert_called_once_with(readonly=False)
+
+    @pytest.mark.asyncio
+    async def test_prepare_and_fetch_share_one_transaction(self) -> None:
         # A transaction-mode pooler keeps a transaction on one server
         # connection; outside one, the fetch can land where nothing was prepared.
         events = []
@@ -493,7 +511,7 @@ class TestPostgreSQLClientExecuteQuery:
         assert events == ["begin", "prepare", "fetch", "commit"]
 
     @pytest.mark.asyncio
-    async def test_execute_query_with_params(self):
+    async def test_execute_query_with_params(self) -> None:
         statement = _make_statement_mock(
             attributes=[_make_attribute("id")],
             rows=[_FakeRecord({"id": 1})],
@@ -504,7 +522,7 @@ class TestPostgreSQLClientExecuteQuery:
         statement.fetch.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_execute_query_without_params(self):
+    async def test_execute_query_without_params(self) -> None:
         statement = _make_statement_mock(attributes=[])
         client, _, conn = self._make_pooled_client(statement=statement, execute_result="SELECT 0")
 
@@ -512,17 +530,17 @@ class TestPostgreSQLClientExecuteQuery:
         conn.execute.assert_awaited_once_with("SELECT 1")
 
     @pytest.mark.asyncio
-    async def test_execute_query_no_description_returns_affected_rows(self):
+    async def test_execute_query_no_description_returns_affected_rows(self) -> None:
         statement = _make_statement_mock(attributes=[])
         client, _, conn = self._make_pooled_client(statement=statement, execute_result="DELETE 3")
 
-        results = await client.execute_query("DELETE FROM t WHERE id < 10")
+        results = await client.execute_query("DELETE FROM t WHERE id < 10", read_only=False)
 
         assert results == [{"affected_rows": 3}]
         conn.execute.assert_awaited_once_with("DELETE FROM t WHERE id < 10")
 
     @pytest.mark.asyncio
-    async def test_execute_query_auto_connects(self, asyncpg_module):
+    async def test_execute_query_auto_connects(self, asyncpg_module) -> None:
         mock_pool = _make_pool_mock()
         statement = _make_statement_mock(attributes=[])
         mock_conn = MagicMock()
@@ -542,7 +560,7 @@ class TestPostgreSQLClientExecuteQuery:
         assert client._pool is mock_pool
 
     @pytest.mark.asyncio
-    async def test_execute_query_failure_raises(self):
+    async def test_execute_query_failure_raises(self) -> None:
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
         statement.fetch.side_effect = _DriverError("syntax error")
         client, _, _ = self._make_pooled_client(statement=statement)
@@ -572,7 +590,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         return client, mock_pool, mock_conn
 
     @pytest.mark.asyncio
-    async def test_with_results(self):
+    async def test_with_results(self) -> None:
         statement = _make_statement_mock(
             attributes=[_make_attribute("id"), _make_attribute("name")],
             rows=[
@@ -590,7 +608,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
     @pytest.mark.asyncio
-    async def test_duplicate_column_names_preserve_positional_values(self):
+    async def test_duplicate_column_names_preserve_positional_values(self) -> None:
         statement = _make_statement_mock(
             attributes=[_make_attribute("a"), _make_attribute("a")],
             rows=[_FakeRecordDuplicateColumns((1, 2))],
@@ -603,18 +621,18 @@ class TestPostgreSQLClientExecuteQueryRaw:
         assert rows == [(1, 2)]
 
     @pytest.mark.asyncio
-    async def test_no_description_returns_empty(self):
+    async def test_no_description_returns_empty(self) -> None:
         statement = _make_statement_mock(attributes=[])
         client, _, conn = self._make_pooled_client(statement=statement)
 
-        columns, rows = await client.execute_query_raw("INSERT INTO t VALUES (1)")
+        columns, rows = await client.execute_query_raw("INSERT INTO t VALUES (1)", read_only=False)
 
         assert columns == []
         assert rows == []
         conn.execute.assert_awaited_once_with("INSERT INTO t VALUES (1)")
 
     @pytest.mark.asyncio
-    async def test_with_params(self):
+    async def test_with_params(self) -> None:
         statement = _make_statement_mock(
             attributes=[_make_attribute("id")],
             rows=[_FakeRecord({"id": 1})],
@@ -625,7 +643,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         statement.fetch.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_no_params(self):
+    async def test_no_params(self) -> None:
         statement = _make_statement_mock(attributes=[])
         client, _, conn = self._make_pooled_client(statement=statement)
 
@@ -633,7 +651,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         conn.execute.assert_awaited_once_with("SELECT 1")
 
     @pytest.mark.asyncio
-    async def test_auto_connects(self, asyncpg_module):
+    async def test_auto_connects(self, asyncpg_module) -> None:
         mock_pool = _make_pool_mock()
         statement = _make_statement_mock(attributes=[])
         mock_conn = MagicMock()
@@ -651,7 +669,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
         asyncpg_module.create_pool.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_failure_raises(self):
+    async def test_failure_raises(self) -> None:
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
         statement.fetch.side_effect = _DriverError("bad query")
         client, _, _ = self._make_pooled_client(statement=statement)
@@ -666,7 +684,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
 
 
 class TestPostgreSQLClientConnectionInfo:
-    def test_get_connection_info_excludes_password(self):
+    def test_get_connection_info_excludes_password(self) -> None:
         client = PostgreSQLClient(
             host="h", database="d", user="u", password="secret", port=5433,
             sslmode="require"
@@ -688,7 +706,7 @@ class TestPostgreSQLClientConnectionInfo:
 
 
 class TestPostgreSQLConfig:
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         cfg = PostgreSQLConfig(host="h", database="d", user="u")
         assert cfg.port == 5432
         assert cfg.password == ""
@@ -697,7 +715,7 @@ class TestPostgreSQLConfig:
         assert cfg.min_pool_size == 1
         assert cfg.max_pool_size == 10
 
-    def test_all_values(self):
+    def test_all_values(self) -> None:
         cfg = PostgreSQLConfig(
             host="h", database="d", user="u", password="p",
             port=5433, timeout=60, sslmode="require",
@@ -710,37 +728,37 @@ class TestPostgreSQLConfig:
         assert cfg.max_pool_size == 20
         assert cfg.pool_acquire_timeout == 15.0
 
-    def test_missing_host_raises(self):
+    def test_missing_host_raises(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(database="d", user="u")
 
-    def test_missing_database_raises(self):
+    def test_missing_database_raises(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(host="h", user="u")
 
-    def test_missing_user_raises(self):
+    def test_missing_user_raises(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(host="h", database="d")
 
-    def test_accepts_username_alias(self):
+    def test_accepts_username_alias(self) -> None:
         cfg = PostgreSQLConfig.model_validate(
             {"host": "h", "database": "d", "username": "admin"}
         )
         assert cfg.user == "admin"
 
-    def test_invalid_port_low(self):
+    def test_invalid_port_low(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(host="h", database="d", user="u", port=0)
 
-    def test_invalid_port_high(self):
+    def test_invalid_port_high(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(host="h", database="d", user="u", port=70000)
 
-    def test_invalid_timeout_zero(self):
+    def test_invalid_timeout_zero(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConfig(host="h", database="d", user="u", timeout=0)
 
-    def test_create_client(self):
+    def test_create_client(self) -> None:
         cfg = PostgreSQLConfig(host="h", database="d", user="u", password="p")
         client = cfg.create_client()
         assert isinstance(client, PostgreSQLClient)
@@ -758,19 +776,19 @@ class TestPostgreSQLConfig:
 
 
 class TestAuthConfig:
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         cfg = AuthConfig(host="h", database="d", user="u")
         assert cfg.port == 5432
         assert cfg.password == ""
         assert cfg.sslmode == "prefer"
 
-    def test_username_alias(self):
+    def test_username_alias(self) -> None:
         cfg = AuthConfig.model_validate(
             {"host": "h", "database": "d", "username": "root"}
         )
         assert cfg.user == "root"
 
-    def test_full(self):
+    def test_full(self) -> None:
         cfg = AuthConfig(
             host="h", port=5433, database="d", user="u", password="p",
             sslmode="require",
@@ -778,7 +796,7 @@ class TestAuthConfig:
         assert cfg.port == 5433
         assert cfg.sslmode == "require"
 
-    def test_populates_from_connection_string(self):
+    def test_populates_from_connection_string(self) -> None:
         cfg = AuthConfig.model_validate({
             "connection_string": "postgresql://alice:secret@db.example.com:6432/mydb",
         })
@@ -788,7 +806,7 @@ class TestAuthConfig:
         assert cfg.user == "alice"
         assert cfg.password == "secret"
 
-    def test_connection_string_alias(self):
+    def test_connection_string_alias(self) -> None:
         cfg = AuthConfig.model_validate({
             "connectionString": "postgresql://u:p@h:5432/db",
         })
@@ -796,7 +814,7 @@ class TestAuthConfig:
         assert cfg.database == "db"
         assert cfg.user == "u"
 
-    def test_url_encoded_credentials_are_decoded(self):
+    def test_url_encoded_credentials_are_decoded(self) -> None:
         # Password contains characters that must be percent-encoded in a URI.
         cfg = AuthConfig.model_validate({
             "connection_string": "postgresql://alice%40corp:p%40ss%2Fword@h/db",
@@ -804,7 +822,7 @@ class TestAuthConfig:
         assert cfg.user == "alice@corp"
         assert cfg.password == "p@ss/word"
 
-    def test_explicit_fields_override_connection_string(self):
+    def test_explicit_fields_override_connection_string(self) -> None:
         # If caller provides both, explicit fields win over the parsed DSN.
         cfg = AuthConfig.model_validate({
             "connection_string": "postgresql://a:b@h1:5432/db1",
@@ -816,11 +834,11 @@ class TestAuthConfig:
         # Fields not explicitly set still come from the connection string.
         assert cfg.user == "a"
 
-    def test_url_encoded_database_is_decoded(self):
+    def test_url_encoded_database_is_decoded(self) -> None:
         cfg = AuthConfig.model_validate({"connection_string": "postgresql://u:p@h/my%20db"})
         assert cfg.database == "my db"
 
-    def test_sslmode_from_connection_string(self):
+    def test_sslmode_from_connection_string(self) -> None:
         # Ignoring it connected with "prefer": no certificate check, and a
         # silent fallback to an unencrypted connection.
         cfg = AuthConfig.model_validate({
@@ -828,18 +846,18 @@ class TestAuthConfig:
         })
         assert cfg.sslmode == "verify-full"
 
-    def test_explicit_sslmode_wins_over_connection_string(self):
+    def test_explicit_sslmode_wins_over_connection_string(self) -> None:
         cfg = AuthConfig.model_validate({
             "connection_string": "postgresql://u:p@h/db?sslmode=disable",
             "sslmode": "require",
         })
         assert cfg.sslmode == "require"
 
-    def test_missing_required_fields_raises(self):
+    def test_missing_required_fields_raises(self) -> None:
         with pytest.raises(ValidationError):
             AuthConfig.model_validate({"host": "h", "database": "d"})
 
-    def test_connection_string_missing_database_raises(self):
+    def test_connection_string_missing_database_raises(self) -> None:
         with pytest.raises(ValidationError):
             AuthConfig.model_validate({
                 "connection_string": "postgresql://user@host:5432/",
@@ -847,7 +865,7 @@ class TestAuthConfig:
 
 
 class TestPostgreSQLConnectorConfig:
-    def test_from_dict(self):
+    def test_from_dict(self) -> None:
         cfg = PostgreSQLConnectorConfig.model_validate({
             "auth": {
                 "host": "localhost", "port": 5432,
@@ -859,13 +877,13 @@ class TestPostgreSQLConnectorConfig:
         assert cfg.auth.database == "mydb"
         assert cfg.timeout == 30
 
-    def test_defaults_timeout(self):
+    def test_defaults_timeout(self) -> None:
         cfg = PostgreSQLConnectorConfig.model_validate({
             "auth": {"host": "h", "database": "d", "user": "u"},
         })
         assert cfg.timeout == 30
 
-    def test_invalid_timeout(self):
+    def test_invalid_timeout(self) -> None:
         with pytest.raises(ValidationError):
             PostgreSQLConnectorConfig.model_validate({
                 "auth": {"host": "h", "database": "d", "user": "u"},
@@ -879,25 +897,25 @@ class TestPostgreSQLConnectorConfig:
 
 
 class TestPostgreSQLClientBuilder:
-    def test_init_and_get_client(self):
+    def test_init_and_get_client(self) -> None:
         mock_client = MagicMock(spec=PostgreSQLClient)
         builder = PostgreSQLClientBuilder(mock_client)
         assert builder.get_client() is mock_client
 
-    def test_get_connection_info(self):
+    def test_get_connection_info(self) -> None:
         mock_client = MagicMock(spec=PostgreSQLClient)
         mock_client.get_connection_info.return_value = {"host": "localhost"}
         builder = PostgreSQLClientBuilder(mock_client)
         assert builder.get_connection_info() == {"host": "localhost"}
 
-    def test_build_with_config(self):
+    def test_build_with_config(self) -> None:
         cfg = PostgreSQLConfig(host="h", database="d", user="u", password="p")
         builder = PostgreSQLClientBuilder.build_with_config(cfg)
         assert isinstance(builder, PostgreSQLClientBuilder)
         assert isinstance(builder.get_client(), PostgreSQLClient)
 
     @pytest.mark.asyncio
-    async def test_build_from_services_success(self, log, cs):
+    async def test_build_from_services_success(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={
             "auth": {
                 "host": "localhost", "port": 5432,
@@ -914,7 +932,7 @@ class TestPostgreSQLClientBuilder:
         assert client.database == "mydb"
 
     @pytest.mark.asyncio
-    async def test_build_from_services_accepts_username_alias(self, log, cs):
+    async def test_build_from_services_accepts_username_alias(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={
             "auth": {
                 "host": "h", "database": "d", "username": "admin",
@@ -927,19 +945,19 @@ class TestPostgreSQLClientBuilder:
         assert builder.get_client().user == "admin"
 
     @pytest.mark.asyncio
-    async def test_build_from_services_no_config_raises(self, log, cs):
+    async def test_build_from_services_no_config_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="Failed to get PostgreSQL"):
             await PostgreSQLClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_not_dict_raises(self, log, cs):
+    async def test_build_from_services_not_dict_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value="not a dict")
         with pytest.raises(ValueError):
             await PostgreSQLClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_validation_error(self, log, cs):
+    async def test_build_from_services_validation_error(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={
             "auth": {"port": "not_a_number"},  # missing required fields
         })
@@ -947,7 +965,7 @@ class TestPostgreSQLClientBuilder:
             await PostgreSQLClientBuilder.build_from_services(log, cs, "inst-1")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_generic_exception_reraises(self, log, cs):
+    async def test_build_from_services_generic_exception_reraises(self, log, cs) -> None:
         # If get_config raises a non-ValueError, should be wrapped by the
         # inner _get_connector_config's try/except as ValueError.
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
@@ -962,7 +980,7 @@ class TestPostgreSQLClientBuilder:
 
 class TestGetConnectorConfig:
     @pytest.mark.asyncio
-    async def test_returns_dict(self, log, cs):
+    async def test_returns_dict(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value={"auth": {}})
         result = await PostgreSQLClientBuilder._get_connector_config(
             log, cs, "inst-1"
@@ -970,7 +988,7 @@ class TestGetConnectorConfig:
         assert result == {"auth": {}}
 
     @pytest.mark.asyncio
-    async def test_empty_raises(self, log, cs):
+    async def test_empty_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="Failed to get PostgreSQL"):
             await PostgreSQLClientBuilder._get_connector_config(
@@ -978,7 +996,7 @@ class TestGetConnectorConfig:
             )
 
     @pytest.mark.asyncio
-    async def test_not_dict_raises(self, log, cs):
+    async def test_not_dict_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value="string config")
         with pytest.raises(ValueError, match="Failed to get PostgreSQL"):
             await PostgreSQLClientBuilder._get_connector_config(
@@ -986,7 +1004,7 @@ class TestGetConnectorConfig:
             )
 
     @pytest.mark.asyncio
-    async def test_exception_raises(self, log, cs):
+    async def test_exception_raises(self, log, cs) -> None:
         cs.get_config = AsyncMock(side_effect=RuntimeError("boom"))
         with pytest.raises(ValueError, match="Failed to get PostgreSQL"):
             await PostgreSQLClientBuilder._get_connector_config(
@@ -994,14 +1012,14 @@ class TestGetConnectorConfig:
             )
 
     @pytest.mark.asyncio
-    async def test_no_instance_id_in_message(self, log, cs):
+    async def test_no_instance_id_in_message(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError) as exc_info:
             await PostgreSQLClientBuilder._get_connector_config(log, cs, None)
         assert "for instance" not in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_instance_id_in_message(self, log, cs):
+    async def test_instance_id_in_message(self, log, cs) -> None:
         cs.get_config = AsyncMock(return_value=None)
         with pytest.raises(ValueError) as exc_info:
             await PostgreSQLClientBuilder._get_connector_config(
