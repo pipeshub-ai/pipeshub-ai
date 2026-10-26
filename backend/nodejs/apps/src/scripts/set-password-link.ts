@@ -7,6 +7,9 @@ import {
   getPreparedRedisProvider,
 } from '../libs/services/redis/connectionProviderFactory';
 import { MongoService } from '../libs/services/mongo.service';
+import { initDocStore } from '../libs/repositories/doc-store';
+import { inInstallOrg } from '../libs/repositories/identity/install-org';
+import { usesMongo } from '../libs/repositories/store-select';
 import { getUserRepository } from '../libs/repositories/user';
 import {
   jwtGeneratorForForgotPasswordLink,
@@ -30,7 +33,11 @@ export type FindLinkUser = (email: string) => Promise<LinkUser | null>;
 
 // The oldest live account that uses the address.
 const findActiveUser: FindLinkUser = async (email) => {
-  return getUserRepository().findActiveByEmail(email);
+  return inInstallOrg(
+    'set-password-link',
+    () => getUserRepository().findActiveByEmail(email),
+    null,
+  );
 };
 
 /** Builds the same link a "Forgot password" email carries. */
@@ -73,8 +80,9 @@ export async function main(
   }
   await getPreparedRedisProvider();
   const appConfig = await loadAppConfig();
-  const mongo = new MongoService(appConfig.mongo);
-  await mongo.initialize();
+  const mongo = usesMongo() ? new MongoService(appConfig.mongo) : undefined;
+  await mongo?.initialize();
+  await initDocStore(process.env.APP_VERSION ?? 'dev', { jobs: false });
   try {
     const { link, lifetime } = await createSetPasswordLink(email, appConfig);
     out(
@@ -86,7 +94,7 @@ export async function main(
     err(error instanceof Error ? error.message : String(error));
     return 1;
   } finally {
-    await mongo.destroy();
+    await mongo?.destroy();
     await closeAllRedisProviders();
   }
 }

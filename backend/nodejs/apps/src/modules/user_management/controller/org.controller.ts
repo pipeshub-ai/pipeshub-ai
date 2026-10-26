@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 
 import { getOrgRepository } from '../../../libs/repositories/org';
+import { asAccount } from '../../../libs/context/orgContext';
 import { createUnitOfWork } from '../../../libs/repositories/doc-store';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
@@ -209,49 +210,57 @@ export class OrgController {
         req.body as { ref?: unknown; referrerDomain?: unknown },
       );
       const ids = getOrgRepository().allocateIds();
-      const { org, adminUserId } = await createUnitOfWork(
-        this.config.rsAvailable === 'true',
-      ).run(async (tx) => {
-        const created = await getOrgRepository().createWithAdmin(
-          {
-            ids,
-            org: {
-              ...req.body,
-              domain,
-              onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
-              signupChannel: source.channel,
-              signupReferrerDomain: source.referrerDomain,
+      // The unit runs as the new organisation and its first administrator: the ids are chosen first and the
+      // context is bound from them (nothing here comes from the request's own identity).
+      const { org, adminUserId } = await asAccount(
+        ids.orgId,
+        ids.adminUserId,
+        'org-create',
+        () =>
+          createUnitOfWork(this.config.rsAvailable === 'true').run(
+            async (tx) => {
+              const created = await getOrgRepository().createWithAdmin(
+                {
+                  ids,
+                  org: {
+                    ...req.body,
+                    domain,
+                    onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+                    signupChannel: source.channel,
+                    signupReferrerDomain: source.referrerDomain,
+                  },
+                  admin: { fullName: adminFullName, email: contactEmail },
+                  passwordHash: hashedPassword,
+                  ipAddress: req.ip,
+                },
+                tx,
+              );
+              const orgCreatedEvent: Event = {
+                eventType: EventType.OrgCreatedEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  accountType: created.org.accountType,
+                  registeredName: created.org.registeredName,
+                } as OrgAddedEvent,
+              };
+              const adminUserEvent: Event = {
+                eventType: EventType.NewUserEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  userId: created.adminUserId,
+                  fullName: adminFullName,
+                  email: created.adminEmail,
+                  syncAction: 'none',
+                } as UserAddedEvent,
+              };
+              await this.eventService.publishEvent(orgCreatedEvent, tx);
+              await this.eventService.publishEvent(adminUserEvent, tx);
+              return created;
             },
-            admin: { fullName: adminFullName, email: contactEmail },
-            passwordHash: hashedPassword,
-            ipAddress: req.ip,
-          },
-          tx,
-        );
-        const orgCreatedEvent: Event = {
-          eventType: EventType.OrgCreatedEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: created.org._id,
-            accountType: created.org.accountType,
-            registeredName: created.org.registeredName,
-          } as OrgAddedEvent,
-        };
-        const adminUserEvent: Event = {
-          eventType: EventType.NewUserEvent,
-          timestamp: Date.now(),
-          payload: {
-            orgId: created.org._id,
-            userId: created.adminUserId,
-            fullName: adminFullName,
-            email: created.adminEmail,
-            syncAction: 'none',
-          } as UserAddedEvent,
-        };
-        await this.eventService.publishEvent(orgCreatedEvent, tx);
-        await this.eventService.publishEvent(adminUserEvent, tx);
-        return created;
-      });
+          ),
+      );
       recordEvent(ORG_CREATED_EVENT, {
         orgId: org._id,
         userId: adminUserId,

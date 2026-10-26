@@ -13,6 +13,7 @@ import {
   passwordResetLinkLifetime,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { asAccount, forOrg } from '../../../libs/context/orgContext';
 import { generateOtp } from '../utils/generateOtp';
 
 import { passwordValidator } from '../utils/passwordValidator';
@@ -509,8 +510,11 @@ export class UserAccountController {
       const email = req.body?.email || '';
 
       const org = await getOrgRepository().getFirstLive({ hydrate: true });
+      // the organisation was found by the server itself (the install's first), so its configuration is read as that organisation
       const orgAuthConfig = org
-        ? await getOrgAuthConfigRepository().getLive(org._id)
+        ? await forOrg(org._id, 'sign-in-page', () =>
+            getOrgAuthConfigRepository().getLive(org._id),
+          )
         : null;
 
       const newUser = { orgId: org?._id, email: '', _id: '' };
@@ -610,7 +614,12 @@ export class UserAccountController {
           this.config.scopedJwtSecret,
         );
       const resetPasswordLink = `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`;
-      const org = await getOrgRepository().getLive(String(user.orgId));
+      const org = await asAccount(
+        String(user.orgId),
+        String(user._id),
+        'address-lookup',
+        () => getOrgRepository().getLive(String(user.orgId)),
+      );
       await this.mailService.sendMail({
         emailTemplateType: 'resetPassword',
         initiator: {
@@ -803,11 +812,13 @@ export class UserAccountController {
       const { _id: orgId, domain } = result.data;
 
       // Transaction only when a replica set is available
-      await createUnitOfWork(this.config.rsAvailable === 'true').run((tx) =>
-        getOrgAuthConfigRepository().createDefault(
-          orgId as string,
-          domain as string | undefined,
-          tx,
+      await forOrg(orgId as string, 'setup', () =>
+        createUnitOfWork(this.config.rsAvailable === 'true').run((tx) =>
+          getOrgAuthConfigRepository().createDefault(
+            orgId as string,
+            domain as string | undefined,
+            tx,
+          ),
         ),
       );
 
@@ -1214,12 +1225,14 @@ export class UserAccountController {
       // A locked account or a failed send gets the same answer as an unknown
       // email, so the answer never shows that the account exists.
       try {
-        await this.generateAndSendLoginOtp(
-          user._id,
-          user.orgId,
-          user.fullName,
-          email,
-          req.ip || ' ',
+        await asAccount(user.orgId, user._id, 'address-lookup', () =>
+          this.generateAndSendLoginOtp(
+            user._id,
+            user.orgId,
+            user.fullName,
+            email,
+            req.ip || ' ',
+          ),
         );
       } catch (sendError) {
         this.logger.warn('No sign-in code was sent', {
@@ -1833,11 +1846,13 @@ export class UserAccountController {
           if (!user) {
             if (jitConfig && jitConfig[methodKey] && userDetails) {
               const details = userDetails;
-              user = await this.jitProvisioningService.provisionUser(
-                providerEmail,
-                details,
-                orgId,
-                methodKey,
+              user = await forOrg(String(orgId), 'jit-provision', () =>
+                this.jitProvisioningService.provisionUser(
+                  providerEmail,
+                  details,
+                  orgId,
+                  methodKey,
+                ),
               );
               await getActivityRepository().record({
                 email: providerEmail,
@@ -1886,13 +1901,16 @@ export class UserAccountController {
       }
       this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
-      await this.completeSignIn(
-        req,
-        res,
-        user,
-        method as AuthMethodType,
-        credentials,
-        sessionInfo,
+      // The account is known: what follows runs as it (its credentials, activity and token are its own).
+      await asAccount(String(user.orgId), String(user._id), 'sign-in', () =>
+        this.completeSignIn(
+          req,
+          res,
+          user,
+          method as AuthMethodType,
+          credentials,
+          sessionInfo,
+        ),
       );
     } catch (error) {
       next(error);

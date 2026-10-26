@@ -1,4 +1,5 @@
 import { Logger } from '../services/logger.service';
+import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { getActivityRepository } from '../repositories/activity';
 import { isValidId } from '../repositories/ids';
 import { getUserRepository } from '../repositories/user';
@@ -31,6 +32,24 @@ export const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
 
 function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
   return role === 'admin' || role === 'member';
+}
+
+// The reads below run under the org the token names, as the HTTP middleware's own do.
+function asVerified<T>(
+  orgId: string | undefined,
+  userId: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!orgId) return fn();
+  return runWithOrgContext(
+    makeOrgContext({
+      orgId,
+      userId: userId || null,
+      kind: 'user',
+      source: 'jwt',
+    }),
+    fn,
+  );
 }
 
 function sessionRefusal(
@@ -79,21 +98,24 @@ export async function findSessionRefusal(
     return SESSION_EXPIRED_MESSAGE;
   }
 
-  const { userId, orgId } = claims;
+  const userId = claims.userId as string;
+  const orgId = claims.orgId as string;
   // The account and its latest session-invalidating activity are independent
   // reads: asked together they cost one round trip to the database on every
   // authenticated request instead of two.
-  const [user, latestActivity] = await Promise.all([
-    getUserRepository().getLiveById(userId as string),
-    userId && orgId
-      ? getActivityRepository()
-          .latestSessionEnding(userId as string, orgId as string)
-          .catch((activityError: unknown): null => {
-            logger.error('Failed to fetch user activity', activityError);
-            return null;
-          })
-      : Promise.resolve(null),
-  ]);
+  const [user, latestActivity] = await asVerified(orgId, userId, () =>
+    Promise.all([
+      getUserRepository().getLiveById(userId),
+      userId && orgId
+        ? getActivityRepository()
+            .latestSessionEnding(userId, orgId)
+            .catch((activityError: unknown): null => {
+              logger.error('Failed to fetch user activity', activityError);
+              return null;
+            })
+        : Promise.resolve(null),
+    ]),
+  );
 
   return sessionRefusal(user, latestActivity, claims.iat);
 }
@@ -108,7 +130,25 @@ export async function findSessionRefusals(
   sessions: ReadonlyArray<AcceptedSession>,
 ): Promise<Array<string | null>> {
   if (sessions.length === 0) return [];
+  // Each organisation's sessions are read as that organisation: two queries per organisation (one in practice).
+  const byOrg = new Map<string, AcceptedSession[]>();
+  for (const s of sessions)
+    byOrg.set(s.orgId, [...(byOrg.get(s.orgId) ?? []), s]);
+  const refusals = new Map<AcceptedSession, string | null>();
+  await Promise.all(
+    [...byOrg].map(async ([orgId, group]) => {
+      const found = await asVerified(orgId, undefined, () =>
+        findSessionRefusalsInOrg(group),
+      );
+      group.forEach((s, i) => refusals.set(s, found[i] ?? null));
+    }),
+  );
+  return sessions.map((s) => refusals.get(s) ?? null);
+}
 
+async function findSessionRefusalsInOrg(
+  sessions: ReadonlyArray<AcceptedSession>,
+): Promise<Array<string | null>> {
   const userIds = [...new Set(sessions.map((s) => s.userId))].filter((id) =>
     isValidId(id),
   );
