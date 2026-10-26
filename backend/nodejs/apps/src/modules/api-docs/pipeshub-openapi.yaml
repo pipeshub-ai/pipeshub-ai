@@ -25150,8 +25150,10 @@ paths:
               `grant_type` is a non-empty string the schema does not accept)
             - `invalid_grant` - `code`, `redirect_uri`, `refresh_token` or `device_code` missing,
               or an unknown, expired or already used authorization code. Also an authorization code
-              or approved device code issued before the app's `knowledgeLimit` changed ("The
-              application's permissions changed after you allowed it. Sign in again.")
+              or approved device code whose `knowledgeLimit` the app's current limit no longer
+              contains, because the app's limit was narrowed after it was issued ("The
+              application's permissions changed after you allowed it. Sign in again."). A widened
+              limit does not refuse it; the token carries the limit the user agreed to.
             - `unsupported_grant_type` - the app does not have the grant
             - `invalid_scope` - a requested scope is not allowed for the app, or the token would carry
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
@@ -70495,8 +70497,8 @@ paths:
             Either the body fails schema validation (standard error envelope, `VALIDATION_ERROR`),
             or the code cannot be used: `invalid_request` when it is unknown, was already
             approved or denied, or has no letters or digits at all; `expired_token` when it is past
-            its lifetime. Granting a code after the app's `knowledgeLimit` changed is refused in the
-            standard envelope (`OAUTH_INVALID_GRANT`, "The application's permissions changed after this
+            its lifetime. Granting a code after the app's `knowledgeLimit` was narrowed so that it no
+            longer contains the limit the login started with is refused in the standard envelope (`OAUTH_INVALID_GRANT`, "The application's permissions changed after this
             login started. Start it again.").
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
