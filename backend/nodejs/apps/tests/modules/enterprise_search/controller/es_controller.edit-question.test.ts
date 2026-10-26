@@ -421,6 +421,14 @@ describe('es_controller editing the last question', () => {
         ])
       })
 
+      it('still finds a second send whose typed answer has a quote and an arrow in it', async () => {
+        const quotedAnswer = 'User selections:\n1. "What do you enjoy?" → Say "yes" → continue'
+        const run = await startStream(editFlow({ turn: 'card', answersSentTwice: quotedAnswer }), controllerModule, undefined, { wait: false })
+        await settle()
+
+        expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+      })
+
       // Typed after a card turn, these quote the card's question but are not a second send of its answers.
       for (const [why, typed] of [
         ['it also quotes a question the card never asked', 'User selections:\n1. "What do you enjoy?" → Pop\n2. "And what next?" → Jazz'],

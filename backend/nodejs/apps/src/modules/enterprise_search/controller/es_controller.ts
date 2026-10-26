@@ -3411,7 +3411,7 @@ function quotedCardQuestions(content: string | undefined | null): Set<string> {
   const body = (content ?? '').trimStart().replace(/^User selections:\s*/, '');
   const lines = body.split('\n').filter((line) => line.trim() !== '');
   for (const [index, line] of lines.entries()) {
-    const match = /^(\d+)\.\s+"(.+)"\s+→/.exec(line.trim());
+    const match = /^(\d+)\.\s+"(.+?)"\s+→/.exec(line.trim());
     const question = match?.[2]?.trim();
     if (!question || Number(match?.[1]) !== index + 1) return new Set<string>();
     questions.add(question);
