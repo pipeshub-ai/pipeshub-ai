@@ -16,11 +16,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     MultimodalModelNotConfiguredError,
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.utils.opik import get_llm_invoke_config
 
 # ============================================================================
@@ -133,9 +138,13 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError) as exc_info:
+        with pytest.raises(AISettingsUnavailableError) as exc_info:
             await strategy._get_multimodal_llm()
-        assert not isinstance(exc_info.value, MultimodalModelNotConfiguredError)
+        # Not a DocumentProcessingError, which the classifier treats as final;
+        # the store's own error stays the cause.
+        assert not isinstance(exc_info.value, DocumentProcessingError)
+        assert isinstance(exc_info.value.__cause__, ConnectionError)
+        assert MessageErrorClassifier.classify_by_exception(exc_info.value) == MessageErrorType.TRANSIENT
 
 
 # ============================================================================

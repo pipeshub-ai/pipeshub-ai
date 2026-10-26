@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     MultimodalModelNotConfiguredError,
 )
@@ -174,8 +175,15 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
             # 2. Scan all LLM configs for the best multimodal candidate
             # `{}` until an admin saves AI settings. A store that cannot be read
-            # raises instead, and the handler below keeps that retryable.
-            raw_configs = (await load_ai_models(self.config, raise_on_error=True)).get("llm")
+            # raises instead: an outage, retried, never "no model is set up".
+            try:
+                ai_models = await load_ai_models(self.config, raise_on_error=True)
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    details={"error": str(e)},
+                ) from e
+            raw_configs = ai_models.get("llm")
             llm_configs: list[dict[str, Any]] = (
                 [cast("dict[str, Any]", c) for c in cast("list[object]", raw_configs) if isinstance(c, dict)]
                 if isinstance(raw_configs, list)
@@ -229,7 +237,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 details={"required": "multimodal LLM"},
             )
 
-        except DocumentProcessingError:
+        except (DocumentProcessingError, AISettingsUnavailableError):
             raise
         except Exception as e:
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")
