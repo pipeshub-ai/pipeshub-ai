@@ -1,4 +1,4 @@
-"""Record -> member edges (KG-13 slice 1): who a record names, resolved to
+"""Record -> member edges: who a record names, resolved to
 existing users only, written idempotently, never bcc."""
 from __future__ import annotations
 

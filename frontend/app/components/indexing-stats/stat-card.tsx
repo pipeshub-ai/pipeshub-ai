@@ -28,6 +28,19 @@ export function StatCard({
       justify="center"
       gap="2"
       onClick={onClick}
+      // A clickable card is a button for the keyboard and assistive technology too.
+      role={isClickable ? 'button' : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={
+        isClickable
+          ? (e) => {
+              if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{

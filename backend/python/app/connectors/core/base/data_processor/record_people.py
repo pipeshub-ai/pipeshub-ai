@@ -1,4 +1,4 @@
-"""Links from a record to the people it names (KG-13 slice 1; authorship).
+"""Links from a record to the people it names.
 
 Two sources of people:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import TYPE_CHECKING, Optional
 
@@ -14,6 +15,7 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -42,6 +44,37 @@ _UNAVAILABLE_STATUSES = frozenset({502, 503, 504})
 
 def within_docling_size_limit(size_bytes: int) -> bool:
     return size_bytes <= MAX_PDF_BYTES
+
+
+MAX_PAGES_ENV = "PDF_DOCLING_MAX_PAGES"
+DEFAULT_MAX_PAGES = 30
+
+
+_warned_negative_max_pages: set[int] = set()
+
+
+def docling_max_pages() -> int:
+    """Text PDFs with more pages than this go to the PdfPlumber+OpenCV parser."""
+    value = env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES)
+    if value >= 0:
+        return value
+    if value not in _warned_negative_max_pages:
+        _warned_negative_max_pages.add(value)
+        logging.getLogger(__name__).warning(
+            "Ignoring negative %s=%d; falling back to %d", MAX_PAGES_ENV, value, DEFAULT_MAX_PAGES
+        )
+    return DEFAULT_MAX_PAGES
+
+
+def docling_takes(size_bytes: int, page_count: int | None) -> bool:
+    """Whether a text PDF goes to Docling rather than the PdfPlumber+OpenCV parser.
+
+    An unknown page count goes to Docling: it reads PDFs with pdfium, which opens
+    files pdfminer cannot count.
+    """
+    if not within_docling_size_limit(size_bytes):
+        return False
+    return page_count is None or page_count <= docling_max_pages()
 
 
 def _docling_unavailable(exc: ServiceCallError) -> bool:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -13,6 +15,7 @@ from app.modules.artifacts.models import SignedFileUrl
 from app.modules.artifacts.store import (
     MAX_FILES_PER_CALL,
     ArtifactRoutesUnavailable,
+    ArtifactStoreError,
     NodeArtifactStore,
     artifact_writes_available,
 )
@@ -137,7 +140,92 @@ async def test_read_urls_get_and_ranges_list_and_delete(storage: FakeStorage) ->
     assert await store.list_revisions("org-1", "vr-1") == []
 
 
+async def test_delete_sends_the_listed_stamp_and_deletes_when_unchanged(storage: FakeStorage) -> None:
+    store = _store(storage)
+    plan = await store.presign_revision("org-1", "vr-1", REV, [("record.json", "application/json")])
+    await store.put(plan.files["record.json"], b"{}", "application/json")
+    storage.stamps[plan.document_id] = 500
+
+    assert await store.delete_revision("org-1", plan.document_id, if_unchanged_since=500) == 1
+
+    assert storage.delete_queries == [{"ifUnchangedSince": "500"}]
+    assert await store.list_revisions("org-1", "vr-1") == []
+
+
+async def test_a_delete_refused_as_changed_returns_none_and_keeps_the_revision(storage: FakeStorage) -> None:
+    store = _store(storage)
+    plan = await store.presign_revision("org-1", "vr-1", REV, [("record.json", "application/json")])
+    await store.put(plan.files["record.json"], b"{}", "application/json")
+    storage.stamps[plan.document_id] = 501
+
+    assert await store.delete_revision("org-1", plan.document_id, if_unchanged_since=500) is None
+
+    assert [r["rev"] for r in await store.list_revisions("org-1", "vr-1")] == [REV]
+
+
+async def test_a_delete_without_the_stamp_sends_none(storage: FakeStorage) -> None:
+    await _store(storage).delete_revision("org-1", "doc-x")
+
+    assert storage.delete_queries == [{}]
+
+
+async def test_a_conflict_that_is_not_changed_is_an_error(storage: FakeStorage) -> None:
+    storage.delete_conflict_body = {"error": {"message": "something else"}}
+
+    with pytest.raises(ArtifactStoreError):
+        await _store(storage).delete_revision("org-1", "doc-x", if_unchanged_since=1)
+
+
+
+async def test_a_bounded_delete_is_one_attempt_that_stops_at_its_timeout(storage: FakeStorage) -> None:
+    storage.delete_delay = 1.0
+    started = time.monotonic()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _store(storage).delete_revision("org-1", "doc-x", if_unchanged_since=1, timeout_seconds=0.2)
+
+    assert time.monotonic() - started < 0.9
+    assert storage.delete_calls == 1
+
+
+async def test_a_bounded_listing_is_one_attempt_that_stops_at_its_timeout(storage: FakeStorage) -> None:
+    storage.list_delay = 1.0
+    started = time.monotonic()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _store(storage).list_revisions("org-1", "vr-1", timeout_seconds=0.2)
+
+    assert time.monotonic() - started < 0.9
+    assert storage.list_calls == 1
+
+
+async def test_a_bounded_listing_is_not_retried_on_a_transient_status(storage: FakeStorage) -> None:
+    storage.list_status = 503
+
+    with pytest.raises(aiohttp.ClientError):
+        await _store(storage).list_revisions("org-1", "vr-1", timeout_seconds=5.0)
+
+    assert storage.list_calls == 1
+
+
+async def test_an_unbounded_listing_still_retries_a_transient_status(storage: FakeStorage) -> None:
+    storage.list_status = 503
+
+    with pytest.raises(aiohttp.ClientError):
+        await _store(storage).list_revisions("org-1", "vr-1")
+
+    assert storage.list_calls == 3
+
+
 def test_signed_urls_stay_out_of_reprs() -> None:
     entry = SignedFileUrl(url=f"https://x/y?sig={SIGNATURE}", method="PUT", headers={"Authorization": "Bearer t"})
     assert SIGNATURE not in repr(entry) and SIGNATURE not in str(entry)
     assert "Bearer t" not in repr(entry)
+
+
+async def test_a_delete_answered_lost_is_an_error_not_a_change(storage: FakeStorage) -> None:
+    """`lost`: the files may be gone although the document stayed; it is never `changed`."""
+    storage.delete_conflict_body = {"purged": 0, "reason": "lost"}
+
+    with pytest.raises(ArtifactStoreError):
+        await _store(storage).delete_revision("org-1", "doc-x", if_unchanged_since=1)

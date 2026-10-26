@@ -22,6 +22,7 @@ const INDEX_STATUS_COLOR: Record<string, string> = {
   QUEUED: 'var(--blue-9)',
   FAILED: 'var(--red-9)',
   FILE_TYPE_NOT_SUPPORTED: 'var(--red-9)',
+  PASSWORD_PROTECTED: 'var(--amber-11)',
 };
 
 interface FilesCardProps {

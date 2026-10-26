@@ -636,6 +636,23 @@ class TestTicketRecord:
         mock_enrich.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_passes_the_access_callback(self) -> None:
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+        ))
+        check = AsyncMock()
+        config_service = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
+            new=AsyncMock(return_value="x"),
+        ) as mock_enrich:
+            await rec.to_llm_context_with_live_fields(config_service=config_service, readable_issue_ids=check)
+
+        assert mock_enrich.await_args.args[2:] == (config_service, check)
+
+    @pytest.mark.asyncio
     async def test_to_llm_context_with_live_fields_falls_back_on_error(self):
         rec = TicketRecord(**_record_kwargs(
             record_type=RecordType.TICKET,

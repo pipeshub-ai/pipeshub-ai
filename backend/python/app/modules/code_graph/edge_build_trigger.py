@@ -185,8 +185,24 @@ class LeaseLostError(RuntimeError):
     """This build no longer holds the repo's lock; another may be writing its edges."""
 
 
+def _pg_state():  # noqa: ANN202
+    """The database lock in ``REDIS_MODE=postgres`` (``None`` otherwise): the same lease, in ``platform.kv_entries``."""
+    from app.services.redis.connection_provider_factory import uses_pg_state
+
+    if not uses_pg_state():
+        return None
+    from app.services.pg_state import PgState
+
+    return PgState()
+
+
 async def assert_lease_held(redis: "Redis", lock_key: str, lock_token: str) -> None:
     """Fence a write: raise unless this build still owns the lock (O-6)."""
+    pg = _pg_state()
+    if pg is not None:
+        if await pg.lock_owner(lock_key) != lock_token:
+            raise LeaseLostError(f"code edge build lost its lock {lock_key}")
+        return
     held = await redis.get(lock_key)
     if isinstance(held, bytes):
         held = held.decode()
@@ -206,6 +222,10 @@ async def acquire_build_lock(
     """
     lock_key = f"{BUILD_LOCK_PREFIX}{org_id}:{record_group_id}"
     lock_token = str(uuid4())
+    pg = _pg_state()
+    if pg is not None:
+        acquired = await pg.lock_acquire(lock_key, lock_token, BUILD_LOCK_TTL_SECONDS)
+        return (lock_key, lock_token) if acquired else None
     acquired = await redis.set(
         lock_key, lock_token, nx=True, ex=BUILD_LOCK_TTL_SECONDS
     )
@@ -219,6 +239,9 @@ async def release_build_lock(
 ) -> bool:
     """Drop the lease only if it is still ours; a lease that expired and was
     re-taken belongs to the build that took it."""
+    pg = _pg_state()
+    if pg is not None:
+        return await pg.lock_release(lock_key, lock_token)
     return bool(
         await redis.eval(RELEASE_LOCK_IF_OWNER_LUA, 1, lock_key, lock_token)
     )
@@ -230,6 +253,11 @@ async def claim_publish(
     record_group_id: str,
 ) -> bool:
     """Win the right to ask for this group's build, once per dedupe window."""
+    pg = _pg_state()
+    if pg is not None:   # a fresh owner each time, so only an absent or expired row can be taken
+        return await pg.lock_acquire(
+            f"{_PUBLISH_DEDUPE_PREFIX}{org_id}:{record_group_id}", str(uuid4()), _PUBLISH_DEDUPE_TTL_SECONDS
+        )
     return bool(
         await redis.set(
             f"{_PUBLISH_DEDUPE_PREFIX}{org_id}:{record_group_id}",
@@ -254,12 +282,11 @@ async def renew_build_lock_until_cancelled(
     while True:
         await asyncio.sleep(BUILD_LOCK_RENEW_INTERVAL_SECONDS)
         try:
-            if not await redis.eval(
-                REFRESH_LOCK_IF_OWNER_LUA,
-                1,
-                lock_key,
-                lock_token,
-                BUILD_LOCK_TTL_SECONDS,
+            pg = _pg_state()
+            if not (
+                await pg.lock_renew(lock_key, lock_token, BUILD_LOCK_TTL_SECONDS)
+                if pg is not None
+                else await redis.eval(REFRESH_LOCK_IF_OWNER_LUA, 1, lock_key, lock_token, BUILD_LOCK_TTL_SECONDS)
             ):
                 log.error(
                     "Code edge build lost its lock %s; another replica may be "
